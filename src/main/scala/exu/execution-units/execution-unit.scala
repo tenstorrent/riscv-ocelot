@@ -21,7 +21,7 @@ import chisel3._
 import chisel3.util._
 
 import freechips.rocketchip.config.{Parameters}
-import freechips.rocketchip.rocket.{BP}
+import freechips.rocketchip.rocket.{BP,VType,VConfig}
 import freechips.rocketchip.tile.{XLen, RoCCCoreIO}
 import freechips.rocketchip.tile
 
@@ -76,6 +76,8 @@ class FFlagsResp(implicit p: Parameters) extends BoomBundle
  * @param hasFdiv does the exe unit have a FP divider
  * @param hasIfpu does the exe unit have a int to FP unit
  * @param hasFpiu does the exe unit have a FP to int unit
+ * @param hasVecConfig does the exe unit have a Vector Configuration unit
+ * @param hasVecExe does the exe unit have a Vector Execution unit
  */
 abstract class ExecutionUnit(
   val readsIrf         : Boolean       = false,
@@ -98,6 +100,8 @@ abstract class ExecutionUnit(
   val hasFdiv          : Boolean       = false,
   val hasIfpu          : Boolean       = false,
   val hasFpiu          : Boolean       = false,
+  val hasVecConfig     : Boolean       = false,
+  val hasVecExe        : Boolean       = false,
   val hasRocc          : Boolean       = false
   )(implicit p: Parameters) extends BoomModule
 {
@@ -134,6 +138,20 @@ abstract class ExecutionUnit(
     val mcontext = if (hasMem) Input(UInt(coreParams.mcontextWidth.W)) else null
     val scontext = if (hasMem) Input(UInt(coreParams.scontextWidth.W)) else null
 
+    // only used by the vec unit
+    val set_vtype       = if (hasVecConfig) Valid(new VType) else null
+    val set_vl          = if (hasVecConfig) Valid(UInt(log2Up(maxVLMax + 1).W)) else null
+    val vconfig         = if (hasVecExe) Input(new VConfig) else null
+    val vxrm            = if (hasVecExe) Input(UInt(2.W)) else null
+    val set_vxsat       = if (hasVecExe) Output(Bool()) else null
+    val vec_dis_uops    = if (hasVecExe) Valid(new MicroOp) else null
+    val vec_dis_ldq_idx = if (hasVecExe) Input(UInt(ldqAddrSz.W)) else null
+    val vec_dis_stq_idx = if (hasVecExe) Input(UInt(stqAddrSz.W)) else null
+    val vec_ldq_full    = if (hasVecExe) Input(Bool()) else null
+    val vec_stq_full    = if (hasVecExe) Input(Bool()) else null
+    val vec_lsu_stall   = if (hasVecExe) Input(Bool()) else null
+    val vec_lsu_io      = if (hasVecExe) Flipped(Vec(2, new boom.lsu.LSUExeIO)) else null
+
     // TODO move this out of ExecutionUnit
     val com_exception = if (hasMem || hasRocc) Input(Bool()) else null
   })
@@ -158,11 +176,11 @@ abstract class ExecutionUnit(
   }
 
   // TODO add "number of fflag ports", so we can properly account for FPU+Mem combinations
-  def hasFFlags     : Boolean = hasFpu || hasFdiv
+  def hasFFlags     : Boolean = hasFpu || hasFdiv || hasVecExe
 
-  require ((hasFpu || hasFdiv) ^ (hasAlu || hasMul || hasMem || hasIfpu),
+  require ((hasFpu || hasFdiv) ^ (hasAlu || hasMul || hasMem || hasIfpu || hasVecExe),
     "[execute] we no longer support mixing FP and Integer functional units in the same exe unit.")
-  def hasFcsr = hasIfpu || hasFpu || hasFdiv
+  def hasFcsr = hasIfpu || hasFpu || hasFdiv || hasVecExe
 
   require (bypassable || !alwaysBypassable,
     "[execute] an execution unit must be bypassable if it is always bypassable")
@@ -176,12 +194,14 @@ abstract class ExecutionUnit(
       fpu = hasFpu,
       csr = hasCSR,
       fdiv = hasFdiv,
-      ifpu = hasIfpu)
+      ifpu = hasIfpu,
+      vecconfig = hasVecConfig,
+      vecexe = hasVecExe)
   }
 }
 
 /**
- * ALU execution unit that can have a branch, alu, mul, div, int to FP,
+ * ALU execution unit that can have a branch, alu, mul, div, int to FP, Vector Config
  * and memory unit.
  *
  * @param hasBrUnit does the exe unit have a branch unit
@@ -191,6 +211,8 @@ abstract class ExecutionUnit(
  * @param hasDiv does the exe unit have a divider
  * @param hasIfpu does the exe unit have a int to FP unit
  * @param hasMem does the exe unit have a MemAddrCalcUnit
+ * @param hasVecConfig does the exe unit have a VecConfigUnit
+ * @param hasVecExe does the exe unit have a VecExeUnit
  */
 class ALUExeUnit(
   hasJmpUnit     : Boolean = false,
@@ -200,13 +222,15 @@ class ALUExeUnit(
   hasDiv         : Boolean = false,
   hasIfpu        : Boolean = false,
   hasMem         : Boolean = false,
-  hasRocc        : Boolean = false)
+  hasRocc        : Boolean = false,
+  hasVecConfig   : Boolean = false,
+  hasVecExe      : Boolean = false)
   (implicit p: Parameters)
   extends ExecutionUnit(
     readsIrf         = true,
-    writesIrf        = hasAlu || hasMul || hasDiv,
+    writesIrf        = hasAlu || hasMul || hasDiv || hasVecExe,
     writesLlIrf      = hasMem || hasRocc,
-    writesLlFrf      = (hasIfpu || hasMem) && p(tile.TileKey).core.fpu != None,
+    writesLlFrf      = (hasIfpu || hasMem || hasVecExe) && p(tile.TileKey).core.fpu != None,
     numBypassStages  =
       if (hasAlu && hasMul) 3 //TODO XXX p(tile.TileKey).core.imulLatency
       else if (hasAlu) 1 else 0,
@@ -220,8 +244,11 @@ class ALUExeUnit(
     hasDiv           = hasDiv,
     hasIfpu          = hasIfpu,
     hasMem           = hasMem,
+    hasVecConfig     = hasVecConfig,
+    hasVecExe        = hasVecExe,
     hasRocc          = hasRocc)
   with freechips.rocketchip.rocket.constants.MemoryOpConstants
+  with tile.HasFPUParameters
 {
   require(!(hasRocc && !hasCSR),
     "RoCC needs to be shared with CSR unit")
@@ -232,17 +259,20 @@ class ALUExeUnit(
 
   val out_str =
     BoomCoreStringPrefix("==ExeUnit==") +
-    (if (hasAlu)  BoomCoreStringPrefix(" - ALU") else "") +
-    (if (hasMul)  BoomCoreStringPrefix(" - Mul") else "") +
-    (if (hasDiv)  BoomCoreStringPrefix(" - Div") else "") +
-    (if (hasIfpu) BoomCoreStringPrefix(" - IFPU") else "") +
-    (if (hasMem)  BoomCoreStringPrefix(" - Mem") else "") +
-    (if (hasRocc) BoomCoreStringPrefix(" - RoCC") else "")
+    (if (hasAlu)      BoomCoreStringPrefix(" - ALU") else "") +
+    (if (hasMul)      BoomCoreStringPrefix(" - Mul") else "") +
+    (if (hasDiv)      BoomCoreStringPrefix(" - Div") else "") +
+    (if (hasIfpu)     BoomCoreStringPrefix(" - IFPU") else "") +
+    (if (hasMem)      BoomCoreStringPrefix(" - Mem") else "") +
+    (if (hasVecConfig)BoomCoreStringPrefix(" - VecConfig") else "") +
+    (if (hasVecExe)   BoomCoreStringPrefix(" - VecExe") else "") +
+    (if (hasRocc)     BoomCoreStringPrefix(" - RoCC") else "")
 
   override def toString: String = out_str.toString
 
   val div_busy  = WireInit(false.B)
   val ifpu_busy = WireInit(false.B)
+  val vec_busy  = WireInit(false.B)
 
   // The Functional Units --------------------
   // Specifically the functional units with fast writeback to IRF
@@ -252,9 +282,11 @@ class ALUExeUnit(
                  Mux(hasMul.B, FU_MUL, 0.U) |
                  Mux(!div_busy && hasDiv.B, FU_DIV, 0.U) |
                  Mux(hasCSR.B, FU_CSR, 0.U) |
+                 Mux(hasVecConfig.B, FU_VCS, 0.U) |
                  Mux(hasJmpUnit.B, FU_JMP, 0.U) |
                  Mux(!ifpu_busy && hasIfpu.B, FU_I2F, 0.U) |
-                 Mux(hasMem.B, FU_MEM, 0.U)
+                 Mux(hasMem.B, FU_MEM, 0.U) |
+                 Mux(!vec_busy && hasVecExe.B, FU_VEC, 0.U)
 
   // ALU Unit -------------------------------
   var alu: ALUUnit = null
@@ -395,15 +427,80 @@ class ALUExeUnit(
     }
   }
 
+  // Vector Configuration Unit --------------------------
+  var vecconfig: VecConfigUnit = null
+  if (hasVecConfig) {
+    require(hasCSR)
+    val vecconfig = Module(new VecConfigUnit(dataWidth))
+    vecconfig.io.req               <> io.req
+    vecconfig.io.req.valid         := io.req.valid && io.req.bits.uop.fu_code_is(FU_VCS)
+    vecconfig.io.req.bits.uop      := io.req.bits.uop
+    vecconfig.io.req.bits.kill     := io.req.bits.kill
+    vecconfig.io.req.bits.rs1_data := io.req.bits.rs1_data
+    vecconfig.io.req.bits.rs2_data := io.req.bits.rs2_data
+    vecconfig.io.req.bits.rs3_data := DontCare
+    vecconfig.io.resp.ready        := DontCare
+    vecconfig.io.brupdate          <> io.brupdate
+
+    iresp_fu_units += vecconfig
+
+    io.set_vtype.valid   := vecconfig.io.resp.valid &&
+                            vecconfig.io.set_vtype.valid
+    io.set_vtype.bits    := vecconfig.io.set_vtype.bits
+    io.set_vl.valid      := vecconfig.io.resp.valid &&
+                            vecconfig.io.set_vl.valid
+    io.set_vl.bits       := vecconfig.io.set_vl.bits
+
+  }
+
+  // Vector Execution Unit --------------------------
+  var vecexe: VecExeUnit = null
+  if (hasVecExe) {
+    val vecexe = Module(new VecExeUnit(dataWidth))
+    vecexe.io.vconfig           := io.vconfig
+    vecexe.io.vxrm              := io.vxrm
+    vecexe.io.fcsr_rm           := io.fcsr_rm
+    vecexe.io.req               <> io.req
+    vecexe.io.req.valid         := io.req.valid && io.req.bits.uop.fu_code_is(FU_VEC)
+    vecexe.io.req.bits.uop      := io.req.bits.uop
+    vecexe.io.req.bits.kill     := io.req.bits.kill
+    vecexe.io.req.bits.rs1_data := io.req.bits.rs1_data
+    vecexe.io.req.bits.rs2_data := io.req.bits.rs2_data
+    vecexe.io.req.bits.rs3_data := ieee(io.req.bits.rs3_data) // FP
+    vecexe.io.resp.ready        := DontCare
+    vecexe.io.brupdate          <> io.brupdate
+    vecexe.io.vec_dis_ldq_idx   := io.vec_dis_ldq_idx
+    vecexe.io.vec_dis_stq_idx   := io.vec_dis_stq_idx
+    vecexe.io.vec_ldq_full      := io.vec_ldq_full   
+    vecexe.io.vec_stq_full      := io.vec_stq_full   
+    vecexe.io.vec_lsu_io        <> io.vec_lsu_io         
+    vecexe.io.vec_lsu_stall     := io.vec_lsu_stall         
+    io.vec_dis_uops             := vecexe.io.vec_dis_uops 
+    io.set_vxsat                := vecexe.io.set_vxsat
+
+    vec_busy     := !vecexe.io.req.ready
+
+    iresp_fu_units += vecexe
+
+    io.ll_fresp.valid       := vecexe.io.resp.valid && (vecexe.io.resp.bits.uop.dst_rtype === RT_FLT)
+    io.ll_fresp.bits.uop    := vecexe.io.resp.bits.uop
+    io.ll_fresp.bits.data   := vecexe.io.resp.bits.data
+    io.ll_fresp.bits.fflags := DontCare
+
+  }
+
   // Outputs (Write Port #0)  ---------------
   if (writesIrf) {
-    io.iresp.valid     := iresp_fu_units.map(_.io.resp.valid).reduce(_|_)
+    io.iresp.valid     := iresp_fu_units.map(f => f.io.resp.valid && f.io.resp.bits.uop.dst_rtype =/= RT_FLT).reduce(_|_)
     io.iresp.bits.uop  := PriorityMux(iresp_fu_units.map(f =>
       (f.io.resp.valid, f.io.resp.bits.uop)))
     io.iresp.bits.data := PriorityMux(iresp_fu_units.map(f =>
       (f.io.resp.valid, f.io.resp.bits.data)))
     io.iresp.bits.predicated := PriorityMux(iresp_fu_units.map(f =>
       (f.io.resp.valid, f.io.resp.bits.predicated)))
+    io.iresp.bits.fflags.valid := iresp_fu_units.map(f => f.io.resp.bits.fflags.valid).reduce(_|_)
+    io.iresp.bits.fflags.bits := PriorityMux(iresp_fu_units.map(f =>
+      (f.io.resp.bits.fflags.valid, f.io.resp.bits.fflags.bits)))
 
     // pulled out for critical path reasons
     // TODO: Does this make sense as part of the iresp bundle?

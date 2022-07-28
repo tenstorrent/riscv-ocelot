@@ -268,17 +268,24 @@ object Sext
  */
 object ImmGen
 {
-  import boom.common.{LONGEST_IMM_SZ, IS_B, IS_I, IS_J, IS_S, IS_U}
+  import boom.common.{LONGEST_IMM_SZ, IS_B, IS_I, IS_J, IS_S, IS_U, IS_IVLI}
   def apply(ip: UInt, isel: UInt): SInt = {
-    val sign = ip(LONGEST_IMM_SZ-1).asSInt
-    val i30_20 = Mux(isel === IS_U, ip(18,8).asSInt, sign)
-    val i19_12 = Mux(isel === IS_U || isel === IS_J, ip(7,0).asSInt, sign)
-    val i11    = Mux(isel === IS_U, 0.S,
-                 Mux(isel === IS_J || isel === IS_B, ip(8).asSInt, sign))
-    val i10_5  = Mux(isel === IS_U, 0.S, ip(18,14).asSInt)
-    val i4_1   = Mux(isel === IS_U, 0.S, ip(13,9).asSInt)
-    val i0     = Mux(isel === IS_S || isel === IS_I, ip(8).asSInt, 0.S)
+    val sign   = Mux(isel === IS_IVLI, 0.S, ip(LONGEST_IMM_SZ-1).asSInt)
+    val i30_20 = Mux(isel === IS_IVLI, 0.S,
+                 Mux(isel === IS_U, ip(18,8).asSInt, sign))
+    val i19_12 = Mux(isel === IS_IVLI, 0.S,
+                 Mux(isel === IS_U || isel === IS_J, ip(7,0).asSInt, sign))
+    val i11    = Mux(isel === IS_IVLI, 0.S,
+                 Mux(isel === IS_U, 0.S,
+                 Mux(isel === IS_J || isel === IS_B, ip(8).asSInt, sign)))
+    val i10_5  = Mux(isel === IS_IVLI, 0.S,
+                 Mux(isel === IS_U, 0.S, ip(18,13).asSInt))
+    val i4_1   = Mux(isel === IS_IVLI, ip(7,4).asSInt,
+                 Mux(isel === IS_U, 0.S, ip(12,9).asSInt))
+    val i0     = Mux(isel === IS_IVLI, ip(3).asSInt,
+                 Mux(isel === IS_S || isel === IS_I, ip(8).asSInt, 0.S))
 
+    // Return uimm[4:0] for AVL
     return Cat(sign, i30_20, i19_12, i11, i10_5, i4_1, i0).asSInt
   }
 }

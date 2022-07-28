@@ -79,6 +79,29 @@ class WithRationalBoomTiles extends Config((site, here, up) => {
   }
 })
 
+//class WithVector extends Config((site, here, up) => {
+//  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map { 
+//    case tp: BoomTileAttachParams => tp.copy(
+//      tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+//         useVector = true
+//    )))
+//    case other => other
+//  }
+//})
+
+class WithVector(coreWidth: Int = 1) extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+      enableVector = true,
+      enableFastLoadUse = false, // Vector Unit doesn't support replay
+      setvLen = 256,
+      setvMemDataBits = 64,
+      issueParams = tp.tileParams.core.issueParams :+ 
+                IssueParams(issueWidth=1, numEntries=32, iqType=IQT_VEC.litValue, dispatchWidth=coreWidth) 
+    )))
+    case other => other
+  }
+})
 /**
  * 1-wide BOOM.
  */
