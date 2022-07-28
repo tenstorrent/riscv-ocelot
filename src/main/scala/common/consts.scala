@@ -23,12 +23,12 @@ import freechips.rocketchip.rocket.RVCExpander
  */
 trait IQType
 {
-  val IQT_SZ  = 3
+  val IQT_SZ  = 4
   val IQT_INT = 1.U(IQT_SZ.W)
   val IQT_MEM = 2.U(IQT_SZ.W)
   val IQT_FP  = 4.U(IQT_SZ.W)
-
   val IQT_MFP = 6.U(IQT_SZ.W)
+  val IQT_VEC = 8.U(IQT_SZ.W)
 }
 
 
@@ -108,19 +108,23 @@ trait ScalarOpConstants
   val MEN_X   = false.B
 
   // Immediate Extend Select
-  val IS_I   = 0.U(3.W)  // I-Type  (LD,ALU)
-  val IS_S   = 1.U(3.W)  // S-Type  (ST)
-  val IS_B   = 2.U(3.W)  // SB-Type (BR)
-  val IS_U   = 3.U(3.W)  // U-Type  (LUI/AUIPC)
-  val IS_J   = 4.U(3.W)  // UJ-Type (J/JAL)
-  val IS_X   = BitPat("b???")
+  val IS_I     = 0.U(3.W)  // I-Type  (LD,ALU)
+  val IS_S     = 1.U(3.W)  // S-Type  (ST)
+  val IS_B     = 2.U(3.W)  // SB-Type (BR)
+  val IS_U     = 3.U(3.W)  // U-Type  (LUI/AUIPC)
+  val IS_J     = 4.U(3.W)  // UJ-Type (J/JAL)
+  val IS_VLI   = 5.U(3.W)  // VSETVLI
+  val IS_IVLI  = 6.U(3.W)  // VSETIVLI
+  val IS_VL    = 7.U(3.W)  // VSETVL
+  val IS_X     = BitPat("b???")
 
   // Decode Stage Control Signals
-  val RT_FIX   = 0.U(2.W)
-  val RT_FLT   = 1.U(2.W)
-  val RT_PAS   = 3.U(2.W) // pass-through (prs1 := lrs1, etc)
-  val RT_X     = 2.U(2.W) // not-a-register (but shouldn't get a busy-bit, etc.)
+  val RT_FIX   = 0.U(3.W)
+  val RT_FLT   = 1.U(3.W)
+  val RT_PAS   = 3.U(3.W) // pass-through (prs1 := lrs1, etc)
+  val RT_X     = 2.U(3.W) // not-a-register (but shouldn't get a busy-bit, etc.)
                              // TODO rename RT_NAR
+  val RT_VEC   = 4.U(3.W)
 
   // Micro-op opcodes
   // TODO change micro-op opcodes into using enum
@@ -258,6 +262,12 @@ trait ScalarOpConstants
 
   val uopMOV       = 109.U(UOPC_SZ.W) // conditional mov decoded from "add rd, x0, rs2"
 
+  // Vector uops
+  val uopVSETVLI   = 110.U(UOPC_SZ.W) // Vector Configuration-Setting Instructions immediate vtype
+  val uopVSETVL    = 111.U(UOPC_SZ.W) // Vector Configuration-Setting Instructions
+  val uopVSETIVLI  = 112.U(UOPC_SZ.W) // Vector Configuration-Setting Instructions immediate vtype and avl
+  val uopVEC       = 114.U(UOPC_SZ.W) // Generic Vector Instructions
+
   // The Bubble Instruction (Machine generated NOP)
   // Insert (XOR x0,x0,x0) which is different from software compiler
   // generated NOPs which are (ADDI x0, x0, 0).
@@ -275,6 +285,7 @@ trait ScalarOpConstants
     uop.uses_ldq   := false.B
     uop.pdst       := 0.U
     uop.dst_rtype  := RT_X
+    uop.fu_code    := 0.U
 
     val cs = Wire(new boom.common.CtrlSignals())
     cs             := DontCare // Overridden in the following lines

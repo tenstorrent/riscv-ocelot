@@ -20,6 +20,8 @@ import chisel3._
 import chisel3.util._
 
 import org.chipsalliance.cde.config.Parameters
+import freechips.rocketchip.rocket.ALU._
+import freechips.rocketchip.rocket.{VType,VConfig}
 import freechips.rocketchip.util._
 import freechips.rocketchip.tile
 import freechips.rocketchip.rocket.{PipelinedMultiplier,BP,BreakpointUnit,Causes,CSR}
@@ -27,6 +29,7 @@ import freechips.rocketchip.rocket.{PipelinedMultiplier,BP,BreakpointUnit,Causes
 import boom.common._
 import boom.ifu._
 import boom.util._
+import boom.rvv.{VecPipeline}
 
 /**t
  * Functional unit constants
@@ -34,18 +37,21 @@ import boom.util._
 object FUConstants
 {
   // bit mask, since a given execution pipeline may support multiple functional units
-  val FUC_SZ = 10
+  val FUC_SZ = 13
   val FU_X   = BitPat.dontCare(FUC_SZ)
-  val FU_ALU =   1.U(FUC_SZ.W)
-  val FU_JMP =   2.U(FUC_SZ.W)
-  val FU_MEM =   4.U(FUC_SZ.W)
-  val FU_MUL =   8.U(FUC_SZ.W)
-  val FU_DIV =  16.U(FUC_SZ.W)
-  val FU_CSR =  32.U(FUC_SZ.W)
-  val FU_FPU =  64.U(FUC_SZ.W)
-  val FU_FDV = 128.U(FUC_SZ.W)
-  val FU_I2F = 256.U(FUC_SZ.W)
-  val FU_F2I = 512.U(FUC_SZ.W)
+  val FU_ALU =    1.U(FUC_SZ.W)
+  val FU_JMP =    2.U(FUC_SZ.W)
+  val FU_MEM =    4.U(FUC_SZ.W)
+  val FU_MUL =    8.U(FUC_SZ.W)
+  val FU_DIV =   16.U(FUC_SZ.W)
+  val FU_CSR =   32.U(FUC_SZ.W)
+  val FU_FPU =   64.U(FUC_SZ.W)
+  val FU_FDV =  128.U(FUC_SZ.W)
+  val FU_I2F =  256.U(FUC_SZ.W)
+  val FU_F2I =  512.U(FUC_SZ.W)
+  val FU_VEC = 1024.U(FUC_SZ.W)
+  val FU_VLS = 2048.U(FUC_SZ.W)
+  val FU_VCS = 4096.U(FUC_SZ.W) // Vector Configuration Setting
 
   // FP stores generate data through FP F2I, and generate address through MemAddrCalc
   val FU_F2IMEM = 516.U(FUC_SZ.W)
@@ -72,7 +78,9 @@ class SupportedFuncUnits(
   val fpu: Boolean  = false,
   val csr: Boolean  = false,
   val fdiv: Boolean = false,
-  val ifpu: Boolean = false)
+  val ifpu: Boolean = false,
+  val vecconfig: Boolean  = false,
+  val vecexe: Boolean = false)
 {
 }
 
@@ -161,12 +169,14 @@ abstract class FunctionalUnit(
   val isJmpUnit: Boolean = false,
   val isAluUnit: Boolean = false,
   val isMemAddrCalcUnit: Boolean = false,
+  val isVecConfigUnit: Boolean = false,
+  val isVecExeUnit: Boolean = false,
   val needsFcsr: Boolean = false)
   (implicit p: Parameters) extends BoomModule
 {
   val io = IO(new Bundle {
     val req    = Flipped(new DecoupledIO(new FuncUnitReq(dataWidth)))
-    val resp   = (new DecoupledIO(new FuncUnitResp(dataWidth)))
+    val resp   = new DecoupledIO(new FuncUnitResp(dataWidth))
 
     val brupdate = Input(new BrUpdateInfo())
 
@@ -184,6 +194,20 @@ abstract class FunctionalUnit(
     val bp = if (isMemAddrCalcUnit) Input(Vec(nBreakpoints, new BP)) else null
     val mcontext = if (isMemAddrCalcUnit) Input(UInt(coreParams.mcontextWidth.W)) else null
     val scontext = if (isMemAddrCalcUnit) Input(UInt(coreParams.scontextWidth.W)) else null
+
+    // only used by vector unit
+    val set_vtype       = if (isVecConfigUnit) Valid(new VType) else null
+    val set_vl          = if (isVecConfigUnit) Valid(UInt(log2Up(maxVLMax + 1).W)) else null
+    val vconfig         = if (isVecExeUnit) Input(new VConfig()) else null
+    val vxrm            = if (isVecExeUnit) Input(UInt(2.W)) else null
+    val set_vxsat       = if (isVecExeUnit) Output(Bool()) else null
+    val vec_dis_uops    = if (isVecExeUnit) Valid(new MicroOp) else null
+    val vec_dis_ldq_idx = if (isVecExeUnit) Input(UInt(ldqAddrSz.W)) else null
+    val vec_dis_stq_idx = if (isVecExeUnit) Input(UInt(stqAddrSz.W)) else null
+    val vec_ldq_full    = if (isVecExeUnit) Input(Bool()) else null
+    val vec_stq_full    = if (isVecExeUnit) Input(Bool()) else null
+    val vec_lsu_io      = if (isVecExeUnit) Flipped(Vec(2, new boom.lsu.LSUExeIO)) else null
+    val vec_lsu_stall   = if (isVecExeUnit) Input(Bool()) else null
 
   })
 }
@@ -208,6 +232,8 @@ abstract class PipelinedFunctionalUnit(
   isJmpUnit: Boolean = false,
   isAluUnit: Boolean = false,
   isMemAddrCalcUnit: Boolean = false,
+  isVecConfigUnit: Boolean = false,
+  isVecExeUnit: Boolean = false,
   needsFcsr: Boolean = false
   )(implicit p: Parameters) extends FunctionalUnit(
     isPipelined = true,
@@ -216,6 +242,8 @@ abstract class PipelinedFunctionalUnit(
     dataWidth = dataWidth,
     isJmpUnit = isJmpUnit,
     isAluUnit = isAluUnit,
+    isVecConfigUnit = isVecConfigUnit,
+    isVecExeUnit = isVecExeUnit,
     isMemAddrCalcUnit = isMemAddrCalcUnit,
     needsFcsr = needsFcsr)
 {
@@ -622,6 +650,101 @@ class IntToFPUnit(latency: Int)(implicit p: Parameters)
   io.resp.bits.fflags.valid      := ifpu.io.out.valid
   io.resp.bits.fflags.bits.uop   := io.resp.bits.uop
   io.resp.bits.fflags.bits.flags := ifpu.io.out.bits.exc
+}
+
+/**
+ * Vector Configuration-Setting functional unit
+ *    Calculate Vector Length for stripmining  
+ *
+ * @param dataWidth width of the data being operated on in the functional unit
+ */
+class VecConfigUnit(dataWidth: Int)(implicit p: Parameters)
+  extends PipelinedFunctionalUnit(
+    numStages = 1,
+    numBypassStages = 0,
+    earliestBypassStage = 0,
+    isVecConfigUnit = true,
+    dataWidth = dataWidth,
+    needsFcsr = false)
+{
+
+  val io_req = io.req.bits
+
+  val avl_imm = ImmGen(io_req.uop.imm_packed, io_req.uop.ctrl.imm_sel).asUInt
+  val vtype_imm = Cat(io_req.uop.imm_packed(19), 0.U((xLen-0).W), io_req.uop.imm_packed(15,8))
+  val vtype_raw = Wire(UInt())
+  val avl     = Wire(UInt(dataWidth.W))
+
+  when        (io_req.uop.ctrl.imm_sel === IS_IVLI) {
+      vtype_raw := vtype_imm
+      avl       := avl_imm
+  } .elsewhen (io_req.uop.ctrl.imm_sel === IS_VLI ) {
+      vtype_raw := vtype_imm
+      avl       := io_req.rs1_data
+  } .otherwise {
+      vtype_raw := io_req.rs2_data
+      avl       := io_req.rs1_data
+  }
+
+  val vtype   = Reg(Vec(numStages, new VType()))
+  val vl      = Reg(Vec(numStages, UInt()))
+  vtype(0)   := VType.fromUInt(vtype_raw, false)
+  when (io_req.uop.ctrl.imm_sel =/= IS_IVLI &&
+        io_req.uop.ldst         =/= 0.U     &&
+        io_req.uop.lrs1         === 0.U       ) {
+    vl(0)      := VType.computeVL(avl, vtype_raw, 0.U, 0.B, 1.B, 0.B)
+  } .otherwise {
+    vl(0)      := VType.computeVL(avl, vtype_raw, 0.U, 0.B, 0.B, 0.B)
+  }
+
+  for (i <- 1 until numStages) {
+    vtype(i)  := vtype(i-1)
+    vl(i)     := vl(i-1)
+  }
+
+  io.resp.bits.data         := vl(numStages-1)
+  io.resp.bits.fflags.valid := false.B
+  io.set_vtype.valid        := true.B
+  io.set_vtype.bits         := vtype(numStages-1)
+  io.set_vl.valid           := RegNext(io_req.uop.ctrl.imm_sel === IS_IVLI ||
+                                       io_req.uop.ldst         =/= 0.U     ||
+                                       io_req.uop.lrs1         =/= 0.U       )
+  io.set_vl.bits            := vl(numStages-1)
+}
+
+/**
+ * Vector Execution functional unit
+ *
+ * @param dataWidth width of the data being operated on in the functional unit
+ */
+class VecExeUnit(dataWidth: Int)(implicit p: Parameters)
+  extends PipelinedFunctionalUnit(
+    numStages = 3,
+    numBypassStages = 0,
+    earliestBypassStage = 0,
+    isVecExeUnit = true,
+    dataWidth = dataWidth,
+    needsFcsr = true)
+{
+
+  val io_req = io.req.bits
+
+  val sv_pipeline = Module(new VecPipeline(xLen=xLen, vLen=coreParams.vLen))
+
+  sv_pipeline.io.vconfig             := io.vconfig
+  sv_pipeline.io.vxrm                := io.vxrm
+  sv_pipeline.io.fcsr_rm             := io.fcsr_rm
+  sv_pipeline.io.req                 <> io.req
+  sv_pipeline.io.vec_dis_ldq_idx     := io.vec_dis_ldq_idx
+  sv_pipeline.io.vec_dis_stq_idx     := io.vec_dis_stq_idx
+  sv_pipeline.io.vec_ldq_full        := io.vec_ldq_full   
+  sv_pipeline.io.vec_stq_full        := io.vec_stq_full   
+  sv_pipeline.io.vec_lsu_io          <> io.vec_lsu_io         
+  sv_pipeline.io.vec_lsu_stall       := io.vec_lsu_stall         
+  io.vec_dis_uops                    := sv_pipeline.io.vec_dis_uops 
+  io.resp                            <> sv_pipeline.io.resp
+  io.set_vxsat                       := sv_pipeline.io.set_vxsat
+
 }
 
 /**

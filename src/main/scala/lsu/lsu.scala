@@ -62,6 +62,7 @@ class LSUExeIO(implicit p: Parameters) extends BoomBundle()(p)
   // Send load data to regfiles
   val iresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen))
   val fresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen+1)) // TODO: Should this be fLen?
+  val vresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen))
 }
 
 class BoomDCacheReq(implicit p: Parameters) extends BoomBundle()(p)
@@ -118,6 +119,13 @@ class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
 
   val ldq_full    = Output(Vec(coreWidth, Bool()))
   val stq_full    = Output(Vec(coreWidth, Bool()))
+
+  val vec_dis_uops    = if(usingVector) Flipped(Valid(new MicroOp)) else null
+  val vec_dis_ldq_idx = if(usingVector) Output(UInt(ldqAddrSz.W)) else null
+  val vec_dis_stq_idx = if(usingVector) Output(UInt(stqAddrSz.W)) else null
+
+  val vec_ldq_full    = if(usingVector) Output(Bool()) else null
+  val vec_stq_full    = if(usingVector) Output(Bool()) else null
 
   val fp_stdata   = Flipped(Decoupled(new ExeUnitResp(fLen)))
 
@@ -197,33 +205,37 @@ class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val committed           = Bool() // committed by ROB
   val succeeded           = Bool() // D$ has ack'd this, we don't need to maintain this anymore
 
+  val vec_bsy             = Bool()
+
   val debug_wb_data       = UInt(xLen.W)
 }
 
 class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   with rocket.HasL1HellaCacheParameters
+  with freechips.rocketchip.rocket.constants.MemoryOpConstants
 {
   val io = IO(new LSUIO)
 
 
   val ldq = Reg(Vec(numLdqEntries, Valid(new LDQEntry)))
-  val stq = Reg(Vec(numStqEntries, Valid(new STQEntry)))
+  val stq = Reg(Vec(numStqEntries+1, Valid(new STQEntry)))
 
-
+  val numLdqEntriesMod = if (usingVector) numLdqEntries / 2 else numLdqEntries
 
   val ldq_head         = Reg(UInt(ldqAddrSz.W))
   val ldq_tail         = Reg(UInt(ldqAddrSz.W))
   val stq_head         = Reg(UInt(stqAddrSz.W)) // point to next store to clear from STQ (i.e., send to memory)
   val stq_tail         = Reg(UInt(stqAddrSz.W))
   val stq_commit_head  = Reg(UInt(stqAddrSz.W)) // point to next store to commit
-  val stq_execute_head = Reg(UInt(stqAddrSz.W)) // point to next store to execute
+  val stq_execute_head = Reg(UInt((stqAddrSz+1).W)) // point to next store to execute
 
 
   // If we got a mispredict, the tail will be misaligned for 1 extra cycle
   assert (io.core.brupdate.b2.mispredict ||
           stq(stq_execute_head).valid ||
           stq_head === stq_execute_head ||
-          stq_tail === stq_execute_head,
+          stq_tail === stq_execute_head ||
+          stq_execute_head === numStqEntries.U,
             "stq_execute_head got off track.")
 
   val h_ready :: h_s1 :: h_s2 :: h_s2_nack :: h_wait :: h_replay :: h_dead :: Nil = Enum(7)
@@ -290,7 +302,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   for (w <- 0 until coreWidth)
   {
-    ldq_full = WrapInc(ld_enq_idx, numLdqEntries) === ldq_head
+    ldq_full = WrapInc(ld_enq_idx, numLdqEntriesMod) === ldq_head
     io.core.ldq_full(w)    := ldq_full
     io.core.dis_ldq_idx(w) := ld_enq_idx
 
@@ -298,7 +310,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     io.core.stq_full(w)    := stq_full
     io.core.dis_stq_idx(w) := st_enq_idx
 
-    val dis_ld_val = io.core.dis_uops(w).valid && io.core.dis_uops(w).bits.uses_ldq && !io.core.dis_uops(w).bits.exception
+    val dis_ld_val = io.core.dis_uops(w).valid && io.core.dis_uops(w).bits.uses_ldq && !io.core.dis_uops(w).bits.exception && (io.core.dis_uops(w).bits.uopc =/= uopVEC)
     val dis_st_val = io.core.dis_uops(w).valid && io.core.dis_uops(w).bits.uses_stq && !io.core.dis_uops(w).bits.exception
     when (dis_ld_val)
     {
@@ -319,18 +331,19 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     }
       .elsewhen (dis_st_val)
     {
-      stq(st_enq_idx).valid           := true.B
-      stq(st_enq_idx).bits.uop        := io.core.dis_uops(w).bits
-      stq(st_enq_idx).bits.addr.valid := false.B
-      stq(st_enq_idx).bits.data.valid := false.B
-      stq(st_enq_idx).bits.committed  := false.B
-      stq(st_enq_idx).bits.succeeded  := false.B
+      stq(st_enq_idx).valid            := true.B
+      stq(st_enq_idx).bits.uop         := io.core.dis_uops(w).bits
+      stq(st_enq_idx).bits.addr.valid  := false.B
+      stq(st_enq_idx).bits.data.valid  := false.B
+      stq(st_enq_idx).bits.committed   := false.B
+      stq(st_enq_idx).bits.succeeded   := false.B
+      stq(st_enq_idx).bits.vec_bsy     := false.B
 
       assert (st_enq_idx === io.core.dis_uops(w).bits.stq_idx, "[lsu] mismatch enq store tag.")
       assert (!stq(st_enq_idx).valid, "[lsu] Enqueuing uop is overwriting stq entries")
     }
 
-    ld_enq_idx = Mux(dis_ld_val, WrapInc(ld_enq_idx, numLdqEntries),
+    ld_enq_idx = Mux(dis_ld_val, WrapInc(ld_enq_idx, numLdqEntriesMod),
                                  ld_enq_idx)
 
     next_live_store_mask = Mux(dis_st_val, next_live_store_mask | (1.U << st_enq_idx),
@@ -339,6 +352,58 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                  st_enq_idx)
 
     assert(!(dis_ld_val && dis_st_val), "A UOP is trying to go into both the LDQ and the STQ")
+  }
+
+  // Vector dispatch logic
+  if (usingVector) {
+    io.core.vec_ldq_full    :=                 (numLdqEntriesMod until numLdqEntries).map{i =>  ldq(i).valid}.reduce(_&&_)
+    io.core.vec_dis_ldq_idx := PriorityEncoder((numLdqEntriesMod until numLdqEntries).map{i => !ldq(i).valid}) + numLdqEntriesMod.U
+
+    io.core.vec_stq_full    := stq(stq_head).valid && 
+                               stq(stq_head).bits.vec_bsy
+    io.core.vec_dis_stq_idx := DontCare
+
+    val vec_dis_ld_val = io.core.vec_dis_uops.valid && io.core.vec_dis_uops.bits.uses_ldq
+    val vec_dis_st_val = io.core.vec_dis_uops.valid && io.core.vec_dis_uops.bits.uses_stq
+    when (vec_dis_ld_val) {
+      ldq(io.core.vec_dis_ldq_idx).valid                := true.B
+      ldq(io.core.vec_dis_ldq_idx).bits.uop             := io.core.vec_dis_uops.bits
+      ldq(io.core.vec_dis_ldq_idx).bits.youngest_stq_idx  := st_enq_idx
+      ldq(io.core.vec_dis_ldq_idx).bits.st_dep_mask     := next_live_store_mask
+
+      ldq(io.core.vec_dis_ldq_idx).bits.addr.valid      := false.B
+      ldq(io.core.vec_dis_ldq_idx).bits.executed        := false.B
+      ldq(io.core.vec_dis_ldq_idx).bits.succeeded       := false.B
+      ldq(io.core.vec_dis_ldq_idx).bits.order_fail      := false.B
+      ldq(io.core.vec_dis_ldq_idx).bits.observed        := false.B
+      ldq(io.core.vec_dis_ldq_idx).bits.forward_std_val := false.B
+
+      //assert (ld_enq_idx === io.core.vec_dis_uops.bits.ldq_idx, "[lsu] mismatch enq load tag.")
+      assert (!ldq(io.core.vec_dis_ldq_idx).valid, "[lsu] Enqueuing uop is overwriting ldq entries")
+    }
+
+    when (vec_dis_st_val) {
+      stq(io.core.vec_dis_uops.bits.stq_idx).bits.addr.valid  := false.B
+      stq(io.core.vec_dis_uops.bits.stq_idx).bits.data.valid  := false.B
+      stq(io.core.vec_dis_uops.bits.stq_idx).bits.committed   := false.B
+      stq(io.core.vec_dis_uops.bits.stq_idx).bits.succeeded   := false.B
+      stq(io.core.vec_dis_uops.bits.stq_idx).bits.vec_bsy     := true.B
+
+      stq(io.core.vec_dis_uops.bits.stq_idx).bits.uop.mem_size := io.core.vec_dis_uops.bits.mem_size
+
+      when (io.core.vec_dis_uops.bits.last_vec_stq) {
+         stq(io.core.vec_dis_uops.bits.stq_idx).bits.uop.uopc     := uopNOP
+
+         when (io.core.vec_dis_uops.bits.is_empty_st) {
+            stq(io.core.vec_dis_uops.bits.stq_idx).bits.succeeded := true.B
+            stq(io.core.vec_dis_uops.bits.stq_idx).bits.committed := true.B
+            stq_execute_head          := WrapInc(stq_execute_head, numStqEntries)
+         }
+      }
+
+      //assert (ld_enq_idx === io.core.vec_dis_uops.bits.stq_idx, "[lsu] mismatch enq load tag.")
+      //assert (!stq(io.core.vec_dis_uops.bits.stq_idx).valid, "[lsu] Enqueuing uop is overwriting stq entries")
+    }
   }
 
   ldq_tail := ld_enq_idx
@@ -788,9 +853,18 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                     coreDataBytes)).data
       dmem_req(w).bits.uop      := stq_commit_e.bits.uop
 
-      stq_execute_head                     := Mux(dmem_req_fire(w),
-                                                WrapInc(stq_execute_head, numStqEntries),
-                                                stq_execute_head)
+      when (stq_execute_head =/= numStqEntries.U) {
+         when (stq_commit_e.bits.uop.uopc =/= uopVEC) {
+            stq_execute_head          := Mux(dmem_req_fire(w),
+                                             WrapInc(stq_execute_head, numStqEntries),
+                                                     stq_execute_head)
+         } .otherwise {
+            // Park the pointer to a reserved entry
+            stq_execute_head          := Mux(dmem_req_fire(w),
+                                             numStqEntries.U,
+                                             stq_execute_head)
+         }
+      }
 
       stq(stq_execute_head).bits.succeeded := false.B
     } .elsewhen (will_fire_load_wakeup(w)) {
@@ -876,7 +950,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       stq(sidx).bits.data.bits  := Mux(will_fire_std_incoming(w) || will_fire_stad_incoming(w),
         exe_req(w).bits.data,
         io.core.fp_stdata.bits.data)
-      assert(!(stq(sidx).bits.data.valid),
+      assert(!(stq(sidx).bits.data.valid && stq(sidx).bits.uop.uopc =/= uopVEC && stq(sidx).bits.uop.uopc =/= uopNOP),
         "[lsu] Incoming store is overwriting a valid data entry")
     }
   }
@@ -940,9 +1014,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
 
     when (fired_stad_incoming(w)) {
-      clr_bsy_valid   (w) := mem_stq_incoming_e(w).valid           &&
-                            !mem_tlb_miss(w)                       &&
-                            !mem_stq_incoming_e(w).bits.uop.is_amo &&
+      clr_bsy_valid   (w) := mem_stq_incoming_e(w).valid                    &&
+                            !mem_tlb_miss(w)                                &&
+                            !mem_stq_incoming_e(w).bits.uop.is_amo          &&
+                             mem_stq_incoming_e(w).bits.uop.uopc =/= uopVEC &&
+                             mem_stq_incoming_e(w).bits.uop.uopc =/= uopNOP &&
                             !IsKilledByBranch(io.core.brupdate, mem_stq_incoming_e(w).bits.uop)
       clr_bsy_rob_idx (w) := mem_stq_incoming_e(w).bits.uop.rob_idx
       clr_bsy_brmask  (w) := GetNewBrMask(io.core.brupdate, mem_stq_incoming_e(w).bits.uop)
@@ -1090,6 +1166,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       when (do_release_search(w) &&
             l_valid              &&
             l_bits.addr.valid    &&
+            !l_bits.uop.is_vec   &&
             block_addr_matches(w)) {
         // This load has been observed, so if a younger load to the same address has not
         // executed yet, this load must be squashed
@@ -1097,6 +1174,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       } .elsewhen (do_st_search(w)                                                                                                &&
                    l_valid                                                                                                        &&
                    l_bits.addr.valid                                                                                              &&
+                   !l_bits.uop.is_vec                                                                                             &&
                    (l_bits.executed || l_bits.succeeded || l_is_forwarding)                                                       &&
                    !l_bits.addr_is_virtual                                                                                        &&
                    l_bits.st_dep_mask(lcam_stq_idx(w))                                                                            &&
@@ -1113,6 +1191,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       } .elsewhen (do_ld_search(w)            &&
                    l_valid                    &&
                    l_bits.addr.valid          &&
+                   !l_bits.uop.is_vec         &&
                    !l_bits.addr_is_virtual    &&
                    dword_addr_matches(w)      &&
                    mask_overlap(w)) {
@@ -1276,6 +1355,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   for (w <- 0 until memWidth) {
     io.core.exe(w).iresp.valid := false.B
     io.core.exe(w).fresp.valid := false.B
+    io.core.exe(w).vresp.valid := false.B
   }
 
   val dmem_resp_fired = WireInit(widthMap(w => false.B))
@@ -1312,24 +1392,37 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         val ldq_idx = io.dmem.resp(w).bits.uop.ldq_idx
         val send_iresp = ldq(ldq_idx).bits.uop.dst_rtype === RT_FIX
         val send_fresp = ldq(ldq_idx).bits.uop.dst_rtype === RT_FLT
+        val send_vresp = ldq(ldq_idx).bits.uop.dst_rtype === RT_VEC
 
         io.core.exe(w).iresp.bits.uop  := ldq(ldq_idx).bits.uop
         io.core.exe(w).fresp.bits.uop  := ldq(ldq_idx).bits.uop
+        io.core.exe(w).vresp.bits.uop  := ldq(ldq_idx).bits.uop
         io.core.exe(w).iresp.valid     := send_iresp
         io.core.exe(w).iresp.bits.data := io.dmem.resp(w).bits.data
         io.core.exe(w).fresp.valid     := send_fresp
         io.core.exe(w).fresp.bits.data := io.dmem.resp(w).bits.data
+        io.core.exe(w).vresp.valid     := send_vresp
+        io.core.exe(w).vresp.bits.data := io.dmem.resp(w).bits.data
 
-        assert(send_iresp ^ send_fresp)
+        assert(send_iresp ^ send_fresp ^ send_vresp)
         dmem_resp_fired(w) := true.B
 
-        ldq(ldq_idx).bits.succeeded      := io.core.exe(w).iresp.valid || io.core.exe(w).fresp.valid
+        ldq(ldq_idx).bits.succeeded      := io.core.exe(w).iresp.valid || io.core.exe(w).fresp.valid || io.core.exe(w).vresp.valid
         ldq(ldq_idx).bits.debug_wb_data  := io.dmem.resp(w).bits.data
       }
         .elsewhen (io.dmem.resp(w).bits.uop.uses_stq)
       {
         assert(!io.dmem.resp(w).bits.is_hella)
         stq(io.dmem.resp(w).bits.uop.stq_idx).bits.succeeded := true.B
+
+        when (stq(io.dmem.resp(w).bits.uop.stq_idx).bits.uop.uopc === uopVEC) {
+           stq_execute_head := io.dmem.resp(w).bits.uop.stq_idx
+           stq(io.dmem.resp(w).bits.uop.stq_idx).bits.addr.valid := false.B
+           stq(io.dmem.resp(w).bits.uop.stq_idx).bits.data.valid := false.B
+           stq(io.dmem.resp(w).bits.uop.stq_idx).bits.vec_bsy    := false.B
+           stq(io.dmem.resp(w).bits.uop.stq_idx).bits.committed  := false.B
+        }
+
         when (io.dmem.resp(w).bits.uop.is_amo) {
           dmem_resp_fired(w) := true.B
           io.core.exe(w).iresp.valid     := true.B
@@ -1363,10 +1456,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
       io.core.exe(w).iresp.valid := (forward_uop.dst_rtype === RT_FIX) && data_ready && live
       io.core.exe(w).fresp.valid := (forward_uop.dst_rtype === RT_FLT) && data_ready && live
+      io.core.exe(w).vresp.valid := (forward_uop.dst_rtype === RT_VEC) && data_ready && live
       io.core.exe(w).iresp.bits.uop  := forward_uop
       io.core.exe(w).fresp.bits.uop  := forward_uop
+      io.core.exe(w).vresp.bits.uop  := forward_uop
       io.core.exe(w).iresp.bits.data := loadgen.data
       io.core.exe(w).fresp.bits.data := loadgen.data
+      io.core.exe(w).vresp.bits.data := loadgen.data
 
       when (data_ready && live) {
         ldq(f_idx).bits.succeeded := data_ready
@@ -1448,18 +1544,19 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   var temp_stq_commit_head = stq_commit_head
   var temp_ldq_head        = ldq_head
+  var next_ldq_head        = ldq_head
   for (w <- 0 until coreWidth)
   {
-    val commit_store = io.core.commit.valids(w) && io.core.commit.uops(w).uses_stq
-    val commit_load  = io.core.commit.valids(w) && io.core.commit.uops(w).uses_ldq
+    val commit_store = io.core.commit.valids(w) && io.core.commit.uops(w).uses_stq && io.core.commit.uops(w).uopc =/= uopVEC
+    val commit_load  = io.core.commit.valids(w) && io.core.commit.uops(w).uses_ldq && io.core.commit.uops(w).uopc =/= uopVEC
     val idx = Mux(commit_store, temp_stq_commit_head, temp_ldq_head)
     when (commit_store)
     {
       stq(idx).bits.committed := true.B
     } .elsewhen (commit_load) {
       assert (ldq(idx).valid, "[lsu] trying to commit an un-allocated load entry.")
-      assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded ,
-        "[lsu] trying to commit an un-executed load entry.")
+      //assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded ,
+      //  "[lsu] trying to commit an un-executed load entry.")
 
       ldq(idx).valid                 := false.B
       ldq(idx).bits.addr.valid       := false.B
@@ -1486,14 +1583,66 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                temp_stq_commit_head)
 
     temp_ldq_head        = Mux(commit_load,
-                               WrapInc(temp_ldq_head, numLdqEntries),
+                               WrapInc(temp_ldq_head, numLdqEntriesMod),
                                temp_ldq_head)
   }
+
+  if (usingVector) {
+    var vec_commit_store     = Bool()
+    var vec_commit_load      = Bool()
+    val vec_commit_load_ooo  = (io.core.exe(0).vresp.valid && (io.core.exe(0).vresp.bits.uop.ldq_idx === ldq_head)) ||
+                               (io.core.exe(1).vresp.valid && (io.core.exe(1).vresp.bits.uop.ldq_idx === ldq_head))
+    val vec_commit_load_last = (io.core.exe(0).vresp.valid || io.core.exe(1).vresp.valid) && (PopCount((0 until numLdqEntries).map{ i => ldq(i).valid }) === 1.U)
+    val ldq_valid_mask_qual  = Wire(Vec(numLdqEntries, Bool()))
+    val ldq_valid_mask       = Wire(Vec(numLdqEntries, Bool()))
+
+    for (w <- 0 until memWidth) {
+      vec_commit_store     = io.core.exe(w).req.valid && io.core.exe(w).req.bits.uop.ctrl.is_sta && io.core.exe(w).req.bits.uop.is_vec
+      vec_commit_load      = io.core.exe(w).vresp.valid 
+
+      when (vec_commit_store)
+      {
+        stq(io.core.exe(w).req.bits.uop.stq_idx).bits.committed := true.B
+      } .elsewhen (vec_commit_load) {
+        assert (ldq(io.core.exe(w).vresp.bits.uop.ldq_idx).valid, "[lsu] trying to commit an un-allocated load entry.")
+        //assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded ,
+        //  "[lsu] trying to commit an un-executed load entry.")
+
+        ldq(io.core.exe(w).vresp.bits.uop.ldq_idx).valid                 := false.B
+        ldq(io.core.exe(w).vresp.bits.uop.ldq_idx).bits.addr.valid       := false.B
+        ldq(io.core.exe(w).vresp.bits.uop.ldq_idx).bits.executed         := false.B
+        ldq(io.core.exe(w).vresp.bits.uop.ldq_idx).bits.succeeded        := false.B
+        ldq(io.core.exe(w).vresp.bits.uop.ldq_idx).bits.order_fail       := false.B
+        ldq(io.core.exe(w).vresp.bits.uop.ldq_idx).bits.forward_std_val  := false.B
+      }
+
+      temp_stq_commit_head = Mux(vec_commit_store &&
+                                 io.core.exe(w).req.bits.uop.last_vec_stq,
+                                 WrapInc(temp_stq_commit_head, numStqEntries),
+                                 temp_stq_commit_head)
+    }
+
+    temp_stq_commit_head = Mux(io.core.vec_dis_uops.valid             &&
+                               io.core.vec_dis_uops.bits.last_vec_stq &&
+                               io.core.vec_dis_uops.bits.is_empty_st,
+                               WrapInc(temp_stq_commit_head, numStqEntries),
+                               temp_stq_commit_head)
+
+    // FIXME : only support one response
+    for (entry <- 0 until numLdqEntries) {
+      ldq_valid_mask_qual(entry) := (ldq(entry).valid && (entry.asUInt > temp_ldq_head))
+      ldq_valid_mask     (entry) := ldq(entry).valid
+    }
+
+    next_ldq_head = PriorityEncoder(Cat(ldq_valid_mask.asUInt, ldq_valid_mask_qual.asUInt))(ldqAddrSz-1,0)
+    temp_ldq_head = Mux(vec_commit_load_last, ldq_tail, Mux(vec_commit_load_ooo, next_ldq_head, temp_ldq_head))
+  }
+
   stq_commit_head := temp_stq_commit_head
   ldq_head        := temp_ldq_head
 
   // store has been committed AND successfully sent data to memory
-  when (stq(stq_head).valid && stq(stq_head).bits.committed)
+  when (stq(stq_head).valid && stq(stq_head).bits.committed && stq(stq_head).bits.uop.uopc =/= uopVEC)
   {
     when (stq(stq_head).bits.uop.is_fence && !io.dmem.ordered) {
       io.dmem.force_order := true.B
@@ -1607,12 +1756,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       stq_commit_head  := 0.U
       stq_execute_head := 0.U
 
-      for (i <- 0 until numStqEntries)
+      for (i <- 0 until numStqEntries+1)
       {
         stq(i).valid           := false.B
         stq(i).bits.addr.valid := false.B
         stq(i).bits.data.valid := false.B
         stq(i).bits.uop        := NullMicroOp
+        stq(i).bits.vec_bsy    := false.B
       }
     }
       .otherwise // exception

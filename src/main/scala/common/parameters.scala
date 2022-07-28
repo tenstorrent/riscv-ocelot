@@ -97,6 +97,9 @@ case class BoomCoreParams(
   mcontextWidth: Int = 0,
   scontextWidth: Int = 0,
   trace: Boolean = false,
+  enableVector: Boolean = false,
+  setvLen: Int = 128,
+  setvMemDataBits: Int = 64,
 
   /* debug stuff */
   enableCommitLogPrintf: Boolean = false,
@@ -119,6 +122,10 @@ case class BoomCoreParams(
   val traceHasWdata = trace
 
   override def customCSRs(implicit p: Parameters) = new BoomCustomCSRs
+  override val useVector: Boolean = enableVector
+  override def vLen: Int = setvLen
+  override def vMemDataBits: Int = setvMemDataBits
+
 }
 
 /**
@@ -216,7 +223,8 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val memIssueParam = issueParams.find(_.iqType == IQT_MEM.litValue).get
 
   val intWidth = intIssueParam.issueWidth
-  val memWidth = memIssueParam.issueWidth
+  val memWidth = if (boomParams.enableVector) memIssueParam.issueWidth + 1 else memIssueParam.issueWidth
+  val memUnitWidth = memIssueParam.issueWidth
 
   issueParams.map(x => require(x.dispatchWidth <= coreWidth && x.dispatchWidth > 0))
 
