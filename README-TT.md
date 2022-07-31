@@ -36,6 +36,16 @@ class MediumBoomVecConfig extends Config(
   new chipyard.config.AbstractConfig)
 ```
 
+## Testing
+A few vector test binaries are included in the [Chipyard](https://github.com/tenstorrent/chipyard/tree/main/tests/rvv) repro.
+
+Here's example commands to compile and run a vector test:
+```
+export CHIPYARD=<path_to_chipyard>
+make -C sims/vcs debug CONFIG=MediumBoomVecConfig USE_FSDB=1
+make -C sims/vcs run-binary-debug CONFIG=MediumBoomVecConfig USE_FSDB=1 BINARY=$CHIPYARD/tests/rvv/rvv_int_arithmetic_1_3828467586_2
+```
+
 ## Parametrization
 The default VLEN is set to 256b.
 It can be changed by updating the config-mixins.scala and tt_briscv_pkg.vh
