@@ -258,12 +258,12 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
     vec_exe_unit.io.vec_lsu_stall    := 0.B
 
-    vec_exe_unit.io.vec_lsu_io(0).iresp <> io.lsu.exe(0).iresp 
-    vec_exe_unit.io.vec_lsu_io(0).fresp <> io.lsu.exe(0).fresp 
-    vec_exe_unit.io.vec_lsu_io(0).vresp <> io.lsu.exe(0).vresp 
-    vec_exe_unit.io.vec_lsu_io(1).iresp <> io.lsu.exe(1).iresp 
-    vec_exe_unit.io.vec_lsu_io(1).fresp <> io.lsu.exe(1).fresp 
-    vec_exe_unit.io.vec_lsu_io(1).vresp <> io.lsu.exe(1).vresp 
+    vec_exe_unit.io.vec_lsu_io(0).iresp <> io.lsu.exe(0).iresp
+    vec_exe_unit.io.vec_lsu_io(0).fresp <> io.lsu.exe(0).fresp
+    vec_exe_unit.io.vec_lsu_io(0).vresp <> io.lsu.exe(0).vresp
+    vec_exe_unit.io.vec_lsu_io(1).iresp <> io.lsu.exe(1).iresp
+    vec_exe_unit.io.vec_lsu_io(1).fresp <> io.lsu.exe(1).fresp
+    vec_exe_unit.io.vec_lsu_io(1).vresp <> io.lsu.exe(1).vresp
 
     io.lsu.vec_dis_uops             := vec_exe_unit.io.vec_dis_uops
     vec_exe_unit.io.vec_dis_ldq_idx := io.lsu.vec_dis_ldq_idx
@@ -853,7 +853,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     int_ren_wakeups(memUnitWidth  ).bits  := io.lsu.exe(1).iresp.bits
     int_ren_wakeups(memUnitWidth+1).valid := vec_exe_resp.valid && vec_exe_resp.bits.uop.dst_rtype === RT_FIX
     int_ren_wakeups(memUnitWidth+1).bits  := vec_exe_resp.bits
-    
+
     iss_wu_idx += 2
     ren_wu_idx += 2
   }
@@ -1032,7 +1032,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
       vec_iss_unit.io.wakeup_ports(i+numIntIssueWakeupPorts).bits.pdst     := fp_pipeline.io.wakeups(i).bits.uop.pdst
       vec_iss_unit.io.wakeup_ports(i+numIntIssueWakeupPorts).bits.poisoned := false.B
       vec_iss_unit.io.wakeup_ports(i+numIntIssueWakeupPorts).bits.rtype    := RT_FLT
-    }    
+    }
   }
 
   //-------------------------------------------------------------

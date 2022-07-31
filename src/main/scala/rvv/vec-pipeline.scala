@@ -31,10 +31,10 @@ class VecPipeline (xLen: Int, vLen: Int)(implicit p: Parameters) extends BoomMod
       val vec_dis_uops    = Valid(new MicroOp)
       val vec_dis_ldq_idx = Input(UInt(ldqAddrSz.W))
       val vec_dis_stq_idx = Input(UInt(stqAddrSz.W))
-    
+
       val vec_ldq_full    = Input(Bool())
       val vec_stq_full    = Input(Bool())
-    
+
       val vec_lsu_io      = Flipped(Vec(2, new LSUExeIO))
       val vec_lsu_stall   = Input(Bool())
    })
@@ -67,10 +67,12 @@ class VecPipeline (xLen: Int, vLen: Int)(implicit p: Parameters) extends BoomMod
 
    vfp_pipeline.io.i_data_req_rtr      := lsu_queue.io.enq.ready
    vfp_pipeline.io.i_rd_data_vld_0     :=     io.vec_lsu_io(0).vresp.valid
-   vfp_pipeline.io.i_rd_data_resp_id_0 := Cat(io.vec_lsu_io(0).vresp.bits.uop.rob_idx(3,0), io.vec_lsu_io(0).vresp.bits.uop.pdst(5,0))
+   vfp_pipeline.io.i_rd_data_resp_id_0 := Cat(io.vec_lsu_io(0).vresp.bits.uop.rob_idx(3,0),
+                                              io.vec_lsu_io(0).vresp.bits.uop.pdst(5,0))
    vfp_pipeline.io.i_rd_data_0         :=     io.vec_lsu_io(0).vresp.bits.data
    vfp_pipeline.io.i_rd_data_vld_1     :=     io.vec_lsu_io(1).vresp.valid
-   vfp_pipeline.io.i_rd_data_resp_id_1 := Cat(io.vec_lsu_io(1).vresp.bits.uop.rob_idx(3,0), io.vec_lsu_io(1).vresp.bits.uop.pdst(5,0))
+   vfp_pipeline.io.i_rd_data_resp_id_1 := Cat(io.vec_lsu_io(1).vresp.bits.uop.rob_idx(3,0),
+                                              io.vec_lsu_io(1).vresp.bits.uop.pdst(5,0))
    vfp_pipeline.io.i_rd_data_1         :=     io.vec_lsu_io(1).vresp.bits.data
 
    uop_queue.io.enq.valid := req_queue.io.deq.valid && req_queue.io.deq.ready
@@ -90,7 +92,7 @@ class VecPipeline (xLen: Int, vLen: Int)(implicit p: Parameters) extends BoomMod
    io.vec_dis_uops.bits.mem_cmd          :=  lsu_queue.io.deq.bits.uop.mem_cmd
    io.vec_dis_uops.bits.is_vec           :=  1.B
    io.vec_dis_uops.bits.last_vec_stq     :=  lsu_queue.io.deq.bits.uop.last_vec_stq
-   io.vec_dis_uops.bits.is_empty_st      :=  lsu_queue.io.deq.bits.uop.is_empty_st 
+   io.vec_dis_uops.bits.is_empty_st      :=  lsu_queue.io.deq.bits.uop.is_empty_st
 
    lsu_queue.io.enq.valid                 :=     vfp_pipeline.io.o_data_req &&
                                               (  vfp_pipeline.io.o_data_byten.orR ||
@@ -156,7 +158,9 @@ class VecPipeline (xLen: Int, vLen: Int)(implicit p: Parameters) extends BoomMod
 
 }
 
-class vfp_pipeline(val vlen: Int, val addrWidth: Int) extends BlackBox(Map("VLEN" -> IntParam(vlen), "ADDRWIDTH" -> IntParam(addrWidth)))
+class vfp_pipeline(val vlen: Int, val addrWidth: Int)
+extends BlackBox(Map("VLEN"      -> IntParam(vlen),
+                     "ADDRWIDTH" -> IntParam(addrWidth)))
 with HasBlackBoxResource with HasBlackBoxPath {
   val io = IO(new Bundle {
     val i_clk       = Input(Bool())
