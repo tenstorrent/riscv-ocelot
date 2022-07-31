@@ -31,7 +31,8 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
   val fpIssueParams = issueParams.find(_.iqType == IQT_FP.litValue).get
   val dispatchWidth = fpIssueParams.dispatchWidth
   val numLlPorts = memWidth
-  val numWakeupPorts = if (usingVector) fpIssueParams.issueWidth + numLlPorts + 1 else fpIssueParams.issueWidth + numLlPorts
+  val numWakeupPorts = if (usingVector) fpIssueParams.issueWidth + numLlPorts + 1
+                       else fpIssueParams.issueWidth + numLlPorts
   val fpPregSz = log2Ceil(numFpPhysRegs)
 
   val io = IO(new Bundle {
@@ -68,11 +69,14 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
                          numWakeupPorts))
   issue_unit.suggestName("fp_issue_unit")
   val fregfile       = Module(new RegisterFileSynthesizable(numFpPhysRegs,
-                        if (usingVector) exe_units.numFrfReadPorts + 1 else  exe_units.numFrfReadPorts,
-                        if (usingVector) exe_units.numFrfWritePorts + memWidth + 1 else exe_units.numFrfWritePorts + memWidth,
+                        if (usingVector) exe_units.numFrfReadPorts + 1
+                        else             exe_units.numFrfReadPorts,
+                        if (usingVector) exe_units.numFrfWritePorts + memWidth + 1
+                        else             exe_units.numFrfWritePorts + memWidth,
                          fLen+1,
                          // No bypassing for any FP units, + memWidth for ll_wb
-                        if (usingVector) Seq.fill(exe_units.numFrfWritePorts + memWidth + 1){ false } else Seq.fill(exe_units.numFrfWritePorts + memWidth){ false }
+                        if (usingVector) Seq.fill(exe_units.numFrfWritePorts + memWidth + 1){ false }
+                        else             Seq.fill(exe_units.numFrfWritePorts + memWidth){ false }
                          ))
   val fregister_read = Module(new RegisterRead(
                          issue_unit.issueWidth,
@@ -221,7 +225,7 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
 
   val vec_resp = if (usingVector) Wire(Decoupled(new ExeUnitResp(fLen+1))) else null
   if (usingVector) {
-     vec_resp           <> io.from_vec 
+     vec_resp           <> io.from_vec
      vec_resp.bits.data := recode(io.from_vec.bits.data, 1.B)
      fregfile.io.write_ports(w_cnt) := RegNext(WritePort(vec_resp, fpregSz, fLen+1, RT_FLT))
      w_cnt += 1

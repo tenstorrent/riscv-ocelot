@@ -359,7 +359,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     io.core.vec_ldq_full    :=                 (numLdqEntriesMod until numLdqEntries).map{i =>  ldq(i).valid}.reduce(_&&_)
     io.core.vec_dis_ldq_idx := PriorityEncoder((numLdqEntriesMod until numLdqEntries).map{i => !ldq(i).valid}) + numLdqEntriesMod.U
 
-    io.core.vec_stq_full    := stq(stq_head).valid && 
+    io.core.vec_stq_full    := stq(stq_head).valid &&
                                stq(stq_head).bits.vec_bsy
     io.core.vec_dis_stq_idx := DontCare
 
@@ -1598,7 +1598,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
     for (w <- 0 until memWidth) {
       vec_commit_store     = io.core.exe(w).req.valid && io.core.exe(w).req.bits.uop.ctrl.is_sta && io.core.exe(w).req.bits.uop.is_vec
-      vec_commit_load      = io.core.exe(w).vresp.valid 
+      vec_commit_load      = io.core.exe(w).vresp.valid
 
       when (vec_commit_store)
       {

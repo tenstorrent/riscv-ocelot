@@ -656,7 +656,7 @@ class IntToFPUnit(latency: Int)(implicit p: Parameters)
 
 /**
  * Vector Configuration-Setting functional unit
- *    Calculate Vector Length for stripmining  
+ *    Calculate Vector Length for stripmining
  *
  * @param dataWidth width of the data being operated on in the functional unit
  */
@@ -739,11 +739,11 @@ class VecExeUnit(dataWidth: Int)(implicit p: Parameters)
   sv_pipeline.io.req                 <> io.req
   sv_pipeline.io.vec_dis_ldq_idx     := io.vec_dis_ldq_idx
   sv_pipeline.io.vec_dis_stq_idx     := io.vec_dis_stq_idx
-  sv_pipeline.io.vec_ldq_full        := io.vec_ldq_full   
-  sv_pipeline.io.vec_stq_full        := io.vec_stq_full   
-  sv_pipeline.io.vec_lsu_io          <> io.vec_lsu_io         
-  sv_pipeline.io.vec_lsu_stall       := io.vec_lsu_stall         
-  io.vec_dis_uops                    := sv_pipeline.io.vec_dis_uops 
+  sv_pipeline.io.vec_ldq_full        := io.vec_ldq_full
+  sv_pipeline.io.vec_stq_full        := io.vec_stq_full
+  sv_pipeline.io.vec_lsu_io          <> io.vec_lsu_io
+  sv_pipeline.io.vec_lsu_stall       := io.vec_lsu_stall
+  io.vec_dis_uops                    := sv_pipeline.io.vec_dis_uops
   io.resp                            <> sv_pipeline.io.resp
   io.set_vxsat                       := sv_pipeline.io.set_vxsat
 

@@ -471,11 +471,11 @@ class ALUExeUnit(
     vecexe.io.brupdate          <> io.brupdate
     vecexe.io.vec_dis_ldq_idx   := io.vec_dis_ldq_idx
     vecexe.io.vec_dis_stq_idx   := io.vec_dis_stq_idx
-    vecexe.io.vec_ldq_full      := io.vec_ldq_full   
-    vecexe.io.vec_stq_full      := io.vec_stq_full   
-    vecexe.io.vec_lsu_io        <> io.vec_lsu_io         
-    vecexe.io.vec_lsu_stall     := io.vec_lsu_stall         
-    io.vec_dis_uops             := vecexe.io.vec_dis_uops 
+    vecexe.io.vec_ldq_full      := io.vec_ldq_full
+    vecexe.io.vec_stq_full      := io.vec_stq_full
+    vecexe.io.vec_lsu_io        <> io.vec_lsu_io
+    vecexe.io.vec_lsu_stall     := io.vec_lsu_stall
+    io.vec_dis_uops             := vecexe.io.vec_dis_uops
     io.set_vxsat                := vecexe.io.set_vxsat
 
     vec_busy     := !vecexe.io.req.ready
@@ -491,7 +491,8 @@ class ALUExeUnit(
 
   // Outputs (Write Port #0)  ---------------
   if (writesIrf) {
-    io.iresp.valid     := iresp_fu_units.map(f => f.io.resp.valid && f.io.resp.bits.uop.dst_rtype =/= RT_FLT).reduce(_|_)
+    io.iresp.valid     := iresp_fu_units.map(f => f.io.resp.valid &&
+                                                  f.io.resp.bits.uop.dst_rtype =/= RT_FLT).reduce(_|_)
     io.iresp.bits.uop  := PriorityMux(iresp_fu_units.map(f =>
       (f.io.resp.valid, f.io.resp.bits.uop)))
     io.iresp.bits.data := PriorityMux(iresp_fu_units.map(f =>
