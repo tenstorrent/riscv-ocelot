@@ -458,6 +458,7 @@ assign o_vec_store_commit =  lq_rden                 &&
                             !lq_rdinfo.fp_rf_wr_flag;
    
 assign o_vec_nonstore_commit =  lq_rden                 &&
+                               !lq_rdinfo.vec_load      &&
                                 lq_rdinfo.vrf_wr_flag;
    
 
@@ -467,7 +468,7 @@ assign lq_full = lq_full_raw | ((~lq_empty));
 // Ratio arbiter between loads and WB stores to avoid WB starvation when endless loads (as in tight polling loop)       //
 // ******************************************************************************************************************** //
 // Fence/AMO will wait for WB to be empty
-assign mem_store_valid = mem_tx_valid & mem_store & ~wb_full & (~mem_ordered | (wb_empty & i_dmem_brisc_memory_idle));
+assign mem_store_valid = mem_tx_valid & mem_store & ~i_vex_mem_lqvld_1c & ~wb_full & (~mem_ordered | (wb_empty & i_dmem_brisc_memory_idle));
 assign mem_load_valid = mem_tx_valid & (mem_load | mem_fence) & ~i_fp_ex_mem_lqvld_1c & ~i_vex_mem_lqvld_1c & 
                            ~(wb_hit & mem_load) & (wb_empty | ~(mem_fence | mem_amo | mem_ordered)) &
                            (i_dmem_brisc_memory_idle | ~(mem_fence | mem_amo | mem_ordered));
@@ -514,7 +515,7 @@ assign o_data_req_id      = DATA_REQ_ID_WIDTH'({2'h0,mem_vecldst_idx, mem_lqid})
 assign o_mem_store        = store_gnt;
 assign o_mem_load         = load_gnt;
 assign o_mem_size         = store_gnt ? wb_ldst_sz : mem_ldst_sz;
-assign o_mem_last         = mem_lq_valid;
+assign o_mem_last         = mem_vecldst_idx_last;
 
 assign o_mem_lq_op      = lq_sim_ex_mem_instrn[6:0];
 assign o_mem_lq_commit  = lq_ready_to_commit;

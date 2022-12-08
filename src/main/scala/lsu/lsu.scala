@@ -354,58 +354,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     assert(!(dis_ld_val && dis_st_val), "A UOP is trying to go into both the LDQ and the STQ")
   }
 
-  // Vector dispatch logic
-  if (usingVector) {
-    io.core.vec_ldq_full    :=                 (numLdqEntriesMod until numLdqEntries).map{i =>  ldq(i).valid}.reduce(_&&_)
-    io.core.vec_dis_ldq_idx := PriorityEncoder((numLdqEntriesMod until numLdqEntries).map{i => !ldq(i).valid}) + numLdqEntriesMod.U
-
-    io.core.vec_stq_full    := stq(stq_head).valid &&
-                               stq(stq_head).bits.vec_bsy
-    io.core.vec_dis_stq_idx := DontCare
-
-    val vec_dis_ld_val = io.core.vec_dis_uops.valid && io.core.vec_dis_uops.bits.uses_ldq
-    val vec_dis_st_val = io.core.vec_dis_uops.valid && io.core.vec_dis_uops.bits.uses_stq
-    when (vec_dis_ld_val) {
-      ldq(io.core.vec_dis_ldq_idx).valid                := true.B
-      ldq(io.core.vec_dis_ldq_idx).bits.uop             := io.core.vec_dis_uops.bits
-      ldq(io.core.vec_dis_ldq_idx).bits.youngest_stq_idx  := st_enq_idx
-      ldq(io.core.vec_dis_ldq_idx).bits.st_dep_mask     := next_live_store_mask
-
-      ldq(io.core.vec_dis_ldq_idx).bits.addr.valid      := false.B
-      ldq(io.core.vec_dis_ldq_idx).bits.executed        := false.B
-      ldq(io.core.vec_dis_ldq_idx).bits.succeeded       := false.B
-      ldq(io.core.vec_dis_ldq_idx).bits.order_fail      := false.B
-      ldq(io.core.vec_dis_ldq_idx).bits.observed        := false.B
-      ldq(io.core.vec_dis_ldq_idx).bits.forward_std_val := false.B
-
-      //assert (ld_enq_idx === io.core.vec_dis_uops.bits.ldq_idx, "[lsu] mismatch enq load tag.")
-      assert (!ldq(io.core.vec_dis_ldq_idx).valid, "[lsu] Enqueuing uop is overwriting ldq entries")
-    }
-
-    when (vec_dis_st_val) {
-      stq(io.core.vec_dis_uops.bits.stq_idx).bits.addr.valid  := false.B
-      stq(io.core.vec_dis_uops.bits.stq_idx).bits.data.valid  := false.B
-      stq(io.core.vec_dis_uops.bits.stq_idx).bits.committed   := false.B
-      stq(io.core.vec_dis_uops.bits.stq_idx).bits.succeeded   := false.B
-      stq(io.core.vec_dis_uops.bits.stq_idx).bits.vec_bsy     := true.B
-
-      stq(io.core.vec_dis_uops.bits.stq_idx).bits.uop.mem_size := io.core.vec_dis_uops.bits.mem_size
-
-      when (io.core.vec_dis_uops.bits.last_vec_stq) {
-         stq(io.core.vec_dis_uops.bits.stq_idx).bits.uop.uopc     := uopNOP
-
-         when (io.core.vec_dis_uops.bits.is_empty_st) {
-            stq(io.core.vec_dis_uops.bits.stq_idx).bits.succeeded := true.B
-            stq(io.core.vec_dis_uops.bits.stq_idx).bits.committed := true.B
-            stq_execute_head          := WrapInc(stq_execute_head, numStqEntries)
-         }
-      }
-
-      //assert (ld_enq_idx === io.core.vec_dis_uops.bits.stq_idx, "[lsu] mismatch enq load tag.")
-      //assert (!stq(io.core.vec_dis_uops.bits.stq_idx).valid, "[lsu] Enqueuing uop is overwriting stq entries")
-    }
-  }
-
   ldq_tail := ld_enq_idx
   stq_tail := st_enq_idx
 
@@ -957,6 +905,58 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val will_fire_stdf_incoming = io.core.fp_stdata.fire
   require (xLen >= fLen) // for correct SDQ size
 
+  // Vector dispatch logic
+  if (usingVector) {
+    io.core.vec_ldq_full    :=                 (numLdqEntriesMod until numLdqEntries).map{i =>  ldq(i).valid}.reduce(_&&_)
+    io.core.vec_dis_ldq_idx := PriorityEncoder((numLdqEntriesMod until numLdqEntries).map{i => !ldq(i).valid}) +& numLdqEntriesMod.U
+
+    io.core.vec_stq_full    := stq(stq_head).valid && 
+                               stq(stq_head).bits.vec_bsy
+    io.core.vec_dis_stq_idx := DontCare
+
+    val vec_dis_ld_val = io.core.vec_dis_uops.valid && io.core.vec_dis_uops.bits.uses_ldq
+    val vec_dis_st_val = io.core.vec_dis_uops.valid && io.core.vec_dis_uops.bits.uses_stq
+    when (vec_dis_ld_val) {
+      ldq(io.core.vec_dis_ldq_idx).valid                := true.B
+      ldq(io.core.vec_dis_ldq_idx).bits.uop             := io.core.vec_dis_uops.bits
+      ldq(io.core.vec_dis_ldq_idx).bits.youngest_stq_idx  := st_enq_idx
+      ldq(io.core.vec_dis_ldq_idx).bits.st_dep_mask     := 0.U // FIXME
+
+      ldq(io.core.vec_dis_ldq_idx).bits.addr.valid      := false.B
+      ldq(io.core.vec_dis_ldq_idx).bits.executed        := false.B
+      ldq(io.core.vec_dis_ldq_idx).bits.succeeded       := false.B
+      ldq(io.core.vec_dis_ldq_idx).bits.order_fail      := false.B
+      ldq(io.core.vec_dis_ldq_idx).bits.observed        := false.B
+      ldq(io.core.vec_dis_ldq_idx).bits.forward_std_val := false.B
+
+      //assert (ld_enq_idx === io.core.vec_dis_uops.bits.ldq_idx, "[lsu] mismatch enq load tag.")
+      assert (!ldq(io.core.vec_dis_ldq_idx).valid, "[lsu] Enqueuing uop is overwriting ldq entries")
+    }
+
+    when (vec_dis_st_val) {
+      stq(io.core.vec_dis_uops.bits.stq_idx).bits.addr.valid  := false.B
+      stq(io.core.vec_dis_uops.bits.stq_idx).bits.data.valid  := false.B
+      stq(io.core.vec_dis_uops.bits.stq_idx).bits.committed   := false.B
+      stq(io.core.vec_dis_uops.bits.stq_idx).bits.succeeded   := false.B
+      stq(io.core.vec_dis_uops.bits.stq_idx).bits.vec_bsy     := true.B
+
+      stq(io.core.vec_dis_uops.bits.stq_idx).bits.uop.mem_size := io.core.vec_dis_uops.bits.mem_size
+
+      when (io.core.vec_dis_uops.bits.last_vec_stq) {
+         stq(io.core.vec_dis_uops.bits.stq_idx).bits.uop.uopc     := uopNOP
+
+         when (io.core.vec_dis_uops.bits.is_empty_st) {
+            stq(io.core.vec_dis_uops.bits.stq_idx).bits.succeeded := true.B
+            stq(io.core.vec_dis_uops.bits.stq_idx).bits.committed := true.B
+            stq_execute_head          := WrapInc(stq_execute_head, numStqEntries)
+         }
+      }
+
+      //assert (ld_enq_idx === io.core.vec_dis_uops.bits.stq_idx, "[lsu] mismatch enq load tag.")
+      //assert (!stq(io.core.vec_dis_uops.bits.stq_idx).valid, "[lsu] Enqueuing uop is overwriting stq entries")
+    }
+  }
+
   //-------------------------------------------------------------
   //-------------------------------------------------------------
   // Cache Access Cycle (Mem)
@@ -1240,7 +1240,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           io.dmem.s1_kill(w)                 := RegNext(dmem_req_fire(w))
           s1_set_execute(lcam_ldq_idx(w))    := false.B
         }
-          .elsewhen (s_uop.is_fence || s_uop.is_amo)
+          .elsewhen (s_uop.is_fence || s_uop.is_amo || s_uop.uopc === uopVEC)
         {
           ldst_addr_matches(w)(i)            := true.B
           io.dmem.s1_kill(w)                 := RegNext(dmem_req_fire(w))
@@ -1547,7 +1547,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   var next_ldq_head        = ldq_head
   for (w <- 0 until coreWidth)
   {
-    val commit_store = io.core.commit.valids(w) && io.core.commit.uops(w).uses_stq && io.core.commit.uops(w).uopc =/= uopVEC
+    val commit_store = io.core.commit.valids(w) && io.core.commit.uops(w).uses_stq
     val commit_load  = io.core.commit.valids(w) && io.core.commit.uops(w).uses_ldq && io.core.commit.uops(w).uopc =/= uopVEC
     val idx = Mux(commit_store, temp_stq_commit_head, temp_ldq_head)
     when (commit_store)
@@ -1616,17 +1616,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         ldq(io.core.exe(w).vresp.bits.uop.ldq_idx).bits.forward_std_val  := false.B
       }
 
-      temp_stq_commit_head = Mux(vec_commit_store &&
-                                 io.core.exe(w).req.bits.uop.last_vec_stq,
-                                 WrapInc(temp_stq_commit_head, numStqEntries),
-                                 temp_stq_commit_head)
+      //temp_stq_commit_head = Mux(vec_commit_store &&
+      //                           io.core.exe(w).req.bits.uop.last_vec_stq,
+      //                           WrapInc(temp_stq_commit_head, numStqEntries),
+      //                           temp_stq_commit_head)
     }
 
-    temp_stq_commit_head = Mux(io.core.vec_dis_uops.valid             &&
-                               io.core.vec_dis_uops.bits.last_vec_stq &&
-                               io.core.vec_dis_uops.bits.is_empty_st,
-                               WrapInc(temp_stq_commit_head, numStqEntries),
-                               temp_stq_commit_head)
+    //temp_stq_commit_head = Mux(io.core.vec_dis_uops.valid             &&
+    //                           io.core.vec_dis_uops.bits.last_vec_stq &&
+    //                           io.core.vec_dis_uops.bits.is_empty_st,
+    //                           WrapInc(temp_stq_commit_head, numStqEntries),
+    //                           temp_stq_commit_head)
 
     // FIXME : only support one response
     for (entry <- 0 until numLdqEntries) {

@@ -650,8 +650,8 @@ module vfp_pipeline #(parameter
    logic [LQ_DEPTH_LOG2-1:0] lq_rd_ptr;
 
    assign o_instrn_commit_valid       =   mem_rf_wr || mem_fp_rf_wr ||
-                                        ((vec_nonstore_commit || vec_store_commit) &&
-                                          lq_last[lq_rd_ptr]);
+                                         (vec_nonstore_commit && lq_last[lq_rd_ptr]) ||
+                                        ((o_mem_load || o_mem_store) && i_data_req_rtr && o_mem_last);
    assign o_instrn_commit_data[VLEN*8-1:64] =  {VLEN*8-64{vec_nonstore_commit}} & mem_vrf_wrdata_nxt[VLEN*8-1:64];
    assign o_instrn_commit_data[      63: 0] =        ({64{vec_nonstore_commit}} & mem_vrf_wrdata_nxt[      63: 0]) |
                                                      ({64{mem_rf_wr          }} & mem_rf_wrdata     [      63: 0]) |
@@ -663,7 +663,7 @@ module vfp_pipeline #(parameter
                          ~|o_data_byten   );
 
    assign o_mem_last = o_mem_last_raw     &&
-                       lq_last[lq_rd_ptr];
+                       lq_last[o_data_req_id[LQ_DEPTH_LOG2-1:0]];
 
    always_ff @(posedge i_clk, posedge i_reset) begin
       if (i_reset) begin
