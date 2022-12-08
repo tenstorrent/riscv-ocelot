@@ -510,11 +510,12 @@ if (INCL_VEC == 1) begin
  assign vec_ldst_vld = v_ext & (vecldst_autogen.load | vecldst_autogen.store);
  assign vec_ldst_idx_vld = vec_ldst_vld & vecldst_autogen.ldst_index;
 			
- assign squash_vec_wr_flag =  is_vec_instrn                         && // A vector instruction
-                             (i_ex_id_csr.v_vl == 0)                && // With VL set to 0
-                            !(EncType == `BRISCV_INSTR_TYPE_Vvi &&     // Except: vmv<nf>r
-                              funct7[6:1] == 6'b100111            ) &&
-                            !vecldst_autogen.ldst_whole_register;      //         vl<nf>r
+ assign squash_vec_wr_flag = 1'b0; // FIXME
+ //assign squash_vec_wr_flag =  is_vec_instrn                         && // A vector instruction
+ //                            (i_ex_id_csr.v_vl == 0)                && // With VL set to 0
+ //                           !(EncType == `BRISCV_INSTR_TYPE_Vvi &&     // Except: vmv<nf>r
+ //                             funct7[6:1] == 6'b100111            ) &&
+ //                           !vecldst_autogen.ldst_whole_register;      //         vl<nf>r
                              
 
 `ifdef SIM
