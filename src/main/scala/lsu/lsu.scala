@@ -907,6 +907,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   // Vector dispatch logic
   if (usingVector) {
+    var live_nonvec_store_mask = live_store_mask
+    for (i <- 0 until numStqEntries)
+    {
+       live_nonvec_store_mask = Mux(stq(i).valid && stq(i).bits.uop.uopc === uopVEC, 
+                                      live_nonvec_store_mask & ~(1.U << i),
+                                      live_nonvec_store_mask
+       )
+    }
     io.core.vec_ldq_full    :=                 (numLdqEntriesMod until numLdqEntries).map{i =>  ldq(i).valid}.reduce(_&&_)
     io.core.vec_dis_ldq_idx := PriorityEncoder((numLdqEntriesMod until numLdqEntries).map{i => !ldq(i).valid}) +& numLdqEntriesMod.U
 
@@ -920,7 +928,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(io.core.vec_dis_ldq_idx).valid                := true.B
       ldq(io.core.vec_dis_ldq_idx).bits.uop             := io.core.vec_dis_uops.bits
       ldq(io.core.vec_dis_ldq_idx).bits.youngest_stq_idx  := st_enq_idx
-      ldq(io.core.vec_dis_ldq_idx).bits.st_dep_mask     := 0.U // FIXME
+      ldq(io.core.vec_dis_ldq_idx).bits.st_dep_mask     := live_nonvec_store_mask // Only check against scalar stores
 
       ldq(io.core.vec_dis_ldq_idx).bits.addr.valid      := false.B
       ldq(io.core.vec_dis_ldq_idx).bits.executed        := false.B
@@ -1110,6 +1118,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val lcam_mask  = widthMap(w => GenByteMask(lcam_addr(w), lcam_uop(w).mem_size))
   val lcam_st_dep_mask = widthMap(w => mem_ldq_e(w).bits.st_dep_mask)
   val lcam_is_release = widthMap(w => fired_release(w))
+  val lcam_is_vec = widthMap(w => mem_ldq_e(w).bits.uop.uopc === uopVEC)
   val lcam_ldq_idx  = widthMap(w =>
                       Mux(fired_load_incoming(w), mem_incoming_uop(w).ldq_idx,
                       Mux(fired_load_wakeup  (w), RegNext(ldq_wakeup_idx),
@@ -1235,6 +1244,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           s1_set_execute(lcam_ldq_idx(w))    := false.B
         }
           .elsewhen (((lcam_mask(w) & write_mask) =/= 0.U) && dword_addr_matches(w))
+        {
+          ldst_addr_matches(w)(i)            := true.B
+          io.dmem.s1_kill(w)                 := RegNext(dmem_req_fire(w))
+          s1_set_execute(lcam_ldq_idx(w))    := false.B
+        }
+          .elsewhen (((lcam_mask(w) & write_mask) =/= 0.U) && lcam_is_vec(w))
         {
           ldst_addr_matches(w)(i)            := true.B
           io.dmem.s1_kill(w)                 := RegNext(dmem_req_fire(w))
@@ -1547,9 +1562,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   var next_ldq_head        = ldq_head
   for (w <- 0 until coreWidth)
   {
-    val commit_store = io.core.commit.valids(w) && io.core.commit.uops(w).uses_stq
+    val commit_store = io.core.commit.valids(w) && io.core.commit.uops(w).uses_stq && io.core.commit.uops(w).uopc =/= uopVEC
+    val commit_any_store = io.core.commit.valids(w) && io.core.commit.uops(w).uses_stq
     val commit_load  = io.core.commit.valids(w) && io.core.commit.uops(w).uses_ldq && io.core.commit.uops(w).uopc =/= uopVEC
-    val idx = Mux(commit_store, temp_stq_commit_head, temp_ldq_head)
+    val idx = Mux(commit_any_store, temp_stq_commit_head, temp_ldq_head)
     when (commit_store)
     {
       stq(idx).bits.committed := true.B
@@ -1578,7 +1594,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       }
     }
 
-    temp_stq_commit_head = Mux(commit_store,
+    temp_stq_commit_head = Mux(commit_any_store,
                                WrapInc(temp_stq_commit_head, numStqEntries),
                                temp_stq_commit_head)
 
