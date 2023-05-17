@@ -37,6 +37,9 @@ class VecPipeline (xLen: Int, vLen: Int)(implicit p: Parameters) extends BoomMod
 
       val vec_lsu_io      = Flipped(Vec(2, new LSUExeIO))
       val vec_lsu_stall   = Input(Bool())
+      val debug_wb_vec_valid = Output(Bool())
+      val debug_wb_vec_wdata = Output(UInt((coreParams.vLen*8).W))
+      val debug_wb_vec_wmask = Output(UInt(8.W))
    })
 
    val vfp_pipeline = Module(new vfp_pipeline(coreParams.vLen, coreMaxAddrBits))
@@ -156,6 +159,10 @@ class VecPipeline (xLen: Int, vLen: Int)(implicit p: Parameters) extends BoomMod
 
    io.set_vxsat                         := vfp_pipeline.io.o_sat_csr
 
+   io.debug_wb_vec_valid                := vfp_pipeline.io.o_instrn_commit_valid &&
+                                           uop_queue.io.deq.bits.dst_rtype === RT_VEC
+   io.debug_wb_vec_wdata                := vfp_pipeline.io.o_instrn_commit_data
+   io.debug_wb_vec_wmask                := vfp_pipeline.io.o_instrn_commit_mask
 }
 
 class vfp_pipeline(val vlen: Int, val addrWidth: Int)

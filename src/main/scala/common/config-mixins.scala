@@ -79,15 +79,14 @@ class WithRationalBoomTiles extends Config((site, here, up) => {
   }
 })
 
-//class WithVector extends Config((site, here, up) => {
-//  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
-//    case tp: BoomTileAttachParams => tp.copy(
-//      tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
-//         useVector = true
-//    )))
-//    case other => other
-//  }
-//})
+class WithBoomDebugHarness extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+      enableDebugHarness = true
+    )))
+    case other => other
+  }
+})
 
 class WithVector(coreWidth: Int = 1) extends Config((site, here, up) => {
   case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {

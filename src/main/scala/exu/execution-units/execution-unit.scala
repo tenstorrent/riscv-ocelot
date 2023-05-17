@@ -152,6 +152,10 @@ abstract class ExecutionUnit(
     val vec_lsu_stall   = if (hasVecExe) Input(Bool()) else null
     val vec_lsu_io      = if (hasVecExe) Flipped(Vec(2, new boom.lsu.LSUExeIO)) else null
 
+    val debug_wb_vec_valid = if (hasVecExe) Output(Bool()) else null
+    val debug_wb_vec_wdata = if (hasVecExe) Output(UInt((coreParams.vLen*8).W)) else null
+    val debug_wb_vec_wmask = if (hasVecExe) Output(UInt((coreParams.vLen*8).W)) else null
+
     // TODO move this out of ExecutionUnit
     val com_exception = if (hasMem || hasRocc) Input(Bool()) else null
   })
@@ -477,6 +481,9 @@ class ALUExeUnit(
     vecexe.io.vec_lsu_stall     := io.vec_lsu_stall
     io.vec_dis_uops             := vecexe.io.vec_dis_uops
     io.set_vxsat                := vecexe.io.set_vxsat
+    io.debug_wb_vec_valid       := vecexe.io.debug_wb_vec_valid 
+    io.debug_wb_vec_wdata       := vecexe.io.debug_wb_vec_wdata 
+    io.debug_wb_vec_wmask       := vecexe.io.debug_wb_vec_wmask 
 
     vec_busy     := !vecexe.io.req.ready
 
