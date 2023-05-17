@@ -209,6 +209,9 @@ abstract class FunctionalUnit(
     val vec_stq_full    = if (isVecExeUnit) Input(Bool()) else null
     val vec_lsu_io      = if (isVecExeUnit) Flipped(Vec(2, new boom.lsu.LSUExeIO)) else null
     val vec_lsu_stall   = if (isVecExeUnit) Input(Bool()) else null
+    val debug_wb_vec_valid = if (isVecExeUnit) Output(Bool()) else null
+    val debug_wb_vec_wdata = if (isVecExeUnit) Output(UInt((coreParams.vLen*8).W)) else null
+    val debug_wb_vec_wmask = if (isVecExeUnit) Output(UInt(8.W)) else null
 
   })
 }
@@ -746,6 +749,9 @@ class VecExeUnit(dataWidth: Int)(implicit p: Parameters)
   io.vec_dis_uops                    := sv_pipeline.io.vec_dis_uops
   io.resp                            <> sv_pipeline.io.resp
   io.set_vxsat                       := sv_pipeline.io.set_vxsat
+  io.debug_wb_vec_valid              := sv_pipeline.io.debug_wb_vec_valid
+  io.debug_wb_vec_wdata              := sv_pipeline.io.debug_wb_vec_wdata
+  io.debug_wb_vec_wmask              := sv_pipeline.io.debug_wb_vec_wmask
 
 }
 

@@ -137,6 +137,16 @@ abstract class AbstractRenameStage(
     ren2_uops(w)   := r_uop
   }
 
+  // Inject debug tag
+  val debug_tag = RegInit(0.U(48.W))
+  when (io.dis_fire.reduce(_||_)) {
+    debug_tag := debug_tag + 1.U
+  }
+
+  for (w <- 0 until plWidth) {
+    ren2_uops(w).debug_tag  := Cat(debug_tag, w.U(16.W))
+  }
+
   //-------------------------------------------------------------
   // Outputs
 
