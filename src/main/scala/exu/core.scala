@@ -1310,7 +1310,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     ll_wbarb.io.in(1)        <> fp_pipeline.io.to_int
     // Connect FLDs
     for (i <- 0 until memUnitWidth) {
-      fp_pipeline.io.ll_wports(i) <> exe_units.memory_units(i).io.ll_fresp.toSeq
+      fp_pipeline.io.ll_wports(i) <> exe_units.memory_units(i).io.ll_fresp
     }
   }
 

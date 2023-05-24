@@ -30,6 +30,7 @@ abstract trait DecodeConstants
 {
   val xpr64 = Y // TODO inform this from xLen
   val DC2 = BitPat.dontCare(2) // Makes the listing below more readable
+  val DC3 = BitPat.dontCare(3) // Makes the listing below more readable
   def decode_default: List[BitPat] =
             //                                                                  frs3_en                        wakeup_delay
             //     is val inst?                                                 |  imm sel                     |    bypassable (aka, known/fixed latency)
@@ -42,7 +43,7 @@ abstract trait DecodeConstants
             //     |  |  |  |         |        |        regtype |       |       |  |     |  |  |  |  |  cmd    |    |  |  |  |  flush on commit
             //     |  |  |  |         |        |        |       |       |       |  |     |  |  |  |  |  |      |    |  |  |  |  |  csr cmd
             //     |  |  |  |         |        |        |       |       |       |  |     |  |  |  |  |  |      |    |  |  |  |  |  |
-              List(N, N, X, uopX    , IQT_INT, FU_X   , RT_X  , DC2    ,DC2    ,X, IS_X, X, X, X, X, N, M_X,   DC2, X, X, N, N, X, CSR.X)
+              List(N, N, X, uopX    , IQT_INT, FU_X   , RT_X  , DC3    ,DC3    ,X, IS_X, X, X, X, X, N, M_X,   DC2, X, X, N, N, X, CSR.X)
 
   val table: Array[(BitPat, List[BitPat])]
 }
@@ -60,8 +61,8 @@ class CtrlSigs extends Bundle
   val iq_type         = UInt(IQT_SZ.W)
   val fu_code         = UInt(FUC_SZ.W)
   val dst_type        = UInt(3.W)
-  val rs1_type        = UInt(2.W)
-  val rs2_type        = UInt(2.W)
+  val rs1_type        = UInt(3.W)
+  val rs2_type        = UInt(3.W)
   val frs3_en         = Bool()
   val imm_sel         = UInt(IS_X.getWidth.W)
   val uses_ldq        = Bool()

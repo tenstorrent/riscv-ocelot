@@ -508,7 +508,7 @@ class ALUExeUnit(
       (f.io.resp.valid, f.io.resp.bits.predicated)).toSeq)
     io.iresp.bits.fflags.valid := iresp_fu_units.map(f => f.io.resp.bits.fflags.valid).reduce(_|_)
     io.iresp.bits.fflags.bits := PriorityMux(iresp_fu_units.map(f =>
-      (f.io.resp.bits.fflags.valid, f.io.resp.bits.fflags.bits)))
+      (f.io.resp.bits.fflags.valid, f.io.resp.bits.fflags.bits)).toSeq)
 
     // pulled out for critical path reasons
     // TODO: Does this make sense as part of the iresp bundle?

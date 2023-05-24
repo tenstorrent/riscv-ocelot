@@ -20,7 +20,7 @@ import chisel3._
 import chisel3.util._
 
 import org.chipsalliance.cde.config.Parameters
-import freechips.rocketchip.rocket.ALU._
+import freechips.rocketchip.rocket.ALUFN._
 import freechips.rocketchip.rocket.{VType,VConfig}
 import freechips.rocketchip.util._
 import freechips.rocketchip.tile
