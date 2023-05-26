@@ -164,7 +164,7 @@ module tt_vfp_ex_unit
    //  If those three bits are 000, 110, or 111, the floating-point value is a zero, infinity, or NaN, respectively;
    //  otherwise, the value is a normalized finite number.
    //  In the latter case, if the recoded exponent field is 2k + 2 or more, the value is a regular normal number,
-   //  and if it’s less, the value is a normalized subnormal number. 
+   //  and if it's less, the value is a normalized subnormal number. 
    assign cls_subnormal = !cls_b_isNaN  &&
                           !cls_b_isInf  &&
                           !cls_b_isZero &&
