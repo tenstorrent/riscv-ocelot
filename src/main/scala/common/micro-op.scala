@@ -38,6 +38,7 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val debug_inst       = UInt(32.W)
   val is_rvc           = Bool()
   val debug_pc         = UInt(coreMaxAddrBits.W)
+  val debug_tag        = UInt(64.W)            // A sequential ID assigned at dispatch. Used by MCM to distinguish between flushed and retired loads.
   val iq_type          = UInt(IQT_SZ.W)        // which issue unit do we use?
   val fu_code          = UInt(FUConstants.FUC_SZ.W) // which functional unit do we use?
   val ctrl             = new CtrlSignals
@@ -152,6 +153,21 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   def unsafe           = uses_ldq || (uses_stq && !is_fence) || is_br || is_jalr
 
   def fu_code_is(_fu: UInt) = (fu_code & _fu) =/= 0.U
+}
+
+/**
+ * MicroOp for Debug Harness
+ */
+class DebugMicroOp(val coreMaxAddrBits: Int, val xLen: Int, val vLen: Int, val lregSz: Int) extends Bundle
+{
+  val ldst             = UInt(lregSz.W)
+  val dst_rtype        = UInt(3.W)
+  val debug_pc         = UInt(coreMaxAddrBits.W)
+  val debug_tag        = UInt(64.W)            // A sequential ID assigned at dispatch. Used by MCM to distinguish between flushed and retired loads.
+  val debug_inst       = UInt(32.W)
+  val debug_wdata      = UInt(xLen.W)
+  val debug_vec_wdata  = UInt((vLen*8).W)
+  val debug_vec_wmask  = UInt(8.W)
 }
 
 /**

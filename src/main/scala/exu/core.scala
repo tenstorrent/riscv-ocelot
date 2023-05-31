@@ -32,6 +32,7 @@ import java.nio.file.{Paths}
 
 import chisel3._
 import chisel3.util._
+import chisel3.experimental._
 
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.Instructions._
@@ -1185,7 +1186,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     ll_wbarb.io.in(1)        <> fp_pipeline.io.to_int
     // Connect FLDs
     fp_pipeline.io.ll_wports <> exe_units.memory_units.map(_.io.ll_fresp).toSeq
-  }
+    }
   if (usingRoCC) {
     require(usingFPU)
     ll_wbarb.io.in(2)       <> exe_units.rocc_unit.io.ll_iresp
@@ -1319,6 +1320,155 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   if (usingFPU) {
     fp_pipeline.io.debug_tsc_reg := debug_tsc_reg
   }
+
+  //-------------------------------------------------------------
+  //-------------------------------------------------------------
+  // **** Connect debugging harness for DV bridge ****
+  //-------------------------------------------------------------
+  //-------------------------------------------------------------
+  if (DEBUG_HARNESS) {
+     if (coreParams.retireWidth == 1) {
+       val harness_1 = Module(new BoomCoreHarnessWrapper_1(coreParams.vLen))
+                     
+       harness_1.io.clock        := clock.asBool
+       harness_1.io.reset        := reset.asBool
+       harness_1.io.hartid       := io.hartid
+
+       harness_1.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_1.io.csrwr.addr  := csr.io.rw.addr
+       harness_1.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_1.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 1) {
+          harness_1.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_1.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_1.io.commit.uops(w).debug_tag   := rob.io.commit.uops(w).debug_tag
+          harness_1.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_1.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_1.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_1.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_1.io.commit.uops(w).debug_vec_wdata := DontCare
+          harness_1.io.commit.uops(w).debug_vec_wmask := DontCare
+       }
+     } else if (coreParams.retireWidth == 2) {
+       val harness_2 = Module(new BoomCoreHarnessWrapper_2(coreParams.vLen))
+                     
+       harness_2.io.clock        := clock.asBool
+       harness_2.io.reset        := reset.asBool
+       harness_2.io.hartid       := io.hartid
+       
+       harness_2.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_2.io.csrwr.addr  := csr.io.rw.addr
+       harness_2.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_2.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 2) {
+          harness_2.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_2.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_2.io.commit.uops(w).debug_tag   := rob.io.commit.uops(w).debug_tag
+          harness_2.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_2.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_2.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_2.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_2.io.commit.uops(w).debug_vec_wdata := DontCare
+          harness_2.io.commit.uops(w).debug_vec_wmask := DontCare
+       }
+     } else if (coreParams.retireWidth == 3) {
+       val harness_3 = Module(new BoomCoreHarnessWrapper_3(coreParams.vLen))
+                     
+       harness_3.io.clock        := clock.asBool
+       harness_3.io.reset        := reset.asBool
+       harness_3.io.hartid       := io.hartid
+       
+       harness_3.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_3.io.csrwr.addr  := csr.io.rw.addr
+       harness_3.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_3.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 3) {
+          harness_3.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_3.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_3.io.commit.uops(w).debug_tag   := rob.io.commit.uops(w).debug_tag
+          harness_3.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_3.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_3.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_3.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_3.io.commit.uops(w).debug_vec_wdata := DontCare
+          harness_3.io.commit.uops(w).debug_vec_wmask := DontCare
+       }
+     } else if (coreParams.retireWidth == 4) {
+       val harness_4 = Module(new BoomCoreHarnessWrapper_4(coreParams.vLen))
+                     
+       harness_4.io.clock        := clock.asBool
+       harness_4.io.reset        := reset.asBool
+       harness_4.io.hartid       := io.hartid
+       
+       harness_4.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_4.io.csrwr.addr  := csr.io.rw.addr
+       harness_4.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_4.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 4) {
+          harness_4.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_4.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_4.io.commit.uops(w).debug_tag   := rob.io.commit.uops(w).debug_tag
+          harness_4.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_4.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_4.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_4.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_4.io.commit.uops(w).debug_vec_wdata := DontCare
+          harness_4.io.commit.uops(w).debug_vec_wmask := DontCare
+       }
+     } else if (coreParams.retireWidth == 6) {
+       val harness_6 = Module(new BoomCoreHarnessWrapper_6(coreParams.vLen))
+                     
+       harness_6.io.clock        := clock.asBool
+       harness_6.io.reset        := reset.asBool
+       harness_6.io.hartid       := io.hartid
+       
+       harness_6.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_6.io.csrwr.addr  := csr.io.rw.addr
+       harness_6.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_6.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 6) {
+          harness_6.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_6.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_6.io.commit.uops(w).debug_tag   := rob.io.commit.uops(w).debug_tag
+          harness_6.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_6.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_6.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_6.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_6.io.commit.uops(w).debug_vec_wdata := DontCare
+          harness_6.io.commit.uops(w).debug_vec_wmask := DontCare
+       }
+     } else if (coreParams.retireWidth == 8) {
+       val harness_8 = Module(new BoomCoreHarnessWrapper_8(coreParams.vLen))
+                     
+       harness_8.io.clock        := clock.asBool
+       harness_8.io.reset        := reset.asBool
+       harness_8.io.hartid       := io.hartid
+       
+       harness_8.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_8.io.csrwr.addr  := csr.io.rw.addr
+       harness_8.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_8.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 8) {
+          harness_8.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_8.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_8.io.commit.uops(w).debug_tag   := rob.io.commit.uops(w).debug_tag
+          harness_8.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_8.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_8.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_8.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_8.io.commit.uops(w).debug_vec_wdata := DontCare
+          harness_8.io.commit.uops(w).debug_vec_wmask := DontCare
+       }
+     }
+  }
+
+
 
   //-------------------------------------------------------------
   //-------------------------------------------------------------
@@ -1477,3 +1627,96 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     io.ifu.debug_ftq_idx := DontCare
   }
 }
+
+class CSRWrite(val xLen: Int) extends Bundle
+{
+  val cmd   = UInt(3.W) // 0:Nop, 2:Read, 4:SystemInsn, 5:Write, 6:Set, 7:Clear
+  val addr  = UInt(12.W)
+  val wdata = Bits(xLen.W)
+  val rdata = Bits(xLen.W)
+}
+
+class BoomCoreHarnessWrapper_1(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(256)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 1, 64, vlen, 5, 1))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_1.v")
+}
+
+class BoomCoreHarnessWrapper_2(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(256)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 2, 64, vlen, 5, 1))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_2.v")
+}
+
+class BoomCoreHarnessWrapper_3(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(256)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 3, 64, vlen, 5, 1))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_3.v")
+}
+
+class BoomCoreHarnessWrapper_4(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(256)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 4, 64, vlen, 5, 2))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_4.v")
+}
+
+class BoomCoreHarnessWrapper_6(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(256)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 6, 64, vlen, 5, 2))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_6.v")
+}
+
+class BoomCoreHarnessWrapper_8(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(256)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 8, 64, vlen, 5, 2))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_8.v")
+}
+

@@ -132,6 +132,15 @@ class CommitSignals(implicit p: Parameters) extends BoomBundle
 }
 
 /**
+ * Commit signals for Debug Harness
+ */
+class DebugCommitSignals(val coreMaxAddrBits: Int, val retireWidth: Int, val xLen: Int, val vLen: Int, val lregSz: Int, val memWidth: Int) extends Bundle
+{
+  val arch_valids = Vec(retireWidth, Bool())
+  val uops        = Vec(retireWidth, new DebugMicroOp(coreMaxAddrBits, xLen, vLen, lregSz))
+}
+
+/**
  * Bundle to communicate exceptions to CSRFile
  *
  * TODO combine FlushSignals and ExceptionSignals (currently timed to different cycles).
