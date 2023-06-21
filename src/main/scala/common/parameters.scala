@@ -97,6 +97,9 @@ case class BoomCoreParams(
   mcontextWidth: Int = 0,
   scontextWidth: Int = 0,
   trace: Boolean = false,
+  enableVector: Boolean = false,
+  setvLen: Int = 128,
+  setvMemDataBits: Int = 64,
 
   /* debug stuff */
   enableCommitLogPrintf: Boolean = false,
@@ -120,6 +123,10 @@ case class BoomCoreParams(
   val traceHasWdata = trace
 
   override def customCSRs(implicit p: Parameters) = new BoomCustomCSRs
+  override val useVector: Boolean = enableVector
+  override def vLen: Int = setvLen
+  override def vMemDataBits: Int = setvMemDataBits
+
 }
 
 /**

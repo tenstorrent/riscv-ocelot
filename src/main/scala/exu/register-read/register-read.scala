@@ -152,6 +152,7 @@ class RegisterRead(
   val bypassed_rs1_data = Wire(Vec(issueWidth, Bits(registerWidth.W)))
   val bypassed_rs2_data = Wire(Vec(issueWidth, Bits(registerWidth.W)))
   val bypassed_pred_data = Wire(Vec(issueWidth, Bool()))
+  bypassed_rs2_data  := DontCare
   bypassed_pred_data := DontCare
 
   for (w <- 0 until issueWidth) {
