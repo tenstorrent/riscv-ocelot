@@ -29,7 +29,6 @@ import freechips.rocketchip.rocket.{PipelinedMultiplier,BP,BreakpointUnit,Causes
 import boom.common._
 import boom.ifu._
 import boom.util._
-import boom.rvv.{VecPipeline}
 
 /**t
  * Functional unit constants
@@ -725,7 +724,7 @@ class VecExeUnit(dataWidth: Int)(implicit p: Parameters)
 
   val io_req = io.req.bits
 
-  val sv_pipeline = Module(new VecPipeline(xLen=xLen, vLen=coreParams.vLen))
+  val sv_pipeline = Module(new OviWrapper(xLen=xLen, vLen=coreParams.vLen))
 
   sv_pipeline.io.vconfig             := io.vconfig
   sv_pipeline.io.vxrm                := io.vxrm
