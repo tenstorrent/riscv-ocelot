@@ -196,7 +196,7 @@ class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
 
   val committed           = Bool() // committed by ROB
   val succeeded           = Bool() // D$ has ack'd this, we don't need to maintain this anymore
-
+  val isVector            = Bool() // KYnew: placeholder for now
   val debug_wb_data       = UInt(xLen.W)
 }
 
@@ -288,6 +288,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   var ldq_full = Bool()
   var stq_full = Bool()
 
+
+
   for (w <- 0 until coreWidth)
   {
     ldq_full = WrapInc(ld_enq_idx, numLdqEntries) === ldq_head
@@ -325,6 +327,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       stq(st_enq_idx).bits.data.valid := false.B
       stq(st_enq_idx).bits.committed  := false.B
       stq(st_enq_idx).bits.succeeded  := false.B
+      stq(st_enq_idx).bits.isVector   := false.B   //KYnew: always false for now, should add in some translations afterwards
 
       assert (st_enq_idx === io.core.dis_uops(w).bits.stq_idx, "[lsu] mismatch enq store tag.")
       assert (!stq(st_enq_idx).valid, "[lsu] Enqueuing uop is overwriting stq entries")
