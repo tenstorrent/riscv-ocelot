@@ -684,6 +684,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val ma_st = widthMap(w => (will_fire_sta_incoming(w) || will_fire_stad_incoming(w)) && exe_req(w).bits.mxcpt.valid) // We get ma_ld in memaddrcalc
   val pf_ld = widthMap(w => dtlb.io.req(w).valid && dtlb.io.resp(w).pf.ld && exe_tlb_uop(w).uses_ldq)
   val pf_st = widthMap(w => dtlb.io.req(w).valid && dtlb.io.resp(w).pf.st && exe_tlb_uop(w).uses_stq)
+  val pf_st_dsq = DontCare
   val ae_ld = widthMap(w => dtlb.io.req(w).valid && dtlb.io.resp(w).ae.ld && exe_tlb_uop(w).uses_ldq)
   val ae_st = widthMap(w => dtlb.io.req(w).valid && dtlb.io.resp(w).ae.st && exe_tlb_uop(w).uses_stq)
 
@@ -730,9 +731,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   }
 
   val exe_tlb_miss  = widthMap(w => dtlb.io.req(w).valid && (dtlb.io.resp(w).miss || !dtlb.io.req(w).ready))
+  val dsq_tlb_miss = dtlb.io.req(memWidth).valid && (dtlb.io.resp(memWidth).miss || !dtlb.io.req(memWidth).ready)  //KYnew
   val exe_tlb_paddr = widthMap(w => Cat(dtlb.io.resp(w).paddr(paddrBits-1,corePgIdxBits),
                                         exe_tlb_vaddr(w)(corePgIdxBits-1,0)))
+  val dsq_tlb_paddr = DontCare //KYnew, placeholder                            
   val exe_tlb_uncacheable = widthMap(w => !(dtlb.io.resp(w).cacheable))
+  val dsq_tlb_uncacheable = !dtlb.io.resp(memWidth).cacheable
 
   for (w <- 0 until memWidth) {
     assert (exe_tlb_paddr(w) === dtlb.io.resp(w).paddr || exe_req(w).bits.sfence.valid, "[lsu] paddrs should match.")
@@ -802,6 +806,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       s0_executing_loads(ldq_retry_idx) := dmem_req_fire(w)
       assert(!ldq_retry_e.bits.executed)
     } .elsewhen (will_fire_store_commit(w)) {
+      when (!stq_commit_e.bits.isVector){
       dmem_req(w).valid         := true.B
       dmem_req(w).bits.addr     := stq_commit_e.bits.addr.bits
       dmem_req(w).bits.data     := (new freechips.rocketchip.rocket.StoreGen(
@@ -815,6 +820,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                 stq_execute_head)
 
       stq(stq_execute_head).bits.succeeded := false.B
+      }.otherwise{
+        dmem_req(w).valid  := false.B                        //KYnew, placeholder
+      }
     } .elsewhen (will_fire_load_wakeup(w)) {
       dmem_req(w).valid      := true.B
       dmem_req(w).bits.addr  := ldq_wakeup_e.bits.addr.bits
