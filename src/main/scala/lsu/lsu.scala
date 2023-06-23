@@ -68,6 +68,15 @@ class LSUExeIO(implicit p: Parameters) extends BoomBundle()(p)
   val fresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen+1)) // TODO: Should this be fLen?
 }
 
+class VGenIO(implicit p: Parameters) extends BoomBundle()(p)
+{
+  // The "resp" of the maddrcalc is really a "req" to the LSU
+  val req       = Flipped(new ValidIO(new FuncUnitResp(xLen)))
+  // Send load data to regfiles
+//  val iresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen))
+//  val fresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen+1)) // TODO: Should this be fLen?
+}
+
 class BoomDCacheReq(implicit p: Parameters) extends BoomBundle()(p)
   with HasBoomUOP
 {
@@ -115,6 +124,10 @@ class LSUDMemIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
 class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
 {
   val exe = Vec(memWidth, new LSUExeIO)
+
+  val VGen = new VGenIO
+
+  val dsq_full = Output(Bool())
 
   val dis_uops    = Flipped(Vec(coreWidth, Valid(new MicroOp)))
   val dis_ldq_idx = Output(Vec(coreWidth, UInt(ldqAddrSz.W)))
@@ -166,6 +179,9 @@ class LSUIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
   val ptw   = new rocket.TLBPTWIO
   val core  = new LSUCoreIO
   val dmem  = new LSUDMemIO
+//  val vgen  = new VGenIO
+
+  
 
   val hellacache = Flipped(new freechips.rocketchip.rocket.HellaCacheIO)
 }
@@ -204,15 +220,28 @@ class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val debug_wb_data       = UInt(xLen.W)
 }
 
+class DSQEntry(implicit p: Parameters) extends BoomBundle()(p)
+   with HasBoomUOP
+{
+  val addr                = Valid(UInt(coreMaxAddrBits.W))
+  val addr_is_virtual     = Bool() // Virtual address, we got a TLB miss
+  val data                = Valid(UInt(xLen.W))
+
+  val succeeded           = Bool() // D$ has ack'd this, we don't need to maintain this anymore
+}
+
 class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   with rocket.HasL1HellaCacheParameters
 {
   val io = IO(new LSUIO)
 
+  val numDsqEntries = 4
+  val dsqAddrSz = log2Ceil(numDsqEntries) 
 
   val ldq = Reg(Vec(numLdqEntries, Valid(new LDQEntry)))
   val stq = Reg(Vec(numStqEntries, Valid(new STQEntry)))
 
+  val dsq = Reg(Vec(numDsqEntries, Valid(new DSQEntry)))
 
 
   val ldq_head         = Reg(UInt(ldqAddrSz.W))
@@ -222,6 +251,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val stq_commit_head  = Reg(UInt(stqAddrSz.W)) // point to next store to commit
   val stq_execute_head = Reg(UInt(stqAddrSz.W)) // point to next store to execute
 
+
+  val dsq_tail         = Reg(UInt(dsqAddrSz.W))
+  val dsq_head         = Reg(UInt(dsqAddrSz.W))
+  val dsq_execute_head = Reg(UInt(dsqAddrSz.W))
 
   // If we got a mispredict, the tail will be misaligned for 1 extra cycle
   assert (io.core.brupdate.b2.mispredict ||
@@ -331,7 +364,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       stq(st_enq_idx).bits.data.valid := false.B
       stq(st_enq_idx).bits.committed  := false.B
       stq(st_enq_idx).bits.succeeded  := false.B
-      stq(st_enq_idx).bits.isVector   := false.B   //KYnew: always false for now, should add in some translations afterwards
+      stq(st_enq_idx).bits.isVector   := io.core.dis_uops(w).bits.is_vec   //KYnew: may remove afterwards given that we already have uop
 
       assert (st_enq_idx === io.core.dis_uops(w).bits.stq_idx, "[lsu] mismatch enq store tag.")
       assert (!stq(st_enq_idx).valid, "[lsu] Enqueuing uop is overwriting stq entries")
@@ -354,6 +387,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.dmem.force_order   := io.core.fence_dmem
   io.core.fencei_rdy    := !stq_nonempty && io.dmem.ordered
 
+  
 
   //-------------------------------------------------------------
   //-------------------------------------------------------------
@@ -440,6 +474,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     e.addr.valid && !e.executed && !e.succeeded && !e.addr_is_virtual && !block
   }), ldq_head))
   val ldq_wakeup_e   = ldq(ldq_wakeup_idx)
+
+  val dsq_commit_e = dsq(dsq_execute_head)
+  val dsq_tlb_e = dsq(dsq_execute_head)              //KYnew: continuous ping TLB for now
 
   // -----------------------
   // Determine what can fire
@@ -667,13 +704,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dtlb.io.req(w).bits.prv         := io.ptw.status.prv
     }
     else {
-      dtlb.io.req(w).valid := false.B 
-      dtlb.io.req(w).bits.vaddr       := DontCare
-      dtlb.io.req(w).bits.size        := DontCare
-      dtlb.io.req(w).bits.cmd         := DontCare
-      dtlb.io.req(w).bits.passthrough := DontCare
-      dtlb.io.req(w).bits.v           := DontCare
-      dtlb.io.req(w).bits.prv         := DontCare
+      dtlb.io.req(w).valid := dsq_tlb_e.valid && dsq_tlb_e.bits.addr_is_virtual 
+      dtlb.io.req(w).bits.vaddr       := dsq_tlb_e.bits.addr.bits
+      dtlb.io.req(w).bits.size        := dsq_tlb_e.bits.uop.mem_size
+      dtlb.io.req(w).bits.cmd         := dsq_tlb_e.bits.uop.mem_cmd
+      dtlb.io.req(w).bits.passthrough := false.B
+      dtlb.io.req(w).bits.v           := io.ptw.status.v
+      dtlb.io.req(w).bits.prv         := io.ptw.status.prv
     }
   }
   dtlb.io.kill                      := exe_kill.reduce(_||_)
@@ -820,6 +857,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                 stq_execute_head)
 
       stq(stq_execute_head).bits.succeeded := false.B
+      }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual){                //KYnew, revisit later
+        dmem_req(w).valid := true.B
+        dmem_req(w).valid := dsq_commit_e.bits.addr.bits
+        dmem_req(w).bits.data := dsq_commit_e.bits.data.bits
+        dmem_req(w).bits.uop := dsq_commit_e.bits.uop
       }.otherwise{
         dmem_req(w).valid  := false.B                        //KYnew, placeholder
       }
@@ -1643,6 +1685,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         stq(i).bits.addr.valid := false.B
         stq(i).bits.data.valid := false.B
         stq(i).bits.uop        := NullMicroOp
+      }
+      dsq_head := 0.U                                    // KYnew
+      dsq_tail := 0.U
+      dsq_execute_head := 0.U 
+      for (i <- 0 until numDsqEntries)
+      {
+        dsq(i).valid           := false.B
+        dsq(i).bits.addr.valid := false.B
+        dsq(i).bits.addr_is_virtual := false.B
+        dsq(i).bits.data.valid := false.B
+        dsq(i).bits.uop        := NullMicroOp
       }
     }
       .otherwise // exception
