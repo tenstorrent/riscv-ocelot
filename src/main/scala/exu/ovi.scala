@@ -35,11 +35,16 @@ class OviWrapper (xLen: Int, vLen: Int)(implicit p: Parameters) extends BoomModu
 
    val vpuModule = Module(new Vpu)
 
+   io.req.ready := vpuModule.io.issue_credit
    vpuModule.io := DontCare
    vpuModule.io.clk := clock
    vpuModule.io.reset_n := ~reset.asBool
    vpuModule.io.issue_valid := io.req.valid
+   vpuModule.io.issue_scalar_opnd := io.req.bits.rs1_data
    io.resp.valid := vpuModule.io.completed_valid
+   io.resp.bits.data := vpuModule.io.completed_dest_reg
+   io.resp.bits.uop := io.req.bits.uop
+   io.resp.bits.uop.dst_rtype := RT_X
    io.set_vxsat := io.req.valid
 
 }

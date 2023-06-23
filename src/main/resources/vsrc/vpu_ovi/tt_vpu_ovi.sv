@@ -21,4 +21,6 @@ module Vpu
                   output logic [13:0] completed_vstart,
                   output logic        completed_illegal);
                   // TODO: Add the signals for memory operations...
+                  assign issue_credit = 1'b1;
+                  assign completed_valid = issue_valid;
 endmodule
