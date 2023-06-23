@@ -47,9 +47,13 @@ import chisel3._
 import chisel3.util._
 
 import org.chipsalliance.cde.config.Parameters
+import freechips.rocketchip.subsystem.{CacheBlockBytes}
+import freechips.rocketchip.diplomacy.{RegionType}
 import freechips.rocketchip.rocket
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.util.Str
+import freechips.rocketchip.util._
+
 
 import boom.common._
 import boom.exu.{BrUpdateInfo, Exception, FuncUnitResp, CommitSignals, ExeUnitResp}
@@ -648,7 +652,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val exe_kill   = widthMap(w =>
                    Mux(will_fire_hella_incoming(w)  , io.hellacache.s1_kill,
                                                       false.B))
-  for (w <- 0 until memWidth) {
+  
+  //val midReq = Vec(memWidth, new TLBReq(log2Ceil(coreDataBytes)))
+
+
+  for (w <- 0 until memWidth+1) {
+    if (w < memWidth){
     dtlb.io.req(w).valid            := exe_tlb_valid(w)
     dtlb.io.req(w).bits.vaddr       := exe_tlb_vaddr(w)
     dtlb.io.req(w).bits.size        := exe_size(w)
@@ -656,6 +665,16 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dtlb.io.req(w).bits.passthrough := exe_passthr(w)
     dtlb.io.req(w).bits.v           := io.ptw.status.v
     dtlb.io.req(w).bits.prv         := io.ptw.status.prv
+    }
+    else {
+      dtlb.io.req(w).valid := false.B 
+      dtlb.io.req(w).bits.vaddr       := DontCare
+      dtlb.io.req(w).bits.size        := DontCare
+      dtlb.io.req(w).bits.cmd         := DontCare
+      dtlb.io.req(w).bits.passthrough := DontCare
+      dtlb.io.req(w).bits.v           := DontCare
+      dtlb.io.req(w).bits.prv         := DontCare
+    }
   }
   dtlb.io.kill                      := exe_kill.reduce(_||_)
   dtlb.io.sfence                    := exe_sfence
