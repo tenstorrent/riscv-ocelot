@@ -56,6 +56,7 @@ class IqWakeup(val pregSz: Int) extends Bundle
 {
   val pdst = UInt(width=pregSz.W)
   val poisoned = Bool()
+  val rtype = UInt(2.W)
 }
 
 /**
