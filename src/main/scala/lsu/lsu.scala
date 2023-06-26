@@ -369,6 +369,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       stq(st_enq_idx).bits.committed  := false.B
       stq(st_enq_idx).bits.succeeded  := false.B
       stq(st_enq_idx).bits.isVector   := io.core.dis_uops(w).bits.is_vec   //KYnew: may remove afterwards given that we already have uop
+      when (io.core.dis_uops(w).bits.is_vec) {
+        stq(st_enq_idx).bits.addr.valid := true.B
+        stq(st_enq_idx).bits.addr_is_virtual := false.B
+      }
 
       assert (st_enq_idx === io.core.dis_uops(w).bits.stq_idx, "[lsu] mismatch enq store tag.")
       assert (!stq(st_enq_idx).valid, "[lsu] Enqueuing uop is overwriting stq entries")
