@@ -34,7 +34,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
 
   val reqQueue = Module(new Queue(new FuncUnitReq(xLen), 2))
   val uOpMem = SyncReadMem(32, new MicroOp())
-  val vpuModule = Module(new Vpu)
+  val vpuModule = Module(new tt_vpu_ovi(vLen))
   val maxIssueCredit = 8
   val issueCreditCnt = RegInit(maxIssueCredit.U(log2Ceil(maxIssueCredit + 1).W))
   issueCreditCnt := issueCreditCnt + vpuModule.io.issue_credit - vpuModule.io.issue_valid
@@ -59,7 +59,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   vpuModule.io.issue_scalar_opnd := reqQueue.io.deq.bits.rs1_data
   vpuModule.io.issue_vcsr := Cat(
     0.U(1.W), // vill
-    3.U(3.W), // vsew
+    2.U(3.W), // vsew
     0.U(2.W), // vlmul
     0.U(3.W), // frm
     0.U(2.W), // vxrm
@@ -82,12 +82,12 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   io.resp.bits.fflags.bits.flags := vpuModule.io.completed_fflags
 
   io.set_vxsat := DontCare
-  io.debug_wb_vec_valid := DontCare
-  io.debug_wb_vec_wdata := DontCare
-  io.debug_wb_vec_wmask := DontCare
+  io.debug_wb_vec_valid := vpuModule.io.debug_wb_vec_valid
+  io.debug_wb_vec_wdata := vpuModule.io.debug_wb_vec_wdata
+  io.debug_wb_vec_wmask := vpuModule.io.debug_wb_vec_wmask
 }
 
-class Vpu extends BlackBox with HasBlackBoxResource {
+class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN" -> IntParam(vLen))) with HasBlackBoxResource {
   val io = IO(new Bundle {
     val clk = Input(Clock())
     val reset_n = Input(Bool())
@@ -108,6 +108,63 @@ class Vpu extends BlackBox with HasBlackBoxResource {
     val completed_vxsat = Output(Bool())
     val completed_vstart = Output(UInt(14.W))
     val completed_illegal = Output(Bool())
+    val debug_wb_vec_valid = Output(Bool())
+    val debug_wb_vec_wdata = Output(UInt((vLen * 8).W))
+    val debug_wb_vec_wmask = Output(UInt(8.W))
   })
-  addResource("/vsrc/vpu_ovi/tt_vpu_ovi.sv")
+  // addResource("/vsrc/vpu_ovi/tt_vpu_ovi.sv")
+  addResource("/vsrc/vpu/briscv_defines.h")
+  addResource("/vsrc/vpu/tt_briscv_pkg.vh")
+  addResource("/vsrc/vpu/autogen_riscv_imabfv.v")
+  addResource("/vsrc/vpu/autogen_defines.h")
+  addResource("/vsrc/vpu/vfp_pipeline.sv")
+  addResource("/vsrc/vpu/tt_id.sv")
+  addResource("/vsrc/vpu/tt_ex.sv")
+  addResource("/vsrc/vpu/tt_lq.sv")
+  addResource("/vsrc/vpu/tt_mem.sv")
+  addResource("/vsrc/vpu/tt_vec.sv")
+  addResource("/vsrc/vpu/tt_vec_iadd.sv")
+  addResource("/vsrc/vpu/tt_vec_idp.sv")
+  addResource("/vsrc/vpu/tt_vec_imul.sv")
+  addResource("/vsrc/vpu/tt_vec_mul_dp.sv")
+  addResource("/vsrc/vpu/tt_vec_regfile.sv")
+  addResource("/vsrc/vpu/tt_vfp_unit.sv")
+  addResource("/vsrc/vpu/tt_vfp_ex_unit.sv")
+  addResource("/vsrc/vpu/tt_vfp_lane.sv")
+  addResource("/vsrc/vpu/tt_vfp_encoder.sv")
+  addResource("/vsrc/vpu/tt_vfp_encoder_lane.sv")
+  addResource("/vsrc/vpu/tt_vfp_fma.sv")
+  addResource("/vsrc/vpu/tt_vfp_red.sv")
+  addResource("/vsrc/vpu/tt_popcnt.sv")
+  addResource("/vsrc/vpu/tt_pipe_stage.sv")
+  addResource("/vsrc/vpu/tt_rts_rtr_pipe_stage.sv")
+  addResource("/vsrc/vpu/tt_cam_buffer.sv")
+  addResource("/vsrc/vpu/tt_skid_buffer.sv")
+  addResource("/vsrc/vpu/tt_store_fifo.sv")
+  addResource("/vsrc/vpu/tt_ffs.sv")
+  addResource("/vsrc/vpu/tt_ascii_instrn_decode.sv")
+  addResource("/vsrc/vpu/tt_compare.sv")
+  addResource("/vsrc/vpu/tt_decoded_mux.sv")
+  addResource("/vsrc/vpu/tt_decoder.sv")
+  addResource("/vsrc/vpu/tt_reshape.sv")
+  addResource("/vsrc/vpu/tt_fifo.sv")
+  addResource("/vsrc/vpu/tt_vpu_ovi.sv")  
+  addResource("/vsrc/HardFloat/source/RISCV/HardFloat_specialize.v")
+  addResource("/vsrc/HardFloat/source/RISCV/HardFloat_specialize.vi")
+  addResource("/vsrc/HardFloat/source/HardFloat_consts.vi")
+  addResource("/vsrc/HardFloat/source/HardFloat_localFuncs.vi")
+  addResource("/vsrc/HardFloat/source/HardFloat_primitives.v")
+  addResource("/vsrc/HardFloat/source/HardFloat_rawFN.v")
+  addResource("/vsrc/HardFloat/source/addRecFN.v")
+  addResource("/vsrc/HardFloat/source/compareRecFN.v")
+  addResource("/vsrc/HardFloat/source/divSqrtRecFN_small.v")
+  addResource("/vsrc/HardFloat/source/fNToRecFN.v")
+  addResource("/vsrc/HardFloat/source/iNToRecFN.v")
+  addResource("/vsrc/HardFloat/source/isSigNaNRecFN.v")
+  addResource("/vsrc/HardFloat/source/mulAddRecFN.v")
+  addResource("/vsrc/HardFloat/source/mulRecFN.v")
+  addResource("/vsrc/HardFloat/source/recFNToFN.v")
+  addResource("/vsrc/HardFloat/source/recFNToIN.v")
+  addResource("/vsrc/HardFloat/source/recFNToRecFN.v")
+  
 }
