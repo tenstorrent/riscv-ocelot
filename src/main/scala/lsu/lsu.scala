@@ -250,7 +250,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val stq_tail         = Reg(UInt(stqAddrSz.W))
   val stq_commit_head  = Reg(UInt(stqAddrSz.W)) // point to next store to commit
   val stq_execute_head = Reg(UInt(stqAddrSz.W)) // point to next store to execute
-
+  val stq_execute_save = Reg(Valid(UInt(stqAddrSz.W)))
+   
 
   // trying to detach the bundle so that we can move things around in the future
   val ioVGen           = io.core.VGen
@@ -259,6 +260,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val dsq_head         = Reg(UInt(dsqAddrSz.W))
   val dsq_execute_head = Reg(UInt(dsqAddrSz.W))
   val dsq_tlb_head     = Reg(UInt(dsqAddrSz.W))
+  val dsq_execute_save = Reg(Valid(UInt(stqAddrSz.W)))
 
   // If we got a mispredict, the tail will be misaligned for 1 extra cycle
   assert (io.core.brupdate.b2.mispredict ||
@@ -879,9 +881,20 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                     coreDataBytes)).data
       dmem_req(w).bits.uop      := stq_commit_e.bits.uop
 
-      stq_execute_head                     := Mux(dmem_req_fire(w),
-                                                WrapInc(stq_execute_head, numStqEntries),
-                                                stq_execute_head)
+//      stq_execute_head                     := Mux(dmem_req_fire(w),
+//                                                WrapInc(stq_execute_head, numStqEntries),
+//                                                stq_execute_head)
+      when (dmem_req_fire(w)) {
+         when (stq_execute_save.valid) {
+           stq_execute_head := stq_execute_save.bits
+           stq_execute_save.valid := false.B
+         }.otherwise {
+           stq_execute_head := WrapInc(stq_execute_head, numStqEntries)
+         }
+      }.otherwise {
+        stq_execute_head := stq_execute_head
+      }
+       
 
       stq(stq_execute_head).bits.succeeded := false.B
       }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual){                //KYnew, revisit later
@@ -889,6 +902,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         dmem_req(w).valid := dsq_commit_e.bits.addr.bits
         dmem_req(w).bits.data := dsq_commit_e.bits.data.bits
         dmem_req(w).bits.uop := dsq_commit_e.bits.uop
+        when (dsq_execute_save.valid) {
+           dsq_execute_head := dsq_execute_save.bits
+           dsq_execute_save.valid := false.B
+         }.otherwise {
+           dsq_execute_head := WrapInc(dsq_execute_head, numDsqEntries)
+         }
+         dsq(dsq_execute_head).bits.succeeded := false.B
       }.otherwise{
         dmem_req(w).valid  := false.B                        //KYnew, placeholder
       }
@@ -1406,11 +1426,21 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         .otherwise
       {
         assert(io.dmem.nack(w).bits.uop.uses_stq)
-        when (IsOlder(io.dmem.nack(w).bits.uop.stq_idx, stq_execute_head, stq_head)) {
+        when (io.dmem.nack(w).bits.uop.is_vec) {
+          dsq_execute_head := io.dmem.nack(w).bits.uop.stq_idx
+          dsq_execute_save.valid := true.B 
+          dsq_execute_save.bits := dsq_execute_head
+        
+        }.elsewhen (IsOlder(io.dmem.nack(w).bits.uop.stq_idx, stq_execute_head, stq_head)) {
           stq_execute_head := io.dmem.nack(w).bits.uop.stq_idx
+          stq_execute_save.valid := true.B 
+          stq_execute_save.bits := stq_execute_head 
         }
       }
     }
+
+    
+
     // Handle the response
     when (io.dmem.resp(w).valid)
     {
@@ -1434,7 +1464,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         ldq(ldq_idx).bits.succeeded      := io.core.exe(w).iresp.valid || io.core.exe(w).fresp.valid
         ldq(ldq_idx).bits.debug_wb_data  := io.dmem.resp(w).bits.data
       }
-        .elsewhen (io.dmem.resp(w).bits.uop.uses_stq)
+        .elsewhen (io.dmem.resp(w).bits.uop.uses_stq && !io.dmem.resp(w).bits.uop.is_vec)
       {
         assert(!io.dmem.resp(w).bits.is_hella)
         stq(io.dmem.resp(w).bits.uop.stq_idx).bits.succeeded := true.B
@@ -1446,6 +1476,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
           stq(io.dmem.resp(w).bits.uop.stq_idx).bits.debug_wb_data := io.dmem.resp(w).bits.data
         }
+      }.elsewhen (io.dmem.resp(w).bits.uop.uses_stq && io.dmem.resp(w).bits.uop.is_vec) {
+        dsq(io.dmem.resp(w).bits.uop.stq_idx).bits.succeeded := true.B
       }
     }
 
@@ -1714,7 +1746,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       stq_tail := 0.U
       stq_commit_head  := 0.U
       stq_execute_head := 0.U
-
+      stq_execute_save.bits := 0.U 
+      stq_execute_save.valid := false.B 
       for (i <- 0 until numStqEntries)
       {
         stq(i).valid           := false.B
@@ -1726,6 +1759,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dsq_tail := 0.U
       dsq_execute_head := 0.U 
       dsq_tlb_head := 0.U
+      dsq_execute_save.bits := 0.U 
+      dsq_execute_save.valid := false.B 
       for (i <- 0 until numDsqEntries)
       {
         dsq(i).valid           := false.B
