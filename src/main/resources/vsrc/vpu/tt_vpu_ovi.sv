@@ -107,6 +107,24 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic       ocelot_sat_csr;
   logic       ocelot_instrn_commit_valid;
 
+  // Hack to keep the vector CSRs constant for ocelot
+  logic [39:0] vcsr_reg;
+  logic        vcsr_lmulb2_reg;
+  logic [39:0] vcsr;
+  logic        vcsr_lmulb2;
+
+  assign vcsr        = ocelot_read_req && read_valid ? read_issue_vcsr : vcsr_reg;
+  assign vcsr_lmulb2 = ocelot_read_req && read_valid ? read_issue_vcsr_lmulb2 : vcsr_lmulb2_reg;
+
+  always_ff@(posedge clk) begin
+    if(!reset_n)
+      {vcsr_reg, vcsr_lmulb2_reg} <= 0;
+    else if(read_valid && ocelot_read_req) begin
+      vcsr_reg <= read_issue_vcsr;
+      vcsr_lmulb2_reg <= read_issue_vcsr_lmulb2;
+    end
+  end
+
   // Just pass the parameters down...
   vfp_pipeline #(
     .LOCAL_MEM_BYTE_ADDR_WIDTH(LOCAL_MEM_BYTE_ADDR_WIDTH),
@@ -123,11 +141,11 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   (
     .i_clk(clk),
     .i_reset(!reset_n),
-    .i_csr_vl(read_issue_vcsr[$clog2(VLEN+1)-1+14:14]),
-    .i_csr_vsew(read_issue_vcsr[38:36]),
-    .i_csr_vlmul({read_issue_vcsr_lmulb2,read_issue_vcsr[35:34]}),
-    .i_csr_vxrm(read_issue_vcsr[30:29]),
-    .i_csr_frm(read_issue_vcsr[33:31]),
+    .i_csr_vl(vcsr[$clog2(VLEN+1)-1+14:14]),
+    .i_csr_vsew(vcsr[38:36]),
+    .i_csr_vlmul({vcsr_lmulb2,vcsr[35:34]}),
+    .i_csr_vxrm(vcsr[30:29]),
+    .i_csr_frm(vcsr[33:31]),
 
     // IF Interface
     .i_if_instrn_rts(read_valid),
