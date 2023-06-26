@@ -71,7 +71,7 @@ class LSUExeIO(implicit p: Parameters) extends BoomBundle()(p)
 class VGenIO(implicit p: Parameters) extends BoomBundle()(p)
 {
   // The "resp" of the maddrcalc is really a "req" to the LSU
-  val req       = Flipped(new ValidIO(new FuncUnitResp(xLen)))
+  val req       = Flipped(new DecoupledIO(new FuncUnitResp(xLen)))
   // Send load data to regfiles
 //  val iresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen))
 //  val fresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen+1)) // TODO: Should this be fLen?
@@ -252,9 +252,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val stq_execute_head = Reg(UInt(stqAddrSz.W)) // point to next store to execute
 
 
+  // trying to detach the bundle so that we can move things around in the future
+  val ioVGen           = io.core.VGen
+
   val dsq_tail         = Reg(UInt(dsqAddrSz.W))
   val dsq_head         = Reg(UInt(dsqAddrSz.W))
   val dsq_execute_head = Reg(UInt(dsqAddrSz.W))
+  val dsq_tlb_head     = Reg(UInt(dsqAddrSz.W))
 
   // If we got a mispredict, the tail will be misaligned for 1 extra cycle
   assert (io.core.brupdate.b2.mispredict ||
@@ -387,7 +391,26 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.dmem.force_order   := io.core.fence_dmem
   io.core.fencei_rdy    := !stq_nonempty && io.dmem.ordered
 
-  
+  var dsq_full = Bool()
+  dsq_full = WrapInc(dsq_tail, numDsqEntries) === dsq_head
+  ioVGen.req.ready    := !dsq_full
+
+  val newDsqEntry = ioVGen.req.ready && ioVGen.req.valid
+
+  dsq_tail := Mux(newDsqEntry, WrapInc(dsq_tail, numDsqEntries), dsq_tail)
+
+  when (newDsqEntry) {
+    
+    dsq(dsq_tail).valid             := true.B
+    dsq(dsq_tail).bits.uop        := ioVGen.req.bits.uop
+    dsq(dsq_tail).bits.addr.valid := false.B
+    dsq(dsq_tail).bits.addr_is_virtual := false.B 
+    dsq(dsq_tail).bits.addr.bits    := ioVGen.req.bits.addr 
+    dsq(dsq_tail).bits.data.valid := false.B
+    dsq(dsq_tail).bits.addr.bits    := ioVGen.req.bits.data
+    dsq(dsq_tail).bits.succeeded  := false.B
+
+  }
 
   //-------------------------------------------------------------
   //-------------------------------------------------------------
@@ -476,7 +499,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val ldq_wakeup_e   = ldq(ldq_wakeup_idx)
 
   val dsq_commit_e = dsq(dsq_execute_head)
-  val dsq_tlb_e = dsq(dsq_execute_head)              //KYnew: continuous ping TLB for now
+  val dsq_tlb_e = dsq(dsq_tlb_head)              //KYnew: continuous pinging TLB for now
 
   // -----------------------
   // Determine what can fire
@@ -721,7 +744,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val ma_st = widthMap(w => (will_fire_sta_incoming(w) || will_fire_stad_incoming(w)) && exe_req(w).bits.mxcpt.valid) // We get ma_ld in memaddrcalc
   val pf_ld = widthMap(w => dtlb.io.req(w).valid && dtlb.io.resp(w).pf.ld && exe_tlb_uop(w).uses_ldq)
   val pf_st = widthMap(w => dtlb.io.req(w).valid && dtlb.io.resp(w).pf.st && exe_tlb_uop(w).uses_stq)
-  val pf_st_dsq = DontCare
+  val pf_st_dsq = dtlb.io.req(memWidth).valid && dtlb.io.resp(memWidth).pf.st
   val ae_ld = widthMap(w => dtlb.io.req(w).valid && dtlb.io.resp(w).ae.ld && exe_tlb_uop(w).uses_ldq)
   val ae_st = widthMap(w => dtlb.io.req(w).valid && dtlb.io.resp(w).ae.st && exe_tlb_uop(w).uses_stq)
 
@@ -1689,6 +1712,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dsq_head := 0.U                                    // KYnew
       dsq_tail := 0.U
       dsq_execute_head := 0.U 
+      dsq_tlb_head := 0.U
       for (i <- 0 until numDsqEntries)
       {
         dsq(i).valid           := false.B
