@@ -727,7 +727,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dtlb.io.req(w).bits.prv         := io.ptw.status.prv
     }
     else {
-      dtlb.io.req(w).valid := dsq_tlb_e.valid && dsq_tlb_e.bits.addr_is_virtual 
+      dtlb.io.req(w).valid := dsq_tlb_e.valid && (dsq_tlb_e.bits.addr_is_virtual || !dsq_tlb_e.bits.addr.valid) 
       dtlb.io.req(w).bits.vaddr       := dsq_tlb_e.bits.addr.bits
       dtlb.io.req(w).bits.size        := dsq_tlb_e.bits.uop.mem_size
       dtlb.io.req(w).bits.cmd         := dsq_tlb_e.bits.uop.mem_cmd
@@ -794,7 +794,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val dsq_tlb_miss = dtlb.io.req(memWidth).valid && (dtlb.io.resp(memWidth).miss || !dtlb.io.req(memWidth).ready)  //KYnew
   val exe_tlb_paddr = widthMap(w => Cat(dtlb.io.resp(w).paddr(paddrBits-1,corePgIdxBits),
                                         exe_tlb_vaddr(w)(corePgIdxBits-1,0)))
-  val dsq_tlb_paddr = DontCare //KYnew, placeholder                            
+  val dsq_tlb_paddr = Cat(dtlb.io.resp(memWidth).paddr(paddrBits-1,corePgIdxBits), dsq_tlb_e.bits.addr.bits(corePgIdxBits-1, 0)) //KYnew, placeholder                            
   val exe_tlb_uncacheable = widthMap(w => !(dtlb.io.resp(w).cacheable))
   val dsq_tlb_uncacheable = !dtlb.io.resp(memWidth).cacheable
 
@@ -956,6 +956,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         "[lsu] Incoming store is overwriting a valid address")
 
     }
+
+    when (dtlb.io.req(memWidth).valid) {
+      dsq(dsq_tlb_head).bits.addr.valid := !pf_st_dsq
+      dsq(dsq_tlb_head).bits.addr.bits  := Mux(dsq_tlb_miss, dsq(dsq_tlb_head).bits.addr.bits, dsq_tlb_paddr)
+      dsq(dsq_tlb_head).bits.addr_is_virtual := dsq_tlb_miss     
+    }
+  
+    dsq_tlb_head := Mux((dtlb.io.req(memWidth).valid && !dsq_tlb_miss), WrapInc(dsq_tlb_head, numDsqEntries), dsq_tlb_head)
+    
 
     //-------------------------------------------------------------
     // Write data into the STQ
