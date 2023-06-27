@@ -458,7 +458,7 @@ assign o_vec_store_commit =  lq_rden                 &&
                             !lq_rdinfo.fp_rf_wr_flag;
    
 assign o_vec_nonstore_commit =  lq_rden                 &&
-                               !lq_rdinfo.vec_load      &&
+                               !o_vec_store_commit      &&
                                 lq_rdinfo.vrf_wr_flag;
    
 

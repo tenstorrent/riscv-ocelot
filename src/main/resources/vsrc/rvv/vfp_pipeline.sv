@@ -651,9 +651,9 @@ module vfp_pipeline #(parameter
 
    assign o_instrn_commit_valid       =   mem_rf_wr || mem_fp_rf_wr ||
                                          (vec_nonstore_commit && lq_last[lq_rd_ptr]) ||
-                                        ((o_mem_load || o_mem_store) && i_data_req_rtr && o_mem_last);
-   assign o_instrn_commit_data[VLEN*8-1:64] =  {VLEN*8-64{vec_nonstore_commit}} & mem_vrf_wrdata_nxt[VLEN*8-1:64];
-   assign o_instrn_commit_data[      63: 0] =        ({64{vec_nonstore_commit}} & mem_vrf_wrdata_nxt[      63: 0]) |
+                                        ((o_mem_store) && i_data_req_rtr && o_mem_last);
+   assign o_instrn_commit_data[VLEN*8-1:64] =  {VLEN*8-64{vec_nonstore_commit || o_mem_load}} & mem_vrf_wrdata_nxt[VLEN*8-1:64];
+   assign o_instrn_commit_data[      63: 0] =        ({64{vec_nonstore_commit || o_mem_load}} & mem_vrf_wrdata_nxt[      63: 0]) |
                                                      ({64{mem_rf_wr          }} & mem_rf_wrdata     [      63: 0]) |
                                                      ({64{mem_fp_rf_wr       }} & mem_fp_rf_wrdata  [      63: 0]);
    assign o_instrn_commit_fflags            =        ({ 5{vec_nonstore_commit}} & mem_vrf_wrexc_nxt [       4: 0]);
