@@ -323,7 +323,7 @@ assign wb_hit         = 1'b0;
 assign wb_empty       = !wb_store_valid;
 assign wb_full_raw    = !i_data_req_rtr;
 
-assign wb_full = wb_full_raw | ((~wb_empty));
+assign wb_full = wb_full_raw;
 
 
 // *********************** //
@@ -468,7 +468,7 @@ assign lq_full = lq_full_raw | ((~lq_empty));
 // Ratio arbiter between loads and WB stores to avoid WB starvation when endless loads (as in tight polling loop)       //
 // ******************************************************************************************************************** //
 // Fence/AMO will wait for WB to be empty
-assign mem_store_valid = mem_tx_valid & mem_store & ~i_vex_mem_lqvld_1c & ~wb_full & (~mem_ordered | (wb_empty & i_dmem_brisc_memory_idle));
+assign mem_store_valid = mem_tx_valid & mem_store & ~i_vex_mem_lqvld_1c & ~wb_full & (~mem_ordered);
 assign mem_load_valid = mem_tx_valid & (mem_load | mem_fence) & ~i_fp_ex_mem_lqvld_1c & ~i_vex_mem_lqvld_1c & 
                            ~(wb_hit & mem_load) & (wb_empty | ~(mem_fence | mem_amo | mem_ordered)) &
                            (i_dmem_brisc_memory_idle | ~(mem_fence | mem_amo | mem_ordered));
