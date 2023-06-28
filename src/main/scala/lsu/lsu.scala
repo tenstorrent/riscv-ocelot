@@ -228,6 +228,7 @@ class DSQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val addr_is_virtual     = Bool() // Virtual address, we got a TLB miss
   val data                = Valid(UInt(xLen.W))
   val last                = Bool()
+  val sent                = Bool()
   val succeeded           = Bool() // D$ has ack'd this, we don't need to maintain this anymore
 }
 
@@ -255,7 +256,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
    
 
   // trying to detach the bundle so that we can move things around in the future
-  val ioVGen           = io.core.VGen
+//  val ioVGen           = io.core.VGen
 
   val dsq_tail         = Reg(UInt(dsqAddrSz.W))
   val dsq_head         = Reg(UInt(dsqAddrSz.W))
@@ -401,23 +402,24 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   var dsq_full = Bool()
   dsq_full = WrapInc(dsq_tail, numDsqEntries) === dsq_head
-  ioVGen.req.ready    := !dsq_full
+  io.core.VGen.req.ready    := !dsq_full
 
-  val newDsqEntry = ioVGen.req.ready && ioVGen.req.valid
+  val newDsqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid
 
   dsq_tail := Mux(newDsqEntry, WrapInc(dsq_tail, numDsqEntries), dsq_tail)
 
   when (newDsqEntry) {
     
     dsq(dsq_tail).valid             := true.B
-    dsq(dsq_tail).bits.uop        := ioVGen.req.bits.uop
+    dsq(dsq_tail).bits.uop        := io.core.VGen.req.bits.uop
     dsq(dsq_tail).bits.addr.valid := false.B
     dsq(dsq_tail).bits.addr_is_virtual := false.B 
-    dsq(dsq_tail).bits.addr.bits    := ioVGen.req.bits.addr 
-    dsq(dsq_tail).bits.data.valid := false.B
-    dsq(dsq_tail).bits.addr.bits    := ioVGen.req.bits.data
+    dsq(dsq_tail).bits.addr.bits    := io.core.VGen.req.bits.addr 
+    dsq(dsq_tail).bits.data.valid := true.B
+    dsq(dsq_tail).bits.data.bits    := io.core.VGen.req.bits.data
     dsq(dsq_tail).bits.succeeded  := false.B
-    dsq(dsq_tail).bits.last := ioVGen.req.bits.last 
+    dsq(dsq_tail).bits.last := io.core.VGen.req.bits.last
+    dsq(dsq_tail).bits.sent := false.B 
 
   }
 
@@ -570,7 +572,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                 (stq_commit_e.bits.committed || ( stq_commit_e.bits.uop.is_amo      &&
                                                                   stq_commit_e.bits.addr.valid      &&
                                                                  !stq_commit_e.bits.addr_is_virtual &&
-                                                                  stq_commit_e.bits.data.valid))))
+                                                                  stq_commit_e.bits.data.valid) || (stq_commit_e.bits.isVector && (stq_commit_head === stq_execute_head)))))
 
   // Can we wakeup a load that was nack'd
   val block_load_wakeup = WireInit(false.B)
@@ -894,15 +896,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       }.elsewhen (dsq_finished) {
         stq(stq_execute_head).bits.succeeded := true.B 
         dsq_finished := false.B 
-      }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual){                //KYnew, revisit later
+      }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded){                //KYnew, revisit later
         dmem_req(w).valid := true.B
-        dmem_req(w).valid := dsq_commit_e.bits.addr.bits
+        dmem_req(w).bits.addr := dsq_commit_e.bits.addr.bits
         dmem_req(w).bits.data := dsq_commit_e.bits.data.bits
         dmem_req(w).bits.uop := dsq_commit_e.bits.uop
-        
+        dmem_req(w).bits.uop.stq_idx := dsq_execute_head
+          when (dsq_execute_head =/= dsq_tail) {
            dsq_execute_head :=  WrapInc(dsq_execute_head, numDsqEntries)
-         
+          }
          dsq(dsq_execute_head).bits.succeeded := false.B
+         dsq(dsq_execute_head).bits.sent := true.B
       }.otherwise{
         dmem_req(w).valid  := false.B                        //KYnew, placeholder
       }
@@ -1654,6 +1658,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   when (dsq(dsq_head).valid && dsq(dsq_head).bits.succeeded) {
     dsq_head := WrapInc(dsq_head, numDsqEntries)
+    dsq(dsq_head).valid  := false.B 
+    dsq(dsq_head).bits.succeeded := false.B 
+    dsq(dsq_head).bits.addr.valid := false.B
+    dsq(dsq_head).bits.data.valid := false.B 
     when (dsq(dsq_head).bits.last) {
       dsq_finished := true.B
     }
@@ -1770,6 +1778,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         dsq(i).bits.addr_is_virtual := false.B
         dsq(i).bits.data.valid := false.B
         dsq(i).bits.uop        := NullMicroOp
+        dsq(i).bits.data.bits := 0.U 
+        dsq(i).bits.addr.bits := 0.U
       }
     }
       .otherwise // exception
