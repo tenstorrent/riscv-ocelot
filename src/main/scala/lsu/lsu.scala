@@ -72,7 +72,7 @@ class VGenIO(implicit p: Parameters) extends BoomBundle()(p)
 {
   // The "resp" of the maddrcalc is really a "req" to the LSU
   val req       = Flipped(new DecoupledIO(new FuncUnitResp(xLen)))
-  val last      = Bool()
+//  val last      = Bool()
   // Send load data to regfiles
 //  val iresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen))
 //  val fresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen+1)) // TODO: Should this be fLen?
@@ -417,7 +417,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dsq(dsq_tail).bits.data.valid := false.B
     dsq(dsq_tail).bits.addr.bits    := ioVGen.req.bits.data
     dsq(dsq_tail).bits.succeeded  := false.B
-    dsq(dsq_tail).bits.last := ioVGen.last 
+    dsq(dsq_tail).bits.last := ioVGen.req.bits.last 
 
   }
 

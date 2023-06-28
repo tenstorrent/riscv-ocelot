@@ -26,11 +26,16 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
     val req = Flipped(new DecoupledIO(new FuncUnitReq(xLen)))
     val resp = new DecoupledIO(new FuncUnitResp(xLen))
     val set_vxsat = Output(Bool())
-
+    val vGenIO = Flipped(new boom.lsu.VGenIO)
+    
     val debug_wb_vec_valid = Output(Bool())
     val debug_wb_vec_wdata = Output(UInt((coreParams.vLen * 8).W))
     val debug_wb_vec_wmask = Output(UInt(8.W))
   })
+
+//  io.vGenIO.last := DontCare
+  io.vGenIO.req.valid := false.B 
+  io.vGenIO.req.bits := DontCare
 
   val reqQueue = Module(new Queue(new FuncUnitReq(xLen), 2))
   val uOpMem = SyncReadMem(32, new MicroOp())
@@ -49,6 +54,52 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   when(reqQueue.io.deq.valid) {
     uOpMem.write(sbId, reqQueue.io.deq.bits.uop)
   }
+
+  /*
+      Fake VGen Start
+  */
+//  io.vGenIO.last := DontCare
+  io.vGenIO.req.valid := false.B 
+  io.vGenIO.req.bits := DontCare
+  val fakeVGenCounter = RegInit(0.U)
+  val fakeVGenEnable  = RegInit(false.B)
+  val fakeVGen = Reg(new boom.lsu.DSQEntry)
+  when (reqQueue.io.deq.valid && reqQueue.io.deq.bits.uop.uses_stq && !fakeVGenEnable) {
+    fakeVGenEnable := true.B 
+    fakeVGen.uop := reqQueue.io.deq.bits.uop
+  }
+  io.vGenIO.req.valid := fakeVGenEnable
+  io.vGenIO.req.bits.uop := fakeVGen.uop  
+  when (fakeVGenCounter === 0.U) {
+    io.vGenIO.req.bits.addr := "h2001000".U 
+    io.vGenIO.req.bits.data := 1.U 
+
+  
+  }.elsewhen (fakeVGenCounter === 1.U){
+    io.vGenIO.req.bits.addr := "h2001008".U 
+    io.vGenIO.req.bits.data := 2.U 
+
+  }.elsewhen (fakeVGenCounter === 2.U){
+    io.vGenIO.req.bits.addr := "h2001010".U 
+    io.vGenIO.req.bits.data := 3.U 
+
+  }.otherwise {
+    io.vGenIO.req.bits.addr := "h2001010".U
+    io.vGenIO.req.bits.data := 4.U
+    io.vGenIO.req.bits.last := true.B
+  }
+  when (io.vGenIO.req.valid && io.vGenIO.req.ready) {
+    when (fakeVGenCounter === 3.U) {
+       fakeVGenCounter := 0.U 
+       fakeVGenEnable := false.B 
+    }.otherwise {
+       fakeVGenCounter := fakeVGenCounter + 1.U
+    }
+  }
+  /*
+      Fake VGen End
+  */
+
 
   vpuModule.io := DontCare
   vpuModule.io.clk := clock
