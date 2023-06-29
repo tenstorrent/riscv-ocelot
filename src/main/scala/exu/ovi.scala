@@ -16,6 +16,13 @@ import boom.lsu.{LSUExeIO}
 
 import hardfloat._
 
+class EnhancedFuncUnitReq(xLen: Int, vLen: Int)(implicit p: Parameters) extends Bundle {
+  val vconfig = new VConfig()
+  val vxrm = UInt(2.W)
+  val fcsr_rm = UInt(3.W)
+  val req = new FuncUnitReq(xLen)
+}
+
 class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
     extends BoomModule
     with freechips.rocketchip.rocket.constants.MemoryOpConstants {
@@ -32,7 +39,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
     val debug_wb_vec_wmask = Output(UInt(8.W))
   })
 
-  val reqQueue = Module(new Queue(new FuncUnitReq(xLen), 2))
+  val reqQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), 2))
   val uOpMem = SyncReadMem(32, new MicroOp())
   val vpuModule = Module(new tt_vpu_ovi(vLen))
   val maxIssueCredit = 8
@@ -40,30 +47,34 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   issueCreditCnt := issueCreditCnt + vpuModule.io.issue_credit - vpuModule.io.issue_valid
 
   reqQueue.io.enq.valid := io.req.valid
-  reqQueue.io.enq.bits := io.req.bits
+  reqQueue.io.enq.bits.req := io.req.bits
+  reqQueue.io.enq.bits.vconfig := io.vconfig
+  reqQueue.io.enq.bits.vxrm := io.vxrm
+  reqQueue.io.enq.bits.fcsr_rm := io.fcsr_rm
   reqQueue.io.deq.ready := issueCreditCnt =/= 0.U
 
   val sbId = RegInit(0.U(5.W))
   sbId := sbId + vpuModule.io.issue_valid
 
   when(reqQueue.io.deq.valid) {
-    uOpMem.write(sbId, reqQueue.io.deq.bits.uop)
+    uOpMem.write(sbId, reqQueue.io.deq.bits.req.uop)
   }
 
   vpuModule.io := DontCare
   vpuModule.io.clk := clock
   vpuModule.io.reset_n := ~reset.asBool
   vpuModule.io.issue_valid := reqQueue.io.deq.valid && reqQueue.io.deq.ready
-  vpuModule.io.issue_inst := reqQueue.io.deq.bits.uop.inst
+  vpuModule.io.issue_inst := reqQueue.io.deq.bits.req.uop.inst
   vpuModule.io.issue_sb_id := sbId
-  vpuModule.io.issue_scalar_opnd := reqQueue.io.deq.bits.rs1_data
+  vpuModule.io.issue_scalar_opnd := reqQueue.io.deq.bits.req.rs1_data
   vpuModule.io.issue_vcsr := Cat(
     0.U(1.W), // vill
-    2.U(3.W), // vsew
-    0.U(2.W), // vlmul
-    0.U(3.W), // frm
-    0.U(2.W), // vxrm
-    4.U(15.W), // vl
+    reqQueue.io.deq.bits.vconfig.vtype.vsew, // vsew
+    reqQueue.io.deq.bits.vconfig.vtype.vlmul(1,0), // vlmul
+    reqQueue.io.deq.bits.fcsr_rm, // frm
+    reqQueue.io.deq.bits.vxrm, // vxrm
+    Cat(0.U((15-log2Ceil(vLen+1)).W),
+        reqQueue.io.deq.bits.vconfig.vl), // vl
     0.U(14.W) // vstart
   )
   vpuModule.io.issue_vcsr_lmulb2 := 0.B
@@ -71,12 +82,16 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   vpuModule.io.dispatch_next_senior := reqQueue.io.deq.valid
   vpuModule.io.dispatch_kill := 0.B
 
+  val respUop = uOpMem.read(vpuModule.io.completed_sb_id)
+
   io := DontCare
   io.req.ready := reqQueue.io.enq.ready
   io.resp.valid := vpuModule.io.completed_valid
   io.resp.bits.data := vpuModule.io.completed_dest_reg
-  io.resp.bits.uop := uOpMem.read(vpuModule.io.completed_sb_id)
-  io.resp.bits.uop.dst_rtype := RT_X
+  io.resp.bits.uop := respUop
+  io.resp.bits.uop.dst_rtype := Mux(respUop.dst_rtype === RT_VEC,
+                                    RT_X,
+                                    respUop.dst_rtype)
   io.resp.bits.fflags.valid := vpuModule.io.completed_fflags.orR
   io.resp.bits.fflags.bits.uop.rob_idx := io.resp.bits.uop.rob_idx
   io.resp.bits.fflags.bits.flags := vpuModule.io.completed_fflags
