@@ -52,7 +52,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   reqQueue.io.enq.bits.vconfig := io.vconfig
   reqQueue.io.enq.bits.vxrm := io.vxrm
   reqQueue.io.enq.bits.fcsr_rm := io.fcsr_rm
-  reqQueue.io.deq.ready := issueCreditCnt =/= 0.U
+  reqQueue.io.deq.ready := issueCreditCnt =/= 0.U 
 
   val sbId = RegInit(0.U(5.W))
   sbId := sbId + vpuModule.io.issue_valid
@@ -105,6 +105,13 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   io.debug_wb_vec_wmask := vpuModule.io.debug_wb_vec_wmask
 
 /*
+  faking mem sync start
+*/
+   val fakeMemSyncStart = ShiftRegister(reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq, 10)
+   val tryDeqVLSIQ = RegInit(false.B)
+   
+
+/*
   vLSIQ start
 */
 
@@ -112,14 +119,18 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   // this needs to be changed in the future to include load, just keep it this way for now
   vLSIQueue.io.enq.valid := reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq
   vLSIQueue.io.enq.bits := reqQueue.io.deq.bits
-  vLSIQueue.io.deq.ready := DontCare
+  vLSIQueue.io.deq.ready := fakeMemSyncStart || tryDeqVLSIQ
+  when (fakeMemSyncStart && !vLSIQueue.io.deq.valid) {
+    tryDeqVLSIQ := true.B 
+  }.elsewhen (tryDeqVLSIQ && !vLSIQueue.io.deq.valid) {
+    tryDeqVLSIQ := false.B 
+  }
+  reqQueue.io.deq.ready := issueCreditCnt =/= 0.U && vLSIQueue.io.enq.ready
 /*
   vLSIQ end
 */
 
-/*
-  faking mem sync start
-*/
+
   /*
       Fake VGen Start
   */
@@ -129,9 +140,11 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   val fakeVGenCounter = RegInit(0.U(2.W))
   val fakeVGenEnable  = RegInit(false.B)
   val fakeVGen = Reg(new EnhancedFuncUnitReq(xLen, vLen))
-  when (reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq && !fakeVGenEnable) {
+//when (reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq && !fakeVGenEnable) {
+  when (vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && vLSIQueue.io.deq.bits.req.uop.uses_stq && !fakeVGenEnable) {
     fakeVGenEnable := true.B 
-    fakeVGen.req.uop := reqQueue.io.deq.bits.req.uop
+//    fakeVGen.req.uop := reqQueue.io.deq.bits.req.uop
+    fakeVGen.req.uop := vLSIQueue.io.deq.bits.req.uop
   }
   io.vGenIO.req.valid := fakeVGenEnable
   io.vGenIO.req.bits.uop := fakeVGen.req.uop 
