@@ -144,12 +144,12 @@ val fakeData5 = 0.U(64.W)
   VDB start
 */
   val vdb = Module (new VDB(512, 64, 4))
-  vdb.io.configValid := newVGenConfig
+  
   vdb.io.writeValid := false.B 
-  vdb.io.writeData := 0.U 
+//  vdb.io.writeData := 0.U 
   vdb.io.pop := false.B 
   vdb.io.last := false.B  
-  vdb.io.sliceSize := 1.U 
+  vdb.io.configValid := false.B  
 
   vdb.io.writeValid := fakeMemSyncStart
   vdb.io.writeData := Cat(fakeData5, fakeData5, fakeData5, fakeData5, fakeData1, fakeData2, fakeData3, fakeData4)
@@ -159,26 +159,55 @@ val fakeData5 = 0.U(64.W)
    VDB end
 */
 
+val vAGen = Module (new VAgen ())
+
+  vAGen.io.configValid := false.B 
+  vAGen.io.startAddr := "h2001000".U (64.W)
+  vAGen.io.sliceSize := 1.U 
+  vAGen.io.vl := 4.U
+  vAGen.io.pop := false.B  
   /*
       Fake VGen Start
   */
 //  io.vGenIO.last := DontCare
   io.vGenIO.req.valid := false.B 
   io.vGenIO.req.bits := DontCare
-  val fakeVGenCounter = RegInit(0.U(2.W))
-  val fakeVGenEnable  = RegInit(false.B)
-  val fakeVGen = Reg(new EnhancedFuncUnitReq(xLen, vLen))
-//when (reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq && !fakeVGenEnable) {
-//  when (vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && vLSIQueue.io.deq.bits.req.uop.uses_stq && !fakeVGenEnable) {
-  when (newVGenConfig && !fakeVGenEnable) {
-    fakeVGenEnable := true.B 
-//    fakeVGen.req.uop := reqQueue.io.deq.bits.req.uop
-    fakeVGen.req.uop := vLSIQueue.io.deq.bits.req.uop
+//  val fakeVGenCounter = RegInit(0.U(2.W))
+  val vGenEnable  = RegInit(false.B)
+  val vGenHold = Reg(new EnhancedFuncUnitReq(xLen, vLen))
+//when (reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq && !vGenEnable) {
+//  when (vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && vLSIQueue.io.deq.bits.req.uop.uses_stq && !vGenEnable) {
+  when (newVGenConfig && !vGenEnable) {
+    vGenEnable := true.B 
+    vGenHold.req.uop := vLSIQueue.io.deq.bits.req.uop
+    vdb.io.configValid := true.B 
+    vAGen.io.configValid := true.B
+    vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
+    val instElemSize = vLSIQueue.io.deq.bits.req.uop.inst(14, 12)
+    when (instElemSize === 0.U) {
+      vdb.io.sliceSize := 1.U
+      vAGen.io.sliceSize := 1.U 
+    }.elsewhen (instElemSize === 5.U){
+    vdb.io.sliceSize := 2.U
+    vAGen.io.sliceSize := 2.U
+    }.elsewhen (instElemSize === 6.U){
+      vdb.io.sliceSize := 4.U
+      vAGen.io.sliceSize := 4.U
+    }.otherwise{
+       vdb.io.sliceSize := 8.U 
+       vAGen.io.sliceSize := 8.U
+    }
   }
-  io.vGenIO.req.valid := fakeVGenEnable
-  io.vGenIO.req.bits.uop := fakeVGen.req.uop
+
+  
+
+  io.vGenIO.req.valid := vGenEnable
+  io.vGenIO.req.bits.uop := vGenHold.req.uop
   io.vGenIO.req.bits.data := vdb.io.outData 
-  io.vGenIO.req.bits.last := false.B  
+  io.vGenIO.req.bits.last := false.B 
+  io.vGenIO.req.bits.addr := vAGen.io.outAddr
+
+/*
   when (fakeVGenCounter === 0.U) {
     io.vGenIO.req.bits.addr := "h2001000".U 
 //    io.vGenIO.req.bits.data := 1.U 
@@ -194,21 +223,30 @@ val fakeData5 = 0.U(64.W)
 //    io.vGenIO.req.bits.data := 3.U 
 
   }.otherwise {
-    io.vGenIO.req.bits.addr := "h2001010".U
+    io.vGenIO.req.bits.addr := "h2001018".U
 //    io.vGenIO.req.bits.data := 4.U
     io.vGenIO.req.bits.last := true.B
      
   }
+  */
+  io.vGenIO.req.bits.last := vAGen.io.last 
   when (io.vGenIO.req.valid && io.vGenIO.req.ready) {
     vdb.io.pop := true.B 
+    vAGen.io.pop := true.B 
+    when (vAGen.io.last) {
+      vGenEnable := false.B         
+      vdb.io.last := true.B
+    }
+    /*
     when (fakeVGenCounter === 3.U) {
        fakeVGenCounter := 0.U 
-       fakeVGenEnable := false.B         
+       vGenEnable := false.B         
        vdb.io.last := true.B
     }.otherwise {
        fakeVGenCounter := fakeVGenCounter + 1.U    
          
     }
+   */ 
   }
   /*
       Fake VGen End
@@ -365,4 +403,48 @@ class VDB(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) extend
       }
     }
   }
+}
+
+class VAgen(implicit p: Parameters) extends Module {
+  val io = IO(new Bundle {
+    val sliceSize = Input(UInt(4.W))
+    val vl = Input(UInt(9.W))
+    val configValid = Input(Bool())
+    val startAddr = Input(UInt(64.W))
+    val pop = Input(Bool())
+    val outAddr = Output(UInt(40.W))
+    val last = Output(Bool())
+  })
+
+  val sliceSizeHold = Reg(UInt(4.W))
+  val vlHold = Reg(UInt(9.W))
+
+  val currentIndex = Reg(UInt(9.W))
+  val currentAddr  = Reg(UInt(64.W))
+
+  val working = RegInit(false.B)
+
+  io.outAddr := currentAddr(39, 0)
+
+  when (io.configValid) {
+    sliceSizeHold := io.sliceSize
+    vlHold := io.vl - 1.U
+    currentIndex := 0.U 
+    currentAddr := io.startAddr
+    working := true.B 
+  }
+  
+  io.last := (currentIndex === vlHold) && working
+
+  when (io.pop) {
+    when (io.last) {
+      working := false.B 
+      currentIndex := 0.U
+    }.otherwise {
+      currentIndex := currentIndex + 1.U 
+      currentAddr := currentAddr + sliceSizeHold
+    }
+  }
+
+
 }
