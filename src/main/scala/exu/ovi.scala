@@ -92,6 +92,22 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   io.debug_wb_vec_wdata := vpuModule.io.debug_wb_vec_wdata
   io.debug_wb_vec_wmask := vpuModule.io.debug_wb_vec_wmask
 
+/*
+  vLSIQ start
+*/
+
+  val vLSIQueue = Module(new Queue(new FuncUnitReq(xLen), 2))
+  // this needs to be changed in the future to include load, just keep it this way for now
+  vLSIQueue.io.enq.valid := reqQueue.io.deq.valid && reqQueue.io.deq.bits.uop.uses_stq
+  vLSIQueue.io.enq.bits := reqQueue.io.deq.bits
+  vLSIQueue.io.deq.ready := DontCare
+/*
+  vLSIQ end
+*/
+
+/*
+  faking mem sync start
+*/
   /*
       Fake VGen Start
   */
