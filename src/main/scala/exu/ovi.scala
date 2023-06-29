@@ -126,10 +126,38 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
     tryDeqVLSIQ := false.B 
   }
   reqQueue.io.deq.ready := issueCreditCnt =/= 0.U && vLSIQueue.io.enq.ready
+  val newVGenConfig = vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && vLSIQueue.io.deq.bits.req.uop.uses_stq 
 /*
   vLSIQ end
 */
 
+/*
+   fake data
+*/
+val fakeData1 = 4.U(64.W)
+val fakeData2 = 3.U(64.W)
+val fakeData3 = 2.U(64.W)
+val fakeData4 = 1.U(64.W)
+val fakeData5 = 0.U(64.W)
+
+/*
+  VDB start
+*/
+  val vdb = Module (new VDB(512, 64, 4))
+  vdb.io.configValid := newVGenConfig
+  vdb.io.writeValid := false.B 
+  vdb.io.writeData := 0.U 
+  vdb.io.pop := false.B 
+  vdb.io.last := false.B  
+  vdb.io.sliceSize := 1.U 
+
+  vdb.io.writeValid := fakeMemSyncStart
+  vdb.io.writeData := Cat(fakeData5, fakeData5, fakeData5, fakeData5, fakeData1, fakeData2, fakeData3, fakeData4)
+  vdb.io.sliceSize := 8.U 
+
+/*
+   VDB end
+*/
 
   /*
       Fake VGen Start
@@ -141,38 +169,45 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   val fakeVGenEnable  = RegInit(false.B)
   val fakeVGen = Reg(new EnhancedFuncUnitReq(xLen, vLen))
 //when (reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq && !fakeVGenEnable) {
-  when (vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && vLSIQueue.io.deq.bits.req.uop.uses_stq && !fakeVGenEnable) {
+//  when (vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && vLSIQueue.io.deq.bits.req.uop.uses_stq && !fakeVGenEnable) {
+  when (newVGenConfig && !fakeVGenEnable) {
     fakeVGenEnable := true.B 
 //    fakeVGen.req.uop := reqQueue.io.deq.bits.req.uop
     fakeVGen.req.uop := vLSIQueue.io.deq.bits.req.uop
   }
   io.vGenIO.req.valid := fakeVGenEnable
-  io.vGenIO.req.bits.uop := fakeVGen.req.uop 
+  io.vGenIO.req.bits.uop := fakeVGen.req.uop
+  io.vGenIO.req.bits.data := vdb.io.outData 
   io.vGenIO.req.bits.last := false.B  
   when (fakeVGenCounter === 0.U) {
     io.vGenIO.req.bits.addr := "h2001000".U 
-    io.vGenIO.req.bits.data := 1.U 
+//    io.vGenIO.req.bits.data := 1.U 
+    
 
   
   }.elsewhen (fakeVGenCounter === 1.U){
     io.vGenIO.req.bits.addr := "h2001008".U 
-    io.vGenIO.req.bits.data := 2.U 
+ //   io.vGenIO.req.bits.data := 2.U 
 
   }.elsewhen (fakeVGenCounter === 2.U){
     io.vGenIO.req.bits.addr := "h2001010".U 
-    io.vGenIO.req.bits.data := 3.U 
+//    io.vGenIO.req.bits.data := 3.U 
 
   }.otherwise {
     io.vGenIO.req.bits.addr := "h2001010".U
-    io.vGenIO.req.bits.data := 4.U
+//    io.vGenIO.req.bits.data := 4.U
     io.vGenIO.req.bits.last := true.B
+     
   }
   when (io.vGenIO.req.valid && io.vGenIO.req.ready) {
+    vdb.io.pop := true.B 
     when (fakeVGenCounter === 3.U) {
        fakeVGenCounter := 0.U 
-       fakeVGenEnable := false.B 
+       fakeVGenEnable := false.B         
+       vdb.io.last := true.B
     }.otherwise {
-       fakeVGenCounter := fakeVGenCounter + 1.U       
+       fakeVGenCounter := fakeVGenCounter + 1.U    
+         
     }
   }
   /*
@@ -263,4 +298,71 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   addResource("/vsrc/HardFloat/source/recFNToIN.v")
   addResource("/vsrc/HardFloat/source/recFNToRecFN.v")
   
+}
+
+
+class VDB(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) extends Module {
+  require(isPow2(M), "M must be a power of 2")
+  require(isPow2(N), "N must be a power of 2")
+  require(M >= N, "M must be greater than or equal to N")
+  require(M % 8 == 0, "M must be a multiple of 8")
+  require(N % 8 == 0, "N must be a multiple of 8")
+  val S = log2Ceil(N / 8 + 1)
+  val I = log2Ceil(M / 8)
+
+  val io = IO(new Bundle {
+    val configValid = Input(Bool())
+    val writeValid = Input(Bool())
+    val writeData = Input(UInt(M.W))
+    val pop = Input(Bool())
+    val last = Input(Bool())
+    val sliceSize = Input(UInt(S.W))
+    val release = Output(Bool())
+    val outData = Output(UInt(N.W))
+  })
+
+  val buffer = RegInit(VecInit(Seq.fill(Depth)(0.U(M.W))))
+  val readPtr = RegInit(0.U(log2Ceil(Depth).W))
+  val writePtr = RegInit(0.U(log2Ceil(Depth).W))
+  val sliceHold = Reg(UInt(S.W))
+  val maxIndex = Reg(UInt(I.W))
+  val currentIndex = Reg(UInt(I.W))
+
+  when(io.configValid) {
+    sliceHold := io.sliceSize
+    maxIndex := (M.U >> (3.U + io.sliceSize)) - 1.U
+    currentIndex := 0.U
+  }
+
+  val currentEntry = buffer(readPtr)
+
+  when(io.writeValid) {
+    buffer(writePtr) := io.writeData
+    writePtr := WrapInc(writePtr, Depth)
+  }
+
+  val slices = Wire(Vec(M / N, UInt(N.W)))
+  for (i <- 0 until (M / N)) {
+    slices(i) := MuxLookup(sliceHold, 0.U,
+      (0 until S).map(j => ((1 << j).U -> currentEntry((i + 1) * (1 << (j + 3)) - 1, i * (1 << (j + 3))))
+    ))
+  }
+
+  io.outData := slices(currentIndex)
+  io.release := false.B 
+  when (io.pop) {
+    when (io.last) {
+      readPtr := WrapInc(readPtr, Depth)
+      currentIndex := 0.U
+      io.release := true.B 
+    } .otherwise {
+      when (currentIndex === maxIndex) {
+        currentIndex := 0.U
+        readPtr := WrapInc(readPtr, Depth)
+        io.release := true.B 
+      } .otherwise {
+        currentIndex := currentIndex + 1.U
+      }
+    }
+  }
 }
