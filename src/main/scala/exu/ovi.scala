@@ -108,9 +108,9 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   vLSIQ start
 */
 
-  val vLSIQueue = Module(new Queue(new FuncUnitReq(xLen), 2))
+  val vLSIQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), 2))
   // this needs to be changed in the future to include load, just keep it this way for now
-  vLSIQueue.io.enq.valid := reqQueue.io.deq.valid && reqQueue.io.deq.bits.uop.uses_stq
+  vLSIQueue.io.enq.valid := reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq
   vLSIQueue.io.enq.bits := reqQueue.io.deq.bits
   vLSIQueue.io.deq.ready := DontCare
 /*
@@ -128,13 +128,13 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   io.vGenIO.req.bits := DontCare
   val fakeVGenCounter = RegInit(0.U(2.W))
   val fakeVGenEnable  = RegInit(false.B)
-  val fakeVGen = Reg(new boom.lsu.DSQEntry)
-  when (reqQueue.io.deq.valid && reqQueue.io.deq.bits.uop.uses_stq && !fakeVGenEnable) {
+  val fakeVGen = Reg(new EnhancedFuncUnitReq(xLen, vLen))
+  when (reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq && !fakeVGenEnable) {
     fakeVGenEnable := true.B 
-    fakeVGen.uop := reqQueue.io.deq.bits.uop
+    fakeVGen.req.uop := reqQueue.io.deq.bits.req.uop
   }
   io.vGenIO.req.valid := fakeVGenEnable
-  io.vGenIO.req.bits.uop := fakeVGen.uop 
+  io.vGenIO.req.bits.uop := fakeVGen.req.uop 
   io.vGenIO.req.bits.last := false.B  
   when (fakeVGenCounter === 0.U) {
     io.vGenIO.req.bits.addr := "h2001000".U 
