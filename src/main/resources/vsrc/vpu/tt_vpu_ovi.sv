@@ -51,21 +51,57 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [39:0] read_issue_vcsr;
   logic        read_issue_vcsr_lmulb2;
 
-  logic [4:0] saved_sb_id;
+  // I'm using dummy wires to connect the memory interface for now
+  logic o_data_req;
+  logic [ADDRWIDTH-1:0] o_data_addr;
+  logic [ST_DATA_WIDTH_BITS/8-1:0] o_data_byten;
+  logic [ST_DATA_WIDTH_BITS-1:0] o_wr_data;
+  logic [DATA_REQ_ID_WIDTH-1:0] o_data_req_id;
+  logic o_mem_load;
+  logic [2:0] o_mem_size;
+  logic o_mem_last;
+
+  logic [VLEN*8-1:0] ocelot_instrn_commit_data;
+  logic [7:0] ocelot_instrn_commit_mask;
+  logic [4:0] ocelot_instrn_commit_fflags;
+  logic       ocelot_sat_csr;
+  logic       ocelot_instrn_commit_valid;
+
+  // Hack to keep the vector CSRs constant for ocelot
+  logic [39:0] vcsr_reg;
+  logic        vcsr_lmulb2_reg;
+  logic [39:0] vcsr;
+  logic        vcsr_lmulb2;
+
+  // This queue should never overflow, so I'm not going to add phase bits
+  // to check if it's full or not.
+  localparam sbid_queue_depth = 8;
+  logic [sbid_queue_depth-1:0][4:0] sbid_queue;
+  logic [$clog2(sbid_queue_depth)-1:0] sbid_queue_wptr;
+  logic [$clog2(sbid_queue_depth)-1:0] sbid_queue_rptr;
 
   always_ff@(posedge clk) begin
-    if(!reset_n)
-      saved_sb_id <= 0;
+    if(!reset_n) begin
+      for(int i=0; i<sbid_queue_depth; i=i+1)
+        sbid_queue[i] <= 0;
+      sbid_queue_wptr <= 0;
+      sbid_queue_rptr <= 0;
+    end
     else begin
-      if(ocelot_read_req && !read_valid)
-        saved_sb_id <= read_issue_sb_id;
+      if(ocelot_read_req && read_valid) begin
+        sbid_queue[sbid_queue_wptr] <= read_issue_sb_id;
+        sbid_queue_wptr <= sbid_queue_wptr + 1;
+      end
+      if(ocelot_instrn_commit_valid) begin
+        sbid_queue_rptr <= sbid_queue_rptr + 1;
+      end
     end
   end
 
   assign issue_credit = 0;
 
   tt_fifo #(
-    .DEPTH(4)
+    .DEPTH(16)
   ) fifo0
   (
     .clk(clk),
@@ -90,28 +126,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .read_issue_vcsr(read_issue_vcsr),
     .read_issue_vcsr_lmulb2(read_issue_vcsr_lmulb2)
   );
-
-  // I'm using dummy wires to connect the memory interface for now
-  logic o_data_req;
-  logic [ADDRWIDTH-1:0] o_data_addr;
-  logic [ST_DATA_WIDTH_BITS/8-1:0] o_data_byten;
-  logic [ST_DATA_WIDTH_BITS-1:0] o_wr_data;
-  logic [DATA_REQ_ID_WIDTH-1:0] o_data_req_id;
-  logic o_mem_load;
-  logic [2:0] o_mem_size;
-  logic o_mem_last;
-
-  logic [VLEN*8-1:0] ocelot_instrn_commit_data;
-  logic [7:0] ocelot_instrn_commit_mask;
-  logic [4:0] ocelot_instrn_commit_fflags;
-  logic       ocelot_sat_csr;
-  logic       ocelot_instrn_commit_valid;
-
-  // Hack to keep the vector CSRs constant for ocelot
-  logic [39:0] vcsr_reg;
-  logic        vcsr_lmulb2_reg;
-  logic [39:0] vcsr;
-  logic        vcsr_lmulb2;
 
   assign vcsr        = ocelot_read_req && read_valid ? read_issue_vcsr : vcsr_reg;
   assign vcsr_lmulb2 = ocelot_read_req && read_valid ? read_issue_vcsr_lmulb2 : vcsr_lmulb2_reg;
@@ -173,7 +187,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_mem_load(o_mem_load),
     .o_mem_size(o_mem_size),
     .o_mem_last(o_mem_last),
-    .i_data_req_rtr('0),
+    .i_data_req_rtr('1),
     .i_rd_data_vld_0('0),
     .i_rd_data_resp_id_0('0),
     .i_rd_data_0('0),
@@ -183,7 +197,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   );
 
   assign completed_valid = ocelot_instrn_commit_valid;
-  assign completed_sb_id = saved_sb_id;
+  assign completed_sb_id = sbid_queue[sbid_queue_rptr];
   assign completed_fflags = ocelot_instrn_commit_fflags;
   assign completed_dest_reg = ocelot_instrn_commit_data[63:0];
   assign completed_vxsat = 0;
