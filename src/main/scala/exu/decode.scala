@@ -481,6 +481,7 @@ object VDecode extends DecodeConstants with VectorInstructions
                         //     |  |  |  |            iq-type func    dst     |       |       |  |         |  |  |  |  |  mem    |    |  |  |  is unique? (clear pipeline for it)
                         //     |  |  |  |            |       unit    regtype |       |       |  |         |  |  |  |  |  cmd    |    |  |  |  |  flush on commit
                         //     |  |  |  |            |       |       |       |       |       |  |         |  |  |  |  |  |      |    |  |  |  |  |  csr cmd
+<<<<<<< HEAD
                         //     |  |  |  |            |       |       |       |       |       |  |         |  |  |  |  |  |      |    |  |  |  |  |  |      is_vec
   V_VL8                 ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_X  , N, IS_X,     Y, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N, Y),
   V_VL16                ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_X  , N, IS_X,     Y, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N, Y),
@@ -537,6 +538,63 @@ object VDecode extends DecodeConstants with VectorInstructions
   V_VSETVLI             ->List(Y, N, X, uopVSETVLI,  IQT_INT,FU_VCS, RT_FIX, RT_FIX, RT_X  , N, IS_VLI,   N, N, N, N, N, M_X  , 0.U, N, N, N, Y, N, CSR.N, Y),
   V_VSETIVLI            ->List(Y, N, X, uopVSETIVLI, IQT_INT,FU_VCS, RT_FIX, RT_X,   RT_X,   N, IS_IVLI,  N, N, N, N, N, M_X  , 0.U, N, N, N, Y, N, CSR.N, Y),
   V_VSETVL              ->List(Y, N, X, uopVSETVL,   IQT_INT,FU_VCS, RT_FIX, RT_FIX, RT_FIX, N, IS_VL,    N, N, N, N, N, M_X  , 0.U, N, N, N, Y, N, CSR.N, Y)
+=======
+  V_VL8                 ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_X  , N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N),
+  V_VL16                ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_X  , N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N),
+  V_VL32                ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_X  , N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N),
+  V_VL64                ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_X  , N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N),
+  V_VLS8                ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_FIX, N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N),
+  V_VLS16               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_FIX, N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N),
+  V_VLS32               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_FIX, N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N),
+  V_VLS64               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_FIX, N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N),
+  V_VLX8                ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_FIX, N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N),
+  V_VLX16               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_FIX, N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N),
+  V_VLX32               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_FIX, N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N),
+  V_VLX64               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_FIX, N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N),
+  V_VS8                 ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_X,   RT_FIX, RT_X  , N, IS_X,     N, Y, N, N, N, M_XWR, 0.U, N, N, N, N, N, CSR.N),
+  V_VS16                ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_X,   RT_FIX, RT_X  , N, IS_X,     N, Y, N, N, N, M_XWR, 0.U, N, N, N, N, N, CSR.N),
+  V_VS32                ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_X,   RT_FIX, RT_X  , N, IS_X,     N, Y, N, N, N, M_XWR, 0.U, N, N, N, N, N, CSR.N),
+  V_VS64                ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_X,   RT_FIX, RT_X  , N, IS_X,     N, Y, N, N, N, M_XWR, 0.U, N, N, N, N, N, CSR.N),
+  V_VSS8                ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_X,   RT_FIX, RT_FIX, N, IS_X,     N, Y, N, N, N, M_XWR, 0.U, N, N, N, N, N, CSR.N),
+  V_VSS16               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_X,   RT_FIX, RT_FIX, N, IS_X,     N, Y, N, N, N, M_XWR, 0.U, N, N, N, N, N, CSR.N),
+  V_VSS32               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_X,   RT_FIX, RT_FIX, N, IS_X,     N, Y, N, N, N, M_XWR, 0.U, N, N, N, N, N, CSR.N),
+  V_VSS64               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_X,   RT_FIX, RT_FIX, N, IS_X,     N, Y, N, N, N, M_XWR, 0.U, N, N, N, N, N, CSR.N),
+  V_VSX8                ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_X,   RT_FIX, RT_FIX, N, IS_X,     N, Y, N, N, N, M_XWR, 0.U, N, N, N, N, N, CSR.N),
+  V_VSX16               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_X,   RT_FIX, RT_FIX, N, IS_X,     N, Y, N, N, N, M_XWR, 0.U, N, N, N, N, N, CSR.N),
+  V_VSX32               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_X,   RT_FIX, RT_FIX, N, IS_X,     N, Y, N, N, N, M_XWR, 0.U, N, N, N, N, N, CSR.N),
+  V_VSX64               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_X,   RT_FIX, RT_FIX, N, IS_X,     N, Y, N, N, N, M_XWR, 0.U, N, N, N, N, N, CSR.N),
+  V_OPIVV               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_OPFVV               ->List(Y, Y, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_OPFVV1              ->List(Y, Y, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VWFUNARY0           ->List(Y, Y, X, uopVEC,      IQT_VEC,FU_VEC, RT_FLT, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VFUNARY0            ->List(Y, Y, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VFUNARY1            ->List(Y, Y, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VMFEQ               ->List(Y, Y, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VMFLE               ->List(Y, Y, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VMFLT               ->List(Y, Y, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VMFNE               ->List(Y, Y, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_OPMVV               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_OPMVV1              ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VWXUNARY0           ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_FIX, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VXUNARY0            ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VMUNARY0            ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VCOMPRESS           ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VMANDNOT            ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VMAND               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VMOR                ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VMXOR               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VMORNOT             ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VMNAND              ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VMNOR               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VMXNOR              ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_OPIVI               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_X,   RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_OPIVX               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_OPFVF               ->List(Y, Y, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FLT, RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_OPMVX               ->List(Y, N, X, uopVEC,      IQT_VEC,FU_VEC, RT_VEC, RT_FIX, RT_X  , N, IS_X,     N, N, N, N, N, M_X  , 0.U, N, N, N, N, N, CSR.N),
+  V_VSETVLI             ->List(Y, N, X, uopVSETVLI,  IQT_INT,FU_VCS, RT_FIX, RT_FIX, RT_X  , N, IS_VLI,   N, N, N, N, N, M_X  , 0.U, N, N, N, Y, N, CSR.N),
+  V_VSETIVLI            ->List(Y, N, X, uopVSETIVLI, IQT_INT,FU_VCS, RT_FIX, RT_X,   RT_X,   N, IS_IVLI,  N, N, N, N, N, M_X  , 0.U, N, N, N, Y, N, CSR.N),
+  V_VSETVL              ->List(Y, N, X, uopVSETVL,   IQT_INT,FU_VCS, RT_FIX, RT_FIX, RT_FIX, N, IS_VL,    N, N, N, N, N, M_X  , 0.U, N, N, N, Y, N, CSR.N)
+>>>>>>> bobcat
   )
 }
 //scalastyle:on
