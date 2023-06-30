@@ -145,6 +145,8 @@ abstract class ExecutionUnit(
     val vxrm            = if (hasVecExe) Input(UInt(2.W)) else null
     val set_vxsat       = if (hasVecExe) Output(Bool()) else null
 
+    val vGenIO = if (hasVecExe) Flipped(new boom.lsu.VGenIO) else null 
+
     val debug_wb_vec_valid = if (hasVecExe) Output(Bool()) else null
     val debug_wb_vec_wdata = if (hasVecExe) Output(UInt((coreParams.vLen*8).W)) else null
     val debug_wb_vec_wmask = if (hasVecExe) Output(UInt((coreParams.vLen*8).W)) else null
@@ -470,6 +472,7 @@ class ALUExeUnit(
     io.debug_wb_vec_valid       := vecexe.io.debug_wb_vec_valid 
     io.debug_wb_vec_wdata       := vecexe.io.debug_wb_vec_wdata 
     io.debug_wb_vec_wmask       := vecexe.io.debug_wb_vec_wmask 
+    io.vGenIO                   <> vecexe.io.vGenIO
 
     vec_busy     := !vecexe.io.req.ready
 

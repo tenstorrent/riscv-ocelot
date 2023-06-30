@@ -116,6 +116,7 @@ class FuncUnitResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundl
   val addr = UInt((vaddrBits+1).W) // only for maddr -> LSU
   val mxcpt = new ValidIO(UInt((freechips.rocketchip.rocket.Causes.all.max+2).W)) //only for maddr->LSU
   val sfence = Valid(new freechips.rocketchip.rocket.SFenceReq) // only for mcalc
+  val last = Bool()
 }
 
 /**
@@ -176,7 +177,7 @@ abstract class FunctionalUnit(
   val io = IO(new Bundle {
     val req    = Flipped(new DecoupledIO(new FuncUnitReq(dataWidth)))
     val resp   = new DecoupledIO(new FuncUnitResp(dataWidth))
-
+    val vGenIO = if (isVecExeUnit) Flipped(new boom.lsu.VGenIO) else null 
     val brupdate = Input(new BrUpdateInfo())
 
     val bypass = Output(Vec(numBypassStages, Valid(new ExeUnitResp(dataWidth))))
@@ -735,6 +736,7 @@ class VecExeUnit(dataWidth: Int)(implicit p: Parameters)
   io.debug_wb_vec_valid              := sv_pipeline.io.debug_wb_vec_valid
   io.debug_wb_vec_wdata              := sv_pipeline.io.debug_wb_vec_wdata
   io.debug_wb_vec_wmask              := sv_pipeline.io.debug_wb_vec_wmask
+  io.vGenIO                          <> sv_pipeline.io.vGenIO 
 
 }
 
