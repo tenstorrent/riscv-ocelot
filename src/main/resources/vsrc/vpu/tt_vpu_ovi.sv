@@ -24,6 +24,13 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                   output logic [13:0] completed_vstart,
                   output logic        completed_illegal,
 
+                  output logic         store_valid,
+                  output logic [511:0] store_data,
+                  input  logic         store_credit,
+
+                  input  logic         memop_sync_end,
+                  output logic         memop_sync_start,
+
                   // Debug signals for cosim checker
                   output logic              debug_wb_vec_valid,
                   output logic [VLEN*8-1:0] debug_wb_vec_wdata,
@@ -41,6 +48,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   localparam LQ_DEPTH_LOG2=$clog2(LQ_DEPTH);
   localparam DATA_REQ_ID_WIDTH=INCL_VEC ? (LQ_DEPTH_LOG2+$clog2(VLEN/8)+2) : LQ_DEPTH_LOG2;
   localparam INCL_FP = 1;
+  localparam STORE_CREDITS = 32;
 
   logic ocelot_read_req;
 
@@ -72,6 +80,126 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic        vcsr_lmulb2_reg;
   logic [39:0] vcsr;
   logic        vcsr_lmulb2;
+
+  // Store logic
+  logic [7:0][VLEN-1:0] store_buffer;
+  logic [7:0] store_buffer_valid;
+  // Indicates if the corresponding entry was sent to the CPU
+  logic [7:0] store_buffer_sent;
+  logic [2:0] store_buffer_wptr;
+  logic [2:0] store_buffer_rptr;
+  logic [1:0] store_fsm_state; // 0: idle, 1: busy, 2: commit
+  logic [1:0] store_fsm_next_state;
+  logic [$clog2(STORE_CREDITS):0] store_credits;
+  logic       vecldst_autogen_store;
+  logic       id_mem_lq_done;
+  logic       id_ex_units_rts;
+  logic [VLEN-1:0] vs3_rddata;
+  // Indicates if there is at least 2 full entries in the store buffer
+  logic       enough_data;
+  logic       store_buffer_full;
+  // This will drive completed.valid
+  logic       store_commit;
+
+  assign enough_data = store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] && 
+                       store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1];
+  always_comb begin
+    store_fsm_next_state = 0;
+    case (store_fsm_state)
+      0: begin
+        if(vecldst_autogen_store)
+          store_fsm_next_state = 1;
+      end
+
+      1: begin
+        if(id_mem_lq_done)
+          store_fsm_next_state = 2;
+        else
+          store_fsm_next_state = 1;
+      end
+
+      2: begin
+        if(memop_sync_end)
+          store_fsm_next_state = 0;
+        else
+          store_fsm_next_state = 2;
+      end
+    endcase
+  end
+
+  always_ff@(posedge clk) begin
+    if(!reset_n) begin
+      store_buffer_wptr <= 0;
+      store_fsm_state <= 0;
+      store_buffer_full <= 0;
+      store_credits <= STORE_CREDITS;
+    end
+    else begin
+      store_fsm_state <= store_fsm_next_state;
+
+      // Reset the store buffer when idle
+      if(store_fsm_state == 0 && !vecldst_autogen_store) begin
+        for(int i=0; i<8; i=i+1) 
+          store_buffer[i] <= 0;
+        store_buffer_full <= 0;
+        store_buffer_valid <= 0;
+        store_buffer_wptr <= 0;
+      end
+      else if(store_fsm_state == 1 || (store_fsm_state == 0 && vecldst_autogen_store)) begin
+        if(id_ex_units_rts) begin
+          store_buffer[store_buffer_wptr] <= vs3_rddata;
+          store_buffer_valid[store_buffer_wptr] <= 1;
+          store_buffer_wptr <= store_buffer_wptr + 1;
+          if(store_buffer_wptr == 7)
+            store_buffer_full <= 1;
+        end
+      end
+    end
+  end
+
+  always_ff@(posedge clk) begin
+    if(!reset_n) begin
+      store_valid <= 0;
+      store_data <= 0;
+      memop_sync_start <= 0;
+      store_commit <= 0;
+      store_buffer_rptr <= 0;
+      store_buffer_sent <= 0;
+    end
+    else begin
+      if(store_fsm_state == 0 && vecldst_autogen_store)
+        memop_sync_start <= 1;
+      else
+        memop_sync_start <= 0;
+
+      if((store_fsm_state == 0 || store_fsm_next_state == 0) && !vecldst_autogen_store) begin
+        store_buffer_rptr <= 0;
+        store_buffer_sent <= 0;
+      end
+      // Bypass the store buffer because we only need to send 1 register
+      else if((store_fsm_state == 1 || store_fsm_state == 0) && id_ex_units_rts && vecldst_autogen_store && id_mem_lq_done && store_buffer_wptr == 0) begin
+        store_valid <= 1;
+        store_data[255:0] <= vs3_rddata;
+      end
+      else if((store_fsm_state == 1 || store_fsm_state == 2) && enough_data && store_credits > 0) begin
+        store_valid <= 1;
+        // little endian
+        store_data[255:0] <= store_buffer[store_buffer_rptr];
+        store_data[511:256] <= store_buffer[store_buffer_rptr+1];
+        store_buffer_sent[store_buffer_rptr] <= 1;
+        store_buffer_sent[store_buffer_rptr+1] <= 1;
+        store_buffer_rptr <= store_buffer_rptr + 2;
+      end
+      else
+        store_valid <= 0;
+
+      // TODO: DJ said check if the LQ is empty...
+      if(store_fsm_state == 2 && memop_sync_end)
+        store_commit <= 1;
+      else
+        store_commit <= 0;
+    end
+  end
 
   // This queue should never overflow, so I'm not going to add phase bits
   // to check if it's full or not.
@@ -193,7 +321,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_rd_data_0('0),
     .i_rd_data_vld_1('0),
     .i_rd_data_resp_id_1('0),
-    .i_rd_data_1('0)
+    .i_rd_data_1('0),
+
+    .o_vecldst_autogen_store(vecldst_autogen_store),
+    .o_id_mem_lq_done(id_mem_lq_done),
+    .o_id_ex_units_rts(id_ex_units_rts),
+    .o_vs3_rddata(vs3_rddata)
   );
 
   assign completed_valid = ocelot_instrn_commit_valid;
