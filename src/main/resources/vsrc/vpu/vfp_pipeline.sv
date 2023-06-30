@@ -57,7 +57,8 @@ module vfp_pipeline #(parameter
    output logic                           o_vecldst_autogen_store,
    output logic                           o_id_mem_lq_done,
    output logic                           o_id_ex_units_rts,
-   output logic [VLEN-1:0]                o_vs3_rddata
+   output logic [VLEN-1:0]                o_vs3_rddata,
+   output logic                           o_lq_empty
 );
 
    localparam                                          FLEN    = 32;
@@ -83,6 +84,7 @@ module vfp_pipeline #(parameter
    logic [LQ_DEPTH-1:0][31:0]    lq_broadside_data;
    logic [LQ_DEPTH-1:0]          lq_broadside_valid;
    logic [LQ_DEPTH-1:0]          lq_broadside_data_valid;
+   logic                         lq_empty;
 
    /////////
    // ID signals
@@ -357,6 +359,7 @@ module vfp_pipeline #(parameter
    assign o_id_mem_lq_done = id_mem_lq_done;
    assign o_id_ex_units_rts = id_ex_units_rts;
    assign o_vs3_rddata = vs3_rddata;
+   assign o_lq_empty = lq_empty;
 
    tt_ex
    #(.INCL_VEC(INCL_VEC),
@@ -653,6 +656,7 @@ module vfp_pipeline #(parameter
       // Trap
       .i_reset_pc               ('0),
       .o_trap                   (  )
+      .o_lq_empty               (lq_empty)
    );
 
    logic [LQ_DEPTH     -1:0] lq_last;
