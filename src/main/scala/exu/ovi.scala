@@ -63,28 +63,6 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
 
 
 
-  vpuModule.io := DontCare
-  vpuModule.io.clk := clock
-  vpuModule.io.reset_n := ~reset.asBool
-  vpuModule.io.issue_valid := reqQueue.io.deq.valid && reqQueue.io.deq.ready
-  vpuModule.io.issue_inst := reqQueue.io.deq.bits.req.uop.inst
-  vpuModule.io.issue_sb_id := sbId
-  vpuModule.io.issue_scalar_opnd := reqQueue.io.deq.bits.req.rs1_data
-  vpuModule.io.issue_vcsr := Cat(
-    0.U(1.W), // vill
-    reqQueue.io.deq.bits.vconfig.vtype.vsew, // vsew
-    reqQueue.io.deq.bits.vconfig.vtype.vlmul_mag, // vlmul
-    reqQueue.io.deq.bits.fcsr_rm, // frm
-    reqQueue.io.deq.bits.vxrm, // vxrm
-    Cat(0.U((15-log2Ceil(vLen+1)).W),
-        reqQueue.io.deq.bits.vconfig.vl), // vl
-    0.U(14.W) // vstart
-  )
-  vpuModule.io.issue_vcsr_lmulb2 := reqQueue.io.deq.bits.vconfig.vtype.vlmul_sign
-  vpuModule.io.dispatch_sb_id := sbId
-  vpuModule.io.dispatch_next_senior := reqQueue.io.deq.valid
-  vpuModule.io.dispatch_kill := 0.B
-
   val respUop = uOpMem.read(vpuModule.io.completed_sb_id)
 
   io := DontCare
@@ -107,9 +85,9 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
 /*
   faking mem sync start
 */
-   val internalMemSyncStart = ShiftRegister(reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq, 10)
+   val internalMemSyncStart = vpuModule.io.memop_sync_start
    val tryDeqVLSIQ = RegInit(false.B)
-   val internalStoreWrite = internalMemSyncStart
+   val internalStoreWrite = vpuModule.io.store_valid
    
 
 /*
@@ -138,15 +116,6 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
 */
 
 /*
-   fake data
-*/
-val fakeData1 = 4.U(64.W)
-val fakeData2 = 3.U(64.W)
-val fakeData3 = 2.U(64.W)
-val fakeData4 = 1.U(64.W)
-val fakeData5 = 0.U(64.W)
-
-/*
   VDB start
 */
   val vdb = Module (new VDB(512, 64, 4))
@@ -158,7 +127,7 @@ val fakeData5 = 0.U(64.W)
   vdb.io.configValid := false.B  
 
   vdb.io.writeValid := internalStoreWrite
-  vdb.io.writeData := Cat(fakeData5, fakeData5, fakeData5, fakeData5, fakeData1, fakeData2, fakeData3, fakeData4)
+  vdb.io.writeData := vpuModule.io.store_data
   vdb.io.sliceSize := 8.U 
   
 
@@ -269,6 +238,30 @@ val vAGen = Module (new VAgen ())
       Fake VGen End
   */
 
+  vpuModule.io := DontCare
+  vpuModule.io.clk := clock
+  vpuModule.io.reset_n := ~reset.asBool
+  vpuModule.io.issue_valid := reqQueue.io.deq.valid && reqQueue.io.deq.ready
+  vpuModule.io.issue_inst := reqQueue.io.deq.bits.req.uop.inst
+  vpuModule.io.issue_sb_id := sbId
+  vpuModule.io.issue_scalar_opnd := reqQueue.io.deq.bits.req.rs1_data
+  vpuModule.io.issue_vcsr := Cat(
+    0.U(1.W), // vill
+    reqQueue.io.deq.bits.vconfig.vtype.vsew, // vsew
+    reqQueue.io.deq.bits.vconfig.vtype.vlmul_mag, // vlmul
+    reqQueue.io.deq.bits.fcsr_rm, // frm
+    reqQueue.io.deq.bits.vxrm, // vxrm
+    Cat(0.U((15-log2Ceil(vLen+1)).W),
+        reqQueue.io.deq.bits.vconfig.vl), // vl
+    0.U(14.W) // vstart
+  )
+  vpuModule.io.issue_vcsr_lmulb2 := reqQueue.io.deq.bits.vconfig.vtype.vlmul_sign
+  vpuModule.io.dispatch_sb_id := sbId
+  vpuModule.io.dispatch_next_senior := reqQueue.io.deq.valid
+  vpuModule.io.dispatch_kill := 0.B
+  vpuModule.io.memop_sync_end := MemSyncEnd
+  vpuModule.io.store_credit := MemCredit
+
 
 
 }
@@ -294,6 +287,11 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
     val completed_vxsat = Output(Bool())
     val completed_vstart = Output(UInt(14.W))
     val completed_illegal = Output(Bool())
+    val store_valid = Output(Bool())
+    val store_data = Output(UInt(512.W))
+    val store_credit = Input(Bool())
+    val memop_sync_end = Input(Bool())
+    val memop_sync_start = Output(Bool())
     val debug_wb_vec_valid = Output(Bool())
     val debug_wb_vec_wdata = Output(UInt((vLen * 8).W))
     val debug_wb_vec_wmask = Output(UInt(8.W))
