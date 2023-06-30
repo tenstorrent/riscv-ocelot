@@ -249,7 +249,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   // Vector Execution Unit
   val vec_exe_unit = if (usingVector) exe_units.vec_exe_unit else null
   val vec_exe_resp = if (usingVector) vec_exe_unit.io.iresp else null
-
+  
   //-------------------------------------------------------------
   // Uarch Hardware Performance Events (HPEs)
 
@@ -291,6 +291,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   if (usingVector) {
     vec_exe_unit.io.vconfig := csr.io.vector.get.vconfig
     vec_exe_unit.io.vxrm := csr.io.vector.get.vxrm
+    io.lsu.VGen <> vec_exe_unit.io.vGenIO 
   }
 
   //****************************************
