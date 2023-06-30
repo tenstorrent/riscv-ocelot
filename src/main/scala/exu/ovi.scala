@@ -80,7 +80,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
         reqQueue.io.deq.bits.vconfig.vl), // vl
     0.U(14.W) // vstart
   )
-  vpuModule.io.issue_vcsr_lmulb2 := 0.B
+  vpuModule.io.issue_vcsr_lmulb2 := reqQueue.io.deq.bits.vconfig.vtype.vlmul(2)
   vpuModule.io.dispatch_sb_id := sbId
   vpuModule.io.dispatch_next_senior := reqQueue.io.deq.valid
   vpuModule.io.dispatch_kill := 0.B
