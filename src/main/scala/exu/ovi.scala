@@ -139,23 +139,30 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
 val vAGen = Module (new VAgen ())
 
   vAGen.io.configValid := false.B 
-//  vAGen.io.startAddr := "h2001000".U (64.W)
+
   vAGen.io.startAddr := DontCare
   vAGen.io.sliceSize := 1.U 
   vAGen.io.vl := 4.U
   vAGen.io.pop := false.B  
   /*
-      Fake VGen Start
+      Decode Start
   */
-//  io.vGenIO.last := DontCare
+
   io.vGenIO.req.valid := false.B 
   io.vGenIO.req.bits := DontCare
-//  val fakeVGenCounter = RegInit(0.U(2.W))
+
   val vGenEnable  = RegInit(false.B)
   val vGenHold = Reg(new EnhancedFuncUnitReq(xLen, vLen))
   val sbIdHold = RegInit(0.U)
-//when (reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq && !vGenEnable) {
-//  when (vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && vLSIQueue.io.deq.bits.req.uop.uses_stq && !vGenEnable) {
+  val vDBcount = RegInit(0.U)
+  val vDBud = Cat (vpuModule.io.store_valid, vdb.io.release)
+  when (vDBud === 1.U) {
+    vDBcount := vDBcount - 1.U
+  }.elsewhen (vDBud === 2.U) {
+    vDBcount := vDBcount + 1.U 
+  }
+
+
   when (newVGenConfig && !vGenEnable) {
     vGenEnable := true.B 
     vGenHold.req.uop := vLSIQueue.io.deq.bits.req.uop
@@ -183,7 +190,7 @@ val vAGen = Module (new VAgen ())
 
   
 
-  io.vGenIO.req.valid := vGenEnable
+  io.vGenIO.req.valid := vGenEnable && vDBcount =/= 0.U 
   io.vGenIO.req.bits.uop := vGenHold.req.uop
   io.vGenIO.req.bits.data := vdb.io.outData 
   io.vGenIO.req.bits.last := false.B 
@@ -194,28 +201,7 @@ val vAGen = Module (new VAgen ())
   val MemCredit = vdb.io.release 
   val MemVstart = 0.U
 
-/*
-  when (fakeVGenCounter === 0.U) {
-    io.vGenIO.req.bits.addr := "h2001000".U 
-//    io.vGenIO.req.bits.data := 1.U 
-    
 
-  
-  }.elsewhen (fakeVGenCounter === 1.U){
-    io.vGenIO.req.bits.addr := "h2001008".U 
- //   io.vGenIO.req.bits.data := 2.U 
-
-  }.elsewhen (fakeVGenCounter === 2.U){
-    io.vGenIO.req.bits.addr := "h2001010".U 
-//    io.vGenIO.req.bits.data := 3.U 
-
-  }.otherwise {
-    io.vGenIO.req.bits.addr := "h2001018".U
-//    io.vGenIO.req.bits.data := 4.U
-    io.vGenIO.req.bits.last := true.B
-     
-  }
-  */
   io.vGenIO.req.bits.last := vAGen.io.last 
   when (io.vGenIO.req.valid && io.vGenIO.req.ready) {
     vdb.io.pop := true.B 
@@ -224,19 +210,9 @@ val vAGen = Module (new VAgen ())
       vGenEnable := false.B         
       vdb.io.last := true.B
     }
-    /*
-    when (fakeVGenCounter === 3.U) {
-       fakeVGenCounter := 0.U 
-       vGenEnable := false.B         
-       vdb.io.last := true.B
-    }.otherwise {
-       fakeVGenCounter := fakeVGenCounter + 1.U    
-         
-    }
-   */ 
   }
   /*
-      Fake VGen End
+      Decode End
   */
 
   vpuModule.io := DontCare
