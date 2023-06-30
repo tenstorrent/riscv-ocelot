@@ -70,14 +70,14 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   vpuModule.io.issue_vcsr := Cat(
     0.U(1.W), // vill
     reqQueue.io.deq.bits.vconfig.vtype.vsew, // vsew
-    reqQueue.io.deq.bits.vconfig.vtype.vlmul(1,0), // vlmul
+    reqQueue.io.deq.bits.vconfig.vtype.vlmul_mag, // vlmul
     reqQueue.io.deq.bits.fcsr_rm, // frm
     reqQueue.io.deq.bits.vxrm, // vxrm
     Cat(0.U((15-log2Ceil(vLen+1)).W),
         reqQueue.io.deq.bits.vconfig.vl), // vl
     0.U(14.W) // vstart
   )
-  vpuModule.io.issue_vcsr_lmulb2 := reqQueue.io.deq.bits.vconfig.vtype.vlmul(2)
+  vpuModule.io.issue_vcsr_lmulb2 := reqQueue.io.deq.bits.vconfig.vtype.vlmul_sign
   vpuModule.io.dispatch_sb_id := sbId
   vpuModule.io.dispatch_next_senior := reqQueue.io.deq.valid
   vpuModule.io.dispatch_kill := 0.B
