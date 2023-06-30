@@ -329,7 +329,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_vs3_rddata(vs3_rddata)
   );
 
-  assign completed_valid = ocelot_instrn_commit_valid;
+  assign completed_valid = ocelot_instrn_commit_valid || store_commit;
   assign completed_sb_id = sbid_queue[sbid_queue_rptr];
   assign completed_fflags = ocelot_instrn_commit_fflags;
   assign completed_dest_reg = ocelot_instrn_commit_data[63:0];
