@@ -52,7 +52,12 @@ module vfp_pipeline #(parameter
    input  logic [63:0]                    i_rd_data_0          ,
    input  logic                           i_rd_data_vld_1      ,
    input  logic [DATA_REQ_ID_WIDTH-1:0]   i_rd_data_resp_id_1  , 
-   input  logic [63:0]                    i_rd_data_1          
+   input  logic [63:0]                    i_rd_data_1          ,
+
+   output logic                           o_vecldst_autogen_store,
+   output logic                           o_id_mem_lq_done,
+   output logic                           o_id_ex_units_rts,
+   output logic [VLEN-1:0]                o_vs3_rddata
 );
 
    localparam                                          FLEN    = 32;
@@ -348,6 +353,10 @@ module vfp_pipeline #(parameter
    assign ex_vec_csr.v_lmul =  i_csr_vlmul;
    assign ex_vec_csr.v_vxrm =  i_csr_vxrm;
    assign ex_vec_csr.v_vl   =  i_csr_vl;
+   assign o_vecldst_autogen_store = id_ex_vecldst_autogen.store;
+   assign o_id_mem_lq_done = id_mem_lq_done;
+   assign o_id_ex_units_rts = id_ex_units_rts;
+   assign o_vs3_rddata = vs3_rddata;
 
    tt_ex
    #(.INCL_VEC(INCL_VEC),

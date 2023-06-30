@@ -43,7 +43,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   val reqQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), 2))
   val uOpMem = SyncReadMem(32, new MicroOp())
   val vpuModule = Module(new tt_vpu_ovi(vLen))
-  val maxIssueCredit = 8
+  val maxIssueCredit = 16
   val issueCreditCnt = RegInit(maxIssueCredit.U(log2Ceil(maxIssueCredit + 1).W))
   issueCreditCnt := issueCreditCnt + vpuModule.io.issue_credit - vpuModule.io.issue_valid
 
