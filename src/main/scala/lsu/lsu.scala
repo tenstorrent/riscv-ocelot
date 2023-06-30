@@ -68,10 +68,18 @@ class LSUExeIO(implicit p: Parameters) extends BoomBundle()(p)
   val fresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen+1)) // TODO: Should this be fLen?
 }
 
+class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
+  with HasBoomUOP
+{
+  val data = Bits(dataWidth.W)
+  val vectorDone = Bool()
+}
+
 class VGenIO(implicit p: Parameters) extends BoomBundle()(p)
 {
   // The "resp" of the maddrcalc is really a "req" to the LSU
   val req       = Flipped(new DecoupledIO(new FuncUnitResp(xLen)))
+  val resp    = new ValidIO(new VGenResp(xLen))
 //  val last      = Bool()
   // Send load data to regfiles
 //  val iresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen))
@@ -264,6 +272,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val dsq_tlb_head     = Reg(UInt(dsqAddrSz.W))
  // val dsq_execute_save = Reg(Valid(UInt(stqAddrSz.W)))
   val dsq_finished     = Reg(Bool())
+  
+  io.core.VGen.resp := DontCare 
+  io.core.VGen.resp.bits.vectorDone := dsq_finished
+  io.core.VGen.resp.valid := dsq_finished
 
   // If we got a mispredict, the tail will be misaligned for 1 extra cycle
   assert (io.core.brupdate.b2.mispredict ||
