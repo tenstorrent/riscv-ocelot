@@ -908,6 +908,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       }.elsewhen (dsq_finished) {
         stq(stq_execute_head).bits.succeeded := true.B 
         dsq_finished := false.B 
+         stq_execute_head                     := WrapInc(stq_execute_head, numStqEntries)
       }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded){                //KYnew, revisit later
         dmem_req(w).valid := true.B
         dmem_req(w).bits.addr := dsq_commit_e.bits.addr.bits
