@@ -209,7 +209,8 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
 
   val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
   val youngest_stq_idx    = UInt(stqAddrSz.W) // index of the oldest store younger than us
-
+  val youngest_vst_idx    = UInt(stqAddrSz.W) // index of youngest vector store older than us
+  val youngest_vst_count  = UInt((stqAddrSz + 1).W)
   val forward_std_val     = Bool()
   val forward_stq_idx     = UInt(stqAddrSz.W) // Which store did we get the store-load forward from?
 
@@ -261,7 +262,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val stq_commit_head  = Reg(UInt(stqAddrSz.W)) // point to next store to commit
   val stq_execute_head = Reg(UInt(stqAddrSz.W)) // point to next store to execute
 //  val stq_execute_save = Reg(Valid(UInt(stqAddrSz.W)))
-   
+  val vstCountWidth = stqAddrSz + 1
+  val youngest_vst     = Reg(UInt(stqAddrSz.W))
+  val vst_count        = Reg(UInt((vstCountWidth).W))
+  val vstExist         = Reg(Bool())
 
   // trying to detach the bundle so that we can move things around in the future
 //  val ioVGen           = io.core.VGen
@@ -373,6 +377,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(ld_enq_idx).bits.order_fail      := false.B
       ldq(ld_enq_idx).bits.observed        := false.B
       ldq(ld_enq_idx).bits.forward_std_val := false.B
+      when (vstExist) {
+        ldq(ld_enq_idx).bits.youngest_vst_count := vst_count
+        ldq(ld_enq_idx).bits.youngest_vst_idx := youngest_vst
+      }
 
       assert (ld_enq_idx === io.core.dis_uops(w).bits.ldq_idx, "[lsu] mismatch enq load tag.")
       assert (!ldq(ld_enq_idx).valid, "[lsu] Enqueuing uop is overwriting ldq entries")
@@ -389,6 +397,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       when (io.core.dis_uops(w).bits.is_vec) {
         stq(st_enq_idx).bits.addr.valid := true.B
         stq(st_enq_idx).bits.addr_is_virtual := false.B
+        youngest_vst := st_enq_idx
+        vst_count := vst_count + 1.U
+        vstExist := true.B 
       }
 
       assert (st_enq_idx === io.core.dis_uops(w).bits.stq_idx, "[lsu] mismatch enq store tag.")
@@ -1792,6 +1803,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dsq_tail := 0.U
       dsq_execute_head := 0.U 
       dsq_tlb_head := 0.U
+      youngest_vst := 0.U 
+      vst_count := 0.U
+      vstExist := false.B 
    //   dsq_execute_save.bits := 0.U 
    //   dsq_execute_save.valid := false.B 
       dsq_finished := false.B 
