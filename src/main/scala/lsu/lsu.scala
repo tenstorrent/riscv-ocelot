@@ -739,7 +739,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   //val midReq = Vec(memWidth, new TLBReq(log2Ceil(coreDataBytes)))
 
 
-  for (w <- 0 until memWidth+1) {
+  for (w <- 0 until memWidth+2) {
     if (w < memWidth){
     dtlb.io.req(w).valid            := exe_tlb_valid(w)
     dtlb.io.req(w).bits.vaddr       := exe_tlb_vaddr(w)
@@ -749,12 +749,21 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dtlb.io.req(w).bits.v           := io.ptw.status.v
     dtlb.io.req(w).bits.prv         := io.ptw.status.prv
     }
-    else {
+    else if (w == memWidth) {
       dtlb.io.req(w).valid := dsq_tlb_e.valid && (dsq_tlb_e.bits.addr_is_virtual || !dsq_tlb_e.bits.addr.valid) 
       dtlb.io.req(w).bits.vaddr       := dsq_tlb_e.bits.addr.bits
       dtlb.io.req(w).bits.size        := dsq_tlb_e.bits.uop.mem_size
       dtlb.io.req(w).bits.cmd         := dsq_tlb_e.bits.uop.mem_cmd
       dtlb.io.req(w).bits.passthrough := false.B
+      dtlb.io.req(w).bits.v           := io.ptw.status.v
+      dtlb.io.req(w).bits.prv         := io.ptw.status.prv
+    }
+    else {
+      dtlb.io.req(w).valid := DontCare 
+      dtlb.io.req(w).bits.vaddr       := DontCare
+      dtlb.io.req(w).bits.size        := DontCare
+      dtlb.io.req(w).bits.cmd         := DontCare
+      dtlb.io.req(w).bits.passthrough := false.B 
       dtlb.io.req(w).bits.v           := io.ptw.status.v
       dtlb.io.req(w).bits.prv         := io.ptw.status.prv
     }
