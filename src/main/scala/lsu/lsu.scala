@@ -416,7 +416,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   dsq_full = WrapInc(dsq_tail, numDsqEntries) === dsq_head
   io.core.VGen.req.ready    := !dsq_full
 
-  val newDsqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid
+  val newDsqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_stq
 
   dsq_tail := Mux(newDsqEntry, WrapInc(dsq_tail, numDsqEntries), dsq_tail)
 
@@ -434,6 +434,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dsq(dsq_tail).bits.sent := false.B 
 
   }
+
+  val newDlqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_ldq
 
   //-------------------------------------------------------------
   //-------------------------------------------------------------

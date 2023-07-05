@@ -99,10 +99,10 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   val sbIdQueue = Module(new Queue(UInt(5.W), 2))
 
   // this needs to be changed in the future to include load, just keep it this way for now
-  vLSIQueue.io.enq.valid := reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq
+  vLSIQueue.io.enq.valid := reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
   vLSIQueue.io.enq.bits := reqQueue.io.deq.bits
   vLSIQueue.io.deq.ready := internalMemSyncStart || tryDeqVLSIQ
-  sbIdQueue.io.enq.valid := reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq
+  sbIdQueue.io.enq.valid := reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
   sbIdQueue.io.enq.bits := sbId
   sbIdQueue.io.deq.ready := internalMemSyncStart || tryDeqVLSIQ
   when (internalMemSyncStart && !vLSIQueue.io.deq.valid) {
@@ -111,7 +111,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
     tryDeqVLSIQ := false.B 
   }
   reqQueue.io.deq.ready := issueCreditCnt =/= 0.U && vLSIQueue.io.enq.ready
-  val newVGenConfig = vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && vLSIQueue.io.deq.bits.req.uop.uses_stq 
+  val newVGenConfig = vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && (vLSIQueue.io.deq.bits.req.uop.uses_stq || vLSIQueue.io.deq.bits.req.uop.uses_ldq)
 /*
   vLSIQ end
 */
@@ -128,7 +128,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   vdb.io.configValid := false.B  
 
   vdb.io.writeValid := internalStoreWrite
-  vdb.io.writeData := vpuModule.io.store_data
+  vdb.io.writeData := Mux(io.vGenIO.req.bits.uop.uses_stq, vpuModule.io.store_data, 0.U)
   vdb.io.sliceSize := 8.U 
   
 
@@ -204,11 +204,11 @@ val vAGen = Module (new VAgen ())
 
   io.vGenIO.req.bits.last := vAGen.io.last 
   when (io.vGenIO.req.valid && io.vGenIO.req.ready) {
-    vdb.io.pop := true.B 
+    vdb.io.pop := io.vGenIO.req.bits.uop.uses_stq
     vAGen.io.pop := true.B 
     when (vAGen.io.last) {
       vGenEnable := false.B         
-      vdb.io.last := true.B
+      vdb.io.last := io.vGenIO.req.bits.uop.uses_stq
     }
   }
   /*
