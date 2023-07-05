@@ -141,6 +141,8 @@ val vAGen = Module (new VAgen ())
   vAGen.io.configValid := false.B 
 
   vAGen.io.startAddr := DontCare
+  vAGen.io.stride := DontCare
+  vAGen.io.isStride := DontCare 
   vAGen.io.sliceSize := 1.U 
   vAGen.io.vl := 4.U
   vAGen.io.pop := false.B  
@@ -170,7 +172,8 @@ val vAGen = Module (new VAgen ())
     vdb.io.configValid := true.B 
     vAGen.io.configValid := true.B
     vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
-    vAGen.io.startAddr := vLSIQueue.io.deq.bits.req.rs1_data 
+    vAGen.io.startAddr := vLSIQueue.io.deq.bits.req.rs1_data
+    vAGen.io.stride := vLSIQueue.io.deq.bits.req.rs2_data 
     // this is fine for now, change later for index store
     val instElemSize = vLSIQueue.io.deq.bits.req.uop.inst(14, 12)
     when (instElemSize === 0.U) {
@@ -185,6 +188,12 @@ val vAGen = Module (new VAgen ())
     }.otherwise{
        vdb.io.sliceSize := 8.U 
        vAGen.io.sliceSize := 8.U
+    }
+    val instMop = vLSIQueue.io.deq.bits.req.uop.inst(27, 26)
+    when (instMop === 0.U) {
+      vAGen.io.isStride := false.B 
+    }.otherwise {
+      vAGen.io.isStride := true.B 
     }
   }
 
@@ -403,6 +412,8 @@ class VAgen(implicit p: Parameters) extends Module {
     val vl = Input(UInt(9.W))
     val configValid = Input(Bool())
     val startAddr = Input(UInt(64.W))
+    val stride = Input(UInt(64.W))
+    val isStride = Input(Bool())
     val pop = Input(Bool())
     val outAddr = Output(UInt(40.W))
     val last = Output(Bool())
@@ -413,8 +424,10 @@ class VAgen(implicit p: Parameters) extends Module {
 
   val currentIndex = Reg(UInt(9.W))
   val currentAddr  = Reg(UInt(64.W))
-
+  val stride  = Reg(UInt(64.W))
   val working = RegInit(false.B)
+  val isStride = Reg(Bool())
+  
 
   io.outAddr := currentAddr(39, 0)
 
@@ -423,6 +436,8 @@ class VAgen(implicit p: Parameters) extends Module {
     vlHold := io.vl - 1.U
     currentIndex := 0.U 
     currentAddr := io.startAddr
+    isStride := io.isStride
+    stride := io.stride 
     working := true.B 
   }
   
@@ -433,8 +448,12 @@ class VAgen(implicit p: Parameters) extends Module {
       working := false.B 
       currentIndex := 0.U
     }.otherwise {
-      currentIndex := currentIndex + 1.U 
-      currentAddr := currentAddr + sliceSizeHold
+      currentIndex := currentIndex + 1.U
+      when (isStride) {
+          currentAddr := currentAddr + stride 
+      }.otherwise { 
+          currentAddr := currentAddr + sliceSizeHold
+      }    
     }
   }
 
