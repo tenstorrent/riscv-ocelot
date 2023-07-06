@@ -543,8 +543,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // Determine what can fire
 
   // Can we fire a incoming load
-  val can_fire_load_incoming = widthMap(w => exe_req(w).valid && exe_req(w).bits.uop.ctrl.is_load && 
-                                        !(vstExist && stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.isVector
+  val can_fire_load_incoming = widthMap(w => exe_req(w).valid && exe_req(w).bits.uop.ctrl.is_load)  
+  val load_incoming_no_vst   =  widthMap(w => !(vstExist && stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.isVector
                                                    && stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.vst_count === ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_count
                                                    && !stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.succeeded))
 
@@ -578,8 +578,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                 RegNext(dtlb.io.miss_rdy)                     &&
                                 !store_needs_order                            &&
                                 (w == memWidth-1).B                           && // TODO: Is this best scheduling?
-                                !ldq_retry_e.bits.order_fail)                 && 
-                                !(vstExist && stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.isVector
+                                !ldq_retry_e.bits.order_fail))                 
+  val load_retry_no_vst  = widthMap (w => !(vstExist && stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.isVector
                                   && stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.vst_count === ldq(ldq_retry_idx).bits.youngest_vst_count
                                   && !stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.succeeded))
 
@@ -605,7 +605,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                 (stq_commit_e.bits.committed || ( stq_commit_e.bits.uop.is_amo      &&
                                                                   stq_commit_e.bits.addr.valid      &&
                                                                  !stq_commit_e.bits.addr_is_virtual &&
-                                                                  stq_commit_e.bits.data.valid) || (stq_commit_e.bits.isVector && (stq_commit_head === stq_execute_head)))))
+                                                                  stq_commit_e.bits.data.valid) || (stq_commit_e.bits.isVector && (stq_head === stq_execute_head)))))
 
   // Can we wakeup a load that was nack'd
   val block_load_wakeup = WireInit(false.B)
@@ -623,10 +623,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                               (w == memWidth-1).B                                      &&
                               (!ldq_wakeup_e.bits.addr_is_uncacheable || (io.core.commit_load_at_rob_head &&
                                                                           ldq_head === ldq_wakeup_idx &&
-                                                                          ldq_wakeup_e.bits.st_dep_mask.asUInt === 0.U)) && 
-                              !(vstExist && stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.isVector
+                                                                          ldq_wakeup_e.bits.st_dep_mask.asUInt === 0.U)))) 
+
+  val load_wakeup_no_vst =   widthMap (w => !(vstExist && stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.isVector
                                 && stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.vst_count === ldq(ldq_wakeup_idx).bits.youngest_vst_count
-                                && !stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.succeeded)))
+                                && !stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.succeeded))
 
   // Can we fire an incoming hellacache request
   val can_fire_hella_incoming  = WireInit(widthMap(w => false.B)) // This is assigned to in the hellashim ocntroller
@@ -678,7 +679,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     will_fire_store_commit  (w) := lsu_sched(can_fire_store_commit  (w) , false, true , false, false) //     , DC
 
 
-   // assert(!(exe_req(w).valid && !(will_fire_load_incoming(w) || will_fire_stad_incoming(w) || will_fire_sta_incoming(w) || will_fire_std_incoming(w) || will_fire_sfence(w))))
+   assert(!(exe_req(w).valid && !(will_fire_load_incoming(w) || will_fire_stad_incoming(w) || will_fire_sta_incoming(w) || will_fire_std_incoming(w) || will_fire_sfence(w))))
 
     when (will_fire_load_wakeup(w)) {
       block_load_mask(ldq_wakeup_idx)           := true.B
@@ -907,14 +908,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
     io.dmem.s1_kill(w) := false.B
 
-    when (will_fire_load_incoming(w)) {
+    when (will_fire_load_incoming(w) && load_incoming_no_vst(w)) {
       dmem_req(w).valid      := !exe_tlb_miss(w) && !exe_tlb_uncacheable(w)
       dmem_req(w).bits.addr  := exe_tlb_paddr(w)
       dmem_req(w).bits.uop   := exe_tlb_uop(w)
 
       s0_executing_loads(ldq_incoming_idx(w)) := dmem_req_fire(w)
       assert(!ldq_incoming_e(w).bits.executed)
-    } .elsewhen (will_fire_load_retry(w)) {
+    } .elsewhen (will_fire_load_retry(w) && load_retry_no_vst(w)) {
       dmem_req(w).valid      := !exe_tlb_miss(w) && !exe_tlb_uncacheable(w)
       dmem_req(w).bits.addr  := exe_tlb_paddr(w)
       dmem_req(w).bits.uop   := exe_tlb_uop(w)
@@ -956,7 +957,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       }.otherwise{
         dmem_req(w).valid  := false.B                        //KYnew, placeholder
       }
-    } .elsewhen (will_fire_load_wakeup(w)) {
+    } .elsewhen (will_fire_load_wakeup(w) && load_wakeup_no_vst (w)) {
       dmem_req(w).valid      := true.B
       dmem_req(w).bits.addr  := ldq_wakeup_e.bits.addr.bits
       dmem_req(w).bits.uop   := ldq_wakeup_e.bits.uop
@@ -1694,7 +1695,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     stq(stq_head).bits.data.valid := false.B
     stq(stq_head).bits.succeeded  := false.B
     stq(stq_head).bits.committed  := false.B
-
+    stq(stq_head).bits.isVector  := false.B
     stq_head := WrapInc(stq_head, numStqEntries)
     when (stq(stq_head).bits.uop.is_fence)
     {
