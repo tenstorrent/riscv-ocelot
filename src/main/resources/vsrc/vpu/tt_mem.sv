@@ -131,8 +131,8 @@ module tt_mem #( parameter
 
    // Misc
    input [31:0] 			i_reset_pc,
-   output reg 				o_trap
-   output logic       o_lq_empty;
+   output reg 				o_trap,
+   output logic       o_lq_empty
 
 );
 

@@ -128,7 +128,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   vdb.io.configValid := false.B  
 
   vdb.io.writeValid := internalStoreWrite
-  vdb.io.writeData := Mux(io.vGenIO.req.bits.uop.uses_stq, vpuModule.io.store_data, 0.U)
+  vdb.io.writeData := vpuModule.io.store_data
   vdb.io.sliceSize := 8.U 
   
 
@@ -201,15 +201,6 @@ val vAGen = Module (new VAgen ())
 
   io.vGenIO.req.valid := vGenEnable && vDBcount =/= 0.U 
   io.vGenIO.req.bits.uop := vGenHold.req.uop
-  // hardcoded for store fixing, change later
-  io.vGenIO.req.bits.uop.uopc := 2.U
-  io.vGenIO.req.bits.uop.fu_code := 516.U
-  io.vGenIO.req.bits.uop.ctrl.fcn_dw := false.B
-  io.vGenIO.req.bits.uop.iw_state := 0.U 
-  io.vGenIO.req.bits.uop.mem_signed := true.B 
-  // ftq_idx, prs1, prs2, prs2_busy, stale_pdst, mem_signed
-  // ldst, lrs1, lrs2, lrs3, lrs2_rtype, s1_kill 
-  // hardcode end
   io.vGenIO.req.bits.data := vdb.io.outData 
   io.vGenIO.req.bits.last := false.B 
   io.vGenIO.req.bits.addr := vAGen.io.outAddr
