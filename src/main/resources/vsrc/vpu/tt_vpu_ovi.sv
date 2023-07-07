@@ -100,6 +100,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic       store_buffer_full;
   // This will drive completed.valid
   logic       store_commit;
+  logic       lq_empty;
 
   assign enough_data = store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] && 
                        store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1];
@@ -107,8 +108,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     store_fsm_next_state = 0;
     case (store_fsm_state)
       0: begin
-        if(vecldst_autogen_store)
-          store_fsm_next_state = 1;
+        if(vecldst_autogen_store) begin
+          if(id_mem_lq_done)
+            store_fsm_next_state = 2;
+          else
+            store_fsm_next_state = 1;
+        end
       end
 
       1: begin
@@ -120,9 +125,16 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
       2: begin
         if(memop_sync_end)
-          store_fsm_next_state = 0;
+          store_fsm_next_state = 3;
         else
           store_fsm_next_state = 2;
+      end
+
+      3: begin
+        if(lq_empty)
+          store_fsm_next_state = 0;
+        else
+          store_fsm_next_state = 3;
       end
     endcase
   end
@@ -193,8 +205,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       else
         store_valid <= 0;
 
-      // TODO: DJ said check if the LQ is empty...
-      if(store_fsm_state == 2 && memop_sync_end)
+      if(store_fsm_state == 3 && lq_empty)
         store_commit <= 1;
       else
         store_commit <= 0;
@@ -326,7 +337,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_vecldst_autogen_store(vecldst_autogen_store),
     .o_id_mem_lq_done(id_mem_lq_done),
     .o_id_ex_units_rts(id_ex_units_rts),
-    .o_vs3_rddata(vs3_rddata)
+    .o_vs3_rddata(vs3_rddata),
+    .o_lq_empty(lq_empty)
   );
 
   assign completed_valid = ocelot_instrn_commit_valid || store_commit;
