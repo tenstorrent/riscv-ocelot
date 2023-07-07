@@ -108,8 +108,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     store_fsm_next_state = 0;
     case (store_fsm_state)
       0: begin
-        if(vecldst_autogen_store)
-          store_fsm_next_state = 1;
+        if(vecldst_autogen_store) begin
+          if(id_mem_lq_done)
+            store_fsm_next_state = 2;
+          else
+            store_fsm_next_state = 1;
+        end
       end
 
       1: begin
