@@ -73,12 +73,26 @@ class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
 {
   val data = Bits(dataWidth.W)
   val vectorDone = Bool()
+  val elemID = Bits(8.W)
+  val vRegID = Bits(5.W)
+  val sbId = Bits(5.W)
+  val strideDir = Bool()
+}
+
+class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
+  with HasBoomUOP
+{
+  val elemID = Bits(8.W)
+  val vRegID = Bits(5.W)
+  val sbId = Bits(5.W)
+  val strideDir = Bool()
 }
 
 class VGenIO(implicit p: Parameters) extends BoomBundle()(p)
 {
   // The "resp" of the maddrcalc is really a "req" to the LSU
   val req       = Flipped(new DecoupledIO(new FuncUnitResp(xLen)))
+  val reqHelp   = Flipped (new ValidIO(new VGenReqHelp(0)))
   val resp    = new ValidIO(new VGenResp(xLen))
 //  val last      = Bool()
   // Send load data to regfiles
@@ -232,8 +246,10 @@ class DLQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val succeeded           = Bool()
   val last                = Bool()
   val sent                = Bool()
-  val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
-  val youngest_stq_idx    = UInt(stqAddrSz.W) // index of the oldest store younger than us
+  val elemID = Bits(8.W)
+  val vRegID = Bits(5.W)
+//  val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
+//  val youngest_stq_idx    = UInt(stqAddrSz.W) // index of the oldest store younger than us
 }
 
 class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
@@ -313,6 +329,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.core.VGen.resp := DontCare 
   io.core.VGen.resp.bits.vectorDone := dsq_finished || dlq_finished 
   io.core.VGen.resp.valid := dsq_finished || dlq_finished
+  io.core.VGen.resp.bits.elemID := DontCare 
+  io.core.VGen.resp.bits.vRegID := DontCare
+  io.core.VGen.resp.bits.sbId := DontCare
+  io.core.VGen.resp.bits.strideDir := DontCare 
 
   // If we got a mispredict, the tail will be misaligned for 1 extra cycle
   assert (io.core.brupdate.b2.mispredict ||

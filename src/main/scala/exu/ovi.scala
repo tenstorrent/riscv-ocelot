@@ -130,7 +130,13 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   vdb.io.writeValid := internalStoreWrite
   vdb.io.writeData := vpuModule.io.store_data
   vdb.io.sliceSize := 8.U 
-  
+
+ val vIdGen = Module (new VIdGen(32, 8))
+ vIdGen.io.configValid := false.B 
+ vIdGen.io.startID := DontCare
+ vIdGen.io.startVD := DontCare  
+ vIdGen.io.pop := DontCare
+ vIdGen.io.sliceSize := DontCare 
 
 /*
    VDB end
@@ -152,6 +158,8 @@ val vAGen = Module (new VAgen ())
 
   io.vGenIO.req.valid := false.B 
   io.vGenIO.req.bits := DontCare
+  io.vGenIO.reqHelp.valid := false.B
+  io.vGenIO.reqHelp.bits := DontCare 
 
   val vGenEnable  = RegInit(false.B)
   val vGenHold = Reg(new EnhancedFuncUnitReq(xLen, vLen))
@@ -169,14 +177,18 @@ val vAGen = Module (new VAgen ())
     vGenEnable := true.B 
     vGenHold.req.uop := vLSIQueue.io.deq.bits.req.uop
     sbIdHold := sbIdQueue.io.deq.bits 
-    vdb.io.configValid := true.B 
+    vdb.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_stq
+    vIdGen.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_ldq 
     vAGen.io.configValid := true.B
     vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
     vAGen.io.startAddr := vLSIQueue.io.deq.bits.req.rs1_data
     vAGen.io.stride := vLSIQueue.io.deq.bits.req.rs2_data 
+    val strideDirHold = RegInit(true.B)
     // this is fine for now, change later for index store
     val instElemSize = vLSIQueue.io.deq.bits.req.uop.inst(14, 12)
     val vldDest = vLSIQueue.io.deq.bits.req.uop.inst(11, 7)
+    strideDirHold := vLSIQueue.io.deq.bits.req.rs2_data(31)
+    
     when (instElemSize === 0.U) {
       vdb.io.sliceSize := 1.U
       vAGen.io.sliceSize := 1.U 
@@ -211,6 +223,11 @@ val vAGen = Module (new VAgen ())
   val MemCredit = vdb.io.release 
   val MemVstart = 0.U
 
+  val MEMLoadValid = WireInit(false.B)
+  val MEMLoadData = WireInit(0.U(512.W))
+  val MEMSeqId    = WireInit(0.U(34.W))
+
+
 
   io.vGenIO.req.bits.last := vAGen.io.last 
   when (io.vGenIO.req.valid && io.vGenIO.req.ready) {
@@ -221,6 +238,8 @@ val vAGen = Module (new VAgen ())
       vdb.io.last := io.vGenIO.req.bits.uop.uses_stq
     }
   }
+
+  
   /*
       Decode End
   */
@@ -460,3 +479,50 @@ class VAgen(implicit p: Parameters) extends Module {
 
 
 }
+
+// M is max number of byte per VLEN (32), N is max number of byte per memory interface (8) 
+class VIdGen(val M: Int, val N: Int)(implicit p: Parameters) extends Module {
+  require(isPow2(M), "M must be a power of 2")
+  require(isPow2(N), "N must be a power of 2")
+  require(M >= N, "M must be greater than or equal to N")
+  require(M % 8 == 0, "M must be a multiple of 8")
+  require(N % 8 == 0, "N must be a multiple of 8")
+  val S = log2Ceil(N + 1)
+  val I = log2Ceil(M) + 3
+  val K = log2Ceil(M)
+  
+
+  val io = IO(new Bundle {
+    val configValid = Input(Bool())
+    val startID = Input(UInt(I.W))
+    val startVD = Input(UInt(5.W))
+    val pop = Input(Bool())
+    val sliceSize = Input(UInt(S.W))
+    val outID = Output(UInt(I.W))
+    val outVD = Output(UInt(5.W))
+  }) 
+
+  val currentID = RegInit(0.U(I.W))
+  val currentVD = RegInit(0.U(5.W))
+  val count = RegInit(0.U(S.W))
+  val step = RegInit(0.U(S.W))
+
+  when (io.configValid) {
+    currentID := io.startID
+    currentVD := io.startVD
+    count := 0.U  // for now
+    step := io.sliceSize
+  }
+  io.outID := currentID
+  io.outVD := currentVD
+  when (io.pop) {
+    currentID := currentID + 1.U 
+    when (count + step === M.U) {
+      count := 0.U
+      currentVD := currentVD + 1.U
+    }.otherwise{
+      count := count + step
+    }
+  }
+
+}  
