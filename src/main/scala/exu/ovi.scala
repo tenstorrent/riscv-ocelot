@@ -172,18 +172,23 @@ val vAGen = Module (new VAgen ())
     vDBcount := vDBcount + 1.U 
   }
 
+  val s0l1 = RegInit(false.B)
+
+  val strideDirHold = RegInit(true.B)
+
 
   when (newVGenConfig && !vGenEnable) {
     vGenEnable := true.B 
     vGenHold.req.uop := vLSIQueue.io.deq.bits.req.uop
     sbIdHold := sbIdQueue.io.deq.bits 
     vdb.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_stq
-    vIdGen.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_ldq 
+    vIdGen.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_ldq
+    s0l1 := vLSIQueue.io.deq.bits.req.uop.uses_ldq
     vAGen.io.configValid := true.B
     vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
     vAGen.io.startAddr := vLSIQueue.io.deq.bits.req.rs1_data
     vAGen.io.stride := vLSIQueue.io.deq.bits.req.rs2_data 
-    val strideDirHold = RegInit(true.B)
+    
     // this is fine for now, change later for index store
     val instElemSize = vLSIQueue.io.deq.bits.req.uop.inst(14, 12)
     val vldDest = vLSIQueue.io.deq.bits.req.uop.inst(11, 7)
@@ -191,16 +196,20 @@ val vAGen = Module (new VAgen ())
     
     when (instElemSize === 0.U) {
       vdb.io.sliceSize := 1.U
-      vAGen.io.sliceSize := 1.U 
+      vAGen.io.sliceSize := 1.U
+      vIdGen.io.sliceSize := 1.U  
     }.elsewhen (instElemSize === 5.U){
     vdb.io.sliceSize := 2.U
     vAGen.io.sliceSize := 2.U
+    vIdGen.io.sliceSize := 2.U
     }.elsewhen (instElemSize === 6.U){
       vdb.io.sliceSize := 4.U
       vAGen.io.sliceSize := 4.U
+      vIdGen.io.sliceSize := 4.U
     }.otherwise{
        vdb.io.sliceSize := 8.U 
        vAGen.io.sliceSize := 8.U
+       vIdGen.io.sliceSize := 8.U
     }
     val instMop = vLSIQueue.io.deq.bits.req.uop.inst(27, 26)
     when (instMop === 0.U) {
@@ -212,14 +221,20 @@ val vAGen = Module (new VAgen ())
 
   
 
-  io.vGenIO.req.valid := vGenEnable && vDBcount =/= 0.U 
+  io.vGenIO.req.valid := vGenEnable && ((!s0l1 && vDBcount =/= 0.U) || s0l1)
   io.vGenIO.req.bits.uop := vGenHold.req.uop
-  io.vGenIO.req.bits.data := vdb.io.outData 
+  io.vGenIO.req.bits.data := Mux(s0l1, 0.U, vdb.io.outData) 
   io.vGenIO.req.bits.last := false.B 
   io.vGenIO.req.bits.addr := vAGen.io.outAddr
 
+  io.vGenIO.reqHelp.bits.elemID := vIdGen.io.outID 
+  io.vGenIO.reqHelp.bits.vRegID := vIdGen.io.outVD
+  io.vGenIO.reqHelp.bits.sbId   := sbIdHold
+  io.vGenIO.reqHelp.bits.strideDir := strideDirHold 
+
   val MemSyncEnd = io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid 
-  val MemSbId = sbIdHold
+  //val MemSbId = sbIdHold
+  val MemSbId = io.vGenIO.resp.bits.sbId
   val MemCredit = vdb.io.release 
   val MemVstart = 0.U
 
@@ -227,7 +242,43 @@ val vAGen = Module (new VAgen ())
   val MEMLoadData = WireInit(0.U(512.W))
   val MEMSeqId    = WireInit(0.U(34.W))
 
+    
+  val seqSbId = io.vGenIO.resp.bits.sbId
+  val seqElCount = WireInit(1.U(7.W))
+  val seqElOff = WireInit(0.U(6.W))
+  val seqElId = io.vGenIO.resp.bits.elemID
+  val seqVreg = io.vGenIO.resp.bits.vRegID
 
+  MEMSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg)
+
+  MEMLoadValid := io.vGenIO.resp.valid && io.vGenIO.resp.bits.s0l1 
+  when (MEMLoadValid) {
+    when (io.vGenIO.resp.bits.strideDir){  // negative
+       when (io.vGenIO.resp.bits.memSize === 0.U) {
+        MEMLoadData := Cat(io.vGenIO.resp.bits.data (7, 0), 0.U) 
+       }.elsewhen (io.vGenIO.resp.bits.memSize === 1.U) {
+        MEMLoadData := Cat(io.vGenIO.resp.bits.data (15, 0), 0.U)       
+       }.elsewhen (io.vGenIO.resp.bits.memSize === 2.U) {
+        MEMLoadData := Cat(io.vGenIO.resp.bits.data (31, 0), 0.U)
+       }.elsewhen (io.vGenIO.resp.bits.memSize === 3.U) {
+        MEMLoadData := Cat(io.vGenIO.resp.bits.data (63, 0), 0.U)
+       }
+    }.otherwise {
+      when (io.vGenIO.resp.bits.memSize === 0.U) {
+        MEMLoadData := Cat(0.U, io.vGenIO.resp.bits.data (7, 0)) 
+       }.elsewhen (io.vGenIO.resp.bits.memSize === 1.U) {
+        MEMLoadData := Cat(0.U, io.vGenIO.resp.bits.data (15, 0))       
+       }.elsewhen (io.vGenIO.resp.bits.memSize === 2.U) {
+        MEMLoadData := Cat(0.U, io.vGenIO.resp.bits.data (31, 0))
+       }.elsewhen (io.vGenIO.resp.bits.memSize === 3.U) {
+        MEMLoadData := Cat(0.U, io.vGenIO.resp.bits.data (63, 0))
+       }
+    }
+  }
+
+  val MEMReturnMaskValid = WireInit(false.B) 
+  val MEMReturnMask = WireInit(0.U(64.W))
+  val MEMMaskCredit = WireInit(false.B)
 
   io.vGenIO.req.bits.last := vAGen.io.last 
   when (io.vGenIO.req.valid && io.vGenIO.req.ready) {

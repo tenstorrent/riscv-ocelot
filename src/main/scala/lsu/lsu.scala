@@ -77,6 +77,8 @@ class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   val vRegID = Bits(5.W)
   val sbId = Bits(5.W)
   val strideDir = Bool()
+  val s0l1 = Bool()
+  val memSize = Bits(2.W)
 }
 
 class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
@@ -272,6 +274,7 @@ class DSQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val addr                = Valid(UInt(coreMaxAddrBits.W))
   val addr_is_virtual     = Bool() // Virtual address, we got a TLB miss
   val data                = Valid(UInt(xLen.W))
+  val sbId = Bits(5.W)
   val last                = Bool()
   val sent                = Bool()
   val succeeded           = Bool() // D$ has ack'd this, we don't need to maintain this anymore
@@ -326,13 +329,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val dlq_tlb_head     = Reg(UInt(dlqAddrSz.W))
   val dlq_finished     = Reg(Bool())
   
+  val sbIdDone = RegInit(0.U(5.W))
+
   io.core.VGen.resp := DontCare 
   io.core.VGen.resp.bits.vectorDone := dsq_finished || dlq_finished 
   io.core.VGen.resp.valid := dsq_finished || dlq_finished
   io.core.VGen.resp.bits.elemID := DontCare 
   io.core.VGen.resp.bits.vRegID := DontCare
-  io.core.VGen.resp.bits.sbId := DontCare
+  io.core.VGen.resp.bits.sbId := sbIdDone 
   io.core.VGen.resp.bits.strideDir := DontCare 
+  io.core.VGen.resp.bits.s0l1 := DontCare
+  io.core.VGen.resp.bits.memSize  := DontCare 
 
   // If we got a mispredict, the tail will be misaligned for 1 extra cycle
   assert (io.core.brupdate.b2.mispredict ||
@@ -517,6 +524,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dsq(dsq_tail).bits.succeeded  := false.B
     dsq(dsq_tail).bits.last := io.core.VGen.req.bits.last
     dsq(dsq_tail).bits.sent := false.B 
+    dsq(dsq_tail).bits.sbId := io.core.VGen.reqHelp.bits.sbId 
 
   }
   
@@ -1832,6 +1840,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dsq(dsq_head).bits.data.valid := false.B 
     when (dsq(dsq_head).bits.last) {
       dsq_finished := true.B
+      sbIdDone := dsq(dsq_head).bits.sbId
     }
   }
 
