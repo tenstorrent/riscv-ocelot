@@ -176,6 +176,7 @@ val vAGen = Module (new VAgen ())
     vAGen.io.stride := vLSIQueue.io.deq.bits.req.rs2_data 
     // this is fine for now, change later for index store
     val instElemSize = vLSIQueue.io.deq.bits.req.uop.inst(14, 12)
+    val vldDest = vLSIQueue.io.deq.bits.req.uop.inst(11, 7)
     when (instElemSize === 0.U) {
       vdb.io.sliceSize := 1.U
       vAGen.io.sliceSize := 1.U 

@@ -212,6 +212,9 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val youngest_stq_idx    = UInt(stqAddrSz.W) // index of the oldest store younger than us
   val youngest_vst_idx    = UInt(stqAddrSz.W) // index of youngest vector store older than us
   val youngest_vst_count  = UInt((stqAddrSz + 1).W)
+  val youngest_vld_idx    = UInt(ldqAddrSz.W) // index of youngest vector store older than us
+  val youngest_vld_count  = UInt((ldqAddrSz + 1).W)
+  val vld_count  = UInt((stqAddrSz + 1).W)
   val forward_std_val     = Bool()
   val forward_stq_idx     = UInt(stqAddrSz.W) // Which store did we get the store-load forward from?
 
@@ -286,6 +289,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val youngest_vst     = Reg(UInt(stqAddrSz.W))
   val vst_count        = Reg(UInt((vstCountWidth).W))
   val vstExist         = Reg(Bool())
+  val vldCountWidth = ldqAddrSz + 1
+  val youngest_vld     = Reg(UInt(ldqAddrSz.W))
+  val vld_count        = Reg(UInt((vldCountWidth).W))
+  val vldExist         = Reg(Bool())
 
   // trying to detach the bundle so that we can move things around in the future
 //  val ioVGen           = io.core.VGen
@@ -407,9 +414,25 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       when (io.core.dis_uops(w).bits.is_vec) {
         ldq(ld_enq_idx).bits.addr.valid := true.B
         ldq(ld_enq_idx).bits.addr_is_virtual := false.B
+        youngest_vld := ld_enq_idx
+        ldq(ld_enq_idx).bits.vld_count := vld_count + 1.U
+        vld_count := vld_count + 1.U
+        vldExist := true.B
+        when (vstExist) {
+          ldq(ld_enq_idx).bits.youngest_vst_count := vst_count
+          ldq(ld_enq_idx).bits.youngest_vst_idx := youngest_vst
+        }
+      }.elsewhen (vldExist) {
+         ldq(ld_enq_idx).bits.youngest_vld_count := vld_count
+         ldq(ld_enq_idx).bits.youngest_vld_idx := youngest_vld
+         when (vstExist) {
+          ldq(ld_enq_idx).bits.youngest_vst_count := vst_count
+          ldq(ld_enq_idx).bits.youngest_vst_idx := youngest_vst
+         }
       }.elsewhen (vstExist) {
         ldq(ld_enq_idx).bits.youngest_vst_count := vst_count
         ldq(ld_enq_idx).bits.youngest_vst_idx := youngest_vst
+        
       }
 
       assert (ld_enq_idx === io.core.dis_uops(w).bits.ldq_idx, "[lsu] mismatch enq load tag.")
@@ -594,9 +617,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   // Can we fire a incoming load
   val can_fire_load_incoming = widthMap(w => exe_req(w).valid && exe_req(w).bits.uop.ctrl.is_load)  
-  val load_incoming_no_vst   =  widthMap(w => !(vstExist && stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.isVector
+  val load_incoming_no_vst   =  widthMap(w => !(vstExist && !ldq(exe_req(w).bits.uop.ldq_idx).bits.isVector  
+                                                   && stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.isVector
                                                    && stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.vst_count === ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_count
                                                    && !stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.succeeded))
+  val load_incoming_no_vld   =  widthMap(w => !(vstExist && !ldq(exe_req(w).bits.uop.ldq_idx).bits.isVector  
+                                                   && ldq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vld_idx).bits.isVector
+                                                   && ldq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vld_idx).bits.vld_count === ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vld_count
+                                                   && !ldq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vld_idx).bits.succeeded))
 
   // Can we fire an incoming store addrgen + store datagen
   val can_fire_stad_incoming = widthMap(w => exe_req(w).valid && exe_req(w).bits.uop.ctrl.is_sta
@@ -629,9 +657,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                 !store_needs_order                            &&
                                 (w == memWidth-1).B                           && // TODO: Is this best scheduling?
                                 !ldq_retry_e.bits.order_fail))                 
-  val load_retry_no_vst  = widthMap (w => !(vstExist && stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.isVector
+  val load_retry_no_vst  = widthMap (w => !(vstExist && !ldq(ldq_retry_idx).bits.isVector
+                                  && stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.isVector
                                   && stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.vst_count === ldq(ldq_retry_idx).bits.youngest_vst_count
                                   && !stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.succeeded))
+
+  val load_retry_no_vld   =  widthMap(w => !(vstExist && !ldq(ldq_retry_idx).bits.isVector  
+                                                   && ldq(ldq(ldq_retry_idx).bits.youngest_vld_idx).bits.isVector
+                                                   && ldq(ldq(ldq_retry_idx).bits.youngest_vld_idx).bits.vld_count === ldq(ldq_retry_idx).bits.youngest_vld_count
+                                                   && !ldq(ldq(ldq_retry_idx).bits.youngest_vld_idx).bits.succeeded))
 
   // Can we retry a store addrgen that missed in the TLB
   // - Weird edge case when sta_retry and std_incoming for same entry in same cycle. Delay this
@@ -675,10 +709,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                                           ldq_head === ldq_wakeup_idx &&
                                                                           ldq_wakeup_e.bits.st_dep_mask.asUInt === 0.U)))) 
 
-  val load_wakeup_no_vst =   widthMap (w => !(vstExist && stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.isVector
+  val load_wakeup_no_vst =   widthMap (w => !(vstExist && !ldq(ldq_wakeup_idx).bits.isVector
+                                && stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.isVector
                                 && stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.vst_count === ldq(ldq_wakeup_idx).bits.youngest_vst_count
                                 && !stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.succeeded))
-
+  
+  val load_wakeup_no_vld   =  widthMap(w => !(vstExist && !ldq(ldq_wakeup_idx).bits.isVector  
+                                                   && ldq(ldq(ldq_wakeup_idx).bits.youngest_vld_idx).bits.isVector
+                                                   && ldq(ldq(ldq_wakeup_idx).bits.youngest_vld_idx).bits.vld_count === ldq(ldq_wakeup_idx).bits.youngest_vld_count
+                                                   && !ldq(ldq(ldq_wakeup_idx).bits.youngest_vld_idx).bits.succeeded))
   // Can we fire an incoming hellacache request
   val can_fire_hella_incoming  = WireInit(widthMap(w => false.B)) // This is assigned to in the hellashim ocntroller
 
@@ -962,14 +1001,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
     io.dmem.s1_kill(w) := false.B
 
-    when (will_fire_load_incoming(w) && load_incoming_no_vst(w)) {
+    when (will_fire_load_incoming(w) && load_incoming_no_vst(w) && load_incoming_no_vld(w)) {
       dmem_req(w).valid      := !exe_tlb_miss(w) && !exe_tlb_uncacheable(w)
       dmem_req(w).bits.addr  := exe_tlb_paddr(w)
       dmem_req(w).bits.uop   := exe_tlb_uop(w)
 
       s0_executing_loads(ldq_incoming_idx(w)) := dmem_req_fire(w)
       assert(!ldq_incoming_e(w).bits.executed)
-    } .elsewhen (will_fire_load_retry(w) && load_retry_no_vst(w)) {
+    } .elsewhen (will_fire_load_retry(w) && load_retry_no_vst(w) && load_retry_no_vst(w)) {
       dmem_req(w).valid      := !exe_tlb_miss(w) && !exe_tlb_uncacheable(w)
       dmem_req(w).bits.addr  := exe_tlb_paddr(w)
       dmem_req(w).bits.uop   := exe_tlb_uop(w)
@@ -1011,7 +1050,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       }.otherwise{
         dmem_req(w).valid  := false.B                        //KYnew, placeholder
       }
-    } .elsewhen (will_fire_load_wakeup(w) && load_wakeup_no_vst (w)) {
+    } .elsewhen (will_fire_load_wakeup(w) && load_wakeup_no_vst (w) && load_wakeup_no_vld(w)) {
       dmem_req(w).valid      := true.B
       dmem_req(w).bits.addr  := ldq_wakeup_e.bits.addr.bits
       dmem_req(w).bits.uop   := ldq_wakeup_e.bits.uop
@@ -1889,7 +1928,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dsq_tlb_head := 0.U
       youngest_vst := 0.U 
       vst_count := 0.U
-      vstExist := false.B 
+      vstExist := false.B
+      youngest_vld := 0.U 
+      vld_count := 0.U
+      vldExist := false.B 
    //   dsq_execute_save.bits := 0.U 
    //   dsq_execute_save.valid := false.B 
       dsq_finished := false.B 
