@@ -79,6 +79,8 @@ class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   val strideDir = Bool()
   val s0l1 = Bool()
   val memSize = Bits(2.W)
+  val dsqFull = Bool()
+  val dlqFull = Bool()
 }
 
 class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
@@ -152,7 +154,7 @@ class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
 
   val VGen = new VGenIO
 
-  val dsq_full = Output(Bool())
+//  val dsq_full = Output(Bool())
 
   val dis_uops    = Flipped(Vec(coreWidth, Valid(new MicroOp)))
   val dis_ldq_idx = Output(Vec(coreWidth, UInt(ldqAddrSz.W)))
@@ -531,8 +533,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   
   var dlq_full = Bool()
   dlq_full = WrapInc(dlq_tail, numDlqEntries) === dlq_head
-  io.core.VGen.req.ready    := !dlq_full && !dsq_full  //TODO: I think this is fine for now, since we won't have them coexist
-
+  io.core.VGen.req.ready    := !dlq_full || !dsq_full  //TODO: I think this is fine for now, since we won't have them coexist
+  io.core.VGen.resp.bits.dsqFull := dsq_full
+  io.core.VGen.resp.bits.dlqFull := dlq_full
   val newDlqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_ldq
 
   dlq_tail := Mux(newDlqEntry, WrapInc(dlq_tail, numDlqEntries), dlq_tail)

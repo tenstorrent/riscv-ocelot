@@ -86,9 +86,9 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
 /*
   faking mem sync start
 */
-  val fakeLoadStart = ShiftRegister (reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_ldq, 200)
+  //val fakeLoadStart = ShiftRegister (reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_ldq, 200)
 
-   val internalMemSyncStart = vpuModule.io.memop_sync_start || fakeLoadStart
+   val internalMemSyncStart = vpuModule.io.memop_sync_start
    val tryDeqVLSIQ = RegInit(false.B)
    val internalStoreWrite = vpuModule.io.store_valid
    
@@ -260,7 +260,7 @@ val vAGen = Module (new VAgen ())
   io.vGenIO.reqHelp.bits.sbId   := sbIdHold
   io.vGenIO.reqHelp.bits.strideDir := strideDirHold 
 
-  val MemSyncEnd = io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid 
+  val MemSyncEnd = io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid && inMiddle 
   val MemSbId = io.vGenIO.resp.bits.sbId
   val MemCredit = vdb.io.release 
   val MemVstart = 0.U
@@ -308,7 +308,8 @@ val vAGen = Module (new VAgen ())
   val MEMMaskCredit = WireInit(false.B)
 
   io.vGenIO.req.bits.last := vAGen.io.last 
-  when (io.vGenIO.req.valid && io.vGenIO.req.ready) {
+  when (io.vGenIO.req.valid && io.vGenIO.req.ready && 
+                              ((io.vGenIO.req.bits.uop.uses_stq && !io.vGenIO.resp.bits.dsqFull) || (io.vGenIO.req.bits.uop.uses_ldq && !io.vGenIO.resp.bits.dlqFull))) {
     vdb.io.pop := io.vGenIO.req.bits.uop.uses_stq
     vAGen.io.pop := true.B 
     vIdGen.io.pop := io.vGenIO.req.bits.uop.uses_ldq
