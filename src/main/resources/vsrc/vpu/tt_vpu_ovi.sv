@@ -28,6 +28,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                   output logic [511:0] store_data,
                   input  logic         store_credit,
 
+                  input  logic [33:0]  load_seq_id;
+                  input  logic [511:0] load_data;
+                  input  logic         load_valid;
+                  input  logic [63:0]  load_mask;
+                  input  logic         load_mask_valid;
+
                   input  logic         memop_sync_end,
                   output logic         memop_sync_start,
 
@@ -90,6 +96,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [2:0] store_buffer_rptr;
   logic [1:0] store_fsm_state; // 0: idle, 1: busy, 2: commit
   logic [1:0] store_fsm_next_state;
+  logic       store_memsync_start;
   logic [$clog2(STORE_CREDITS):0] store_credits;
   logic       vecldst_autogen_store;
   logic       id_mem_lq_done;
@@ -101,8 +108,13 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   // This will drive completed.valid
   logic       store_commit;
   logic       lq_empty;
+  // Load logic - finite state machine
+  logic [1:0] load_fsm_state, load_fsm_next_state;
+  logic       vecldst_autogen_store;
+  logic       load_commit;
+  logic load_memsync_start;
 
-  assign enough_data = store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] && 
+  assign enough_data = store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] &&
                        store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1];
   always_comb begin
     store_fsm_next_state = 0;
@@ -151,7 +163,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
       // Reset the store buffer when idle
       if(store_fsm_state == 0 && !vecldst_autogen_store) begin
-        for(int i=0; i<8; i=i+1) 
+        for(int i=0; i<8; i=i+1)
           store_buffer[i] <= 0;
         store_buffer_full <= 0;
         store_buffer_valid <= 0;
@@ -169,21 +181,23 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
+  assign store_memsync_start = store_fsm_state == 0 && vecldst_autogen_store;
+  always_ff@(posedge clk) begin
+    if(!reset_n)
+      memop_sync_start <= 0;
+    else
+      memop_sync_start <= store_memsync_start | load_memsync_start;
+  end
+
   always_ff@(posedge clk) begin
     if(!reset_n) begin
       store_valid <= 0;
       store_data <= 0;
-      memop_sync_start <= 0;
       store_commit <= 0;
       store_buffer_rptr <= 0;
       store_buffer_sent <= 0;
     end
     else begin
-      if(store_fsm_state == 0 && vecldst_autogen_store)
-        memop_sync_start <= 1;
-      else
-        memop_sync_start <= 0;
-
       if((store_fsm_state == 0 || store_fsm_next_state == 0) && !vecldst_autogen_store) begin
         store_buffer_rptr <= 0;
         store_buffer_sent <= 0;
@@ -231,7 +245,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         sbid_queue[sbid_queue_wptr] <= read_issue_sb_id;
         sbid_queue_wptr <= sbid_queue_wptr + 1;
       end
-      if(ocelot_instrn_commit_valid) begin
+      if(ocelot_instrn_commit_valid || store_commit || load_commit) begin
         sbid_queue_rptr <= sbid_queue_rptr + 1;
       end
     end
@@ -276,6 +290,138 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       vcsr_reg <= read_issue_vcsr;
       vcsr_lmulb2_reg <= read_issue_vcsr_lmulb2;
     end
+  end
+
+  logic [511:0] flipped_load_data;
+  logic [511:0] shifted_load_data;
+  logic [511:0] packed_load_data;
+  logic [4:0]   v_reg;
+  logic [10:0]  el_id;
+  logic [5:0]   el_offset;
+  logic [6:0]   el_count;
+  logic [4:0]   sb_id;
+  logic [2:0]   eew_log2;
+
+  assign v_reg = load_seq_id[4:0];
+  assign el_id = load_seq_id[15:5];
+  assign el_off = load_seq_id[21:16];
+  assign el_count = load_seq_id[28:22];
+  assign sb_id = load_seq_id[33:29];
+
+  assign eew_log2 = read_issue_inst[14:12] == 3'b000 ? 3'd3 : // 8-bit EEW
+                    read_issue_inst[14:12] == 3'b101 ? 3'd4 : // 16-bit EEW
+                    read_issue_inst[14:12] == 3'b110 ? 3'd5 : 3'd6; // 32-bit, 64-bit EEW
+
+  always_comb begin
+    // Shift
+    shifted_load_data = read_issue_scalar_opnd[63] ? load_data << (el_offset << eew_log2) : load_data >> (el_offset << eew_log2);
+    // Flip if stride is negative
+    if(load_valid) begin
+      if(read_issue_scalar_opnd[63])
+      begin
+        if(eew_log2 == 3'd3)
+          for(int i=0, j=511; i<512; i=i+8, j=j-8)
+            flipped_load_data[i+7:i] = shifted_load_data[j:j-7];
+        else if(eew_log2 == 3'd4)
+          for(int i=0, j=511; i<512; i=i+16, j=j-16)
+            flipped_load_data[i+15:i] = shifted_load_data[j:j-15];
+        else if(eew_log2 == 3'd5)
+          for(int i=0, j=511; i<512; i=i+32, j=j-32)
+            flipped_load_data[i+31:i] = shifted_load_data[j:j-31];
+        else if(eew_log2 == 3'd6)
+          for(int i=0, j=511; i<512; i=i+64, j=j-64)
+            flipped_load_data[i+63:i] = shifted_load_data[j:j-63];
+      end
+      else
+        flipped_load_data = shifted_load_data;
+
+      packed_load_data = flipped_load_data;
+      // Collapse
+      case(eew_log2)
+        // For EEW=8-bits, stride can be 1, 2, 4
+        3'd3: begin
+          if(read_issue_scalar_opnd == 1 || $signed(read_issue_scalar_opnd) == -1)
+            packed_load_data = flipped_load_data;
+          else if(read_issue_scalar_opnd == 2 || $signed(read_issue_scalar_opnd) == -2)
+            for(int i=0, j=0; i<256; i=i+8, j=j+16)
+              packed_load_data[i+7:i] = flipped_load_data[j+7:j];
+          else if(read_issue_scalar_opnd == 4 || $signed(read_issue_scalar_opnd) == -4)
+            for(int i=0, j=0; i<128; i=i+8, j=j+32)
+              packed_load_data[i+7:i] = flipped_load_data[j+7:j];
+        end
+      endcase
+      case(eew_log2)
+        // For EEW=16-bits, stride can be 2, 4, 8
+        3'd4: begin
+          if(read_issue_scalar_opnd == 2 || $signed(read_issue_scalar_opnd) == -2)
+            packed_load_data = flipped_load_data;
+          else if(read_issue_scalar_opnd == 4 || $signed(read_issue_scalar_opnd) == -4)
+            for(int i=0, j=0; i<256; i=i+16, j=j+32)
+              packed_load_data[i+15:i] = flipped_load_data[j+15:j];
+          else if(read_issue_scalar_opnd == 8 || $signed(read_issue_scalar_opnd) == -8)
+            for(int i=0, j=0; i<128; i=i+16, j=j+64)
+              packed_load_data[i+15:i] = flipped_load_data[j+15:j];
+        end
+      endcase
+      case(eew_log2)
+        // For EEW=32-bits, stride can be 4, 8, 16
+        3'd5: begin
+          if(read_issue_scalar_opnd == 4 || $signed(read_issue_scalar_opnd) == -4)
+            packed_load_data = flipped_load_data;
+          else if(read_issue_scalar_opnd == 8 || $signed(read_issue_scalar_opnd) == -8)
+            for(int i=0, j=0; i<256; i=i+32, j=j+64)
+              packed_load_data[i+31:i] = flipped_load_data[j+31:j];
+          else if(read_issue_scalar_opnd == 16 || $signed(read_issue_scalar_opnd) == -16)
+            for(int i=0, j=0; i<128; i=i+32, j=j+128)
+              packed_load_data[i+31:i] = flipped_load_data[j+31:j];
+        end
+      endcase
+      case(eew_log2)
+        // For EEW=64-bits, stride can be 8, 16, 32
+        3'd6: begin
+          if(read_issue_scalar_opnd == 8 || $signed(read_issue_scalar_opnd) == -8)
+            packed_load_data = flipped_load_data;
+          else if(read_issue_scalar_opnd == 16 || $signed(read_issue_scalar_opnd) == -16)
+            for(int i=0, j=0; i<256; i=i+64, j=j+128)
+              packed_load_data[i+63:i] = flipped_load_data[j+63:j];
+          else if(read_issue_scalar_opnd == 32 || $signed(read_issue_scalar_opnd) == -32)
+            for(int i=0, j=0; i<128; i=i+64, j=j+256)
+              packed_load_data[i+63:i] = flipped_load_data[j+63:j];
+        end
+      endcase
+    end
+  end
+
+  always_comb begin
+    case(load_fsm_state)
+      2'd0: begin
+        if(vecldst_autogen_load)
+          load_fsm_next_state = 2'd1;
+        else
+          load_fsm_next_state = 2'd0;
+      end
+      2'd1: begin
+        if(memop_sync_end)
+          load_fsm_next_state = 2'd2;
+        else
+          load_fsm_next_state = 2'd1;
+      end
+      2'd2: begin
+        if(lq_empty)
+          store_fsm_next_state = 0;
+        else
+          store_fsm_next_state = 2;
+      end
+    endcase
+  end
+  assign load_memsync_start = load_fsm_state == 2'd0 && vecldst_autogen_load;
+  assign load_commit = load_fsm_state == 2'd2 && lq_empty;
+
+  always_ff@(posedge clk) begin
+    if(!reset_n)
+      load_fsm_state <= 0;
+    else
+      load_fsm_state <= load_fsm_next_state;
   end
 
   // Just pass the parameters down...
@@ -335,19 +481,33 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_rd_data_1('0),
 
     .o_vecldst_autogen_store(vecldst_autogen_store),
+    .o_vecldst_autogen_load(vecldst_autogen_load),
     .o_id_mem_lq_done(id_mem_lq_done),
     .o_id_ex_units_rts(id_ex_units_rts),
     .o_vs3_rddata(vs3_rddata),
     .o_lq_empty(lq_empty)
   );
 
-  assign completed_valid = ocelot_instrn_commit_valid || store_commit;
-  assign completed_sb_id = sbid_queue[sbid_queue_rptr];
-  assign completed_fflags = ocelot_instrn_commit_fflags;
-  assign completed_dest_reg = ocelot_instrn_commit_data[63:0];
-  assign completed_vxsat = 0;
-  assign completed_vstart = 0;
-  assign completed_illegal = 0;
+  always @(posedge clk) begin
+    if(!reset_n) begin
+      completed_valid <= 0;
+      completed_sb_id <= 0;
+      completed_fflags <= 0;
+      completed_dest_reg <= 0;
+      completed_vxsat <= 0;
+      completed_vstart <= 0;
+      completed_illegal <= 0;
+    end
+    else begin
+      completed_valid <= ocelot_instrn_commit_valid || store_commit || load_commit;
+      completed_sb_id <= sbid_queue[sbid_queue_rptr];
+      completed_fflags <= ocelot_instrn_commit_fflags;
+      completed_dest_reg <= ocelot_instrn_commit_data[63:0];
+      completed_vxsat <= 0;
+      completed_vstart <= 0;
+      completed_illegal <= 0;
+    end
+  end
 
   assign debug_wb_vec_valid = ocelot_instrn_commit_valid;
   assign debug_wb_vec_wdata = ocelot_instrn_commit_data;
