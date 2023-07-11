@@ -657,7 +657,7 @@ module vfp_pipeline #(parameter
       .o_mem_last               (o_mem_last_raw),
       // Trap
       .i_reset_pc               ('0),
-      .o_trap                   (  )
+      .o_trap                   (  ),
       .o_lq_empty               (lq_empty)
    );
 
