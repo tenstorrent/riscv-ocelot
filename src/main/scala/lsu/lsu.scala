@@ -243,13 +243,14 @@ class DLQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val addr                = Valid(UInt(coreMaxAddrBits.W))
   val addr_is_virtual     = Bool() // Virtual address, we got a TLB miss
   val addr_is_uncacheable = Bool() // Uncacheable, wait until head of ROB to execute
-
+  val sbId = Bits(5.W)
   val executed            = Bool() // load sent to memory, reset by NACKs
   val succeeded           = Bool()
   val last                = Bool()
   val sent                = Bool()
   val elemID = Bits(8.W)
   val vRegID = Bits(5.W)
+
 //  val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
 //  val youngest_stq_idx    = UInt(stqAddrSz.W) // index of the oldest store younger than us
 }
@@ -546,6 +547,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dlq(dlq_tail).bits.succeeded  := false.B
     dlq(dlq_tail).bits.last := io.core.VGen.req.bits.last
     dlq(dlq_tail).bits.sent := false.B 
+    dlq(dlq_tail).bits.sbId := io.core.VGen.reqHelp.bits.sbId
+    dlq(dlq_tail).bits.elemID := io.core.VGen.reqHelp.bits.elemID
+    dlq(dlq_tail).bits.vRegID := io.core.VGen.reqHelp.bits.vRegID
 
   }
 
@@ -1841,6 +1845,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     when (dsq(dsq_head).bits.last) {
       dsq_finished := true.B
       sbIdDone := dsq(dsq_head).bits.sbId
+    }
+  }
+
+  when (dlq(dlq_head).valid && dlq(dlq_head).bits.succeeded) {
+    dlq_head := WrapInc(dlq_head, numDsqEntries)
+    dlq(dsq_head).valid  := false.B 
+    dlq(dsq_head).bits.succeeded := false.B 
+    dlq(dsq_head).bits.addr.valid := false.B
+    when (dlq(dlq_head).bits.last) {
+      dlq_finished := true.B
+      sbIdDone := dlq(dlq_head).bits.sbId
     }
   }
 

@@ -256,7 +256,7 @@ val vAGen = Module (new VAgen ())
 
   MEMSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg)
 
-  MEMLoadValid := io.vGenIO.resp.valid && io.vGenIO.resp.bits.s0l1 
+  MEMLoadValid := io.vGenIO.resp.valid && io.vGenIO.resp.bits.s0l1 && !io.vGenIO.resp.bits.vectorDone
   when (MEMLoadValid) {
     when (io.vGenIO.resp.bits.strideDir){  // negative
        when (io.vGenIO.resp.bits.memSize === 0.U) {
@@ -289,6 +289,7 @@ val vAGen = Module (new VAgen ())
   when (io.vGenIO.req.valid && io.vGenIO.req.ready) {
     vdb.io.pop := io.vGenIO.req.bits.uop.uses_stq
     vAGen.io.pop := true.B 
+    vIdGen.io.pop := io.vGenIO.req.bits.uop.uses_ldq
     when (vAGen.io.last) {
       vGenEnable := false.B         
       vdb.io.last := io.vGenIO.req.bits.uop.uses_stq
@@ -324,6 +325,11 @@ val vAGen = Module (new VAgen ())
   vpuModule.io.memop_sync_end := MemSyncEnd
   vpuModule.io.store_credit := MemCredit
 
+  vpuModule.io.load_seq_id := MEMSeqId
+  vpuModule.io.load_data := MEMLoadData
+  vpuModule.io.load_valid := MEMLoadValid
+  vpuModule.io.load_mask := MEMReturnMask
+  vpuModule.io.load_mask_valid := MEMReturnMaskValid
 
 
 }
