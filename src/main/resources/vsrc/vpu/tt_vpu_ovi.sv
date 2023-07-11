@@ -28,11 +28,11 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                   output logic [511:0] store_data,
                   input  logic         store_credit,
 
-                  input  logic [33:0]  load_seq_id;
-                  input  logic [511:0] load_data;
-                  input  logic         load_valid;
-                  input  logic [63:0]  load_mask;
-                  input  logic         load_mask_valid;
+                  input  logic [33:0]  load_seq_id,
+                  input  logic [511:0] load_data,
+                  input  logic         load_valid,
+                  input  logic [63:0]  load_mask,
+                  input  logic         load_mask_valid,
 
                   input  logic         memop_sync_end,
                   output logic         memop_sync_start,
