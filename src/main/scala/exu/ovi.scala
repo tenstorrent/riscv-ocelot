@@ -86,7 +86,9 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
 /*
   faking mem sync start
 */
-   val internalMemSyncStart = vpuModule.io.memop_sync_start
+  val fakeLoadStart = ShiftRegister (reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_ldq, 200)
+
+   val internalMemSyncStart = vpuModule.io.memop_sync_start || fakeLoadStart
    val tryDeqVLSIQ = RegInit(false.B)
    val internalStoreWrite = vpuModule.io.store_valid
    
@@ -131,16 +133,20 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   vdb.io.writeData := vpuModule.io.store_data
   vdb.io.sliceSize := 8.U 
 
- val vIdGen = Module (new VIdGen(32, 8))
+ 
+
+/*
+   VDB end
+*/
+/*
+   Vid Gen Start
+*/
+val vIdGen = Module (new VIdGen(32, 8))
  vIdGen.io.configValid := false.B 
  vIdGen.io.startID := DontCare
  vIdGen.io.startVD := DontCare  
  vIdGen.io.pop := DontCare
  vIdGen.io.sliceSize := DontCare 
-
-/*
-   VDB end
-*/
 
 val vAGen = Module (new VAgen ())
 
@@ -233,7 +239,6 @@ val vAGen = Module (new VAgen ())
   io.vGenIO.reqHelp.bits.strideDir := strideDirHold 
 
   val MemSyncEnd = io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid 
-  //val MemSbId = sbIdHold
   val MemSbId = io.vGenIO.resp.bits.sbId
   val MemCredit = vdb.io.release 
   val MemVstart = 0.U
