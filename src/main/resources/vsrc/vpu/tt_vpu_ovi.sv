@@ -110,9 +110,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic       lq_empty;
   // Load logic - finite state machine
   logic [1:0] load_fsm_state, load_fsm_next_state;
-  logic       vecldst_autogen_store;
+  logic       vecldst_autogen_load;
   logic       load_commit;
-  logic load_memsync_start;
+  logic       load_memsync_start;
 
   assign enough_data = store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] &&
                        store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1];
@@ -312,87 +312,18 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                     read_issue_inst[14:12] == 3'b101 ? 3'd4 : // 16-bit EEW
                     read_issue_inst[14:12] == 3'b110 ? 3'd5 : 3'd6; // 32-bit, 64-bit EEW
 
+  integer i,j;
   always_comb begin
     // Shift
     shifted_load_data = read_issue_scalar_opnd[63] ? load_data << (el_offset << eew_log2) : load_data >> (el_offset << eew_log2);
     // Flip if stride is negative
     if(load_valid) begin
-      if(read_issue_scalar_opnd[63])
-      begin
-        if(eew_log2 == 3'd3)
-          for(int i=0, j=511; i<512; i=i+8, j=j-8)
-            flipped_load_data[i+7:i] = shifted_load_data[j:j-7];
-        else if(eew_log2 == 3'd4)
-          for(int i=0, j=511; i<512; i=i+16, j=j-16)
-            flipped_load_data[i+15:i] = shifted_load_data[j:j-15];
-        else if(eew_log2 == 3'd5)
-          for(int i=0, j=511; i<512; i=i+32, j=j-32)
-            flipped_load_data[i+31:i] = shifted_load_data[j:j-31];
-        else if(eew_log2 == 3'd6)
-          for(int i=0, j=511; i<512; i=i+64, j=j-64)
-            flipped_load_data[i+63:i] = shifted_load_data[j:j-63];
-      end
-      else
-        flipped_load_data = shifted_load_data;
-
-      packed_load_data = flipped_load_data;
-      // Collapse
-      case(eew_log2)
-        // For EEW=8-bits, stride can be 1, 2, 4
-        3'd3: begin
-          if(read_issue_scalar_opnd == 1 || $signed(read_issue_scalar_opnd) == -1)
-            packed_load_data = flipped_load_data;
-          else if(read_issue_scalar_opnd == 2 || $signed(read_issue_scalar_opnd) == -2)
-            for(int i=0, j=0; i<256; i=i+8, j=j+16)
-              packed_load_data[i+7:i] = flipped_load_data[j+7:j];
-          else if(read_issue_scalar_opnd == 4 || $signed(read_issue_scalar_opnd) == -4)
-            for(int i=0, j=0; i<128; i=i+8, j=j+32)
-              packed_load_data[i+7:i] = flipped_load_data[j+7:j];
-        end
-      endcase
-      case(eew_log2)
-        // For EEW=16-bits, stride can be 2, 4, 8
-        3'd4: begin
-          if(read_issue_scalar_opnd == 2 || $signed(read_issue_scalar_opnd) == -2)
-            packed_load_data = flipped_load_data;
-          else if(read_issue_scalar_opnd == 4 || $signed(read_issue_scalar_opnd) == -4)
-            for(int i=0, j=0; i<256; i=i+16, j=j+32)
-              packed_load_data[i+15:i] = flipped_load_data[j+15:j];
-          else if(read_issue_scalar_opnd == 8 || $signed(read_issue_scalar_opnd) == -8)
-            for(int i=0, j=0; i<128; i=i+16, j=j+64)
-              packed_load_data[i+15:i] = flipped_load_data[j+15:j];
-        end
-      endcase
-      case(eew_log2)
-        // For EEW=32-bits, stride can be 4, 8, 16
-        3'd5: begin
-          if(read_issue_scalar_opnd == 4 || $signed(read_issue_scalar_opnd) == -4)
-            packed_load_data = flipped_load_data;
-          else if(read_issue_scalar_opnd == 8 || $signed(read_issue_scalar_opnd) == -8)
-            for(int i=0, j=0; i<256; i=i+32, j=j+64)
-              packed_load_data[i+31:i] = flipped_load_data[j+31:j];
-          else if(read_issue_scalar_opnd == 16 || $signed(read_issue_scalar_opnd) == -16)
-            for(int i=0, j=0; i<128; i=i+32, j=j+128)
-              packed_load_data[i+31:i] = flipped_load_data[j+31:j];
-        end
-      endcase
-      case(eew_log2)
-        // For EEW=64-bits, stride can be 8, 16, 32
-        3'd6: begin
-          if(read_issue_scalar_opnd == 8 || $signed(read_issue_scalar_opnd) == -8)
-            packed_load_data = flipped_load_data;
-          else if(read_issue_scalar_opnd == 16 || $signed(read_issue_scalar_opnd) == -16)
-            for(int i=0, j=0; i<256; i=i+64, j=j+128)
-              packed_load_data[i+63:i] = flipped_load_data[j+63:j];
-          else if(read_issue_scalar_opnd == 32 || $signed(read_issue_scalar_opnd) == -32)
-            for(int i=0, j=0; i<128; i=i+64, j=j+256)
-              packed_load_data[i+63:i] = flipped_load_data[j+63:j];
-        end
-      endcase
+      packed_load_data = shifted_load_data;
     end
   end
 
   always_comb begin
+    load_fsm_next_state = 2'd0;
     case(load_fsm_state)
       2'd0: begin
         if(vecldst_autogen_load)
@@ -408,9 +339,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       end
       2'd2: begin
         if(lq_empty)
-          store_fsm_next_state = 0;
+          load_fsm_next_state = 0;
         else
-          store_fsm_next_state = 2;
+          load_fsm_next_state = 2;
       end
     endcase
   end
