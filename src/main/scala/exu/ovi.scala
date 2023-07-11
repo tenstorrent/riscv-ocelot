@@ -97,20 +97,38 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   vLSIQ start
 */
 
+
+  val inMiddle = RegInit(false.B)
+  val outStandingReq = RegInit(0.U)
+  val vOSud = Cat (vpuModule.io.memop_sync_start, vpuModule.io.memop_sync_end)
+  when (vOSud === 1.U) {
+    outStandingReq := outStandingReq - 1.U
+  }.elsewhen (vOSud === 2.U) {
+    outStandingReq := outStandingReq + 1.U 
+  }
+
   val vLSIQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), 2))
   val sbIdQueue = Module(new Queue(UInt(5.W), 2))
 
   // this needs to be changed in the future to include load, just keep it this way for now
   vLSIQueue.io.enq.valid := reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
   vLSIQueue.io.enq.bits := reqQueue.io.deq.bits
-  vLSIQueue.io.deq.ready := internalMemSyncStart || tryDeqVLSIQ
+  vLSIQueue.io.deq.ready := !inMiddle && ((outStandingReq =/= 0.U || internalMemSyncStart) || tryDeqVLSIQ)
   sbIdQueue.io.enq.valid := reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
   sbIdQueue.io.enq.bits := sbId
-  sbIdQueue.io.deq.ready := internalMemSyncStart || tryDeqVLSIQ
-  when (internalMemSyncStart && !vLSIQueue.io.deq.valid) {
+  sbIdQueue.io.deq.ready := !inMiddle && ((outStandingReq =/= 0.U || internalMemSyncStart) || tryDeqVLSIQ)
+  when (!inMiddle) {
+  when (vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready) {
+    inMiddle := true.B 
+  }.elsewhen ((outStandingReq =/= 0.U || internalMemSyncStart) && !vLSIQueue.io.deq.valid) {
     tryDeqVLSIQ := true.B 
-  }.elsewhen (tryDeqVLSIQ && !vLSIQueue.io.deq.valid) {
-    tryDeqVLSIQ := false.B 
+    inMiddle := true.B 
+  }.elsewhen (tryDeqVLSIQ && vLSIQueue.io.deq.valid) {
+    tryDeqVLSIQ := false.B
+    inMiddle := true.B 
+  }
+  }.elsewhen (vpuModule.io.memop_sync_end) {
+    inMiddle := false.B
   }
   reqQueue.io.deq.ready := issueCreditCnt =/= 0.U && vLSIQueue.io.enq.ready
   val newVGenConfig = vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && (vLSIQueue.io.deq.bits.req.uop.uses_stq || vLSIQueue.io.deq.bits.req.uop.uses_ldq)
@@ -177,10 +195,13 @@ val vAGen = Module (new VAgen ())
   }.elsewhen (vDBud === 2.U) {
     vDBcount := vDBcount + 1.U 
   }
+  
+
 
   val s0l1 = RegInit(false.B)
 
   val strideDirHold = RegInit(true.B)
+
 
 
   when (newVGenConfig && !vGenEnable) {
@@ -225,6 +246,7 @@ val vAGen = Module (new VAgen ())
     }
   }
 
+    
   
 
   io.vGenIO.req.valid := vGenEnable && ((!s0l1 && vDBcount =/= 0.U) || s0l1)
@@ -363,7 +385,7 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
     val debug_wb_vec_valid = Output(Bool())
     val debug_wb_vec_wdata = Output(UInt((vLen * 8).W))
     val debug_wb_vec_wmask = Output(UInt(8.W))
-    val load_seq_id = Input(UInt(33.W))
+    val load_seq_id = Input(UInt(34.W))
     val load_data = Input(UInt(512.W))
     val load_valid = Input (Bool())
     val load_mask = Input(UInt(64.W))
