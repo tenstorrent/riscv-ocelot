@@ -511,7 +511,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   dsq_full = WrapInc(dsq_tail, numDsqEntries) === dsq_head
   
 
-  val newDsqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_stq
+  val newDsqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_stq && !io.core.VGen.resp.bits.dsqFull
 
   dsq_tail := Mux(newDsqEntry, WrapInc(dsq_tail, numDsqEntries), dsq_tail)
 
@@ -536,7 +536,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.core.VGen.req.ready    := !dlq_full || !dsq_full  //TODO: I think this is fine for now, since we won't have them coexist
   io.core.VGen.resp.bits.dsqFull := dsq_full
   io.core.VGen.resp.bits.dlqFull := dlq_full
-  val newDlqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_ldq
+  val newDlqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_ldq && !io.core.VGen.resp.bits.dlqFull
 
   dlq_tail := Mux(newDlqEntry, WrapInc(dlq_tail, numDlqEntries), dlq_tail)
 
