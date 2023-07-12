@@ -851,7 +851,7 @@ assign ex_mem_payload.mem_fence = (ex_instrn[6:0] == 7'b0001111) & (ex_instrn[14
 // 1. Regular and fault-first unit stride with nf=0
 // 2. Whole register unit stride load for all nf values
 // 3. Unit stride mask load (Covered by 1 since nf=0 for mask loads)
-assign ex_mem_payload.vecldst_128 = 1'b0; // ex_type_vecldst & ex_vecldst_autogen.ldst_ustride & ~ex_vecldst_autogen.ldst_mask & ((ex_vecldst_nf == 4'h1) | ex_vecldst_autogen.ldst_whole_register);
+assign ex_mem_payload.vecldst_128 = 1'b1; // ex_type_vecldst & ex_vecldst_autogen.ldst_ustride & ~ex_vecldst_autogen.ldst_mask & ((ex_vecldst_nf == 4'h1) | ex_vecldst_autogen.ldst_whole_register);
 assign ex_mem_payload.mem_amo     = ex_type_amo;
 assign ex_mem_payload.mem_amotype = ex_instrn[31:27];
    
