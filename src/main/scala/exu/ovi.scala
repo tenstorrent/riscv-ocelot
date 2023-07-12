@@ -163,7 +163,7 @@ val vIdGen = Module (new VIdGen(32, 8))
  vIdGen.io.configValid := false.B 
  vIdGen.io.startID := DontCare
  vIdGen.io.startVD := DontCare  
- vIdGen.io.pop := DontCare
+ vIdGen.io.pop := false.B
  vIdGen.io.sliceSize := DontCare 
 
 val vAGen = Module (new VAgen ())
@@ -210,6 +210,7 @@ val vAGen = Module (new VAgen ())
     sbIdHold := sbIdQueue.io.deq.bits 
     vdb.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_stq
     vIdGen.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_ldq
+    vIdGen.io.startID := 0.U
     s0l1 := vLSIQueue.io.deq.bits.req.uop.uses_ldq
     vAGen.io.configValid := true.B
     vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
@@ -220,6 +221,7 @@ val vAGen = Module (new VAgen ())
     val instElemSize = vLSIQueue.io.deq.bits.req.uop.inst(14, 12)
     val vldDest = vLSIQueue.io.deq.bits.req.uop.inst(11, 7)
     strideDirHold := vLSIQueue.io.deq.bits.req.rs2_data(31)
+    vIdGen.io.startVD := vldDest
     
     when (instElemSize === 0.U) {
       vdb.io.sliceSize := 1.U
@@ -278,7 +280,7 @@ val vAGen = Module (new VAgen ())
 
   MEMSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg)
 
-  MEMLoadValid := io.vGenIO.resp.valid && io.vGenIO.resp.bits.s0l1 && !io.vGenIO.resp.bits.vectorDone
+  MEMLoadValid := io.vGenIO.resp.valid && io.vGenIO.resp.bits.s0l1 && !io.vGenIO.resp.bits.vectorDone  // needs fixing later if we are overlapping
   when (MEMLoadValid) {
     when (io.vGenIO.resp.bits.strideDir){  // negative
        when (io.vGenIO.resp.bits.memSize === 0.U) {
