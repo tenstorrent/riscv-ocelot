@@ -73,6 +73,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   io.resp.bits.uop.dst_rtype := Mux(respUop.dst_rtype === RT_VEC,
                                     RT_X,
                                     respUop.dst_rtype)
+  io.resp.bits.uop.uses_stq := 0.B // Trick Rob to acknowledge Vector Store
   io.resp.bits.fflags.valid := vpuModule.io.completed_fflags.orR
   io.resp.bits.fflags.bits.uop.rob_idx := io.resp.bits.uop.rob_idx
   io.resp.bits.fflags.bits.flags := vpuModule.io.completed_fflags
@@ -98,10 +99,10 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   val sbIdQueue = Module(new Queue(UInt(5.W), 2))
 
   // this needs to be changed in the future to include load, just keep it this way for now
-  vLSIQueue.io.enq.valid := reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq
+  vLSIQueue.io.enq.valid := reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
   vLSIQueue.io.enq.bits := reqQueue.io.deq.bits
   vLSIQueue.io.deq.ready := internalMemSyncStart || tryDeqVLSIQ
-  sbIdQueue.io.enq.valid := reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq
+  sbIdQueue.io.enq.valid := reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
   sbIdQueue.io.enq.bits := sbId
   sbIdQueue.io.deq.ready := internalMemSyncStart || tryDeqVLSIQ
   when (internalMemSyncStart && !vLSIQueue.io.deq.valid) {
@@ -110,7 +111,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
     tryDeqVLSIQ := false.B 
   }
   reqQueue.io.deq.ready := issueCreditCnt =/= 0.U && vLSIQueue.io.enq.ready
-  val newVGenConfig = vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && vLSIQueue.io.deq.bits.req.uop.uses_stq 
+  val newVGenConfig = vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && (vLSIQueue.io.deq.bits.req.uop.uses_stq || vLSIQueue.io.deq.bits.req.uop.uses_ldq)
 /*
   vLSIQ end
 */
@@ -138,23 +139,32 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
 val vAGen = Module (new VAgen ())
 
   vAGen.io.configValid := false.B 
-//  vAGen.io.startAddr := "h2001000".U (64.W)
+
   vAGen.io.startAddr := DontCare
+  vAGen.io.stride := DontCare
+  vAGen.io.isStride := DontCare 
   vAGen.io.sliceSize := 1.U 
   vAGen.io.vl := 4.U
   vAGen.io.pop := false.B  
   /*
-      Fake VGen Start
+      Decode Start
   */
-//  io.vGenIO.last := DontCare
+
   io.vGenIO.req.valid := false.B 
   io.vGenIO.req.bits := DontCare
-//  val fakeVGenCounter = RegInit(0.U(2.W))
+
   val vGenEnable  = RegInit(false.B)
   val vGenHold = Reg(new EnhancedFuncUnitReq(xLen, vLen))
   val sbIdHold = RegInit(0.U)
-//when (reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_stq && !vGenEnable) {
-//  when (vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && vLSIQueue.io.deq.bits.req.uop.uses_stq && !vGenEnable) {
+  val vDBcount = RegInit(0.U)
+  val vDBud = Cat (vpuModule.io.store_valid, vdb.io.release)
+  when (vDBud === 1.U) {
+    vDBcount := vDBcount - 1.U
+  }.elsewhen (vDBud === 2.U) {
+    vDBcount := vDBcount + 1.U 
+  }
+
+
   when (newVGenConfig && !vGenEnable) {
     vGenEnable := true.B 
     vGenHold.req.uop := vLSIQueue.io.deq.bits.req.uop
@@ -162,7 +172,8 @@ val vAGen = Module (new VAgen ())
     vdb.io.configValid := true.B 
     vAGen.io.configValid := true.B
     vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
-    vAGen.io.startAddr := vLSIQueue.io.deq.bits.req.rs1_data 
+    vAGen.io.startAddr := vLSIQueue.io.deq.bits.req.rs1_data
+    vAGen.io.stride := vLSIQueue.io.deq.bits.req.rs2_data 
     // this is fine for now, change later for index store
     val instElemSize = vLSIQueue.io.deq.bits.req.uop.inst(14, 12)
     when (instElemSize === 0.U) {
@@ -178,11 +189,17 @@ val vAGen = Module (new VAgen ())
        vdb.io.sliceSize := 8.U 
        vAGen.io.sliceSize := 8.U
     }
+    val instMop = vLSIQueue.io.deq.bits.req.uop.inst(27, 26)
+    when (instMop === 0.U) {
+      vAGen.io.isStride := false.B 
+    }.otherwise {
+      vAGen.io.isStride := true.B 
+    }
   }
 
   
 
-  io.vGenIO.req.valid := vGenEnable
+  io.vGenIO.req.valid := vGenEnable && vDBcount =/= 0.U 
   io.vGenIO.req.bits.uop := vGenHold.req.uop
   io.vGenIO.req.bits.data := vdb.io.outData 
   io.vGenIO.req.bits.last := false.B 
@@ -193,49 +210,18 @@ val vAGen = Module (new VAgen ())
   val MemCredit = vdb.io.release 
   val MemVstart = 0.U
 
-/*
-  when (fakeVGenCounter === 0.U) {
-    io.vGenIO.req.bits.addr := "h2001000".U 
-//    io.vGenIO.req.bits.data := 1.U 
-    
 
-  
-  }.elsewhen (fakeVGenCounter === 1.U){
-    io.vGenIO.req.bits.addr := "h2001008".U 
- //   io.vGenIO.req.bits.data := 2.U 
-
-  }.elsewhen (fakeVGenCounter === 2.U){
-    io.vGenIO.req.bits.addr := "h2001010".U 
-//    io.vGenIO.req.bits.data := 3.U 
-
-  }.otherwise {
-    io.vGenIO.req.bits.addr := "h2001018".U
-//    io.vGenIO.req.bits.data := 4.U
-    io.vGenIO.req.bits.last := true.B
-     
-  }
-  */
   io.vGenIO.req.bits.last := vAGen.io.last 
   when (io.vGenIO.req.valid && io.vGenIO.req.ready) {
-    vdb.io.pop := true.B 
+    vdb.io.pop := io.vGenIO.req.bits.uop.uses_stq
     vAGen.io.pop := true.B 
     when (vAGen.io.last) {
       vGenEnable := false.B         
-      vdb.io.last := true.B
+      vdb.io.last := io.vGenIO.req.bits.uop.uses_stq
     }
-    /*
-    when (fakeVGenCounter === 3.U) {
-       fakeVGenCounter := 0.U 
-       vGenEnable := false.B         
-       vdb.io.last := true.B
-    }.otherwise {
-       fakeVGenCounter := fakeVGenCounter + 1.U    
-         
-    }
-   */ 
   }
   /*
-      Fake VGen End
+      Decode End
   */
 
   vpuModule.io := DontCare
@@ -426,6 +412,8 @@ class VAgen(implicit p: Parameters) extends Module {
     val vl = Input(UInt(9.W))
     val configValid = Input(Bool())
     val startAddr = Input(UInt(64.W))
+    val stride = Input(UInt(64.W))
+    val isStride = Input(Bool())
     val pop = Input(Bool())
     val outAddr = Output(UInt(40.W))
     val last = Output(Bool())
@@ -436,8 +424,10 @@ class VAgen(implicit p: Parameters) extends Module {
 
   val currentIndex = Reg(UInt(9.W))
   val currentAddr  = Reg(UInt(64.W))
-
+  val stride  = Reg(UInt(64.W))
   val working = RegInit(false.B)
+  val isStride = Reg(Bool())
+  
 
   io.outAddr := currentAddr(39, 0)
 
@@ -446,6 +436,8 @@ class VAgen(implicit p: Parameters) extends Module {
     vlHold := io.vl - 1.U
     currentIndex := 0.U 
     currentAddr := io.startAddr
+    isStride := io.isStride
+    stride := io.stride 
     working := true.B 
   }
   
@@ -456,8 +448,12 @@ class VAgen(implicit p: Parameters) extends Module {
       working := false.B 
       currentIndex := 0.U
     }.otherwise {
-      currentIndex := currentIndex + 1.U 
-      currentAddr := currentAddr + sliceSizeHold
+      currentIndex := currentIndex + 1.U
+      when (isStride) {
+          currentAddr := currentAddr + stride 
+      }.otherwise { 
+          currentAddr := currentAddr + sliceSizeHold
+      }    
     }
   }
 

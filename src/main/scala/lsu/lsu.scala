@@ -209,7 +209,8 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
 
   val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
   val youngest_stq_idx    = UInt(stqAddrSz.W) // index of the oldest store younger than us
-
+  val youngest_vst_idx    = UInt(stqAddrSz.W) // index of youngest vector store older than us
+  val youngest_vst_count  = UInt((stqAddrSz + 1).W)
   val forward_std_val     = Bool()
   val forward_stq_idx     = UInt(stqAddrSz.W) // Which store did we get the store-load forward from?
 
@@ -226,6 +227,7 @@ class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val committed           = Bool() // committed by ROB
   val succeeded           = Bool() // D$ has ack'd this, we don't need to maintain this anymore
   val isVector            = Bool() // KYnew: placeholder for now
+  val vst_count  = UInt((stqAddrSz + 1).W)
   val debug_wb_data       = UInt(xLen.W)
 }
 
@@ -261,7 +263,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val stq_commit_head  = Reg(UInt(stqAddrSz.W)) // point to next store to commit
   val stq_execute_head = Reg(UInt(stqAddrSz.W)) // point to next store to execute
 //  val stq_execute_save = Reg(Valid(UInt(stqAddrSz.W)))
-   
+  val vstCountWidth = stqAddrSz + 1
+  val youngest_vst     = Reg(UInt(stqAddrSz.W))
+  val vst_count        = Reg(UInt((vstCountWidth).W))
+  val vstExist         = Reg(Bool())
 
   // trying to detach the bundle so that we can move things around in the future
 //  val ioVGen           = io.core.VGen
@@ -373,6 +378,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(ld_enq_idx).bits.order_fail      := false.B
       ldq(ld_enq_idx).bits.observed        := false.B
       ldq(ld_enq_idx).bits.forward_std_val := false.B
+      when (vstExist) {
+        ldq(ld_enq_idx).bits.youngest_vst_count := vst_count
+        ldq(ld_enq_idx).bits.youngest_vst_idx := youngest_vst
+      }
 
       assert (ld_enq_idx === io.core.dis_uops(w).bits.ldq_idx, "[lsu] mismatch enq load tag.")
       assert (!ldq(ld_enq_idx).valid, "[lsu] Enqueuing uop is overwriting ldq entries")
@@ -389,6 +398,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       when (io.core.dis_uops(w).bits.is_vec) {
         stq(st_enq_idx).bits.addr.valid := true.B
         stq(st_enq_idx).bits.addr_is_virtual := false.B
+        youngest_vst := st_enq_idx
+        stq(st_enq_idx).bits.vst_count := vst_count + 1.U
+        vst_count := vst_count + 1.U
+        vstExist := true.B 
       }
 
       assert (st_enq_idx === io.core.dis_uops(w).bits.stq_idx, "[lsu] mismatch enq store tag.")
@@ -416,7 +429,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   dsq_full = WrapInc(dsq_tail, numDsqEntries) === dsq_head
   io.core.VGen.req.ready    := !dsq_full
 
-  val newDsqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid
+  val newDsqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_stq
 
   dsq_tail := Mux(newDsqEntry, WrapInc(dsq_tail, numDsqEntries), dsq_tail)
 
@@ -434,6 +447,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dsq(dsq_tail).bits.sent := false.B 
 
   }
+
+  val newDlqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_ldq
 
   //-------------------------------------------------------------
   //-------------------------------------------------------------
@@ -528,7 +543,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // Determine what can fire
 
   // Can we fire a incoming load
-  val can_fire_load_incoming = widthMap(w => exe_req(w).valid && exe_req(w).bits.uop.ctrl.is_load)
+  val can_fire_load_incoming = widthMap(w => exe_req(w).valid && exe_req(w).bits.uop.ctrl.is_load)  
+  val load_incoming_no_vst   =  widthMap(w => !(vstExist && stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.isVector
+                                                   && stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.vst_count === ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_count
+                                                   && !stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.succeeded))
 
   // Can we fire an incoming store addrgen + store datagen
   val can_fire_stad_incoming = widthMap(w => exe_req(w).valid && exe_req(w).bits.uop.ctrl.is_sta
@@ -560,7 +578,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                 RegNext(dtlb.io.miss_rdy)                     &&
                                 !store_needs_order                            &&
                                 (w == memWidth-1).B                           && // TODO: Is this best scheduling?
-                                !ldq_retry_e.bits.order_fail))
+                                !ldq_retry_e.bits.order_fail))                 
+  val load_retry_no_vst  = widthMap (w => !(vstExist && stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.isVector
+                                  && stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.vst_count === ldq(ldq_retry_idx).bits.youngest_vst_count
+                                  && !stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.succeeded))
 
   // Can we retry a store addrgen that missed in the TLB
   // - Weird edge case when sta_retry and std_incoming for same entry in same cycle. Delay this
@@ -584,7 +605,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                 (stq_commit_e.bits.committed || ( stq_commit_e.bits.uop.is_amo      &&
                                                                   stq_commit_e.bits.addr.valid      &&
                                                                  !stq_commit_e.bits.addr_is_virtual &&
-                                                                  stq_commit_e.bits.data.valid) || (stq_commit_e.bits.isVector && (stq_commit_head === stq_execute_head)))))
+                                                                  stq_commit_e.bits.data.valid) || (stq_commit_e.bits.isVector && (stq_head === stq_execute_head)))))
 
   // Can we wakeup a load that was nack'd
   val block_load_wakeup = WireInit(false.B)
@@ -602,7 +623,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                               (w == memWidth-1).B                                      &&
                               (!ldq_wakeup_e.bits.addr_is_uncacheable || (io.core.commit_load_at_rob_head &&
                                                                           ldq_head === ldq_wakeup_idx &&
-                                                                          ldq_wakeup_e.bits.st_dep_mask.asUInt === 0.U))))
+                                                                          ldq_wakeup_e.bits.st_dep_mask.asUInt === 0.U)))) 
+
+  val load_wakeup_no_vst =   widthMap (w => !(vstExist && stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.isVector
+                                && stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.vst_count === ldq(ldq_wakeup_idx).bits.youngest_vst_count
+                                && !stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.succeeded))
 
   // Can we fire an incoming hellacache request
   val can_fire_hella_incoming  = WireInit(widthMap(w => false.B)) // This is assigned to in the hellashim ocntroller
@@ -654,7 +679,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     will_fire_store_commit  (w) := lsu_sched(can_fire_store_commit  (w) , false, true , false, false) //     , DC
 
 
-    assert(!(exe_req(w).valid && !(will_fire_load_incoming(w) || will_fire_stad_incoming(w) || will_fire_sta_incoming(w) || will_fire_std_incoming(w) || will_fire_sfence(w))))
+   assert(!(exe_req(w).valid && !(will_fire_load_incoming(w) || will_fire_stad_incoming(w) || will_fire_sta_incoming(w) || will_fire_std_incoming(w) || will_fire_sfence(w))))
 
     when (will_fire_load_wakeup(w)) {
       block_load_mask(ldq_wakeup_idx)           := true.B
@@ -739,7 +764,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   //val midReq = Vec(memWidth, new TLBReq(log2Ceil(coreDataBytes)))
 
 
-  for (w <- 0 until memWidth+1) {
+  for (w <- 0 until memWidth+2) {
     if (w < memWidth){
     dtlb.io.req(w).valid            := exe_tlb_valid(w)
     dtlb.io.req(w).bits.vaddr       := exe_tlb_vaddr(w)
@@ -749,12 +774,21 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dtlb.io.req(w).bits.v           := io.ptw.status.v
     dtlb.io.req(w).bits.prv         := io.ptw.status.prv
     }
-    else {
+    else if (w == memWidth) {
       dtlb.io.req(w).valid := dsq_tlb_e.valid && (dsq_tlb_e.bits.addr_is_virtual || !dsq_tlb_e.bits.addr.valid) 
       dtlb.io.req(w).bits.vaddr       := dsq_tlb_e.bits.addr.bits
       dtlb.io.req(w).bits.size        := dsq_tlb_e.bits.uop.mem_size
       dtlb.io.req(w).bits.cmd         := dsq_tlb_e.bits.uop.mem_cmd
       dtlb.io.req(w).bits.passthrough := false.B
+      dtlb.io.req(w).bits.v           := io.ptw.status.v
+      dtlb.io.req(w).bits.prv         := io.ptw.status.prv
+    }
+    else {
+      dtlb.io.req(w).valid := DontCare 
+      dtlb.io.req(w).bits.vaddr       := DontCare
+      dtlb.io.req(w).bits.size        := DontCare
+      dtlb.io.req(w).bits.cmd         := DontCare
+      dtlb.io.req(w).bits.passthrough := false.B 
       dtlb.io.req(w).bits.v           := io.ptw.status.v
       dtlb.io.req(w).bits.prv         := io.ptw.status.prv
     }
@@ -874,14 +908,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
     io.dmem.s1_kill(w) := false.B
 
-    when (will_fire_load_incoming(w)) {
+    when (will_fire_load_incoming(w) && load_incoming_no_vst(w)) {
       dmem_req(w).valid      := !exe_tlb_miss(w) && !exe_tlb_uncacheable(w)
       dmem_req(w).bits.addr  := exe_tlb_paddr(w)
       dmem_req(w).bits.uop   := exe_tlb_uop(w)
 
       s0_executing_loads(ldq_incoming_idx(w)) := dmem_req_fire(w)
       assert(!ldq_incoming_e(w).bits.executed)
-    } .elsewhen (will_fire_load_retry(w)) {
+    } .elsewhen (will_fire_load_retry(w) && load_retry_no_vst(w)) {
       dmem_req(w).valid      := !exe_tlb_miss(w) && !exe_tlb_uncacheable(w)
       dmem_req(w).bits.addr  := exe_tlb_paddr(w)
       dmem_req(w).bits.uop   := exe_tlb_uop(w)
@@ -908,6 +942,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       }.elsewhen (dsq_finished) {
         stq(stq_execute_head).bits.succeeded := true.B 
         dsq_finished := false.B 
+         stq_execute_head                     := WrapInc(stq_execute_head, numStqEntries)
       }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded){                //KYnew, revisit later
         dmem_req(w).valid := true.B
         dmem_req(w).bits.addr := dsq_commit_e.bits.addr.bits
@@ -922,7 +957,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       }.otherwise{
         dmem_req(w).valid  := false.B                        //KYnew, placeholder
       }
-    } .elsewhen (will_fire_load_wakeup(w)) {
+    } .elsewhen (will_fire_load_wakeup(w) && load_wakeup_no_vst (w)) {
       dmem_req(w).valid      := true.B
       dmem_req(w).bits.addr  := ldq_wakeup_e.bits.addr.bits
       dmem_req(w).bits.uop   := ldq_wakeup_e.bits.uop
@@ -1031,17 +1066,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val exe_req_killed = widthMap(w => IsKilledByBranch(io.core.brupdate, exe_req(w).bits.uop))
   val stdf_killed = IsKilledByBranch(io.core.brupdate, io.core.fp_stdata.bits.uop)
 
-  val fired_load_incoming  = widthMap(w => RegNext(will_fire_load_incoming(w) && !exe_req_killed(w)))
+  val fired_load_incoming  = widthMap(w => RegNext(will_fire_load_incoming(w) && !exe_req_killed(w) && load_incoming_no_vst(w)))
   val fired_stad_incoming  = widthMap(w => RegNext(will_fire_stad_incoming(w) && !exe_req_killed(w)))
   val fired_sta_incoming   = widthMap(w => RegNext(will_fire_sta_incoming (w) && !exe_req_killed(w)))
   val fired_std_incoming   = widthMap(w => RegNext(will_fire_std_incoming (w) && !exe_req_killed(w)))
   val fired_stdf_incoming  = RegNext(will_fire_stdf_incoming && !stdf_killed)
   val fired_sfence         = RegNext(will_fire_sfence)
   val fired_release        = RegNext(will_fire_release)
-  val fired_load_retry     = widthMap(w => RegNext(will_fire_load_retry   (w) && !IsKilledByBranch(io.core.brupdate, ldq_retry_e.bits.uop)))
+  val fired_load_retry     = widthMap(w => RegNext(will_fire_load_retry   (w) && !IsKilledByBranch(io.core.brupdate, ldq_retry_e.bits.uop) && load_retry_no_vst(w)))
   val fired_sta_retry      = widthMap(w => RegNext(will_fire_sta_retry    (w) && !IsKilledByBranch(io.core.brupdate, stq_retry_e.bits.uop)))
   val fired_store_commit   = RegNext(will_fire_store_commit)
-  val fired_load_wakeup    = widthMap(w => RegNext(will_fire_load_wakeup  (w) && !IsKilledByBranch(io.core.brupdate, ldq_wakeup_e.bits.uop)))
+  val fired_load_wakeup    = widthMap(w => RegNext(will_fire_load_wakeup  (w) && !IsKilledByBranch(io.core.brupdate, ldq_wakeup_e.bits.uop) && load_wakeup_no_vst(w)))
   val fired_hella_incoming = RegNext(will_fire_hella_incoming)
   val fired_hella_wakeup   = RegNext(will_fire_hella_wakeup)
 
@@ -1660,7 +1695,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     stq(stq_head).bits.data.valid := false.B
     stq(stq_head).bits.succeeded  := false.B
     stq(stq_head).bits.committed  := false.B
-
+    stq(stq_head).bits.isVector  := false.B
     stq_head := WrapInc(stq_head, numStqEntries)
     when (stq(stq_head).bits.uop.is_fence)
     {
@@ -1780,6 +1815,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dsq_tail := 0.U
       dsq_execute_head := 0.U 
       dsq_tlb_head := 0.U
+      youngest_vst := 0.U 
+      vst_count := 0.U
+      vstExist := false.B 
    //   dsq_execute_save.bits := 0.U 
    //   dsq_execute_save.valid := false.B 
       dsq_finished := false.B 
