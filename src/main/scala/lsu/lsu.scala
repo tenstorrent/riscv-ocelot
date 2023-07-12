@@ -225,7 +225,7 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val order_fail          = Bool()
   val observed            = Bool()
   val isVector            = Bool() // KYnew: placeholder for now
-
+  
   val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
   val youngest_stq_idx    = UInt(stqAddrSz.W) // index of the oldest store younger than us
   val youngest_vst_idx    = UInt(stqAddrSz.W) // index of youngest vector store older than us
@@ -647,6 +647,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val dsq_tlb_e = dsq(dsq_tlb_head)              //KYnew: continuous pinging TLB for now
   val dlq_tlb_e = dlq(dlq_tlb_head)
 
+  val dlq_commit_e = dlq(dlq_execute_head)
+  val ldq_commit_e = ldq(ldq_head)
+
   // -----------------------
   // Determine what can fire
 
@@ -724,7 +727,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                 (stq_commit_e.bits.committed || ( stq_commit_e.bits.uop.is_amo      &&
                                                                   stq_commit_e.bits.addr.valid      &&
                                                                  !stq_commit_e.bits.addr_is_virtual &&
-                                                                  stq_commit_e.bits.data.valid) || (stq_commit_e.bits.isVector && (stq_head === stq_execute_head)))))
+                                                                  stq_commit_e.bits.data.valid) || (stq_commit_e.bits.isVector && (stq_head === stq_execute_head) && dsq_commit_e.valid))))
+
+  val can_fire_vector_load = widthMap(w => (w == 0).B && 
+                                           ldq_commit_e.bits.isVector && dlq_commit_e.valid && 
+                                           dlq_commit_e.bits.addr.valid && !dlq_commit_e.bits.addr_is_virtual)
 
   // Can we wakeup a load that was nack'd
   val block_load_wakeup = WireInit(false.B)
@@ -1035,8 +1042,22 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dmem_req(w).bits.is_hella := false.B
 
     io.dmem.s1_kill(w) := false.B
-
-    when (will_fire_load_incoming(w) && load_incoming_no_vst(w) && load_incoming_no_vld(w)) {
+    when (can_fire_vector_load(w)){
+      when (dlq_finished) {
+        ldq(ldq_head).bits.succeeded := true.B 
+        dlq_finished := false.B
+      }.otherwise {
+      dmem_req(w).valid := true.B
+      dmem_req(w).bits.addr := dlq_commit_e.bits.addr.bits
+      dmem_req(w).bits.uop := dlq_commit_e.bits.uop
+      dmem_req(w).bits.uop.ldq_idx := dlq_execute_head
+      when (dlq_execute_head =/= dlq_tail) {
+        dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
+      }
+      dlq(dlq_execute_head).bits.succeeded := false.B
+      dlq(dlq_execute_head).bits.sent := true.B
+      } 
+    }.elsewhen (will_fire_load_incoming(w) && load_incoming_no_vst(w) && load_incoming_no_vld(w)) {
       dmem_req(w).valid      := !exe_tlb_miss(w) && !exe_tlb_uncacheable(w)
       dmem_req(w).bits.addr  := exe_tlb_paddr(w)
       dmem_req(w).bits.uop   := exe_tlb_uop(w)
@@ -1788,6 +1809,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(idx).bits.succeeded        := false.B
       ldq(idx).bits.order_fail       := false.B
       ldq(idx).bits.forward_std_val  := false.B
+      ldq(idx).bits.isVector  := false.B
 
     }
 
