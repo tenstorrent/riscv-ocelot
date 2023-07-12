@@ -86,9 +86,9 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
 /*
   faking mem sync start
 */
-  val fakeLoadStart = ShiftRegister (reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_ldq, 200)
+  //val fakeLoadStart = ShiftRegister (reqQueue.io.deq.valid && reqQueue.io.deq.bits.req.uop.uses_ldq, 200)
 
-   val internalMemSyncStart = vpuModule.io.memop_sync_start || fakeLoadStart
+   val internalMemSyncStart = vpuModule.io.memop_sync_start
    val tryDeqVLSIQ = RegInit(false.B)
    val internalStoreWrite = vpuModule.io.store_valid
    
@@ -97,20 +97,38 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   vLSIQ start
 */
 
+
+  val inMiddle = RegInit(false.B)
+  val outStandingReq = RegInit(0.U)
+  val vOSud = Cat (vpuModule.io.memop_sync_start, vpuModule.io.memop_sync_end)
+  when (vOSud === 1.U) {
+    outStandingReq := outStandingReq - 1.U
+  }.elsewhen (vOSud === 2.U) {
+    outStandingReq := outStandingReq + 1.U 
+  }
+
   val vLSIQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), 2))
   val sbIdQueue = Module(new Queue(UInt(5.W), 2))
 
   // this needs to be changed in the future to include load, just keep it this way for now
   vLSIQueue.io.enq.valid := reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
   vLSIQueue.io.enq.bits := reqQueue.io.deq.bits
-  vLSIQueue.io.deq.ready := internalMemSyncStart || tryDeqVLSIQ
+  vLSIQueue.io.deq.ready := !inMiddle && ((outStandingReq =/= 0.U || internalMemSyncStart) || tryDeqVLSIQ)
   sbIdQueue.io.enq.valid := reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
   sbIdQueue.io.enq.bits := sbId
-  sbIdQueue.io.deq.ready := internalMemSyncStart || tryDeqVLSIQ
-  when (internalMemSyncStart && !vLSIQueue.io.deq.valid) {
+  sbIdQueue.io.deq.ready := !inMiddle && ((outStandingReq =/= 0.U || internalMemSyncStart) || tryDeqVLSIQ)
+  when (!inMiddle) {
+  when (vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready) {
+    inMiddle := true.B 
+  }.elsewhen ((outStandingReq =/= 0.U || internalMemSyncStart) && !vLSIQueue.io.deq.valid) {
     tryDeqVLSIQ := true.B 
-  }.elsewhen (tryDeqVLSIQ && !vLSIQueue.io.deq.valid) {
-    tryDeqVLSIQ := false.B 
+    inMiddle := true.B 
+  }.elsewhen (tryDeqVLSIQ && vLSIQueue.io.deq.valid) {
+    tryDeqVLSIQ := false.B
+    inMiddle := true.B 
+  }
+  }.elsewhen (vpuModule.io.memop_sync_end) {
+    inMiddle := false.B
   }
   reqQueue.io.deq.ready := issueCreditCnt =/= 0.U && vLSIQueue.io.enq.ready
   val newVGenConfig = vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready && (vLSIQueue.io.deq.bits.req.uop.uses_stq || vLSIQueue.io.deq.bits.req.uop.uses_ldq)
@@ -145,7 +163,7 @@ val vIdGen = Module (new VIdGen(32, 8))
  vIdGen.io.configValid := false.B 
  vIdGen.io.startID := DontCare
  vIdGen.io.startVD := DontCare  
- vIdGen.io.pop := DontCare
+ vIdGen.io.pop := false.B
  vIdGen.io.sliceSize := DontCare 
 
 val vAGen = Module (new VAgen ())
@@ -177,10 +195,13 @@ val vAGen = Module (new VAgen ())
   }.elsewhen (vDBud === 2.U) {
     vDBcount := vDBcount + 1.U 
   }
+  
+
 
   val s0l1 = RegInit(false.B)
 
   val strideDirHold = RegInit(true.B)
+
 
 
   when (newVGenConfig && !vGenEnable) {
@@ -189,6 +210,7 @@ val vAGen = Module (new VAgen ())
     sbIdHold := sbIdQueue.io.deq.bits 
     vdb.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_stq
     vIdGen.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_ldq
+    vIdGen.io.startID := 0.U
     s0l1 := vLSIQueue.io.deq.bits.req.uop.uses_ldq
     vAGen.io.configValid := true.B
     vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
@@ -199,6 +221,7 @@ val vAGen = Module (new VAgen ())
     val instElemSize = vLSIQueue.io.deq.bits.req.uop.inst(14, 12)
     val vldDest = vLSIQueue.io.deq.bits.req.uop.inst(11, 7)
     strideDirHold := vLSIQueue.io.deq.bits.req.rs2_data(31)
+    vIdGen.io.startVD := vldDest
     
     when (instElemSize === 0.U) {
       vdb.io.sliceSize := 1.U
@@ -225,6 +248,7 @@ val vAGen = Module (new VAgen ())
     }
   }
 
+    
   
 
   io.vGenIO.req.valid := vGenEnable && ((!s0l1 && vDBcount =/= 0.U) || s0l1)
@@ -238,7 +262,7 @@ val vAGen = Module (new VAgen ())
   io.vGenIO.reqHelp.bits.sbId   := sbIdHold
   io.vGenIO.reqHelp.bits.strideDir := strideDirHold 
 
-  val MemSyncEnd = io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid 
+  val MemSyncEnd = io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid && inMiddle 
   val MemSbId = io.vGenIO.resp.bits.sbId
   val MemCredit = vdb.io.release 
   val MemVstart = 0.U
@@ -256,7 +280,7 @@ val vAGen = Module (new VAgen ())
 
   MEMSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg)
 
-  MEMLoadValid := io.vGenIO.resp.valid && io.vGenIO.resp.bits.s0l1 && !io.vGenIO.resp.bits.vectorDone
+  MEMLoadValid := io.vGenIO.resp.valid && io.vGenIO.resp.bits.s0l1 && !io.vGenIO.resp.bits.vectorDone  // needs fixing later if we are overlapping
   when (MEMLoadValid) {
     when (io.vGenIO.resp.bits.strideDir){  // negative
        when (io.vGenIO.resp.bits.memSize === 0.U) {
@@ -286,7 +310,8 @@ val vAGen = Module (new VAgen ())
   val MEMMaskCredit = WireInit(false.B)
 
   io.vGenIO.req.bits.last := vAGen.io.last 
-  when (io.vGenIO.req.valid && io.vGenIO.req.ready) {
+  when (io.vGenIO.req.valid && io.vGenIO.req.ready && 
+                              ((io.vGenIO.req.bits.uop.uses_stq && !io.vGenIO.resp.bits.dsqFull) || (io.vGenIO.req.bits.uop.uses_ldq && !io.vGenIO.resp.bits.dlqFull))) {
     vdb.io.pop := io.vGenIO.req.bits.uop.uses_stq
     vAGen.io.pop := true.B 
     vIdGen.io.pop := io.vGenIO.req.bits.uop.uses_ldq
@@ -363,7 +388,7 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
     val debug_wb_vec_valid = Output(Bool())
     val debug_wb_vec_wdata = Output(UInt((vLen * 8).W))
     val debug_wb_vec_wmask = Output(UInt(8.W))
-    val load_seq_id = Input(UInt(33.W))
+    val load_seq_id = Input(UInt(34.W))
     val load_data = Input(UInt(512.W))
     val load_valid = Input (Bool())
     val load_mask = Input(UInt(64.W))
