@@ -252,6 +252,7 @@ class DLQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val sent                = Bool()
   val elemID = Bits(8.W)
   val vRegID = Bits(5.W)
+  val strideDir = Bool()
 
 //  val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
 //  val youngest_stq_idx    = UInt(stqAddrSz.W) // index of the oldest store younger than us
@@ -553,6 +554,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dlq(dlq_tail).bits.sbId := io.core.VGen.reqHelp.bits.sbId
     dlq(dlq_tail).bits.elemID := io.core.VGen.reqHelp.bits.elemID
     dlq(dlq_tail).bits.vRegID := io.core.VGen.reqHelp.bits.vRegID
+    dlq(dlq_tail).bits.strideDir := io.core.VGen.reqHelp.bits.strideDir
 
   }
 
@@ -1621,9 +1623,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       }
         .elsewhen (io.dmem.nack(w).bits.uop.uses_ldq)
       {
+        when (io.dmem.nack(w).bits.uop.is_vec) {
+          dlq_execute_head := io.dmem.nack(w).bits.uop.ldq_idx  // TODO: do I reload everything? Maybe for now?
+//          dlq_execute_save.valid := true.B 
+//          dlq_execute_save.bits := dlq_execute_head
+        }.otherwise {
         assert(ldq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed)
         ldq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed  := false.B
         nacking_loads(io.dmem.nack(w).bits.uop.ldq_idx) := true.B
+        }
       }
         .otherwise
       {
@@ -1646,7 +1654,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     // Handle the response
     when (io.dmem.resp(w).valid)
     {
-      when (io.dmem.resp(w).bits.uop.uses_ldq)
+      when (io.dmem.resp(w).bits.uop.uses_ldq && io.dmem.resp(w).bits.uop.is_vec){
+          ldq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded := true.B
+          io.core.VGen.resp.valid := true.B 
+          io.core.VGen.resp.bits.elemID := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemID 
+          io.core.VGen.resp.bits.vRegID := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.vRegID 
+          io.core.VGen.resp.bits.sbId := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.sbId  
+          io.core.VGen.resp.bits.strideDir := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.strideDir
+          io.core.VGen.resp.bits.s0l1 := true.B 
+          io.core.VGen.resp.bits.memSize  := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.uop.mem_size
+          io.core.VGen.resp.bits.data := io.dmem.resp(w).bits.data
+      }.elsewhen (io.dmem.resp(w).bits.uop.uses_ldq)
       {
         assert(!io.dmem.resp(w).bits.is_hella)
         val ldq_idx = io.dmem.resp(w).bits.uop.ldq_idx
