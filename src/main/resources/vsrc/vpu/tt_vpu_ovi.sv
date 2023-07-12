@@ -382,145 +382,145 @@ module tt_vpu_ovi #(parameter VLEN = 256)
           end
           -64'd1: begin
             for(i=0, j=511; i<512; i=i+8, j=j-8)
-              packed_load_data[i+7:i] = load_data[j:j-7];
+              packed_load_data[i+:8] = load_data[j-:8];
             load_stride_in_eew_log2 = 0;
           end
           64'd2: begin
             for(i=0, j=0; i<256; i=i+8, j=j+16)
-              packed_load_data[i+7:i] = el_offset[0] ? load_data[j+15:j+8] : load_data[j+7:j];
+              packed_load_data[i+:8] = el_offset[0] ? load_data[j+8+:8] : load_data[j+:8];
             load_stride_in_eew_log2 = 1;
           end
           -64'd2: begin
             for(i=0, j=511; i<256; i=i+8, j=j-16)
-              packed_load_data[i+7:i] = el_offset[0] ? load_data[j-8:j-15] : load_data[j:j-7];
+              packed_load_data[i+:8] = el_offset[0] ? load_data[j-8-:8] : load_data[j-:8];
             load_stride_in_eew_log2 = 1;
           end
           64'd4: begin
             for(i=0, j=0; i<128; i=i+8, j=j+32)
-              packed_load_data[i+7:i] = el_offset[1:0] == 2'b00 ? load_data[j+8:j] :
-                                         el_offset[1:0] == 2'b01 ? load_data[j+15:j+8] :
-                                         el_offset[1:0] == 2'b10 ? load_data[j+23:j+16] : load_data[j+31:j+23];
+              packed_load_data[i+:8] = el_offset[1:0] == 2'b00 ? load_data[j+:8] :
+                                         el_offset[1:0] == 2'b01 ? load_data[j+8+:8] :
+                                         el_offset[1:0] == 2'b10 ? load_data[j+16+:8] : load_data[j+23+:8];
             load_stride_in_eew_log2 = 2;
           end
           -64'd4: begin
             for(i=0, j=511; i<128; i=i+8, j=j-32)
-              packed_load_data[i+7:i] = el_offset[1:0] == 2'b00 ? load_data[j:j-7] :
-                                         el_offset[1:0] == 2'b01 ? load_data[j-8:j-15] :
-                                         el_offset[1:0] == 2'b10 ? load_data[j-16:j-23] : load_data[j-23:j-31];
+              packed_load_data[i+:8] = el_offset[1:0] == 2'b00 ? load_data[j-:8] :
+                                         el_offset[1:0] == 2'b01 ? load_data[j-8-:8] :
+                                         el_offset[1:0] == 2'b10 ? load_data[j-16-:8] : load_data[j-23-:8];
             load_stride_in_eew_log2 = 2;
           end
         endcase
       end
       2'd1: begin
-        case($signed(load_stride))
-          64'd2: begin 
-            packed_load_data = load_data;
-            load_stride_in_eew_log2 = 0;
-          end
-          -64'd2: begin
-            for(i=0, j=511; i<512; i=i+16, j=j-16)
-              packed_load_data[i+15:i] = load_data[j:j-15];
-            load_stride_in_eew_log2 = 0;
-          end
-          64'd4: begin
-            for(i=0, j=0; i<256; i=i+16, j=j+32)
-              packed_load_data[i+15:i] = el_offset[0] ? load_data[j+31:j+16] : load_data[j+15:j];
-            load_stride_in_eew_log2 = 1;
-          end
-          -64'd4: begin
-            for(i=0, j=511; i<256; i=i+16, j=j-32)
-              packed_load_data[i+15:i] = el_offset[0] ? load_data[j-16:j-31] : load_data[j:j-15];
-            load_stride_in_eew_log2 = 1;
-          end
-          64'd8: begin
-            for(i=0, j=0; i<128; i=i+16, j=j+64)
-              packed_load_data[i+15:i] = el_offset[1:0] == 2'b00 ? load_data[j+16:j] :
-                                         el_offset[1:0] == 2'b01 ? load_data[j+31:j+16] :
-                                         el_offset[1:0] == 2'b10 ? load_data[j+47:j+32] : load_data[j+63:j+48];
-            load_stride_in_eew_log2 = 2;
-          end
-          -64'd8: begin
-            for(i=0, j=511; i<128; i=i+16, j=j-64)
-              packed_load_data[i+15:i] = el_offset[1:0] == 2'b00 ? load_data[j:j-15] :
-                                         el_offset[1:0] == 2'b01 ? load_data[j-16:j-31] :
-                                         el_offset[1:0] == 2'b10 ? load_data[j-32:j-47] : load_data[j-48:j-63];
-            load_stride_in_eew_log2 = 2;
-          end
-        endcase
+      case($signed(load_stride))
+        64'd2: begin 
+          packed_load_data = load_data;
+          load_stride_in_eew_log2 = 0;
+        end
+        -64'd2: begin
+          for(i=0, j=511; i<512; i=i+16, j=j-16)
+            packed_load_data[i+:16] = load_data[j-:16];
+          load_stride_in_eew_log2 = 0;
+        end
+        64'd4: begin
+          for(i=0, j=0; i<256; i=i+16, j=j+32)
+            packed_load_data[i+:16] = el_offset[0] ? load_data[j+16+:16] : load_data[j+:16];
+          load_stride_in_eew_log2 = 1;
+        end
+        -64'd4: begin
+          for(i=0, j=511; i<256; i=i+16, j=j-32)
+            packed_load_data[i+:16] = el_offset[0] ? load_data[j-16-:16] : load_data[j-:16];
+          load_stride_in_eew_log2 = 1;
+        end
+        64'd8: begin
+          for(i=0, j=0; i<128; i=i+16, j=j+64)
+            packed_load_data[i+:16] = el_offset[1:0] == 2'b00 ? load_data[j+:16] :
+                                      el_offset[1:0] == 2'b01 ? load_data[j+16+:16] :
+                                      el_offset[1:0] == 2'b10 ? load_data[j+32+:16] : load_data[j+48+:16];
+          load_stride_in_eew_log2 = 2;
+        end
+        -64'd8: begin
+          for(i=0, j=511; i<128; i=i+16, j=j-64)
+            packed_load_data[i+:16] = el_offset[1:0] == 2'b00 ? load_data[j-:16] :
+                                      el_offset[1:0] == 2'b01 ? load_data[j-16-:16] :
+                                      el_offset[1:0] == 2'b10 ? load_data[j-32-:16] : load_data[j-48-:16];
+          load_stride_in_eew_log2 = 2;
+        end
+      endcase
       end
       2'd2: begin
-        case($signed(load_stride))
-          64'd4: begin 
-            packed_load_data = load_data;
-            load_stride_in_eew_log2 = 0;
-          end
-          -64'd4: begin
-            for(i=0, j=511; i<512; i=i+32, j=j-32)
-              packed_load_data[i+31:i] = load_data[j:j-31];
-            load_stride_in_eew_log2 = 0;
-          end
-          64'd8: begin
-            for(i=0, j=0; i<256; i=i+32, j=j+64)
-              packed_load_data[i+31:i] = el_offset[0] ? load_data[j+63:j+32] : load_data[j+31:j];
-            load_stride_in_eew_log2 = 1;
-          end
-          -64'd8: begin
-            for(i=0, j=511; i<256; i=i+32, j=j-64)
-              packed_load_data[i+31:i] = el_offset[0] ? load_data[j-32:j-63] : load_data[j:j-31];
-            load_stride_in_eew_log2 = 1;
-          end
-          64'd16: begin
-            for(i=0, j=0; i<128; i=i+32, j=j+128)
-              packed_load_data[i+31:i] = el_offset[1:0] == 2'b00 ? load_data[j+31:j] :
-                                         el_offset[1:0] == 2'b01 ? load_data[j+63:j+32] :
-                                         el_offset[1:0] == 2'b10 ? load_data[j+95:j+64] : load_data[j+127:j+96];
-            load_stride_in_eew_log2 = 2;
-          end
-          -64'd16: begin
-            for(i=0, j=511; i<128; i=i+32, j=j-128)
-              packed_load_data[i+31:i] = el_offset[1:0] == 2'b00 ? load_data[j:j-31] :
-                                         el_offset[1:0] == 2'b01 ? load_data[j-32:j-63] :
-                                         el_offset[1:0] == 2'b10 ? load_data[j-64:j-95] : load_data[j-96:j-127];
-            load_stride_in_eew_log2 = 2;
-          end
-        endcase
+      case($signed(load_stride))
+        64'd4: begin 
+          packed_load_data = load_data;
+          load_stride_in_eew_log2 = 0;
+        end
+        -64'd4: begin
+          for(i=0, j=511; i<512; i=i+32, j=j-32)
+            packed_load_data[i+:32] = load_data[j-:32];
+          load_stride_in_eew_log2 = 0;
+        end
+        64'd8: begin
+          for(i=0, j=0; i<256; i=i+32, j=j+64)
+            packed_load_data[i+:32] = el_offset[0] ? load_data[j+63-:32] : load_data[j+31-:32];
+          load_stride_in_eew_log2 = 1;
+        end
+        -64'd8: begin
+          for(i=0, j=511; i<256; i=i+32, j=j-64)
+            packed_load_data[i+:32] = el_offset[0] ? load_data[j-32-:32] : load_data[j-:32];
+          load_stride_in_eew_log2 = 1;
+        end
+        64'd16: begin
+          for(i=0, j=0; i<128; i=i+32, j=j+128)
+            packed_load_data[i+:32] = el_offset[1:0] == 2'b00 ? load_data[j+31-:32] :
+                                      el_offset[1:0] == 2'b01 ? load_data[j+63-:32] :
+                                      el_offset[1:0] == 2'b10 ? load_data[j+95-:32] : load_data[j+127-:32];
+          load_stride_in_eew_log2 = 2;
+        end
+        -64'd16: begin
+          for(i=0, j=511; i<128; i=i+32, j=j-128)
+            packed_load_data[i+:32] = el_offset[1:0] == 2'b00 ? load_data[j-:32] :
+                                      el_offset[1:0] == 2'b01 ? load_data[j-32-:32] :
+                                      el_offset[1:0] == 2'b10 ? load_data[j-64-:32] : load_data[j-96-:32];
+          load_stride_in_eew_log2 = 2;
+        end
+      endcase
       end
       2'd3: begin
-        case($signed(load_stride))
-          64'd8: begin
-            packed_load_data = load_data;
-            load_stride_in_eew_log2 = 0;
-          end
-          -64'd8: begin
-            for(i=0, j=511; i<512; i=i+64, j=j-64)
-              packed_load_data[i+63:i] = load_data[j:j-63];
-            load_stride_in_eew_log2 = 0;
-          end
-          64'd16: begin
-            for(i=0, j=0; i<256; i=i+64, j=j+128)
-              packed_load_data[i+63:i] = el_offset[0] ? load_data[j+127:j+64] : load_data[j+63:j];
-            load_stride_in_eew_log2 = 1;
-          end
-          -64'd16: begin
-            for(i=0, j=511; i<256; i=i+64, j=j-128)
-              packed_load_data[i+63:i] = el_offset[0] ? load_data[j-64:j-127] : load_data[j:j-63];
-            load_stride_in_eew_log2 = 1;
-          end
-          64'd32: begin
-            for(i=0, j=0; i<128; i=i+64, j=j+256)
-              packed_load_data[i+63:i] = el_offset[1:0] == 2'b00 ? load_data[j+63:j] :
-                                         el_offset[1:0] == 2'b01 ? load_data[j+127:j+64] :
-                                         el_offset[1:0] == 2'b10 ? load_data[j+191:j+128] : load_data[j+255:j+192];
-            load_stride_in_eew_log2 = 2;
-          end
-          -64'd32: begin
-            for(i=0, j=511; i<128; i=i+32, j=j-256)
-              packed_load_data[i+63:i] = el_offset[1:0] == 2'b00 ? load_data[j:j-63] :
-                                         el_offset[1:0] == 2'b01 ? load_data[j-64:j-127] :
-                                         el_offset[1:0] == 2'b10 ? load_data[j-128:j-191] : load_data[j-191:j-255];
-            load_stride_in_eew_log2 = 2;
-          end
-        endcase
+      case($signed(load_stride))
+        64'd8: begin
+          packed_load_data = load_data;
+          load_stride_in_eew_log2 = 0;
+        end
+        -64'd8: begin
+          for(i=0, j=511; i<512; i=i+64, j=j-64)
+            packed_load_data[i+:64] = load_data[j-:64];
+          load_stride_in_eew_log2 = 0;
+        end
+        64'd16: begin
+          for(i=0, j=0; i<256; i=i+64, j=j+128)
+            packed_load_data[i+:64] = el_offset[0] ? load_data[j+127-:64] : load_data[j+63-:64];
+          load_stride_in_eew_log2 = 1;
+        end
+        -64'd16: begin
+          for(i=0, j=511; i<256; i=i+64, j=j-128)
+            packed_load_data[i+:64] = el_offset[0] ? load_data[j-64-:64] : load_data[j-:64];
+          load_stride_in_eew_log2 = 1;
+        end
+        64'd32: begin
+          for(i=0, j=0; i<128; i=i+64, j=j+256)
+            packed_load_data[i+:64] = el_offset[1:0] == 2'b00 ? load_data[j+63-:64] :
+                                      el_offset[1:0] == 2'b01 ? load_data[j+127-:64] :
+                                      el_offset[1:0] == 2'b10 ? load_data[j+191-:64] : load_data[j+255-:64];
+          load_stride_in_eew_log2 = 2;
+        end
+        -64'd32: begin
+          for(i=0, j=511; i<128; i=i+64, j=j-256)
+            packed_load_data[i+:64] = el_offset[1:0] == 2'b00 ? load_data[j-:64] :
+                                      el_offset[1:0] == 2'b01 ? load_data[j-64-:64] :
+                                      el_offset[1:0] == 2'b10 ? load_data[j-128-:64] : load_data[j-192-:64];
+          load_stride_in_eew_log2 = 2;
+        end
+      endcase
       end
     endcase
   end
@@ -530,18 +530,19 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     offset_diff = (el_id - packed_offset) << eew_log2;
     shamt = offset_diff[10] ? offset_diff + VLEN : offset_diff;
     // Circular rotate left by shamt
-    shifted_load_data = {packed_load_data[511-shamt:0], packed_load_data[511:511-shamt]}; // perform the rotation
+    shifted_load_data = packed_load_data << shamt | (packed_load_data >> (512-shamt));
     el_id_lower_bound = el_id << eew_log2;
     el_id_upper_bound = (el_id + el_count) << eew_log2;
   end
 
+  integer k;
   always @(posedge clk) begin
     if(!reset_n)
-      for(i=0; i<8; i=i+1)
-        load_buffer[i] <= 0;
+      for(k=0; k<8; k=k+1)
+        load_buffer[k] <= 0;
     else begin
-      for(i=0; i<VLEN; i=i+1)
-        load_buffer[v_reg[2:0]][i] <= (el_id_lower_bound <= i && i <= el_id_upper_bound) ? shifted_load_data[i] : load_buffer[v_reg[2:0]][i];
+      for(k=0; k<VLEN; k=k+1)
+        load_buffer[v_reg[2:0]][k] <= (el_id_lower_bound <= k && k <= el_id_upper_bound) ? shifted_load_data[k] : load_buffer[v_reg[2:0]][k];
     end
   end
 
