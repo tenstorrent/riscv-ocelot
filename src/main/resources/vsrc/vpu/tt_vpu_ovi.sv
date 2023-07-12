@@ -2,39 +2,40 @@
 // Open Vector Interface wrapper module for Ocelot
 
 // Temporary test module for load logic
-module load_test_module(input logic clk, reset_n,
-                        input memop_sync_start,
-                        output memop_sync_end,
-                        output load_valid,
-                        output [511:0] load_data,
-                        output [33:0] load_seq_id)
+// module load_test_module(input logic clk, reset_n,
+//                         input memop_sync_start,
+//                         output memop_sync_end,
+//                         output load_valid,
+//                         output [511:0] load_data,
+//                         output [33:0] load_seq_id)
 
-  initial begin
-    load_valid = 0;
-    load_data = 0;
-    @(posedge memop_sync_start) begin
-      repeat(5) @(posedge clk)
-      load_valid = 1;
-      load_data = 512'h123456789ABCDEF0; //64-bits data
-      load_seq_id[4:0] = 3; // v_reg = 3
-      load_seq_id[15:5] = 0 // el_id = 0
-      load_seq_id[21:16] = 0 // el_off = 0
-      load_seq_id[28:22] = 1 // el_count = 1
-      load_seq_id[33:29] = 0 // sb_id = 0
-      @(posedge clk)
-      load_data = 512'h246813579BCEFD0A; //64-bits data
-      load_seq_id[15:5] = 1; // el_id = 1
-      @(posedge clk)
-      load_data = 512'hFEDCBA9876543210; //64-bits data
-      load_seq_id[15:5] = 2; // el_id = 2
-      @(posedge clk)
-      load_data = 512'h0AFDB97531426820; //64-bits data
-      load_seq_id[15:5] = 3; // el_id = 3
-      @(posedge clk)
-        load_valid = 0;
-    end
-  end
-endmodule
+//   initial begin
+//     load_valid = 0;
+//     load_data = 0;
+//     @(posedge memop_sync_start)
+//     @(posedge memop_sync_start) begin
+//       repeat(5) @(posedge clk)
+//       load_valid = 1;
+//       load_data = 512'h123456789ABCDEF0; //64-bits data
+//       load_seq_id[4:0] = 3; // v_reg = 3
+//       load_seq_id[15:5] = 0 // el_id = 0
+//       load_seq_id[21:16] = 0 // el_off = 0
+//       load_seq_id[28:22] = 1 // el_count = 1
+//       load_seq_id[33:29] = 0 // sb_id = 0
+//       @(posedge clk)
+//       load_data = 512'h246813579BCEFD0A; //64-bits data
+//       load_seq_id[15:5] = 1; // el_id = 1
+//       @(posedge clk)
+//       load_data = 512'hFEDCBA9876543210; //64-bits data
+//       load_seq_id[15:5] = 2; // el_id = 2
+//       @(posedge clk)
+//       load_data = 512'h0AFDB97531426820; //64-bits data
+//       load_seq_id[15:5] = 3; // el_id = 3
+//       @(posedge clk)
+//         load_valid = 0;
+//     end
+//   end
+// endmodule
 
 module tt_vpu_ovi #(parameter VLEN = 256)
 (                 input  logic clk, reset_n,
@@ -345,6 +346,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [5:0] packed_offset;
   logic [10:0] offset_diff;
   logic [$clog2(VLEN)-1:0] shamt;
+  logic [8:0] el_id_lower_bound;
+  logic [8:0] el_id_upper_bound;
   logic [7:0][VLEN-1:0] load_buffer;
 
   assign v_reg = load_seq_id[4:0];
@@ -355,7 +358,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   always @(posedge clk) begin
     if(!reset_n)
-      {eew_reg,load_stride,eew_log2_reg} <= 0;
+      {eew,load_stride,eew_log2} <= 0;
     else if(read_valid && ocelot_read_req) begin
       eew <= read_issue_inst[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
              read_issue_inst[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
@@ -534,7 +537,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   always @(posedge clk) begin
     if(!reset_n)
-      for(i=0; i<8: i=i+1)
+      for(i=0; i<8; i=i+1)
         load_buffer[i] <= 0;
     else begin
       for(i=0; i<VLEN; i=i+1)
