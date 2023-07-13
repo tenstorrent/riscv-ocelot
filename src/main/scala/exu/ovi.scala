@@ -332,7 +332,7 @@ val vAGen = Module (new VAgen ())
   vpuModule.io.issue_valid := reqQueue.io.deq.valid && reqQueue.io.deq.ready
   vpuModule.io.issue_inst := reqQueue.io.deq.bits.req.uop.inst
   vpuModule.io.issue_sb_id := sbId
-  vpuModule.io.issue_scalar_opnd := reqQueue.io.deq.bits.req.rs1_data
+  vpuModule.io.issue_scalar_opnd := Mux( (reqQueue.io.deq.bits.req.uop.uses_ldq || reqQueue.io.deq.bits.req.uop.uses_stq), reqQueue.io.deq.bits.req.rs2_data, reqQueue.io.deq.bits.req.rs1_data)
   vpuModule.io.issue_vcsr := Cat(
     0.U(1.W), // vill
     reqQueue.io.deq.bits.vconfig.vtype.vsew, // vsew
