@@ -225,6 +225,8 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val order_fail          = Bool()
   val observed            = Bool()
   val isVector            = Bool() // KYnew: placeholder for now
+  val vectorCanGo         = Bool()
+  val vectorHasCross      = Bool()
   
   val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
   val hasOlderVst         = Bool()
@@ -271,6 +273,9 @@ class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val succeeded           = Bool() // D$ has ack'd this, we don't need to maintain this anymore
   val isVector            = Bool() // KYnew: placeholder for now
   val vst_count  = UInt((stqAddrSz + 1).W)
+  val vectorCanGo         = Bool()
+  val vectorHasCross      = Bool()
+  val youngest_ldq_idx    = UInt(ldqAddrSz.W)
   val debug_wb_data       = UInt(xLen.W)
 }
 
@@ -493,6 +498,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         stq(st_enq_idx).bits.vst_count := vst_count + 1.U
         vst_count := vst_count + 1.U
         vstExist := true.B 
+        stq(st_enq_idx).bits.youngest_ldq_idx  := ld_enq_idx
+        stq(st_enq_idx).bits.vectorCanGo := false.B 
+        stq(st_enq_idx).bits.vectorHasCross := true.B 
       }
 
       assert (st_enq_idx === io.core.dis_uops(w).bits.stq_idx, "[lsu] mismatch enq store tag.")
@@ -909,6 +917,20 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   
   //val midReq = Vec(memWidth, new TLBReq(log2Ceil(coreDataBytes)))
 
+  for (w <- 0 until numStqEntries) {
+    when (stq(w).valid && stq(w).bits.isVector) {
+      when (stq(w).bits.vectorHasCross && !stq(w).bits.vectorCanGo) {
+        when ((ldq_head > stq(w).bits.youngest_ldq_idx) || ldq_head === WrapInc(stq(w).bits.youngest_ldq_idx, numLdqEntries)) {
+          stq(w).bits.vectorCanGo := true.B 
+        }
+      }.otherwise {
+        when (ldq_head === stq(w).bits.youngest_ldq_idx) {
+          stq(w).bits.vectorHasCross := true.B 
+        }
+      }
+    }
+  }
+
 
   for (w <- 0 until memWidth+2) {
     if (w < memWidth){
@@ -1060,6 +1082,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     when (can_fire_vector_load(w)){
       when (dlq_finished) {
         ldq(ldq_head).bits.succeeded := true.B 
+        ldq(ldq_head).bits.executed := true.B
         dlq_finished := false.B
       }.otherwise {
       dmem_req(w).valid := true.B
