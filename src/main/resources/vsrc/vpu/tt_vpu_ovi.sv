@@ -701,7 +701,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
-  assign debug_wb_vec_valid = (ocelot_instrn_commit_valid && load_fsm_state != 2'd2) || store_commit || load_commit;
+  assign debug_wb_vec_valid = ocelot_instrn_commit_valid;
   assign debug_wb_vec_wdata = ocelot_instrn_commit_data;
   assign debug_wb_vec_wmask = ocelot_instrn_commit_mask;
 
