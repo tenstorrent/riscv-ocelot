@@ -59,7 +59,9 @@ module vfp_pipeline #(parameter
    output logic                           o_id_mem_lq_done,
    output logic                           o_id_ex_units_rts,
    output logic [VLEN-1:0]                o_vs3_rddata,
-   output logic                           o_lq_empty
+   output logic                           o_lq_empty,
+
+   input  logic                           i_ovi_stall
 );
 
    localparam                                          FLEN    = 32;
@@ -346,7 +348,9 @@ module vfp_pipeline #(parameter
       .i_mem_fe_lqfull                       (mem_fe_lqfull),         
       .i_mem_fe_lqempty                      (mem_fe_lqempty),
       .i_mem_fe_skidbuffull                  (mem_fe_skidbuffull),    
-      .i_mem_id_lqnxtid                      (mem_id_lqnxtid[LQ_DEPTH_LOG2-1:0])
+      .i_mem_id_lqnxtid                      (mem_id_lqnxtid[LQ_DEPTH_LOG2-1:0]),
+
+      .i_ovi_stall                           (i_ovi_stall)
    );  
 
    //////////
@@ -443,7 +447,9 @@ module vfp_pipeline #(parameter
       .o_ex_mem_vld           (ex_mem_vld          ),
       
       // Debug
-      .i_reset_pc             ('0)
+      .i_reset_pc             ('0),
+
+      .i_ovi_stall(i_ovi_stall)
    );
 
    assign vrf_p2_rden    = id_vec_autogen.rf_rden2; // FIXME | ex_vec_csr.v_lmul[2];

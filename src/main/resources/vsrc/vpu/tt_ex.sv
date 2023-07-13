@@ -86,7 +86,9 @@ module tt_ex #(parameter INCL_VEC=0, VLEN=128, ADDRWIDTH=40, ST_DATA_WIDTH_BITS=
    output wire 			    o_ex_mem_vld ,
 
    // Unique indentifier for debug
-   input [31:0] 		    i_reset_pc
+   input [31:0] 		    i_reset_pc,
+
+   input logic          i_ovi_stall
 
 );
 
@@ -193,7 +195,7 @@ wire mem_pipe_rtr_raw = (i_mem_ex_rtr & ~int_div_stall);
 wire mem_pipe_rtr     = (i_mem_ex_rtr & ~int_div_stall & (~(ex_vld & ex_type_vecldst) | ex_vecldst_iter_done_q));
 reg ex_disp_vld;
 
-assign o_ex_id_rtr = mem_pipe_rtr;  
+assign o_ex_id_rtr = mem_pipe_rtr && !i_ovi_stall;
 
 // Create a single cycle EX branch vld based on new instr popped out of the instrn_fifo
 always_ff @(posedge i_clk) begin
@@ -851,7 +853,7 @@ assign ex_mem_payload.mem_fence = (ex_instrn[6:0] == 7'b0001111) & (ex_instrn[14
 // 1. Regular and fault-first unit stride with nf=0
 // 2. Whole register unit stride load for all nf values
 // 3. Unit stride mask load (Covered by 1 since nf=0 for mask loads)
-assign ex_mem_payload.vecldst_128 = 1'b1; // ex_type_vecldst & ex_vecldst_autogen.ldst_ustride & ~ex_vecldst_autogen.ldst_mask & ((ex_vecldst_nf == 4'h1) | ex_vecldst_autogen.ldst_whole_register);
+assign ex_mem_payload.vecldst_128 = 1'b0; // ex_type_vecldst & ex_vecldst_autogen.ldst_ustride & ~ex_vecldst_autogen.ldst_mask & ((ex_vecldst_nf == 4'h1) | ex_vecldst_autogen.ldst_whole_register);
 assign ex_mem_payload.mem_amo     = ex_type_amo;
 assign ex_mem_payload.mem_amotype = ex_instrn[31:27];
    

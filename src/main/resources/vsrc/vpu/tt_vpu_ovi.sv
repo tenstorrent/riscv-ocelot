@@ -92,6 +92,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   localparam INCL_FP = 1;
   localparam STORE_CREDITS = 32;
 
+  // stall the ID stage when there is a load/store 
+  logic ovi_stall;
   logic ocelot_read_req;
 
   logic        read_valid;
@@ -156,7 +158,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     store_fsm_next_state = 0;
     case (store_fsm_state)
       0: begin
-        if(vecldst_autogen_store) begin
+        if(vecldst_autogen_store && ocelot_read_req) begin
           if(id_mem_lq_done)
             store_fsm_next_state = 2;
           else
@@ -205,7 +207,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         store_buffer_valid <= 0;
         store_buffer_wptr <= 0;
       end
-      else if(store_fsm_state == 1 || (store_fsm_state == 0 && vecldst_autogen_store)) begin
+      else if(store_fsm_state == 1 || (store_fsm_state == 0 && vecldst_autogen_store && ocelot_read_req)) begin
         if(id_ex_units_rts) begin
           store_buffer[store_buffer_wptr] <= vs3_rddata;
           store_buffer_valid[store_buffer_wptr] <= 1;
@@ -217,7 +219,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
-  assign store_memsync_start = store_fsm_state == 0 && vecldst_autogen_store;
+  assign store_memsync_start = store_fsm_state == 0 && vecldst_autogen_store && ocelot_read_req;
   always_ff@(posedge clk) begin
     if(!reset_n)
       memop_sync_start <= 0;
@@ -239,7 +241,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         store_buffer_sent <= 0;
       end
       // Bypass the store buffer because we only need to send 1 register
-      else if((store_fsm_state == 1 || store_fsm_state == 0) && id_ex_units_rts && vecldst_autogen_store && id_mem_lq_done && store_buffer_wptr == 0) begin
+      else if((store_fsm_state == 1 || store_fsm_state == 0) && id_ex_units_rts && vecldst_autogen_store && ocelot_read_req && id_mem_lq_done && store_buffer_wptr == 0) begin
         store_valid <= 1;
         store_data[255:0] <= vs3_rddata;
       end
@@ -281,7 +283,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         sbid_queue[sbid_queue_wptr] <= read_issue_sb_id;
         sbid_queue_wptr <= sbid_queue_wptr + 1;
       end
-      if(ocelot_instrn_commit_valid || store_commit || load_commit) begin
+      if((ocelot_instrn_commit_valid && load_fsm_state != 2'd2) || store_commit || load_commit) begin
         sbid_queue_rptr <= sbid_queue_rptr + 1;
       end
     end
@@ -332,7 +334,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [511:0] shifted_load_data;
   logic [4:0]   v_reg;
   logic [10:0]  el_id;
-  logic [5:0]   el_offset;
+  logic [5:0]   el_off;
   logic [6:0]   el_count;
   logic [4:0]   sb_id;
   // from 0 to 3, 8-bit to 64-bit EEW
@@ -387,26 +389,26 @@ module tt_vpu_ovi #(parameter VLEN = 256)
           end
           64'd2: begin
             for(i=0, j=0; i<256; i=i+8, j=j+16)
-              packed_load_data[i+:8] = el_offset[0] ? load_data[j+8+:8] : load_data[j+:8];
+              packed_load_data[i+:8] = el_off[0] ? load_data[j+8+:8] : load_data[j+:8];
             load_stride_in_eew_log2 = 1;
           end
           -64'd2: begin
             for(i=0, j=511; i<256; i=i+8, j=j-16)
-              packed_load_data[i+:8] = el_offset[0] ? load_data[j-8-:8] : load_data[j-:8];
+              packed_load_data[i+:8] = el_off[0] ? load_data[j-8-:8] : load_data[j-:8];
             load_stride_in_eew_log2 = 1;
           end
           64'd4: begin
             for(i=0, j=0; i<128; i=i+8, j=j+32)
-              packed_load_data[i+:8] = el_offset[1:0] == 2'b00 ? load_data[j+:8] :
-                                         el_offset[1:0] == 2'b01 ? load_data[j+8+:8] :
-                                         el_offset[1:0] == 2'b10 ? load_data[j+16+:8] : load_data[j+23+:8];
+              packed_load_data[i+:8] = el_off[1:0] == 2'b00 ? load_data[j+:8] :
+                                         el_off[1:0] == 2'b01 ? load_data[j+8+:8] :
+                                         el_off[1:0] == 2'b10 ? load_data[j+16+:8] : load_data[j+23+:8];
             load_stride_in_eew_log2 = 2;
           end
           -64'd4: begin
             for(i=0, j=511; i<128; i=i+8, j=j-32)
-              packed_load_data[i+:8] = el_offset[1:0] == 2'b00 ? load_data[j-:8] :
-                                         el_offset[1:0] == 2'b01 ? load_data[j-8-:8] :
-                                         el_offset[1:0] == 2'b10 ? load_data[j-16-:8] : load_data[j-23-:8];
+              packed_load_data[i+:8] = el_off[1:0] == 2'b00 ? load_data[j-:8] :
+                                         el_off[1:0] == 2'b01 ? load_data[j-8-:8] :
+                                         el_off[1:0] == 2'b10 ? load_data[j-16-:8] : load_data[j-23-:8];
             load_stride_in_eew_log2 = 2;
           end
         endcase
@@ -424,26 +426,26 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         end
         64'd4: begin
           for(i=0, j=0; i<256; i=i+16, j=j+32)
-            packed_load_data[i+:16] = el_offset[0] ? load_data[j+16+:16] : load_data[j+:16];
+            packed_load_data[i+:16] = el_off[0] ? load_data[j+16+:16] : load_data[j+:16];
           load_stride_in_eew_log2 = 1;
         end
         -64'd4: begin
           for(i=0, j=511; i<256; i=i+16, j=j-32)
-            packed_load_data[i+:16] = el_offset[0] ? load_data[j-16-:16] : load_data[j-:16];
+            packed_load_data[i+:16] = el_off[0] ? load_data[j-16-:16] : load_data[j-:16];
           load_stride_in_eew_log2 = 1;
         end
         64'd8: begin
           for(i=0, j=0; i<128; i=i+16, j=j+64)
-            packed_load_data[i+:16] = el_offset[1:0] == 2'b00 ? load_data[j+:16] :
-                                      el_offset[1:0] == 2'b01 ? load_data[j+16+:16] :
-                                      el_offset[1:0] == 2'b10 ? load_data[j+32+:16] : load_data[j+48+:16];
+            packed_load_data[i+:16] = el_off[1:0] == 2'b00 ? load_data[j+:16] :
+                                      el_off[1:0] == 2'b01 ? load_data[j+16+:16] :
+                                      el_off[1:0] == 2'b10 ? load_data[j+32+:16] : load_data[j+48+:16];
           load_stride_in_eew_log2 = 2;
         end
         -64'd8: begin
           for(i=0, j=511; i<128; i=i+16, j=j-64)
-            packed_load_data[i+:16] = el_offset[1:0] == 2'b00 ? load_data[j-:16] :
-                                      el_offset[1:0] == 2'b01 ? load_data[j-16-:16] :
-                                      el_offset[1:0] == 2'b10 ? load_data[j-32-:16] : load_data[j-48-:16];
+            packed_load_data[i+:16] = el_off[1:0] == 2'b00 ? load_data[j-:16] :
+                                      el_off[1:0] == 2'b01 ? load_data[j-16-:16] :
+                                      el_off[1:0] == 2'b10 ? load_data[j-32-:16] : load_data[j-48-:16];
           load_stride_in_eew_log2 = 2;
         end
       endcase
@@ -461,26 +463,26 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         end
         64'd8: begin
           for(i=0, j=0; i<256; i=i+32, j=j+64)
-            packed_load_data[i+:32] = el_offset[0] ? load_data[j+63-:32] : load_data[j+31-:32];
+            packed_load_data[i+:32] = el_off[0] ? load_data[j+63-:32] : load_data[j+31-:32];
           load_stride_in_eew_log2 = 1;
         end
         -64'd8: begin
           for(i=0, j=511; i<256; i=i+32, j=j-64)
-            packed_load_data[i+:32] = el_offset[0] ? load_data[j-32-:32] : load_data[j-:32];
+            packed_load_data[i+:32] = el_off[0] ? load_data[j-32-:32] : load_data[j-:32];
           load_stride_in_eew_log2 = 1;
         end
         64'd16: begin
           for(i=0, j=0; i<128; i=i+32, j=j+128)
-            packed_load_data[i+:32] = el_offset[1:0] == 2'b00 ? load_data[j+31-:32] :
-                                      el_offset[1:0] == 2'b01 ? load_data[j+63-:32] :
-                                      el_offset[1:0] == 2'b10 ? load_data[j+95-:32] : load_data[j+127-:32];
+            packed_load_data[i+:32] = el_off[1:0] == 2'b00 ? load_data[j+31-:32] :
+                                      el_off[1:0] == 2'b01 ? load_data[j+63-:32] :
+                                      el_off[1:0] == 2'b10 ? load_data[j+95-:32] : load_data[j+127-:32];
           load_stride_in_eew_log2 = 2;
         end
         -64'd16: begin
           for(i=0, j=511; i<128; i=i+32, j=j-128)
-            packed_load_data[i+:32] = el_offset[1:0] == 2'b00 ? load_data[j-:32] :
-                                      el_offset[1:0] == 2'b01 ? load_data[j-32-:32] :
-                                      el_offset[1:0] == 2'b10 ? load_data[j-64-:32] : load_data[j-96-:32];
+            packed_load_data[i+:32] = el_off[1:0] == 2'b00 ? load_data[j-:32] :
+                                      el_off[1:0] == 2'b01 ? load_data[j-32-:32] :
+                                      el_off[1:0] == 2'b10 ? load_data[j-64-:32] : load_data[j-96-:32];
           load_stride_in_eew_log2 = 2;
         end
       endcase
@@ -498,26 +500,26 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         end
         64'd16: begin
           for(i=0, j=0; i<256; i=i+64, j=j+128)
-            packed_load_data[i+:64] = el_offset[0] ? load_data[j+127-:64] : load_data[j+63-:64];
+            packed_load_data[i+:64] = el_off[0] ? load_data[j+127-:64] : load_data[j+63-:64];
           load_stride_in_eew_log2 = 1;
         end
         -64'd16: begin
           for(i=0, j=511; i<256; i=i+64, j=j-128)
-            packed_load_data[i+:64] = el_offset[0] ? load_data[j-64-:64] : load_data[j-:64];
+            packed_load_data[i+:64] = el_off[0] ? load_data[j-64-:64] : load_data[j-:64];
           load_stride_in_eew_log2 = 1;
         end
         64'd32: begin
           for(i=0, j=0; i<128; i=i+64, j=j+256)
-            packed_load_data[i+:64] = el_offset[1:0] == 2'b00 ? load_data[j+63-:64] :
-                                      el_offset[1:0] == 2'b01 ? load_data[j+127-:64] :
-                                      el_offset[1:0] == 2'b10 ? load_data[j+191-:64] : load_data[j+255-:64];
+            packed_load_data[i+:64] = el_off[1:0] == 2'b00 ? load_data[j+63-:64] :
+                                      el_off[1:0] == 2'b01 ? load_data[j+127-:64] :
+                                      el_off[1:0] == 2'b10 ? load_data[j+191-:64] : load_data[j+255-:64];
           load_stride_in_eew_log2 = 2;
         end
         -64'd32: begin
           for(i=0, j=511; i<128; i=i+64, j=j-256)
-            packed_load_data[i+:64] = el_offset[1:0] == 2'b00 ? load_data[j-:64] :
-                                      el_offset[1:0] == 2'b01 ? load_data[j-64-:64] :
-                                      el_offset[1:0] == 2'b10 ? load_data[j-128-:64] : load_data[j-192-:64];
+            packed_load_data[i+:64] = el_off[1:0] == 2'b00 ? load_data[j-:64] :
+                                      el_off[1:0] == 2'b01 ? load_data[j-64-:64] :
+                                      el_off[1:0] == 2'b10 ? load_data[j-128-:64] : load_data[j-192-:64];
           load_stride_in_eew_log2 = 2;
         end
       endcase
@@ -526,11 +528,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   end
 
   always_comb begin
-    packed_offset = el_offset >> load_stride_in_eew_log2;
+    packed_offset = el_off >> load_stride_in_eew_log2;
     offset_diff = (el_id - packed_offset) << eew_log2;
     shamt = offset_diff[10] ? offset_diff + VLEN : offset_diff;
     // Circular rotate left by shamt
-    shifted_load_data = packed_load_data << shamt | (packed_load_data >> (512-shamt));
+    // shifted_load_data = packed_load_data << shamt | (packed_load_data >> (512-shamt));
+    shifted_load_data = packed_load_data << (el_id << eew_log2);
     el_id_lower_bound = el_id << eew_log2;
     el_id_upper_bound = (el_id + el_count) << eew_log2;
   end
@@ -542,35 +545,46 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         load_buffer[k] <= 0;
     else begin
       for(k=0; k<VLEN; k=k+1)
-        load_buffer[v_reg[2:0]][k] <= (el_id_lower_bound <= k && k <= el_id_upper_bound) ? shifted_load_data[k] : load_buffer[v_reg[2:0]][k];
+        load_buffer[v_reg[2:0]][k] <= (el_id_lower_bound <= k && k < el_id_upper_bound) ? shifted_load_data[k] : load_buffer[v_reg[2:0]][k];
     end
   end
+
+  logic [VLEN-1:0][DATA_REQ_ID_WIDTH-1:0] req_buffer;
+  logic [$clog2(VLEN)-1:0] req_buffer_wptr;
 
   always_comb begin
     load_fsm_next_state = 2'd0;
     case(load_fsm_state)
       2'd0: begin
-        if(vecldst_autogen_load)
+        if(vecldst_autogen_load && ocelot_read_req)
           load_fsm_next_state = 2'd1;
         else
           load_fsm_next_state = 2'd0;
       end
       2'd1: begin
-        if(memop_sync_end)
+        if(!o_data_req && req_buffer_wptr != 0)
           load_fsm_next_state = 2'd2;
         else
           load_fsm_next_state = 2'd1;
       end
       2'd2: begin
-        if(lq_empty)
-          load_fsm_next_state = 0;
+        if(memop_sync_end)
+          load_fsm_next_state = 2'd3;
         else
-          load_fsm_next_state = 2;
+          load_fsm_next_state = 2'd2;
+      end
+      2'd3: begin
+        if(lq_empty)
+          load_fsm_next_state = 2'd0;
+        else
+          load_fsm_next_state = 2'd3;
       end
     endcase
   end
-  assign load_memsync_start = load_fsm_state == 2'd0 && vecldst_autogen_load;
-  assign load_commit = load_fsm_state == 2'd2 && lq_empty;
+  assign load_memsync_start = load_fsm_state == 2'd1 && load_fsm_next_state == 2'd2;
+  assign load_commit = load_fsm_state == 2'd3 && lq_empty;
+
+  assign ovi_stall = store_fsm_state != 0 || load_fsm_state != 0;
 
   always_ff@(posedge clk) begin
     if(!reset_n)
@@ -578,6 +592,27 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     else
       load_fsm_state <= load_fsm_next_state;
   end
+
+  integer r;
+  always @(posedge clk) begin
+    if(!reset_n) begin
+      req_buffer_wptr <= 0;
+      for(r=0; r<VLEN; r=r+1)
+        req_buffer[r] <= 0;
+    end
+    else begin
+      if(load_fsm_state == 0) begin
+        req_buffer_wptr <= 0;
+        for(r=0; r<VLEN; r=r+1)
+          req_buffer[r] <= 0;
+      end
+      else if(load_fsm_state == 1 && o_data_req) begin
+        req_buffer[req_buffer_wptr] <= o_data_req_id;
+        req_buffer_wptr <= req_buffer_wptr + 1;
+      end
+    end
+  end
+
 
   // Just pass the parameters down...
   vfp_pipeline #(
@@ -628,9 +663,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_mem_size(o_mem_size),
     .o_mem_last(o_mem_last),
     .i_data_req_rtr('1),
-    .i_rd_data_vld_0('0),
-    .i_rd_data_resp_id_0('0),
-    .i_rd_data_0('0),
+    .i_rd_data_vld_0(load_valid && load_fsm_state == 2),
+    .i_rd_data_resp_id_0(req_buffer[el_id]),
+    .i_rd_data_0(load_data[63:0]),
     .i_rd_data_vld_1('0),
     .i_rd_data_resp_id_1('0),
     .i_rd_data_1('0),
@@ -640,7 +675,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_id_mem_lq_done(id_mem_lq_done),
     .o_id_ex_units_rts(id_ex_units_rts),
     .o_vs3_rddata(vs3_rddata),
-    .o_lq_empty(lq_empty)
+    .o_lq_empty(lq_empty),
+
+    .i_ovi_stall(ovi_stall)
   );
 
   always @(posedge clk) begin
@@ -654,7 +691,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       completed_illegal <= 0;
     end
     else begin
-      completed_valid <= ocelot_instrn_commit_valid || store_commit || load_commit;
+      completed_valid <= (ocelot_instrn_commit_valid && load_fsm_state != 2'd2) || store_commit || load_commit;
       completed_sb_id <= sbid_queue[sbid_queue_rptr];
       completed_fflags <= ocelot_instrn_commit_fflags;
       completed_dest_reg <= ocelot_instrn_commit_data[63:0];
@@ -664,7 +701,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
-  assign debug_wb_vec_valid = ocelot_instrn_commit_valid;
+  assign debug_wb_vec_valid = (ocelot_instrn_commit_valid && load_fsm_state != 2'd2) || store_commit || load_commit;
   assign debug_wb_vec_wdata = ocelot_instrn_commit_data;
   assign debug_wb_vec_wmask = ocelot_instrn_commit_mask;
 
