@@ -86,7 +86,9 @@ module tt_ex #(parameter INCL_VEC=0, VLEN=128, ADDRWIDTH=40, ST_DATA_WIDTH_BITS=
    output wire 			    o_ex_mem_vld ,
 
    // Unique indentifier for debug
-   input [31:0] 		    i_reset_pc
+   input [31:0] 		    i_reset_pc,
+
+   input logic          i_ovi_stall
 
 );
 
@@ -193,7 +195,7 @@ wire mem_pipe_rtr_raw = (i_mem_ex_rtr & ~int_div_stall);
 wire mem_pipe_rtr     = (i_mem_ex_rtr & ~int_div_stall & (~(ex_vld & ex_type_vecldst) | ex_vecldst_iter_done_q));
 reg ex_disp_vld;
 
-assign o_ex_id_rtr = mem_pipe_rtr;  
+assign o_ex_id_rtr = mem_pipe_rtr && !i_ovi_stall;
 
 // Create a single cycle EX branch vld based on new instr popped out of the instrn_fifo
 always_ff @(posedge i_clk) begin
