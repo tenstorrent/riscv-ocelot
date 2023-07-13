@@ -131,7 +131,9 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output logic 			     o_fp_rf_wr_flag, 
    output reg [ 4:0] 			     o_fp_rf_wraddr,
    
-   output 				     o_id_ex_instdisp
+   output 				     o_id_ex_instdisp,
+
+   input logic            i_ovi_stall
 
 );
 
@@ -228,7 +230,7 @@ logic no_lq_load_pending;
                             // Need all units to be ready to dispatch anything
                          & (is_ex_instrn | is_fp_instrn | is_vec_instrn) & units_rtr & !i_ex_bp_mispredict;
 
-  assign o_id_instrn_rtr = units_rtr & ~id_replay & ~raw_hazard_stall & ~(i_mem_fe_lqfull | i_mem_fe_skidbuffull) & ~sync_stall;
+  assign o_id_instrn_rtr = units_rtr & ~id_replay & ~raw_hazard_stall & ~(i_mem_fe_lqfull | i_mem_fe_skidbuffull) & ~sync_stall & ~i_ovi_stall;
 `else
 tt_rts_rtr_pipe_stage #(.WIDTH(32)) id_instrn_flops
 (

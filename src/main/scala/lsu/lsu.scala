@@ -1082,7 +1082,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     when (can_fire_vector_load(w)){
       when (dlq_finished) {
         ldq(ldq_head).bits.succeeded := true.B 
+<<<<<<< HEAD
         ldq(ldq_head).bits.executed := true.B
+=======
+        ldq(ldq_head).bits.executed := true.B 
+>>>>>>> kychen/0707UnitLoad
         dlq_finished := false.B
       }.otherwise {
       dmem_req(w).valid := true.B
