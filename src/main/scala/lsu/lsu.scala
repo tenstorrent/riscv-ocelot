@@ -79,7 +79,7 @@
        older VS: block
        older VL: block
        older SL: block
-   VL: only go when next to commit
+   VL: nano-op basis
        older unresolved SL: block
        older resolved SL: if match then block, otherwise go  
        older VL: block
