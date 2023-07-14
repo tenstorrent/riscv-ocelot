@@ -523,7 +523,7 @@ class VIdGen(val M: Int, val N: Int)(implicit p: Parameters) extends Module {
   require(M >= N, "M must be greater than or equal to N")
   require(M % 8 == 0, "M must be a multiple of 8")
   require(N % 8 == 0, "N must be a multiple of 8")
-  val S = log2Ceil(N + 1)
+  val S = log2Ceil(M + 1)
   val I = log2Ceil(M) + 3
   val K = log2Ceil(M)
   
