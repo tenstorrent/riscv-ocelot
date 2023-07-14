@@ -41,6 +41,58 @@
 //    - ability to turn off things if VM is disabled
 //    - reconsider port count of the wakeup, retry stuff
 
+
+/*
+   Original BOOM handle SL, SS
+   SS: Follow Commit order
+
+   SL: 
+       older SS: can go, older SS kill when match and forward
+       older SL: can go, older SL kill when match and retry
+*/
+
+/*
+   Current Bobcat handle SL, SS, VL, VS
+   SS: Follow Commit order
+   VS: only go when next to commit 
+       older SS: block
+       older VS: block
+       older VL: block
+       older SL: block
+   VL: only go when next to commit
+       older SL: block
+       older VL: block
+       older SS: block
+       older VS: block
+   SL: 
+       older SS: can go, older SS kill when match and forward
+       older SL: can go, older SL kill when match and retry
+       older VS: block
+       older VL: block 
+*/
+
+/*
+   Bobcat Goal handle SL, SS, VL, VS
+   SS: Follow Commit order
+   VS: only go when next to commit 
+       older SS: block
+       older VS: block
+       older VL: block
+       older SL: block
+   VL: only go when next to commit
+       older unresolved SL: block
+       older resolved SL: if match then block, otherwise go  
+       older VL: block
+       older unresolved SS: block
+       older resolved SS: if match then forward
+       older VS: block
+   SL: 
+       older SS: can go, older SS kill when match and forward
+       older SL: can go, older SL kill when match and retry
+       older VS: block
+       older VL: block 
+*/
+
 package boom.lsu
 
 import chisel3._
@@ -467,9 +519,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           ldq(ld_enq_idx).bits.vectorNoYoung := true.B 
         }.otherwise {
         ldq(ld_enq_idx).bits.vectorNoYoung := false.B 
-//        ldq(ld_enq_idx).bits.youngest_stq_idx  := st_enq_idx
         ldq(ld_enq_idx).bits.vectorCanGo := false.B 
-        ldq(ld_enq_idx).bits.vectorHasCross := true.B
+        ldq(ld_enq_idx).bits.vectorHasCross := false.B
         } 
         when (vstExist) {
           ldq(ld_enq_idx).bits.hasOlderVst := true.B 
@@ -517,7 +568,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         stq(st_enq_idx).bits.vectorNoYoung := false.B 
         stq(st_enq_idx).bits.youngest_ldq_idx  := ld_enq_idx
         stq(st_enq_idx).bits.vectorCanGo := false.B 
-        stq(st_enq_idx).bits.vectorHasCross := true.B
+        stq(st_enq_idx).bits.vectorHasCross := false.B
         } 
       }
 
@@ -774,7 +825,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                            dlq_commit_e.bits.addr.valid && !dlq_commit_e.bits.addr_is_virtual &&
                                            !(ldq_commit_e.bits.hasOlderVst && stq(ldq_commit_e.bits.youngest_vst_idx).bits.isVector
                                                       && stq(ldq_commit_e.bits.youngest_vst_idx).bits.vst_count === ldq_commit_e.bits.youngest_vst_count
-                                                      && !stq(ldq_commit_e.bits.youngest_vst_idx).bits.succeeded) ) || dlq_finished)
+                                                      && !stq(ldq_commit_e.bits.youngest_vst_idx).bits.succeeded) && !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung) ) || dlq_finished)
 //&& !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung)
   // Can we wakeup a load that was nack'd
   val block_load_wakeup = WireInit(false.B)
@@ -939,28 +990,36 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   for (w <- 0 until numStqEntries) {
     when (stq(w).valid && stq(w).bits.isVector && !stq(w).bits.vectorNoYoung) {
+/*
       when (stq(w).bits.vectorHasCross && !stq(w).bits.vectorCanGo) {
         when ((ldq_head > stq(w).bits.youngest_ldq_idx) || ldq_head === WrapInc(stq(w).bits.youngest_ldq_idx, numLdqEntries)) {
           stq(w).bits.vectorCanGo := true.B 
         }
       }.otherwise {
-        when (ldq_head === stq(w).bits.youngest_ldq_idx) {
-          stq(w).bits.vectorHasCross := true.B 
+*/
+//        when (ldq_head === stq(w).bits.youngest_ldq_idx) {
+        when (ldq_head === stq(w).bits.youngest_ldq_idx && !stq(w).bits.vectorCanGo) {
+//          stq(w).bits.vectorHasCross := true.B 
+          stq(w).bits.vectorCanGo := true.B
         }
-      }
+//      }
     }
   }
   for (w <- 0 until numLdqEntries) {
     when (ldq(w).valid && ldq(w).bits.isVector && !ldq(w).bits.vectorNoYoung) {
+/*
       when (ldq(w).bits.vectorHasCross && !ldq(w).bits.vectorCanGo) {
         when ((stq_head > ldq(w).bits.youngest_stq_idx) || stq_head === WrapInc(ldq(w).bits.youngest_stq_idx, numStqEntries)) {
           ldq(w).bits.vectorCanGo := true.B 
         }
       }.otherwise {
-        when (stq_head === ldq(w).bits.youngest_stq_idx) {
-          ldq(w).bits.vectorHasCross := true.B 
+*/
+//        when (stq_head === ldq(w).bits.youngest_stq_idx) {
+        when (stq_head === ldq(w).bits.youngest_stq_idx && !ldq(w).bits.vectorCanGo) {
+//          ldq(w).bits.vectorHasCross := true.B 
+          ldq(w).bits.vectorCanGo := true.B
         }
-      }
+//      }
     }
   }
 
