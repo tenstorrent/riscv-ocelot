@@ -238,7 +238,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [7:0] store_buffer_sent;
   logic [2:0] store_buffer_wptr;
   logic [2:0] store_buffer_rptr;
-  logic [1:0] store_fsm_state; // 0: idle, 1: busy, 2: commit
+  logic [1:0] store_fsm_state; // 0: idle, 1: send, 2: wait, 3: commit
   logic [1:0] store_fsm_next_state;
   logic       store_memsync_start;
   logic [$clog2(STORE_CREDITS):0] store_credits;
@@ -253,6 +253,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic       vecldst_autogen_load;
   logic       load_commit;
   logic       load_memsync_start;
+  logic       id_replay;
 
   logic [VLEN-1:0][DATA_REQ_ID_WIDTH-1:0] req_buffer;
   logic [$clog2(VLEN)-1:0] req_buffer_wptr;
@@ -852,21 +853,18 @@ module tt_vpu_ovi #(parameter VLEN = 256)
             store_fsm_next_state = 1;
         end
       end
-
       1: begin
         if(id_mem_lq_done)
           store_fsm_next_state = 2;
         else
           store_fsm_next_state = 1;
       end
-
       2: begin
         if(memop_sync_end)
           store_fsm_next_state = 3;
         else
           store_fsm_next_state = 2;
       end
-
       3: begin
         if(lq_empty)
           store_fsm_next_state = 0;
@@ -1246,7 +1244,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   assign load_memsync_start = load_fsm_state == 2'd1 && load_fsm_next_state == 2'd2;
   assign load_commit = load_fsm_state == 2'd3 && lq_empty;
 
-  assign ovi_stall = store_fsm_state != 0 || load_fsm_state != 0;
+  assign ovi_stall = (store_fsm_state != 0 && store_fsm_state != 1) || load_fsm_state != 0;
 
   always_ff@(posedge clk) begin
     if(!reset_n)
