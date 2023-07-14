@@ -202,6 +202,7 @@ val vAGen = Module (new VAgen ())
 
   val strideDirHold = RegInit(true.B)
 
+  val sliceSizeHold = RegInit(0.U)
 
 
   when (newVGenConfig && !vGenEnable) {
@@ -222,25 +223,30 @@ val vAGen = Module (new VAgen ())
     val vldDest = vLSIQueue.io.deq.bits.req.uop.inst(11, 7)
     strideDirHold := vLSIQueue.io.deq.bits.req.rs2_data(31)
     vIdGen.io.startVD := vldDest
-  /*  
+    
     when (instElemSize === 0.U) {
     //  vdb.io.sliceSize := 1.U
-      vAGen.io.sliceSize := 1.U
-    //  vIdGen.io.sliceSize := 1.U  
+    //  vAGen.io.sliceSize := 1.U
+    //  vIdGen.io.sliceSize := 1.U
+    sliceSizeHold := 1.U   
     }.elsewhen (instElemSize === 5.U){
    // vdb.io.sliceSize := 2.U
-    vAGen.io.sliceSize := 2.U
+   // vAGen.io.sliceSize := 2.U
    // vIdGen.io.sliceSize := 2.U
+   sliceSizeHold := 2.U 
     }.elsewhen (instElemSize === 6.U){
     //  vdb.io.sliceSize := 4.U
-      vAGen.io.sliceSize := 4.U
+    //  vAGen.io.sliceSize := 4.U
     //  vIdGen.io.sliceSize := 4.U
+    sliceSizeHold := 4.U 
     }.otherwise{
     //   vdb.io.sliceSize := 8.U 
-       vAGen.io.sliceSize := 8.U
+    //   vAGen.io.sliceSize := 8.U
     //   vIdGen.io.sliceSize := 8.U
+    sliceSizeHold := 8.U 
     }
-  */
+  
+    
     val instMop = vLSIQueue.io.deq.bits.req.uop.inst(27, 26)
     when (instMop === 0.U) {
       vAGen.io.isStride := false.B 
@@ -249,6 +255,9 @@ val vAGen = Module (new VAgen ())
     }
   }
 
+    vdb.io.sliceSize := sliceSizeHold 
+    vAGen.io.sliceSize := sliceSizeHold 
+    vIdGen.io.sliceSize := sliceSizeHold 
     
   
 
