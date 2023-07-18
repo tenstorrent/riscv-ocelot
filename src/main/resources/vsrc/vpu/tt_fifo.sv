@@ -31,6 +31,7 @@ module tt_fifo #(parameter DEPTH = 4)
     logic [39:0] issue_vcsr;
     logic        issue_vcsr_lmulb2;
     logic        next_senior;
+    logic        valid;
   } fifo_entry;
 
   fifo_entry fifo [DEPTH-1:0];
@@ -65,6 +66,7 @@ module tt_fifo #(parameter DEPTH = 4)
         fifo[i].issue_vcsr       <= 0;
         fifo[i].issue_vcsr_lmulb2 <= 0;
         fifo[i].next_senior <= 0;
+        fifo[i].valid <= 0;
       end
     end
     else if (!queue_full && issue_valid) begin
@@ -73,6 +75,7 @@ module tt_fifo #(parameter DEPTH = 4)
       fifo[wr_ptr].issue_scalar_opnd <= issue_scalar_opnd;
       fifo[wr_ptr].issue_vcsr       <= issue_vcsr;
       fifo[wr_ptr].issue_vcsr_lmulb2 <= issue_vcsr_lmulb2;
+      fifo[wr_ptr].valid            <= 1;
       // dispatch.next_senior can be sent in the same cycle as the instruction
       if(dispatch_next_senior) begin
         // TODO: assert that wr_ptr == dispatch_ptr
@@ -104,12 +107,14 @@ module tt_fifo #(parameter DEPTH = 4)
       end
     end
 
-    if (!queue_empty && read_req) begin
+    if (!queue_empty && read_req && !fifo[rd_ptr].valid) begin
       rd_ptr <= rd_ptr + 1;
       // Flip the phase bit when rd_ptr wraps around
       if(rd_ptr == DEPTH - 1)
         rd_phase <= ~rd_phase;
     end
+    else if(!queue_empty && fifo[rd_ptr].next_senior && read_req && fifo[rd_ptr].valid) 
+      fifo[rd_ptr].valid <= 0;
   end
 
   always_comb begin
@@ -120,7 +125,7 @@ module tt_fifo #(parameter DEPTH = 4)
     read_issue_vcsr_lmulb2  = fifo[rd_ptr].issue_vcsr_lmulb2;
     // We don't speculatively issue vector instructions to Ocelot
     // as it does not support flushing.
-    if (!queue_empty && fifo[rd_ptr].next_senior)
+    if (!queue_empty && fifo[rd_ptr].next_senior && fifo[rd_ptr].valid)
       read_valid             = 1'b1;
     else
       read_valid             = 1'b0;
