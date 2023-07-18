@@ -974,7 +974,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
-  assign issue_credit = 0;
+  assign issue_credit = read_valid && ocelot_read_req;
 
   tt_fifo #(
     .DEPTH(16)
@@ -1294,8 +1294,16 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
-  assign debug_wb_vec_valid = ocelot_instrn_commit_valid;
-  assign debug_wb_vec_wdata = ocelot_instrn_commit_data;
-  assign debug_wb_vec_wmask = ocelot_instrn_commit_mask;
+  always_ff @(posedge clk) begin
+     if (~reset_n) begin
+        debug_wb_vec_valid <= '0;
+        debug_wb_vec_wdata <= '0;
+        debug_wb_vec_wmask <= '0;
+     end else begin
+        debug_wb_vec_valid <= ocelot_instrn_commit_valid;
+        debug_wb_vec_wdata <= ocelot_instrn_commit_data;
+        debug_wb_vec_wmask <= ocelot_instrn_commit_mask;
+     end
+  end
 
 endmodule
