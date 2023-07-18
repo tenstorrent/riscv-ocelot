@@ -24,6 +24,7 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output wire [4:0] 			     o_id_ex_Zb_instr,
    output wire 				     o_id_ex_units_rts ,
    input 				     tt_briscv_pkg::csr_to_id i_ex_id_csr,
+   output logic     o_id_ex_last,
 
    //FP EX0 Interface
    input 				     i_fp_ex0_id_rtr ,
@@ -549,7 +550,7 @@ assign valid_ex_instrn =  id_rts & is_ex_instrn;
 assign o_id_ex_rts = (!raw_hazard_stall) & valid_ex_instrn;
 assign o_id_ex_instrn = instrn_id;
 assign o_id_ex_vecldst = vec_ldst_vld;
-
+assign o_id_ex_last = vec_autogen_incr.replay_cnt == 1;
 //FP Instructions
 assign is_fp_instrn = f_ext;
 assign valid_fp_instrn = id_rts & is_fp_instrn;

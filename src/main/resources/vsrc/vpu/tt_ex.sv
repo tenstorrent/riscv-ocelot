@@ -29,6 +29,7 @@ module tt_ex #(parameter INCL_VEC=0, VLEN=128, ADDRWIDTH=40, ST_DATA_WIDTH_BITS=
    input [31:0] 		    i_id_ex_instrn ,
    input 			    tt_briscv_pkg::vecldst_autogen_s i_id_ex_vecldst_autogen, //Decode signal bundle
    input 			    i_id_ex_instdisp ,
+   input          i_id_ex_last,
 
    // From RF
    input [63:0] 		    i_rf_p0_reg ,
@@ -194,6 +195,7 @@ logic [LQ_DEPTH_LOG2-1:0] ex_lqid, ex_lqid_d1;
 wire mem_pipe_rtr_raw = (i_mem_ex_rtr & ~int_div_stall);
 wire mem_pipe_rtr     = (i_mem_ex_rtr & ~int_div_stall & (~(ex_vld & ex_type_vecldst) | ex_vecldst_iter_done_q));
 reg ex_disp_vld;
+logic ex_last;
 
 assign o_ex_id_rtr = mem_pipe_rtr && !i_ovi_stall;
 
@@ -234,6 +236,15 @@ tt_pipe_stage #(.WIDTH(1)) units_vld_flop
    .i_en      (mem_pipe_rtr  ),
    .i_d       (i_id_ex_units_rts),
    .o_q       (units_vld        )
+);
+
+tt_pipe_stage #(.WIDTH(1)) ex_last_flop   
+(
+   .i_clk     (i_clk         ),
+   .i_reset_n (i_reset_n     ),
+   .i_en      (i_id_ex_rts & o_ex_id_rtr  ),
+   .i_d       (i_id_ex_last),
+   .o_q       (ex_last        )
 );
 
 tt_pipe_stage #(.WIDTH(LQ_DEPTH_LOG2)) ex_lqid_flops 
