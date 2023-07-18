@@ -40,7 +40,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
     val debug_wb_vec_wmask = Output(UInt(8.W))
   })
 
-  val reqQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), 2))
+  val reqQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), 4))
   val uOpMem = SyncReadMem(32, new MicroOp())
   val vpuModule = Module(new tt_vpu_ovi(vLen))
   val maxIssueCredit = 16
@@ -52,7 +52,6 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   reqQueue.io.enq.bits.vconfig := io.vconfig
   reqQueue.io.enq.bits.vxrm := io.vxrm
   reqQueue.io.enq.bits.fcsr_rm := io.fcsr_rm
-  reqQueue.io.deq.ready := issueCreditCnt =/= 0.U 
 
   val sbId = RegInit(0.U(5.W))
   sbId := sbId + vpuModule.io.issue_valid
@@ -66,7 +65,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   val respUop = uOpMem.read(vpuModule.io.completed_sb_id)
 
   io := DontCare
-  io.req.ready := reqQueue.io.enq.ready
+  io.req.ready := reqQueue.io.deq.ready
   io.resp.valid := vpuModule.io.completed_valid
   io.resp.bits.data := vpuModule.io.completed_dest_reg
   io.resp.bits.uop := respUop
