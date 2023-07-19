@@ -132,8 +132,8 @@ module tt_mem #( parameter
    // Misc
    input [31:0] 			i_reset_pc,
    output reg 				o_trap,
-   output logic       o_lq_empty
-
+   output logic       o_lq_empty,
+   output logic       o_is_load
 );
 
 localparam ACTUAL_WB_DEPTH = 1;
@@ -465,6 +465,7 @@ assign o_vec_nonstore_commit =  lq_rden                 &&
 
 assign lq_full = lq_full_raw | ((~lq_empty)); 
 assign o_lq_empty = lq_empty;
+assign o_is_load = lq_rdinfo.vec_load;
 
 // ******************************************************************************************************************** //
 // Ratio arbiter between loads and WB stores to avoid WB starvation when endless loads (as in tight polling loop)       //
