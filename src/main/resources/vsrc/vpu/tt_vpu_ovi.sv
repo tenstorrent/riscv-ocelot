@@ -108,6 +108,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   tt_briscv_pkg::vec_autogen_s     id_vec_autogen;
   tt_briscv_pkg::vecldst_autogen_s id_ex_vecldst_autogen;
   wire                             id_ex_instdisp       ;
+  logic                            id_ex_last;
 
   logic                     id_replay;              // From id of tt_id.v
   logic [LQ_DEPTH_LOG2-1:0] id_vex_lqid;          // From id of tt_id.v
@@ -161,6 +162,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   wire [LQ_DEPTH_LOG2-1:0] ex_dst_lqid_2c;
   wire [31:0]              ex_fwd_data_2c;
   wire                     ex_id_rtr;
+  logic                    ex_last; // Indicates this is the last micro-op
   
   // EX --> MEM signals
   tt_briscv_pkg::mem_skidbuf_s ex_mem_payload;
@@ -253,7 +255,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic       vecldst_autogen_load;
   logic       load_commit;
   logic       load_memsync_start;
-  logic       id_replay;
 
   logic [VLEN-1:0][DATA_REQ_ID_WIDTH-1:0] req_buffer;
   logic [$clog2(VLEN)-1:0] req_buffer_wptr;
@@ -279,6 +280,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [8:0] el_id_lower_bound;
   logic [8:0] el_id_upper_bound;
   logic [7:0][VLEN-1:0] load_buffer;  
+  logic       is_load;
 
   always_ff @(posedge clk) begin
     if(!reset_n) begin
@@ -350,6 +352,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_id_ex_units_rts                     (id_ex_units_rts),       
     .o_id_ex_instdisp                      (id_ex_instdisp),
     .o_vecldst_autogen                     (id_ex_vecldst_autogen), 
+    .o_id_ex_last                          (id_ex_last),
     .i_ex_bp_mispredict                    ('0),      
     .i_ex_dst_vld_1c                       (ex_dst_vld_1c),         
     .i_ex_dst_lqid_1c                      (ex_dst_lqid_1c), 
@@ -476,6 +479,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_id_ex_Zb_instr    (id_ex_Zb_instr    ),
     .i_id_ex_units_rts   (id_ex_units_rts   ),
     .i_id_ex_instdisp    (id_ex_instdisp    ),
+    .i_id_ex_last        (id_ex_last),
     
     .i_id_ex_vecldst_autogen(id_ex_vecldst_autogen),
     
@@ -525,7 +529,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     // Debug
     .i_reset_pc             ('0),
 
-    .i_ovi_stall(ovi_stall)
+    .i_ovi_stall(ovi_stall),
+    .o_ex_last(ex_last)
   );
 
   assign vrf_p2_rden    = id_vec_autogen.rf_rden2; // FIXME | ex_vec_csr.v_lmul[2];
@@ -721,7 +726,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_data_req_id            (o_data_req_id     ),
     .o_data_128b              (o_data_128b       ),
     .i_data_req_rtr           ('1    ),
-    .i_data_vld_0             (load_valid && load_fsm_state == 2   ),
+    .i_data_vld_0             (load_valid && vecldst_autogen_load),
     .i_data_vld_cancel_0      ('0),
     .i_data_resp_id_0         (req_buffer[el_id]),
     .i_data_rddata_0          (load_data[63:0]       ),
@@ -741,7 +746,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     // Trap
     .i_reset_pc               ('0),
     .o_trap                   (  ),
-    .o_lq_empty               (lq_empty)
+    .o_lq_empty               (lq_empty),
+    .o_is_load                (is_load)
   );
 
   logic [LQ_DEPTH     -1:0] lq_last;
@@ -840,6 +846,22 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
+  logic fsm_memop_sync_start;
+  logic fsm_completed_valid;
+  tt_memop_fsm memop_fsm(.i_clk(clk), 
+                    .i_reset_n(reset_n),
+                    .i_load(vecldst_autogen_load),  
+                    .i_store(vecldst_autogen_store),
+                    .i_ex_rtr(ex_id_rtr),
+                    .i_id_ex_rts(id_ex_rts),
+                    .i_last_uop(id_ex_last),
+                    .i_lq_empty(lq_empty),
+                    .i_mem_req(o_data_req), // load memory request coming from ocelot
+                    .i_memop_sync_end(memop_sync_end),
+                    .o_memop_sync_start(fsm_memop_sync_start),
+                    .o_completed_valid(fsm_completed_valid),
+                    .o_ovi_stall(ovi_stall));
+
   assign enough_data = store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] &&
                        store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1];
   // always_comb begin
@@ -877,41 +899,36 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   always_ff@(posedge clk) begin
     if(!reset_n) begin
       store_buffer_wptr <= 0;
-      store_fsm_state <= 0;
       store_buffer_full <= 0;
       store_credits <= STORE_CREDITS;
     end
     else begin
-      store_fsm_state <= store_fsm_next_state;
-
       // Reset the store buffer when idle
-      if(store_fsm_state == 0 && !vecldst_autogen_store) begin
+      if(!vecldst_autogen_store) begin
         for(int i=0; i<8; i=i+1)
           store_buffer[i] <= 0;
         store_buffer_full <= 0;
         store_buffer_valid <= 0;
         store_buffer_wptr <= 0;
       end
-      else if(store_fsm_state == 1 || (store_fsm_state == 0 && vecldst_autogen_store && ocelot_read_req)) begin
-        if(id_ex_units_rts) begin
+      else if(id_ex_units_rts && id_ex_rts) begin
           store_buffer[store_buffer_wptr] <= vs3_rddata;
           store_buffer_valid[store_buffer_wptr] <= 1;
           store_buffer_wptr <= store_buffer_wptr + 1;
           if(store_buffer_wptr == 7)
             store_buffer_full <= 1;
-        end
       end
     end
   end
 
   // assign store_memsync_start = store_fsm_state == 0 && vecldst_autogen_store && ocelot_read_req;
-  // always_ff@(posedge clk) begin
-  //   if(!reset_n)
-  //     memop_sync_start <= 0;
-  //   else
-  //     memop_sync_start <= store_memsync_start | load_memsync_start;
-  // end
-
+  always_ff@(posedge clk) begin
+    if(!reset_n)
+      memop_sync_start <= 0;
+    else
+      memop_sync_start <= fsm_memop_sync_start;
+  end
+  logic drain_store_buffer;
   always_ff@(posedge clk) begin
     if(!reset_n) begin
       store_valid <= 0;
@@ -919,33 +936,40 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       store_commit <= 0;
       store_buffer_rptr <= 0;
       store_buffer_sent <= 0;
+      drain_store_buffer <= 0;
     end
     else begin
-      if((store_fsm_state == 0 || store_fsm_next_state == 0) && !vecldst_autogen_store) begin
+      if(!vecldst_autogen_store) begin
         store_buffer_rptr <= 0;
         store_buffer_sent <= 0;
+        store_valid <= 0;
       end
-      // Bypass the store buffer because we only need to send 1 register
-      else if((store_fsm_state == 1 || store_fsm_state == 0) && id_ex_units_rts && vecldst_autogen_store && ocelot_read_req && id_mem_lq_done && store_buffer_wptr == 0) begin
-        store_valid <= 1;
-        store_data[255:0] <= vs3_rddata;
-      end
-      else if((store_fsm_state == 1 || store_fsm_state == 2) && enough_data && store_credits > 0) begin
-        store_valid <= 1;
-        // little endian
-        store_data[255:0] <= store_buffer[store_buffer_rptr];
-        store_data[511:256] <= store_buffer[store_buffer_rptr+1];
-        store_buffer_sent[store_buffer_rptr] <= 1;
-        store_buffer_sent[store_buffer_rptr+1] <= 1;
-        store_buffer_rptr <= store_buffer_rptr + 2;
+      else if(drain_store_buffer && store_credits > 0) begin
+        if(store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] && 
+           store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1]) begin
+          store_valid <= 1;
+          store_data[255:0] <= store_buffer[store_buffer_rptr];
+          store_data[511:256] <= store_buffer[store_buffer_rptr+1];
+          store_buffer_sent[store_buffer_rptr] <= 1;
+          store_buffer_sent[store_buffer_rptr+1] <= 1;
+          store_buffer_rptr <= store_buffer_rptr + 2;
+        end
+        else if(store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr]) begin
+          store_valid <= 1;
+          store_data[255:0] <= store_buffer[store_buffer_rptr];
+          store_buffer_sent[store_buffer_rptr] <= 1;
+          store_buffer_rptr <= store_buffer_rptr + 1;
+        end
+        else
+          store_valid <= 0;
       end
       else
         store_valid <= 0;
 
-      if(store_fsm_state == 3 && lq_empty)
-        store_commit <= 1;
-      else
-        store_commit <= 0;
+      if(id_mem_lq_done && vecldst_autogen_store)
+        drain_store_buffer <= 1;
+      else if(memop_sync_end)
+        drain_store_buffer <= 0;
     end
   end
 
@@ -1261,12 +1285,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         req_buffer[r] <= 0;
     end
     else begin
-      if(load_fsm_state == 0) begin
+      if(!vecldst_autogen_load) begin
         req_buffer_wptr <= 0;
         for(r=0; r<VLEN; r=r+1)
           req_buffer[r] <= 0;
       end
-      else if(load_fsm_state == 1 && o_data_req) begin
+      else if(o_data_req) begin
         req_buffer[req_buffer_wptr] <= o_data_req_id;
         req_buffer_wptr <= req_buffer_wptr + 1;
       end
@@ -1284,7 +1308,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       completed_illegal <= 0;
     end
     else begin
-      completed_valid <= (ocelot_instrn_commit_valid && load_fsm_state != 2'd2) || store_commit || load_commit;
+      completed_valid <= (ocelot_instrn_commit_valid && !is_load) || fsm_completed_valid;
       completed_sb_id <= sbid_queue[sbid_queue_rptr];
       completed_fflags <= ocelot_instrn_commit_fflags;
       completed_dest_reg <= ocelot_instrn_commit_data[63:0];
@@ -1294,16 +1318,36 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
+  logic              debug_wb_vec_valid_saved;
+  logic [VLEN*8-1:0] debug_wb_vec_wdata_saved;
+  logic [7:0]        debug_wb_vec_wmask_saved;
+
   always_ff @(posedge clk) begin
-     if (~reset_n) begin
-        debug_wb_vec_valid <= '0;
-        debug_wb_vec_wdata <= '0;
-        debug_wb_vec_wmask <= '0;
-     end else begin
-        debug_wb_vec_valid <= ocelot_instrn_commit_valid;
-        debug_wb_vec_wdata <= ocelot_instrn_commit_data;
-        debug_wb_vec_wmask <= ocelot_instrn_commit_mask;
-     end
+    if (~reset_n) begin
+      debug_wb_vec_valid <= '0;
+      debug_wb_vec_wdata <= '0;
+      debug_wb_vec_wmask <= '0;
+      debug_wb_vec_valid_saved <= '0;
+      debug_wb_vec_wdata_saved <= '0;
+      debug_wb_vec_wmask_saved <= '0;
+    end 
+    else if(ocelot_instrn_commit_valid) begin
+      if(!is_load) begin
+          debug_wb_vec_valid <= ocelot_instrn_commit_valid;
+          debug_wb_vec_wdata <= ocelot_instrn_commit_data;
+          debug_wb_vec_wmask <= ocelot_instrn_commit_mask;
+      end
+      else begin
+        debug_wb_vec_valid_saved <= ocelot_instrn_commit_valid;
+        debug_wb_vec_wdata_saved <= ocelot_instrn_commit_data;
+        debug_wb_vec_wmask_saved <= ocelot_instrn_commit_mask;
+      end
+    end
+    else if(is_load && fsm_completed_valid) begin
+      debug_wb_vec_valid <= debug_wb_vec_valid_saved;
+      debug_wb_vec_wdata <= debug_wb_vec_wdata_saved;
+      debug_wb_vec_wmask <= debug_wb_vec_wmask_saved;
+    end
   end
 
 endmodule

@@ -50,6 +50,7 @@ module tt_ex #(parameter INCL_VEC=0, VLEN=128, ADDRWIDTH=40, ST_DATA_WIDTH_BITS=
    output wire 			    o_ex_is_some_branch ,
    output 			    o_ex_branch_taken ,
    output 			    o_ex_id_rtr ,
+   output logic     o_ex_last,
 
    output logic 		    o_ex_dst_vld_1c, // forwarding control to ID
    output logic [LQ_DEPTH_LOG2-1:0] o_ex_dst_lqid_1c, // forwarding control to ID
@@ -198,6 +199,7 @@ reg ex_disp_vld;
 logic ex_last;
 
 assign o_ex_id_rtr = mem_pipe_rtr && !i_ovi_stall;
+assign o_ex_last = ex_last;
 
 // Create a single cycle EX branch vld based on new instr popped out of the instrn_fifo
 always_ff @(posedge i_clk) begin
