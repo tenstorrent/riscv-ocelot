@@ -550,7 +550,7 @@ assign valid_ex_instrn =  id_rts & is_ex_instrn;
 assign o_id_ex_rts = (!raw_hazard_stall) & valid_ex_instrn;
 assign o_id_ex_instrn = instrn_id;
 assign o_id_ex_vecldst = vec_ldst_vld;
-assign o_id_ex_last = vec_autogen_incr.replay_cnt == 1;
+assign o_id_ex_last = vec_autogen_incr.replay_cnt == 0;
 //FP Instructions
 assign is_fp_instrn = f_ext;
 assign valid_fp_instrn = id_rts & is_fp_instrn;
