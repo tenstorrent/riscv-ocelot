@@ -1318,35 +1318,61 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
-  logic              debug_wb_vec_valid_saved;
   logic [VLEN*8-1:0] debug_wb_vec_wdata_saved;
   logic [7:0]        debug_wb_vec_wmask_saved;
+
+  logic              debug_wb_vec_valid_next;
+  logic [VLEN*8-1:0] debug_wb_vec_wdata_next;
+  logic [7:0]        debug_wb_vec_wmask_next;
+  logic              committed_load;
+
+  always @(posedge clk ) begin
+    if(!reset_n) 
+      committed_load <= 0;
+    else begin
+      if(is_load && ocelot_instrn_commit_valid)
+        committed_load <= 1;
+      else if(fsm_completed_valid && committed_load)
+        committed_load <= 0;
+    end
+  end
+
+  always_comb begin
+    if(committed_load && fsm_completed_valid) begin
+      debug_wb_vec_valid_next = 1;
+      debug_wb_vec_wdata_next = debug_wb_vec_wdata_saved;
+      debug_wb_vec_wmask_next = debug_wb_vec_wmask_saved;
+    end
+    else begin
+      debug_wb_vec_valid_next = ocelot_instrn_commit_valid && !is_load;
+      debug_wb_vec_wdata_next = ocelot_instrn_commit_data;
+      debug_wb_vec_wmask_next = ocelot_instrn_commit_mask;
+    end
+  end
+
+  always @(posedge clk) begin
+    if(!reset_n) begin
+      debug_wb_vec_wdata_saved <= '0;
+      debug_wb_vec_wmask_saved <= '0;
+    end
+    else begin
+      if(ocelot_instrn_commit_valid && is_load) begin
+        debug_wb_vec_wdata_saved <= ocelot_instrn_commit_data;
+        debug_wb_vec_wmask_saved <= ocelot_instrn_commit_mask;
+      end
+    end
+  end
 
   always_ff @(posedge clk) begin
     if (~reset_n) begin
       debug_wb_vec_valid <= '0;
       debug_wb_vec_wdata <= '0;
       debug_wb_vec_wmask <= '0;
-      debug_wb_vec_valid_saved <= '0;
-      debug_wb_vec_wdata_saved <= '0;
-      debug_wb_vec_wmask_saved <= '0;
     end 
-    else if(ocelot_instrn_commit_valid) begin
-      if(!is_load) begin
-          debug_wb_vec_valid <= ocelot_instrn_commit_valid;
-          debug_wb_vec_wdata <= ocelot_instrn_commit_data;
-          debug_wb_vec_wmask <= ocelot_instrn_commit_mask;
-      end
-      else begin
-        debug_wb_vec_valid_saved <= ocelot_instrn_commit_valid;
-        debug_wb_vec_wdata_saved <= ocelot_instrn_commit_data;
-        debug_wb_vec_wmask_saved <= ocelot_instrn_commit_mask;
-      end
-    end
-    else if(is_load && fsm_completed_valid) begin
-      debug_wb_vec_valid <= debug_wb_vec_valid_saved;
-      debug_wb_vec_wdata <= debug_wb_vec_wdata_saved;
-      debug_wb_vec_wmask <= debug_wb_vec_wmask_saved;
+    else begin
+      debug_wb_vec_valid <= debug_wb_vec_valid_next;
+      debug_wb_vec_wdata <= debug_wb_vec_wdata_next;
+      debug_wb_vec_wmask <= debug_wb_vec_wmask_next;
     end
   end
 
