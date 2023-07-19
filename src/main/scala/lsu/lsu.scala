@@ -351,7 +351,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val io = IO(new LSUIO)
 
   val numDsqEntries = 4
-  val numDlqEntries = 16
+  val numDlqEntries = 8
   val dsqAddrSz = log2Ceil(numDsqEntries) 
   val dlqAddrSz = log2Ceil(numDlqEntries) 
 
@@ -1171,7 +1171,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dmem_req(w).bits.is_hella := false.B
 
     io.dmem.s1_kill(w) := false.B
-    when (can_fire_vector_load(w)){
+    when (can_fire_vector_load(w) && io.dmem.req.ready){
       when (dlq_finished) {
         ldq(ldq_head).bits.succeeded := true.B 
         ldq(ldq_head).bits.executed := true.B
@@ -2022,25 +2022,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   }
 
   when (dlq(dlq_head).valid && dlq(dlq_head).bits.succeeded) {
-    dlq_head := WrapInc(dlq_head, numDsqEntries)
-    dlq(dsq_head).valid  := false.B 
-    dlq(dsq_head).bits.succeeded := false.B 
-    dlq(dsq_head).bits.addr.valid := false.B
-    when (dlq(dlq_head).bits.last) {
-      dlq_finished := true.B
-      sbIdDone := dlq(dlq_head).bits.sbId
-    }
-  }
-
-  when (dlq(dlq_head).valid && dlq(dlq_head).bits.succeeded) {
     dlq_head := WrapInc(dlq_head, numDlqEntries)
     dlq(dlq_head).valid  := false.B 
     dlq(dlq_head).bits.succeeded := false.B 
     dlq(dlq_head).bits.addr.valid := false.B
     when (dlq(dlq_head).bits.last) {
       dlq_finished := true.B
+      sbIdDone := dlq(dlq_head).bits.sbId
     }
   }
+
+  
 
 
   // -----------------------
