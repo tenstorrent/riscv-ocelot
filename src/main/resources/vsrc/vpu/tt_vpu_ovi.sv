@@ -896,11 +896,21 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   //   endcase
   // end
 
+  always @(posedge clk) begin
+    if(!reset_n)
+      store_credits <= STORE_CREDITS;
+    else begin
+      if(store_credit && !store_valid)
+        store_credits <= store_credits + 1;
+      else if (!store_credit && store_valid)
+        store_credits <= store_credits - 1;
+    end
+  end
+
   always_ff@(posedge clk) begin
     if(!reset_n) begin
       store_buffer_wptr <= 0;
       store_buffer_full <= 0;
-      store_credits <= STORE_CREDITS;
     end
     else begin
       // Reset the store buffer when idle
