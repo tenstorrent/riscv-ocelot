@@ -16,6 +16,24 @@ import boom.lsu.{LSUExeIO}
 
 import hardfloat._
 
+class CombMemory[T <: Data](size: Int, gen: T) extends Module {
+  val io = IO(new Bundle {
+    val wrAddr = Input(UInt(log2Ceil(size).W))
+    val wrData = Input(gen.cloneType)
+    val wrEn   = Input(Bool())
+    val rdAddr = Input(UInt(log2Ceil(size).W))
+    val rdData = Output(gen.cloneType)
+  })
+
+  val mem = RegInit(VecInit(Seq.fill(size)(0.U.asTypeOf(gen))))
+
+  when(io.wrEn) {
+    mem(io.wrAddr) := io.wrData
+  }
+
+  io.rdData := mem(io.rdAddr)
+}
+
 class EnhancedFuncUnitReq(xLen: Int, vLen: Int)(implicit p: Parameters) extends Bundle {
   val vconfig = new VConfig()
   val vxrm = UInt(2.W)
@@ -41,7 +59,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   })
 
   val reqQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), 4))
-  val uOpMem = SyncReadMem(32, new MicroOp())
+  val uOpMem = Module(new CombMemory(32, new MicroOp()))
   val vpuModule = Module(new tt_vpu_ovi(vLen))
   val maxIssueCredit = 16
   val issueCreditCnt = RegInit(maxIssueCredit.U(log2Ceil(maxIssueCredit + 1).W))
@@ -56,13 +74,12 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   val sbId = RegInit(0.U(5.W))
   sbId := sbId + vpuModule.io.issue_valid
 
-  when(reqQueue.io.deq.valid) {
-    uOpMem.write(sbId, reqQueue.io.deq.bits.req.uop)
-  }
+  uOpMem.io.wrEn := reqQueue.io.deq.valid
+  uOpMem.io.wrAddr := sbId
+  uOpMem.io.wrData := reqQueue.io.deq.bits.req.uop
+  uOpMem.io.rdAddr := vpuModule.io.completed_sb_id
 
-
-
-  val respUop = uOpMem.read(vpuModule.io.completed_sb_id)
+  val respUop = uOpMem.io.rdData
 
   io := DontCare
   io.req.ready := reqQueue.io.deq.ready
@@ -622,3 +639,4 @@ class VDB(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) extend
     }
   }
 }
+

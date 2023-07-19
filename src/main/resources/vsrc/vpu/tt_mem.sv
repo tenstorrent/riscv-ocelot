@@ -463,7 +463,7 @@ assign o_vec_nonstore_commit =  lq_rden                 &&
                                 lq_rdinfo.vrf_wr_flag;
    
 
-assign lq_full = lq_full_raw | ((~lq_empty)); 
+assign lq_full = lq_full_raw; 
 assign o_lq_empty = lq_empty;
 assign o_is_load = lq_rdinfo.vec_load;
 
