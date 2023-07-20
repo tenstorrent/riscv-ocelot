@@ -588,7 +588,7 @@ class VDB(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) extend
   require(M % 8 == 0, "M must be a multiple of 8")
   require(N % 8 == 0, "N must be a multiple of 8")
   val S = log2Ceil(N / 8 + 1)
-  val I = log2Ceil(M / 8)
+  val I = log2Ceil(M / 8 + 1)
   val maxIndex = (M / 8)
 
   val io = IO(new Bundle {
