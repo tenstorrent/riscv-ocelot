@@ -127,7 +127,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   val sbIdQueue = Module(new Queue(UInt(5.W), 2))
 
   // this needs to be changed in the future to include load, just keep it this way for now
-  vLSIQueue.io.enq.valid := reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
+  vLSIQueue.io.enq.valid := issueCreditCnt =/= 0.U && reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
   vLSIQueue.io.enq.bits := reqQueue.io.deq.bits
   vLSIQueue.io.deq.ready := !inMiddle && ((outStandingReq =/= 0.U || internalMemSyncStart) || tryDeqVLSIQ)
   sbIdQueue.io.enq.valid := reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)

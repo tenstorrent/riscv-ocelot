@@ -1753,9 +1753,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         .elsewhen (io.dmem.nack(w).bits.uop.uses_ldq)
       {
         when (io.dmem.nack(w).bits.uop.is_vec) {
+          when (IsOlder(io.dmem.nack(w).bits.uop.ldq_idx, dlq_execute_head, dlq_head)) {
           dlq_execute_head := io.dmem.nack(w).bits.uop.ldq_idx  // TODO: do I reload everything? Maybe for now?
 //          dlq_execute_save.valid := true.B 
 //          dlq_execute_save.bits := dlq_execute_head
+          }
         }.otherwise {
         assert(ldq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed)
         ldq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed  := false.B
@@ -1766,10 +1768,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       {
         assert(io.dmem.nack(w).bits.uop.uses_stq)
         when (io.dmem.nack(w).bits.uop.is_vec) {
+          when (IsOlder(io.dmem.nack(w).bits.uop.stq_idx, dsq_execute_head, dsq_head)) {
           dsq_execute_head := io.dmem.nack(w).bits.uop.stq_idx
 //          dsq_execute_save.valid := true.B 
 //          dsq_execute_save.bits := dsq_execute_head
-        
+          }
         }.elsewhen (IsOlder(io.dmem.nack(w).bits.uop.stq_idx, stq_execute_head, stq_head)) {
           stq_execute_head := io.dmem.nack(w).bits.uop.stq_idx
 //          stq_execute_save.valid := true.B 
