@@ -243,13 +243,10 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [1:0] store_fsm_state; // 0: idle, 1: send, 2: wait, 3: commit
   logic [1:0] store_fsm_next_state;
   logic       store_memsync_start;
-  logic [$clog2(STORE_CREDITS):0] store_credits;
+  logic [$clog2(STORE_CREDITS+1)-1:0] store_credits, store_credits_nxt;
   logic       vecldst_autogen_store;
   // Indicates if there is at least 2 full entries in the store buffer
   logic       enough_data;
-  logic       store_buffer_full;
-  // This will drive completed.valid
-  logic       store_commit;
   // Load logic - finite state machine
   logic [1:0] load_fsm_state, load_fsm_next_state;
   logic       vecldst_autogen_load;
@@ -726,7 +723,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_data_req_id            (o_data_req_id     ),
     .o_data_128b              (o_data_128b       ),
     .i_data_req_rtr           ('1    ),
-    .i_data_vld_0             (load_valid && vecldst_autogen_load),
+    .i_data_vld_0             (load_valid),
     .i_data_vld_cancel_0      ('0),
     .i_data_resp_id_0         (req_buffer[el_id]),
     .i_data_rddata_0          (load_data[63:0]       ),
@@ -900,33 +897,25 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     if(!reset_n)
       store_credits <= STORE_CREDITS;
     else begin
-      if(store_credit && !store_valid)
-        store_credits <= store_credits + 1;
-      else if (!store_credit && store_valid)
-        store_credits <= store_credits - 1;
+      store_credits <= store_credits_nxt;
     end
   end
 
+  assign store_credits_nxt = store_credits + store_credit - store_valid;
+
   always_ff@(posedge clk) begin
     if(!reset_n) begin
-      store_buffer_wptr <= 0;
-      store_buffer_full <= 0;
-    end
-    else begin
-      // Reset the store buffer when idle
-      if(!vecldst_autogen_store) begin
-        for(int i=0; i<8; i=i+1)
-          store_buffer[i] <= 0;
-        store_buffer_full <= 0;
-        store_buffer_valid <= 0;
-        store_buffer_wptr <= 0;
-      end
-      else if(id_ex_units_rts && id_ex_rts) begin
-          store_buffer[store_buffer_wptr] <= vs3_rddata;
-          store_buffer_valid[store_buffer_wptr] <= 1;
-          store_buffer_wptr <= store_buffer_wptr + 1;
-          if(store_buffer_wptr == 7)
-            store_buffer_full <= 1;
+      store_buffer_wptr  <= '0;
+      store_buffer_valid <= '0;
+    end else begin
+      if(memop_sync_end) begin
+        store_buffer_wptr  <= '0;
+        store_buffer_valid <= '0;
+      end else
+      if(id_ex_units_rts && ex_id_rtr && vecldst_autogen_store) begin
+        store_buffer      [store_buffer_wptr] <= vs3_rddata;
+        store_buffer_valid[store_buffer_wptr] <= 1;
+        store_buffer_wptr                     <= store_buffer_wptr + 1;
       end
     end
   end
@@ -943,18 +932,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     if(!reset_n) begin
       store_valid <= 0;
       store_data <= 0;
-      store_commit <= 0;
       store_buffer_rptr <= 0;
       store_buffer_sent <= 0;
       drain_store_buffer <= 0;
     end
     else begin
-      if(!vecldst_autogen_store) begin
-        store_buffer_rptr <= 0;
-        store_buffer_sent <= 0;
-        store_valid <= 0;
-      end
-      else if(drain_store_buffer && store_credits > 0) begin
+      if(drain_store_buffer && store_credits_nxt > 0) begin
         if(store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] && 
            store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1]) begin
           store_valid <= 1;
@@ -963,23 +946,25 @@ module tt_vpu_ovi #(parameter VLEN = 256)
           store_buffer_sent[store_buffer_rptr] <= 1;
           store_buffer_sent[store_buffer_rptr+1] <= 1;
           store_buffer_rptr <= store_buffer_rptr + 2;
-        end
-        else if(store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr]) begin
+        end else
+        if(store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr]) begin
           store_valid <= 1;
           store_data[255:0] <= store_buffer[store_buffer_rptr];
           store_buffer_sent[store_buffer_rptr] <= 1;
           store_buffer_rptr <= store_buffer_rptr + 1;
-        end
-        else
+        end else
           store_valid <= 0;
-      end
-      else
+      end else
         store_valid <= 0;
 
-      if(id_mem_lq_done && vecldst_autogen_store)
+      if(id_ex_units_rts && ex_id_rtr && id_ex_last && vecldst_autogen_store) begin
         drain_store_buffer <= 1;
-      else if(memop_sync_end)
+      end else
+      if(memop_sync_end) begin
+        store_buffer_rptr <= '0;
+        store_buffer_sent <= '0;
         drain_store_buffer <= 0;
+      end
     end
   end
 
@@ -989,6 +974,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [sbid_queue_depth-1:0][4:0] sbid_queue;
   logic [$clog2(sbid_queue_depth)-1:0] sbid_queue_wptr;
   logic [$clog2(sbid_queue_depth)-1:0] sbid_queue_rptr;
+ 
+  logic completed_valid_nxt;
 
   always_ff@(posedge clk) begin
     if(!reset_n) begin
@@ -1002,7 +989,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         sbid_queue[sbid_queue_wptr] <= read_issue_sb_id;
         sbid_queue_wptr <= sbid_queue_wptr + 1;
       end
-      if(completed_valid) begin
+      if(completed_valid_nxt) begin
         sbid_queue_rptr <= sbid_queue_rptr + 1;
       end
     end
@@ -1295,12 +1282,10 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         req_buffer[r] <= 0;
     end
     else begin
-      if(!vecldst_autogen_load) begin
+      if(memop_sync_end) begin
         req_buffer_wptr <= 0;
-        for(r=0; r<VLEN; r=r+1)
-          req_buffer[r] <= 0;
       end
-      else if(o_data_req) begin
+      else if(o_data_req && o_mem_load) begin
         req_buffer[req_buffer_wptr] <= o_data_req_id;
         req_buffer_wptr <= req_buffer_wptr + 1;
       end
@@ -1318,7 +1303,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       completed_illegal <= 0;
     end
     else begin
-      completed_valid <= (ocelot_instrn_commit_valid && !is_load) || fsm_completed_valid;
+      completed_valid <= completed_valid_nxt;
       completed_sb_id <= sbid_queue[sbid_queue_rptr];
       completed_fflags <= ocelot_instrn_commit_fflags;
       completed_dest_reg <= ocelot_instrn_commit_data[63:0];
@@ -1327,6 +1312,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       completed_illegal <= 0;
     end
   end
+
+  assign completed_valid_nxt = (ocelot_instrn_commit_valid && !is_load) || fsm_completed_valid;
 
   logic [VLEN*8-1:0] debug_wb_vec_wdata_saved;
   logic [7:0]        debug_wb_vec_wmask_saved;

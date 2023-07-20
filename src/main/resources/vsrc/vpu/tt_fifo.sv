@@ -107,7 +107,7 @@ module tt_fifo #(parameter DEPTH = 4)
       end
     end
 
-    if (!queue_empty && read_req && !fifo[rd_ptr].valid) begin
+    if (read_req && read_valid) begin
       rd_ptr <= rd_ptr + 1;
       // Flip the phase bit when rd_ptr wraps around
       if(rd_ptr == DEPTH - 1)
