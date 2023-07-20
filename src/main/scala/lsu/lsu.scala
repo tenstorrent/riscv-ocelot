@@ -1176,6 +1176,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         ldq(ldq_head).bits.succeeded := true.B 
         ldq(ldq_head).bits.executed := true.B
         dlq_finished := false.B
+      }.elsewhen(dlq_commit_e.bits.succeeded){
+        when (dlq_execute_head =/= dlq_tail) {
+        dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
+      }
       }.otherwise {
       dmem_req(w).valid := true.B
       dmem_req(w).bits.addr := dlq_commit_e.bits.addr.bits
