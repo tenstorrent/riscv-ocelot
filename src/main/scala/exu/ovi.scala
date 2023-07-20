@@ -204,7 +204,7 @@ val vAGen = Module (new VAgen ())
   val vGenEnable  = RegInit(false.B)
   val vGenHold = Reg(new EnhancedFuncUnitReq(xLen, vLen))
   val sbIdHold = RegInit(0.U)
-  val vDBcount = RegInit(0.U)
+  val vDBcount = RegInit(0.U(3.W))
   val vDBud = Cat (vpuModule.io.store_valid, vdb.io.release)
   when (vDBud === 1.U) {
     vDBcount := vDBcount - 1.U
