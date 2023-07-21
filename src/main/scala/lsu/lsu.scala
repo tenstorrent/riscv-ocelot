@@ -1791,6 +1791,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     when (io.dmem.resp(w).valid)
     {
       when (io.dmem.resp(w).bits.uop.uses_ldq && io.dmem.resp(w).bits.uop.is_vec){
+        when(!dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded){
           dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded := true.B
           io.core.VGen.resp.valid := true.B 
           io.core.VGen.resp.bits.elemID := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemID 
@@ -1800,6 +1801,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           io.core.VGen.resp.bits.s0l1 := true.B 
           io.core.VGen.resp.bits.memSize  := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.uop.mem_size
           io.core.VGen.resp.bits.data := io.dmem.resp(w).bits.data
+      }
       }.elsewhen (io.dmem.resp(w).bits.uop.uses_ldq){
         assert(!io.dmem.resp(w).bits.is_hella)
         val ldq_idx = io.dmem.resp(w).bits.uop.ldq_idx
