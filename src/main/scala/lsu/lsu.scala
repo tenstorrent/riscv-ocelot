@@ -818,14 +818,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                                  !stq_commit_e.bits.addr_is_virtual &&
                                                                   stq_commit_e.bits.data.valid) || 
                                                                   (stq_commit_e.bits.isVector && (stq_head === stq_execute_head) && dsq_commit_e.valid 
-                                                                                              && !(!stq_commit_e.bits.vectorCanGo && !stq_commit_e.bits.vectorNoYoung)) || dsq_finished)))
+                                                                                              && !(!stq_commit_e.bits.vectorCanGo && !stq_commit_e.bits.vectorNoYoung) && !dsq_finished))))
 
   val can_fire_vector_load = widthMap(w => (w == 0).B && 
                                            ldq_commit_e.bits.isVector && (dlq_commit_e.valid && 
                                            dlq_commit_e.bits.addr.valid && !dlq_commit_e.bits.addr_is_virtual &&
                                            !(ldq_commit_e.bits.hasOlderVst && stq(ldq_commit_e.bits.youngest_vst_idx).bits.isVector
                                                       && stq(ldq_commit_e.bits.youngest_vst_idx).bits.vst_count === ldq_commit_e.bits.youngest_vst_count
-                                                      && !stq(ldq_commit_e.bits.youngest_vst_idx).bits.succeeded) && !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung) ) || dlq_finished)
+                                                      && !stq(ldq_commit_e.bits.youngest_vst_idx).bits.succeeded) && !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung) ) && !dlq_finished)
 //&& !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung)
   // Can we wakeup a load that was nack'd
   val block_load_wakeup = WireInit(false.B)
@@ -1163,6 +1163,18 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val s0_executing_loads = WireInit(VecInit((0 until numLdqEntries).map(x=>false.B)))
 
 
+when (dlq_finished) {
+        ldq(ldq_head).bits.succeeded := true.B 
+        ldq(ldq_head).bits.executed := true.B
+        dlq_finished := false.B
+  }
+
+  when (dsq_finished) {
+        stq(stq_execute_head).bits.succeeded := true.B 
+        dsq_finished := false.B 
+         stq_execute_head                     := WrapInc(stq_execute_head, numStqEntries)
+  }
+
   for (w <- 0 until memWidth) {
     dmem_req(w).valid := false.B
     dmem_req(w).bits.uop   := NullMicroOp
@@ -1172,11 +1184,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
     io.dmem.s1_kill(w) := false.B
     when (can_fire_vector_load(w) && io.dmem.req.ready){
+/*
       when (dlq_finished) {
         ldq(ldq_head).bits.succeeded := true.B 
         ldq(ldq_head).bits.executed := true.B
         dlq_finished := false.B
       }.elsewhen(dlq_commit_e.bits.succeeded){
+*/
+     when(!dlq_finished) {
+     when(dlq_commit_e.bits.succeeded){
         when (dlq_execute_head =/= dlq_tail) {
         dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
       }
@@ -1191,6 +1207,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dlq(dlq_execute_head).bits.succeeded := false.B
       dlq(dlq_execute_head).bits.sent := true.B
       } 
+    }
     }.elsewhen (will_fire_load_incoming(w) && load_incoming_no_vst(w) && load_incoming_no_vld(w)) {
       dmem_req(w).valid      := !exe_tlb_miss(w) && !exe_tlb_uncacheable(w)
       dmem_req(w).bits.addr  := exe_tlb_paddr(w)
@@ -1222,11 +1239,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
        
 
       stq(stq_execute_head).bits.succeeded := false.B
+/*
       }.elsewhen (dsq_finished) {
         stq(stq_execute_head).bits.succeeded := true.B 
         dsq_finished := false.B 
          stq_execute_head                     := WrapInc(stq_execute_head, numStqEntries)
+         */
       }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready){                //KYnew, revisit later
+
+//      }.elsewhen (!dsq_finished && dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready){
         dmem_req(w).valid := true.B
         dmem_req(w).bits.addr := dsq_commit_e.bits.addr.bits
         dmem_req(w).bits.data := dsq_commit_e.bits.data.bits
