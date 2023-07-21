@@ -155,7 +155,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
 /*
   VDB start
 */
-  val vdb = Module (new VDB(512, 64, 4))
+  val vdb = Module (new VDB(512, 64, 256, 4))
   
   vdb.io.writeValid := false.B 
 //  vdb.io.writeData := 0.U 
@@ -166,6 +166,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   vdb.io.writeValid := internalStoreWrite
   vdb.io.writeData := vpuModule.io.store_data
   vdb.io.sliceSize := 8.U 
+  vdb.io.vlmul := 0.U
 
  
 
@@ -212,6 +213,7 @@ val vAGen = Module (new VAgen ())
     vDBcount := vDBcount + 1.U 
   }
   
+  assert (vDBcount < 5.U)
 
 
   val s0l1 = RegInit(false.B)
@@ -231,6 +233,7 @@ val vAGen = Module (new VAgen ())
     s0l1 := vLSIQueue.io.deq.bits.req.uop.uses_ldq
     vAGen.io.configValid := true.B
     vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
+    vdb.io.vlmul := vLSIQueue.io.deq.bits.vconfig.vtype.vlmul_mag
     vAGen.io.startAddr := vLSIQueue.io.deq.bits.req.rs1_data
     vAGen.io.stride := vLSIQueue.io.deq.bits.req.rs2_data 
     
@@ -581,15 +584,18 @@ class VIdGen(val M: Int, val N: Int)(implicit p: Parameters) extends Module {
 }  
 
 
-class VDB(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) extends Module {
+class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Parameters) extends Module {
   require(isPow2(M), "M must be a power of 2")
   require(isPow2(N), "N must be a power of 2")
+  require(isPow2(Vlen), "Vlen must be a power of 2")
   require(M >= N, "M must be greater than or equal to N")
   require(M % 8 == 0, "M must be a multiple of 8")
   require(N % 8 == 0, "N must be a multiple of 8")
   val S = log2Ceil(N / 8 + 1)
   val I = log2Ceil(M / 8 + 1)
   val maxIndex = (M / 8)
+  val safeLmul = (M/Vlen)  // 2 in our case
+  val preshift = log2Ceil(M/Vlen)
 
   val io = IO(new Bundle {
     val configValid = Input(Bool())
@@ -597,6 +603,7 @@ class VDB(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) extend
     val writeData = Input(UInt(M.W))
     val pop = Input(Bool())
     val last = Input(Bool())
+    val vlmul = Input(UInt(2.W))
     val sliceSize = Input(UInt(S.W))
     val release = Output(Bool())
     val outData = Output(UInt(N.W))
@@ -605,10 +612,18 @@ class VDB(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) extend
   val buffer = RegInit(VecInit(Seq.fill(Depth)(0.U(M.W))))
   val readPtr = RegInit(0.U(log2Ceil(Depth).W))
   val writePtr = RegInit(0.U(log2Ceil(Depth).W))
+  val finalJump = RegInit(0.U((log2Ceil(Depth+1)).W))
   val currentIndex = Reg(UInt(I.W))
+  val needJump = RegInit(false.B)
+  val jumping = RegInit(false.B)
 
   when(io.configValid) {
    currentIndex := 0.U
+   needJump := false.B 
+   when (io.vlmul > safeLmul.U) {
+    needJump := true.B 
+    finalJump := (1.U << (io.vlmul - preshift.U))
+   }
   }
 
   val currentEntry = buffer(readPtr)
@@ -626,16 +641,33 @@ class VDB(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) extend
   when (io.pop) {
     when (io.last) {
       readPtr := WrapInc(readPtr, Depth)
+      when(needJump) {
+      finalJump := finalJump - 1.U
+      }
       currentIndex := 0.U
       io.release := true.B 
+      when (finalJump > 1.U) {
+        jumping := true.B 
+      }
     } .otherwise {
       when (currentIndex + io.sliceSize === maxIndex.U) {
         currentIndex := 0.U
         readPtr := WrapInc(readPtr, Depth)
+        when(needJump) {
+        finalJump := finalJump - 1.U
+        }
         io.release := true.B 
       } .otherwise {
         currentIndex := currentIndex + io.sliceSize
       }
+    }
+  }
+  when (jumping) {
+    readPtr := WrapInc(readPtr, Depth)
+    finalJump := finalJump - 1.U
+    io.release := true.B 
+    when (finalJump === 1.U) {
+      jumping := false.B 
     }
   }
 }
