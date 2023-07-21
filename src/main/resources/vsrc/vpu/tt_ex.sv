@@ -408,23 +408,23 @@ always_comb begin
    ex_mem_payload_fn.vecldst_idx_last = ex_mem_payload.vecldst_128 ? ((vec_ldst_addr[3:0] == 4'h0) | (ex_vecldst_elem_count == 'h1)) : // Element1 if not aligned to 128b 
                                                   (ex_vecldst_data_num_elem == (ex_vecldst_data_elem_base + ex_vecldst_elem_count + 1'b1));  
    casez({ex_mem_payload.vecldst_128, ex_mem_payload.mem_sz[1:0]})
-      3'b1??: begin
-        ex_mem_payload_fn.mem_byten = '0;
-        ex_vecldst_store_val_fn     = '0;
-      end
-      3'b000: begin
+      // 3'b1??: begin
+      //   ex_mem_payload_fn.mem_byten = '0;
+      //   ex_vecldst_store_val_fn     = '0;
+      // end
+      3'b?00: begin
         ex_mem_payload_fn.mem_byten = ex_vecldst_elem_mask ? '0 : 'h1;
         ex_vecldst_store_val_fn     = {ST_DATA_WIDTH_BITS/8{ex_vecldst_store_val[7:0]}};
       end
-      3'b001: begin
+      3'b?01: begin
         ex_mem_payload_fn.mem_byten = ex_vecldst_elem_mask ? '0 : 'h3;
         ex_vecldst_store_val_fn     = {ST_DATA_WIDTH_BITS/16{ex_vecldst_store_val[15:0]}};
       end
-      3'b010: begin
+      3'b?10: begin
         ex_mem_payload_fn.mem_byten = ex_vecldst_elem_mask ? '0 : 'hf;
         ex_vecldst_store_val_fn     = {ST_DATA_WIDTH_BITS/32{ex_vecldst_store_val[31:0]}};
       end
-      3'b011: begin
+      3'b?11: begin
         ex_mem_payload_fn.mem_byten = ex_vecldst_elem_mask ? '0 : 'hff;
         ex_vecldst_store_val_fn     = {ST_DATA_WIDTH_BITS/64{ex_vecldst_store_val[63:0]}};
       end
@@ -866,7 +866,7 @@ assign ex_mem_payload.mem_fence = (ex_instrn[6:0] == 7'b0001111) & (ex_instrn[14
 // 1. Regular and fault-first unit stride with nf=0
 // 2. Whole register unit stride load for all nf values
 // 3. Unit stride mask load (Covered by 1 since nf=0 for mask loads)
-assign ex_mem_payload.vecldst_128 = 1'b0; // ex_type_vecldst & ex_vecldst_autogen.ldst_ustride & ~ex_vecldst_autogen.ldst_mask & ((ex_vecldst_nf == 4'h1) | ex_vecldst_autogen.ldst_whole_register);
+assign ex_mem_payload.vecldst_128 = 1'b1; // ex_type_vecldst & ex_vecldst_autogen.ldst_ustride & ~ex_vecldst_autogen.ldst_mask & ((ex_vecldst_nf == 4'h1) | ex_vecldst_autogen.ldst_whole_register);
 assign ex_mem_payload.mem_amo     = ex_type_amo;
 assign ex_mem_payload.mem_amotype = ex_instrn[31:27];
    

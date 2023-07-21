@@ -65,7 +65,7 @@ module tt_lq #(parameter
    input 				i_data_vld_0,
    input 				i_data_vld_cancel_0,
    input [DATA_REQ_ID_WIDTH-1:0] 	i_data_resp_id_0,
-   input [63:0] 	                i_data_rddata_0,
+   input [VLEN-1:0] 	                i_data_rddata_0,
 
    input 				i_data_vld_1, 
    input 				i_data_vld_cancel_1,
@@ -380,14 +380,14 @@ if (INCL_VEC == 1) begin: GenInclVec
          vecld_addr  = vecld_128 ? lq_data[LD_DATA_WIDTH_BITS+:$clog2(VLEN/8)] : '0;   
    
          // Byte mask (1 implies byte is masked)
-         vec_load_vrf_wrdata_byten = vecld_128 ? (vecld_idx[0] ? ({VLEN/8{1'b1}} >> (VLEN/8 - vecld_addr) << (VLEN/8 - vecld_addr)) : ({VLEN/8{1'b1}} << vecld_addr >> vecld_addr)) :
+         vec_load_vrf_wrdata_byten = vecld_128 ? 32'hffff_ffff :
                                                  ((vecld_sz[1:0] == 2'h3 ? 'hff :
                                                    vecld_sz[1:0] == 2'h2 ? 'hf  :
                                                    vecld_sz[1:0] == 2'h1 ? 'h3  :
                                                                            'h1   ) << (vecld_idx << vecld_sz[1:0]));
           
          // Convert return data to register format
-         vec_load_vrf_wrdata[LD_DATA_WIDTH_BITS-1:0] = vecld_128 ? (vecld_idx[0] ? (return_data << (VLEN - 8*vecld_addr)) : (return_data >> 8*vecld_addr)) : 
+         vec_load_vrf_wrdata[LD_DATA_WIDTH_BITS-1:0] = vecld_128 ? return_data : 
                                                                    (vecld_sz[1:0] == 2'h3 ? {LD_DATA_WIDTH_BITS/64{return_data[63:0]}} :
                                                                     vecld_sz[1:0] == 2'h2 ? {LD_DATA_WIDTH_BITS/32{return_data[31:0]}} :
                                                                     vecld_sz[1:0] == 2'h1 ? {LD_DATA_WIDTH_BITS/16{return_data[(16*vecld_addr[1])+:16]}} :

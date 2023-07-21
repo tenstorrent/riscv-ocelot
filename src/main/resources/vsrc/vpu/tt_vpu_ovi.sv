@@ -621,6 +621,26 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic                           o_mem_store;
   logic                        o_mem_last_raw;
 
+  // fake signals to test the 128 switch
+  logic [VLEN-1:0] fake_data;
+  logic            fake_valid;
+  logic [DATA_REQ_ID_WIDTH-1:0] fake_req_id; 
+
+  always @(posedge clk) begin
+    if(!reset_n)
+      {fake_data,fake_valid,fake_req_id} <= '0;
+    else begin
+      if(o_data_req && o_mem_load) begin
+        // some random number
+        fake_data <= 256'h3E4A21B69D57C82F0B1346785A2F9D40B3C6D8A5E9F213B47896A52DB3C486F0;
+        fake_valid <= 1;
+        fake_req_id <= o_data_req_id;
+      end
+      else 
+        fake_valid <= 0;
+    end
+  end
+
   tt_mem 
   #(
     .LQ_DEPTH(LQ_DEPTH), 
@@ -723,10 +743,10 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_data_req_id            (o_data_req_id     ),
     .o_data_128b              (o_data_128b       ),
     .i_data_req_rtr           ('1    ),
-    .i_data_vld_0             (load_valid),
+    .i_data_vld_0             (fake_valid),
     .i_data_vld_cancel_0      ('0),
-    .i_data_resp_id_0         (req_buffer[el_id]),
-    .i_data_rddata_0          (load_data[63:0]       ),
+    .i_data_resp_id_0         (fake_req_id),
+    .i_data_rddata_0          (fake_data       ),
     .i_data_vld_1             ('0   ),
     .i_data_vld_cancel_1      ('0),
     .i_data_resp_id_1         ('0),

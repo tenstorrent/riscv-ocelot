@@ -109,7 +109,7 @@ module tt_mem #( parameter
    input 				i_data_vld_0,
    input 				i_data_vld_cancel_0,
    input [DATA_REQ_ID_WIDTH-1:0] 	i_data_resp_id_0,
-   input [63:0] 	                i_data_rddata_0,
+  input [VLEN-1:0] 	                i_data_rddata_0,
    input 				i_data_vld_1,
    input 				i_data_vld_cancel_1,
    input [DATA_REQ_ID_WIDTH-1:0] 	i_data_resp_id_1,
