@@ -10,7 +10,6 @@ module tt_memop_fsm(input i_clk,
                     input i_memop_sync_end,
                     output o_memop_sync_start,
                     output o_completed_valid,
-                    output wait_for_sync_end,
                     output o_ovi_stall);
 
   // Unified FSM

@@ -377,7 +377,7 @@ val vAGen = Module (new VAgen ())
   )
   vpuModule.io.issue_vcsr_lmulb2 := reqQueue.io.deq.bits.vconfig.vtype.vlmul_sign
   vpuModule.io.dispatch_sb_id := sbId
-  vpuModule.io.dispatch_next_senior := reqQueue.io.deq.valid
+  vpuModule.io.dispatch_next_senior := reqQueue.io.deq.valid && reqQueue.io.deq.ready
   vpuModule.io.dispatch_kill := 0.B
   vpuModule.io.memop_sync_end := MemSyncEnd
   vpuModule.io.store_credit := MemCredit
@@ -426,12 +426,10 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
     val load_mask = Input(UInt(64.W))
     val load_mask_valid = Input (Bool())
   })
-  // addResource("/vsrc/vpu_ovi/tt_vpu_ovi.sv")
   addResource("/vsrc/vpu/briscv_defines.h")
   addResource("/vsrc/vpu/tt_briscv_pkg.vh")
   addResource("/vsrc/vpu/autogen_riscv_imabfv.v")
   addResource("/vsrc/vpu/autogen_defines.h")
-  addResource("/vsrc/vpu/vfp_pipeline.sv")
   addResource("/vsrc/vpu/tt_id.sv")
   addResource("/vsrc/vpu/tt_ex.sv")
   addResource("/vsrc/vpu/tt_lq.sv")
@@ -454,7 +452,6 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   addResource("/vsrc/vpu/tt_rts_rtr_pipe_stage.sv")
   addResource("/vsrc/vpu/tt_cam_buffer.sv")
   addResource("/vsrc/vpu/tt_skid_buffer.sv")
-  addResource("/vsrc/vpu/tt_store_fifo.sv")
   addResource("/vsrc/vpu/tt_ffs.sv")
   addResource("/vsrc/vpu/tt_ascii_instrn_decode.sv")
   addResource("/vsrc/vpu/tt_compare.sv")
@@ -464,6 +461,7 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   addResource("/vsrc/vpu/tt_memop_fsm.sv")
   addResource("/vsrc/vpu/tt_fifo.sv")
   addResource("/vsrc/vpu/tt_vpu_ovi.sv")  
+  addResource("/vsrc/vpu/tt_vpu_ovi_assert.sv")  
   addResource("/vsrc/HardFloat/source/RISCV/HardFloat_specialize.v")
   addResource("/vsrc/HardFloat/source/RISCV/HardFloat_specialize.vi")
   addResource("/vsrc/HardFloat/source/HardFloat_consts.vi")
@@ -472,12 +470,10 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   addResource("/vsrc/HardFloat/source/HardFloat_rawFN.v")
   addResource("/vsrc/HardFloat/source/addRecFN.v")
   addResource("/vsrc/HardFloat/source/compareRecFN.v")
-  addResource("/vsrc/HardFloat/source/divSqrtRecFN_small.v")
   addResource("/vsrc/HardFloat/source/fNToRecFN.v")
   addResource("/vsrc/HardFloat/source/iNToRecFN.v")
   addResource("/vsrc/HardFloat/source/isSigNaNRecFN.v")
   addResource("/vsrc/HardFloat/source/mulAddRecFN.v")
-  addResource("/vsrc/HardFloat/source/mulRecFN.v")
   addResource("/vsrc/HardFloat/source/recFNToFN.v")
   addResource("/vsrc/HardFloat/source/recFNToIN.v")
   addResource("/vsrc/HardFloat/source/recFNToRecFN.v")

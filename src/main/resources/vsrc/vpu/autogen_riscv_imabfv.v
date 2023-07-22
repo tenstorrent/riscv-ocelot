@@ -4866,29 +4866,6 @@ v_rf_store_rd_en[0] = 1'b0; // Assigning Default value of 0
 end
 endmodule
 
-module autogen_v_math_fmt (
-input [6:0] Opcode,
-input [6:0] funct7,
-input [2:0] funct3,
-output reg [3:0] v_math_fmt
-);
-
-always_comb begin
-v_math_fmt[3] = 1'b0; // Assigning Default value of 0
-// No logic driving this. Skipping Output for v_math_fmt[3]
-
-v_math_fmt[2] = 1'b0; // Assigning Default value of 0
-// No logic driving this. Skipping Output for v_math_fmt[2]
-
-v_math_fmt[1] = 1'b0; // Assigning Default value of 0
-// No logic driving this. Skipping Output for v_math_fmt[1]
-
-v_math_fmt[0] = 1'b0; // Assigning Default value of 0
-// No logic driving this. Skipping Output for v_math_fmt[0]
-
-end
-endmodule
-
 module autogen_v_rf_rd_p2_is_rs2 (
 input [6:0] Opcode,
 input [6:0] funct7,
@@ -4985,20 +4962,6 @@ always_comb begin
 	    15'b10101111?11?101  :  v_rf_rdneg0[0] = 1'b1;
 	    default : v_rf_rdneg0[0] = 1'b0;
 	endcase
-end
-endmodule
-
-module autogen_v_rd_neg1 (
-input [6:0] Opcode,
-input [6:0] funct7,
-input [2:0] funct3,
-output reg [0:0] v_rd_neg1
-);
-
-always_comb begin
-v_rd_neg1[0] = 1'b0; // Assigning Default value of 0
-// No logic driving this. Skipping Output for v_rd_neg1[0]
-
 end
 endmodule
 
@@ -5404,21 +5367,6 @@ always_comb begin
 v_permuteop[0] = 1'b0; // Assigning Default value of 0
 // No logic driving this. Skipping Output for v_permuteop[0]
 
-end
-endmodule
-
-module autogen_v_p1_dest (
-input [6:0] Opcode,
-input [6:0] funct7,
-input [2:0] funct3,
-output reg [0:0] v_p1_dest
-);
-
-always_comb begin
-	casez({Opcode[6], Opcode[5], Opcode[4], Opcode[3], Opcode[2], Opcode[1], Opcode[0], funct7[6], funct7[5], funct7[4], funct7[3], funct3[1], funct3[0]})
-	    13'b1010111101001  :  v_p1_dest[0] = 1'b1;
-	    default : v_p1_dest[0] = 1'b0;
-	endcase
 end
 endmodule
 

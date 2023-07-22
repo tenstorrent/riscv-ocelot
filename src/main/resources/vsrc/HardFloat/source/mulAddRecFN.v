@@ -427,52 +427,52 @@ endmodule
 /*----------------------------------------------------------------------------
 *----------------------------------------------------------------------------*/
 
-module
-    mulAddRecFN#(parameter expWidth = 5, parameter sigWidth = 10) (
-        input [(`floatControlWidth - 1):0] control,
-        input [1:0] op,
-        input [(expWidth + sigWidth):0] a,
-        input [(expWidth + sigWidth):0] b,
-        input [(expWidth + sigWidth):0] c,
-        input [2:0] roundingMode,
-        output [(expWidth + sigWidth):0] out,
-        output [4:0] exceptionFlags
-    );
-
-    wire invalidExc, out_isNaN, out_isInf, out_isZero, out_sign;
-    wire signed [(expWidth + 1):0] out_sExp;
-    wire [(sigWidth + 2):0] out_sig;
-    mulAddRecFNToRaw#(expWidth, sigWidth)
-        mulAddRecFNToRaw(
-            control,
-            op,
-            a,
-            b,
-            c,
-            roundingMode,
-            invalidExc,
-            out_isNaN,
-            out_isInf,
-            out_isZero,
-            out_sign,
-            out_sExp,
-            out_sig
-        );
-    roundRawFNToRecFN#(expWidth, sigWidth, 0)
-        roundRawOut(
-            control,
-            invalidExc,
-            1'b0,
-            out_isNaN,
-            out_isInf,
-            out_isZero,
-            out_sign,
-            out_sExp,
-            out_sig,
-            roundingMode,
-            out,
-            exceptionFlags
-        );
-
-endmodule
+//module
+//    mulAddRecFN#(parameter expWidth = 5, parameter sigWidth = 10) (
+//        input [(`floatControlWidth - 1):0] control,
+//        input [1:0] op,
+//        input [(expWidth + sigWidth):0] a,
+//        input [(expWidth + sigWidth):0] b,
+//        input [(expWidth + sigWidth):0] c,
+//        input [2:0] roundingMode,
+//        output [(expWidth + sigWidth):0] out,
+//        output [4:0] exceptionFlags
+//    );
+//
+//    wire invalidExc, out_isNaN, out_isInf, out_isZero, out_sign;
+//    wire signed [(expWidth + 1):0] out_sExp;
+//    wire [(sigWidth + 2):0] out_sig;
+//    mulAddRecFNToRaw#(expWidth, sigWidth)
+//        mulAddRecFNToRaw(
+//            control,
+//            op,
+//            a,
+//            b,
+//            c,
+//            roundingMode,
+//            invalidExc,
+//            out_isNaN,
+//            out_isInf,
+//            out_isZero,
+//            out_sign,
+//            out_sExp,
+//            out_sig
+//        );
+//    roundRawFNToRecFN#(expWidth, sigWidth, 0)
+//        roundRawOut(
+//            control,
+//            invalidExc,
+//            1'b0,
+//            out_isNaN,
+//            out_isInf,
+//            out_isZero,
+//            out_sign,
+//            out_sExp,
+//            out_sig,
+//            roundingMode,
+//            out,
+//            exceptionFlags
+//        );
+//
+//endmodule
 
