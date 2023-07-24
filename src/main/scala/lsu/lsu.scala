@@ -133,6 +133,8 @@ class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   val memSize = Bits(2.W)
   val dsqFull = Bool()
   val dlqFull = Bool()
+  val isMask = Bool()
+  val Mask = Bits(64.W)
 }
 
 class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
@@ -142,6 +144,8 @@ class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   val vRegID = Bits(5.W)
   val sbId = Bits(5.W)
   val strideDir = Bool()
+  val isMask = Bool()
+  val Mask = Bits(64.W)
 }
 
 class VGenIO(implicit p: Parameters) extends BoomBundle()(p)
@@ -310,6 +314,8 @@ class DLQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val elemID = Bits(8.W)
   val vRegID = Bits(5.W)
   val strideDir = Bool()
+  val isMask = Bool()
+  val Mask = Bits(64.W)
 
 //  val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
 //  val youngest_stq_idx    = UInt(stqAddrSz.W) // index of the oldest store younger than us
@@ -593,8 +599,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.dmem.force_order   := io.core.fence_dmem
   io.core.fencei_rdy    := !stq_nonempty && io.dmem.ordered
 
-  var dsq_full = Bool()
-  dsq_full = WrapInc(dsq_tail, numDsqEntries) === dsq_head
+//  var dsq_full = Bool()
+  val dsq_full = WireInit(false.B)
+  dsq_full := WrapInc(dsq_tail, numDsqEntries) === dsq_head
   
 
   val newDsqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_stq && !io.core.VGen.resp.bits.dsqFull
@@ -617,9 +624,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   }
   
-  var dlq_full = Bool()
-  dlq_full = WrapInc(dlq_tail, numDlqEntries) === dlq_head
-  io.core.VGen.req.ready    := !dlq_full || !dsq_full  //TODO: I think this is fine for now, since we won't have them coexist
+//  var dlq_full = Bool()
+  val dlq_full = WireInit(false.B)
+  dlq_full := WrapInc(dlq_tail, numDlqEntries) === dlq_head
+//  io.core.VGen.req.ready    := !dlq_full || !dsq_full  //TODO: I think this is fine for now, since we won't have them coexist
+  io.core.VGen.req.ready    :=  ((io.core.VGen.req.bits.uop.uses_stq && !dsq_full) || (io.core.VGen.req.bits.uop.uses_ldq && !dlq_full))
   io.core.VGen.resp.bits.dsqFull := dsq_full
   io.core.VGen.resp.bits.dlqFull := dlq_full
   val newDlqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_ldq && !io.core.VGen.resp.bits.dlqFull
@@ -640,6 +649,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dlq(dlq_tail).bits.elemID := io.core.VGen.reqHelp.bits.elemID
     dlq(dlq_tail).bits.vRegID := io.core.VGen.reqHelp.bits.vRegID
     dlq(dlq_tail).bits.strideDir := io.core.VGen.reqHelp.bits.strideDir
+    dlq(dlq_tail).bits.isMask := io.core.VGen.reqHelp.bits.isMask
+    dlq(dlq_tail).bits.Mask := io.core.VGen.reqHelp.bits.Mask
 
   }
 
@@ -1819,6 +1830,8 @@ when (dlq_finished) {
           io.core.VGen.resp.bits.vRegID := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.vRegID 
           io.core.VGen.resp.bits.sbId := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.sbId  
           io.core.VGen.resp.bits.strideDir := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.strideDir
+          io.core.VGen.resp.bits.isMask := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.isMask
+          io.core.VGen.resp.bits.Mask := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.Mask
           io.core.VGen.resp.bits.s0l1 := true.B 
           io.core.VGen.resp.bits.memSize  := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.uop.mem_size
           io.core.VGen.resp.bits.data := io.dmem.resp(w).bits.data

@@ -290,6 +290,8 @@ val vAGen = Module (new VAgen ())
   io.vGenIO.reqHelp.bits.vRegID := vIdGen.io.outVD
   io.vGenIO.reqHelp.bits.sbId   := sbIdHold
   io.vGenIO.reqHelp.bits.strideDir := strideDirHold 
+  io.vGenIO.reqHelp.bits.isMask := DontCare
+  io.vGenIO.reqHelp.bits.Mask := DontCare
 
   val MemSyncEnd = io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid && inMiddle 
   val MemSbId = io.vGenIO.resp.bits.sbId
@@ -339,8 +341,10 @@ val vAGen = Module (new VAgen ())
   val MEMMaskCredit = WireInit(false.B)
 
   io.vGenIO.req.bits.last := vAGen.io.last 
-  when (io.vGenIO.req.valid && io.vGenIO.req.ready && 
-                              ((io.vGenIO.req.bits.uop.uses_stq && !io.vGenIO.resp.bits.dsqFull) || (io.vGenIO.req.bits.uop.uses_ldq && !io.vGenIO.resp.bits.dlqFull))) {
+/*  when (io.vGenIO.req.valid && io.vGenIO.req.ready && 
+                              ((io.vGenIO.req.bits.uop.uses_stq && !io.vGenIO.resp.bits.dsqFull) || (io.vGenIO.req.bits.uop.uses_ldq && !io.vGenIO.resp.bits.dlqFull))) {*/
+  when (io.vGenIO.req.valid && io.vGenIO.req.ready) { 
+                                                        
     vdb.io.pop := io.vGenIO.req.bits.uop.uses_stq
     vAGen.io.pop := true.B 
     vIdGen.io.pop := io.vGenIO.req.bits.uop.uses_ldq
