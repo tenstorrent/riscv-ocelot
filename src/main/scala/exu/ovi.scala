@@ -593,8 +593,8 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
   val S = log2Ceil(N / 8 + 1)
   val I = log2Ceil(M / 8 + 1)
   val maxIndex = (M / 8)
-  val safeLmul = (M/Vlen)  // 2 in our case
-  val preshift = log2Ceil(M/Vlen)
+  val safeLmul = log2Ceil(M/Vlen)  // 2 in our case, however this needs to be logged (LMUL = 2, but vlmul = 1)
+  val preshift = log2Ceil(M/Vlen) // 1 in our case
 
   val io = IO(new Bundle {
     val configValid = Input(Bool())
@@ -633,8 +633,16 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
   }
 
   val paddedEntry = Cat(0.U((N-8).W), currentEntry)
-  val slices = VecInit(Seq.tabulate(M/N)(i => paddedEntry((i+1)*N-1, i*N)))
-  io.outData := slices(currentIndex)
+  //val slices = VecInit(Seq.tabulate(M/N)(i => paddedEntry((i+1)*N-1, i*N)))
+  val slices = VecInit(Seq.tabulate(M/8)(i => paddedEntry(i*8+N-1, i*8)))
+  io.outData := slices(currentIndex) 
+  when (io.sliceSize === 1.U) {
+  io.outData := slices(currentIndex)(7, 0)
+  }.elsewhen(io.sliceSize === 2.U) {
+    io.outData := slices(currentIndex) (15, 0)
+  }.elsewhen(io.sliceSize === 4.U) {
+    io.outData := slices(currentIndex) (31, 0)
+  }
 
   io.release := false.B 
   when (io.pop) {
