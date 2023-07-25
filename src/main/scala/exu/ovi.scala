@@ -193,6 +193,10 @@ val vAGen = Module (new VAgen ())
   vAGen.io.sliceSize := 8.U 
   vAGen.io.vl := 4.U
   vAGen.io.pop := false.B  
+
+  val vwhls = Module (new VWhLSDecoder (256))
+  vwhls.io.nf := DontCare
+  vwhls.io.wth := DontCare
   /*
       Decode Start
   */
@@ -227,22 +231,46 @@ val vAGen = Module (new VAgen ())
     vGenEnable := true.B 
     vGenHold.req.uop := vLSIQueue.io.deq.bits.req.uop
     sbIdHold := sbIdQueue.io.deq.bits 
+
+    val instElemSize = vLSIQueue.io.deq.bits.req.uop.inst(14, 12)
+    val vldDest = vLSIQueue.io.deq.bits.req.uop.inst(11, 7)
+    val instNf = vLSIQueue.io.deq.bits.req.uop.inst(31, 29)
+    val isWholeStore = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 39.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 8.U 
+    val isWholeLoad = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 7.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 8.U 
+    val isStoreMask = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 39.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 11.U 
+    val isLoadMask = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 7.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 11.U
+    
+
     vdb.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_stq
     vIdGen.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_ldq
     vIdGen.io.startID := 0.U
     s0l1 := vLSIQueue.io.deq.bits.req.uop.uses_ldq
     vAGen.io.configValid := true.B
-    vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
+    
     vdb.io.vlmul := vLSIQueue.io.deq.bits.vconfig.vtype.vlmul_mag
+    vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
     vAGen.io.startAddr := vLSIQueue.io.deq.bits.req.rs1_data
     vAGen.io.stride := vLSIQueue.io.deq.bits.req.rs2_data 
-    
+    when (isWholeLoad || isWholeStore) {
+    vwhls.io.nf := instNf
+    vwhls.io.wth := instElemSize 
+    vAGen.io.vl := vwhls.io.overVl 
+    vdb.io.vlmul := vwhls.io.overVlmul
+    }.elsewhen (isStoreMask || isLoadMask) {
+      vAGen.io.vl := (vLSIQueue.io.deq.bits.vconfig.vl + 7.U) >> 3
+    }
+  /*  }.otherwise{
+     vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
+     vdb.io.vlmul := vLSIQueue.io.deq.bits.vconfig.vtype.vlmul_mag
+    }
+    */
     // this is fine for now, change later for index store
-    val instElemSize = vLSIQueue.io.deq.bits.req.uop.inst(14, 12)
-    val vldDest = vLSIQueue.io.deq.bits.req.uop.inst(11, 7)
-    strideDirHold := vLSIQueue.io.deq.bits.req.rs2_data(31)
+    
     vIdGen.io.startVD := vldDest
     
+    when (isWholeStore || isStoreMask || isLoadMask) {
+      sliceSizeHold := 1.U 
+    }.otherwise {
     when (instElemSize === 0.U) {
     //  vdb.io.sliceSize := 1.U
     //  vAGen.io.sliceSize := 1.U
@@ -264,13 +292,16 @@ val vAGen = Module (new VAgen ())
     //   vIdGen.io.sliceSize := 8.U
     sliceSizeHold := 8.U 
     }
+    }
   
     
     val instMop = vLSIQueue.io.deq.bits.req.uop.inst(27, 26)
     when (instMop === 0.U) {
       vAGen.io.isStride := false.B 
+      strideDirHold := 0.U
     }.otherwise {
       vAGen.io.isStride := true.B 
+      strideDirHold := vLSIQueue.io.deq.bits.req.rs2_data(31)
     }
   }
 
@@ -315,13 +346,13 @@ val vAGen = Module (new VAgen ())
   when (MEMLoadValid) {
     when (io.vGenIO.resp.bits.strideDir){  // negative
        when (io.vGenIO.resp.bits.memSize === 0.U) {
-        MEMLoadData := Cat(io.vGenIO.resp.bits.data (7, 0), 0.U) 
+        MEMLoadData := Cat(io.vGenIO.resp.bits.data (7, 0), 0.U(504.W)) 
        }.elsewhen (io.vGenIO.resp.bits.memSize === 1.U) {
-        MEMLoadData := Cat(io.vGenIO.resp.bits.data (15, 0), 0.U)       
+        MEMLoadData := Cat(io.vGenIO.resp.bits.data (15, 0), 0.U(496.W))       
        }.elsewhen (io.vGenIO.resp.bits.memSize === 2.U) {
-        MEMLoadData := Cat(io.vGenIO.resp.bits.data (31, 0), 0.U)
+        MEMLoadData := Cat(io.vGenIO.resp.bits.data (31, 0), 0.U(480.W))
        }.elsewhen (io.vGenIO.resp.bits.memSize === 3.U) {
-        MEMLoadData := Cat(io.vGenIO.resp.bits.data (63, 0), 0.U)
+        MEMLoadData := Cat(io.vGenIO.resp.bits.data (63, 0), 0.U(448.W))
        }
     }.otherwise {
       when (io.vGenIO.resp.bits.memSize === 0.U) {
@@ -606,7 +637,7 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
     val writeData = Input(UInt(M.W))
     val pop = Input(Bool())
     val last = Input(Bool())
-    val vlmul = Input(UInt(2.W))
+    val vlmul = Input(UInt(3.W))
     val sliceSize = Input(UInt(S.W))
     val release = Output(Bool())
     val outData = Output(UInt(N.W))
@@ -619,9 +650,11 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
   val currentIndex = Reg(UInt(I.W))
   val needJump = RegInit(false.B)
   val jumping = RegInit(false.B)
+  val miniIndex = RegInit(0.U(log2Ceil(N+1).W))
 
   when(io.configValid) {
    currentIndex := 0.U
+   miniIndex := 0.U
    needJump := false.B 
    when (io.vlmul > safeLmul.U) {
     needJump := true.B 
@@ -636,18 +669,11 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
     writePtr := WrapInc(writePtr, Depth)
   }
 
-  val paddedEntry = Cat(0.U((N-8).W), currentEntry)
-  //val slices = VecInit(Seq.tabulate(M/N)(i => paddedEntry((i+1)*N-1, i*N)))
-  val slices = VecInit(Seq.tabulate(M/8)(i => paddedEntry(i*8+N-1, i*8)))
+//  val paddedEntry = Cat(0.U((N-8).W), currentEntry)
+  val slices = VecInit(Seq.tabulate(M/N)(i => currentEntry((i+1)*N-1, i*N)))
+ // val slices = VecInit(Seq.tabulate(M/N)(i => paddedEntry(i*64+N-1, i*64)))
   io.outData := slices(currentIndex) 
-  when (io.sliceSize === 1.U) {
-  io.outData := slices(currentIndex)(7, 0)
-  }.elsewhen(io.sliceSize === 2.U) {
-    io.outData := slices(currentIndex) (15, 0)
-  }.elsewhen(io.sliceSize === 4.U) {
-    io.outData := slices(currentIndex) (31, 0)
-  }
-
+ 
   io.release := false.B 
   when (io.pop) {
     when (io.last) {
@@ -661,15 +687,23 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
         jumping := true.B 
       }
     } .otherwise {
-      when (currentIndex + io.sliceSize === maxIndex.U) {
-        currentIndex := 0.U
-        readPtr := WrapInc(readPtr, Depth)
-        when(needJump) {
-        finalJump := finalJump - 1.U
+ //     when (currentIndex + io.sliceSize === maxIndex.U) {
+      when (miniIndex + io.sliceSize === 8.U) {
+        miniIndex := 0.U
+        when (currentIndex === (M/N - 1).U) {
+          currentIndex := 0.U
+          readPtr := WrapInc(readPtr, Depth)
+          io.release := true.B 
+          when(needJump) {
+            finalJump := finalJump - 1.U
+          }
+        }.otherwise {
+          currentIndex := currentIndex + 1.U 
         }
-        io.release := true.B 
+        
       } .otherwise {
-        currentIndex := currentIndex + io.sliceSize
+//        currentIndex := currentIndex + io.sliceSize
+        miniIndex := miniIndex + io.sliceSize
       }
     }
   }
@@ -683,3 +717,40 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
   }
 }
 
+class VWhLSDecoder(val M: Int) extends Module {
+  val Mbyte = M/8
+  val io = IO(new Bundle {
+    val nf = Input(UInt(3.W))
+    val wth = Input(UInt(3.W))
+    val overVl = Output(UInt(9.W))
+    val overVlmul = Output(UInt(3.W))
+  })
+
+  val nf_wth = Cat(io.nf, io.wth)
+
+  io.overVl := MuxLookup(nf_wth, 0.U, Array(
+    0.U  -> (Mbyte.U),
+    5.U  -> (Mbyte.U >> 1),
+    6.U  -> (Mbyte.U >> 2),
+    7.U  -> (Mbyte.U >> 3),
+    8.U  -> (Mbyte.U << 1),
+    13.U -> (Mbyte.U),
+    14.U -> (Mbyte.U >> 1),
+    15.U -> (Mbyte.U >> 2),
+    24.U -> (Mbyte.U << 2),
+    29.U -> (Mbyte.U << 1),
+    30.U -> (Mbyte.U),
+    31.U -> (Mbyte.U >> 1),
+    56.U -> (Mbyte.U << 3),
+    61.U -> (Mbyte.U << 2),
+    62.U -> (Mbyte.U << 1),
+    63.U -> (Mbyte.U)
+  ))
+  io.overVlmul := 0.U
+  switch(io.nf) {
+    is (0.U) { io.overVlmul := 0.U }
+    is (1.U) { io.overVlmul := 1.U }
+    is (3.U) { io.overVlmul := 2.U }
+    is (7.U) { io.overVlmul := 3.U }
+  }
+}
