@@ -235,10 +235,10 @@ val vAGen = Module (new VAgen ())
     val instElemSize = vLSIQueue.io.deq.bits.req.uop.inst(14, 12)
     val vldDest = vLSIQueue.io.deq.bits.req.uop.inst(11, 7)
     val instNf = vLSIQueue.io.deq.bits.req.uop.inst(31, 29)
-    val isWholeStore = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 39.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 8.U 
-    val isWholeLoad = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 7.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 8.U 
-    val isStoreMask = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 39.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 11.U 
-    val isLoadMask = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 7.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 11.U
+    val isWholeStore = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 39.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 8.U && vLSIQueue.io.deq.bits.req.uop.inst(27, 26) === 0.U
+    val isWholeLoad = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 7.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 8.U && vLSIQueue.io.deq.bits.req.uop.inst(27, 26) === 0.U
+    val isStoreMask = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 39.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 11.U && vLSIQueue.io.deq.bits.req.uop.inst(27, 26) === 0.U
+    val isLoadMask = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 7.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 11.U && vLSIQueue.io.deq.bits.req.uop.inst(27, 26) === 0.U
     
 
     vdb.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_stq
@@ -258,6 +258,7 @@ val vAGen = Module (new VAgen ())
     vdb.io.vlmul := vwhls.io.overVlmul
     }.elsewhen (isStoreMask || isLoadMask) {
       vAGen.io.vl := (vLSIQueue.io.deq.bits.vconfig.vl + 7.U) >> 3
+      vdb.io.vlmul := 0.U
     }
   /*  }.otherwise{
      vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
@@ -609,9 +610,11 @@ class VIdGen(val M: Int, val N: Int)(implicit p: Parameters) extends Module {
     currentID := currentID + 1.U 
     when (count + io.sliceSize === M.U) {
       count := 0.U
+ //     currentID := 0.U 
       currentVD := currentVD + 1.U
     }.otherwise{
       count := count + io.sliceSize
+ //     currentID := currentID + 1.U 
     }
   }
 
@@ -669,8 +672,8 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
     writePtr := WrapInc(writePtr, Depth)
   }
 
-//  val paddedEntry = Cat(0.U((N-8).W), currentEntry)
-  val slices = VecInit(Seq.tabulate(M/N)(i => currentEntry((i+1)*N-1, i*N)))
+ val paddedEntry = Cat(0.U((N-8).W), currentEntry)
+ val slices = VecInit(Seq.tabulate(M/8)(i => paddedEntry(i*8+N-1, i*8)))
  // val slices = VecInit(Seq.tabulate(M/N)(i => paddedEntry(i*64+N-1, i*64)))
   io.outData := slices(currentIndex) 
  
@@ -687,10 +690,10 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
         jumping := true.B 
       }
     } .otherwise {
- //     when (currentIndex + io.sliceSize === maxIndex.U) {
-      when (miniIndex + io.sliceSize === 8.U) {
-        miniIndex := 0.U
-        when (currentIndex === (M/N - 1).U) {
+     when (currentIndex + io.sliceSize === maxIndex.U) {
+ //     when (miniIndex + io.sliceSize === 8.U) {
+  //      miniIndex := 0.U
+  //      when (currentIndex === (M/N - 1).U) {
           currentIndex := 0.U
           readPtr := WrapInc(readPtr, Depth)
           io.release := true.B 
@@ -698,13 +701,14 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
             finalJump := finalJump - 1.U
           }
         }.otherwise {
-          currentIndex := currentIndex + 1.U 
+          currentIndex := currentIndex + io.sliceSize
         }
-        
+/*        
       } .otherwise {
 //        currentIndex := currentIndex + io.sliceSize
         miniIndex := miniIndex + io.sliceSize
       }
+      */
     }
   }
   when (jumping) {

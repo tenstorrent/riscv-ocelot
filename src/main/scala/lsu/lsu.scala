@@ -1261,7 +1261,11 @@ when (dlq_finished) {
 //      }.elsewhen (!dsq_finished && dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready){
         dmem_req(w).valid := true.B
         dmem_req(w).bits.addr := dsq_commit_e.bits.addr.bits
-        dmem_req(w).bits.data := dsq_commit_e.bits.data.bits
+        dmem_req(w).bits.data     := (new freechips.rocketchip.rocket.StoreGen(
+                                    dsq_commit_e.bits.uop.mem_size, 0.U,
+                                    dsq_commit_e.bits.data.bits,
+                                    coreDataBytes)).data
+//        dmem_req(w).bits.data := dsq_commit_e.bits.data.bits
         dmem_req(w).bits.uop := dsq_commit_e.bits.uop
         dmem_req(w).bits.uop.stq_idx := dsq_execute_head
           when (dsq_execute_head =/= dsq_tail) {
@@ -1823,7 +1827,7 @@ when (dlq_finished) {
     when (io.dmem.resp(w).valid)
     {
       when (io.dmem.resp(w).bits.uop.uses_ldq && io.dmem.resp(w).bits.uop.is_vec){
-        when(!dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded){
+        when(!dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded && IsOlder(io.dmem.resp(w).bits.uop.ldq_idx, dlq_execute_head, dlq_head)){
           dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded := true.B
           io.core.VGen.resp.valid := true.B 
           io.core.VGen.resp.bits.elemID := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemID 
@@ -1868,7 +1872,9 @@ when (dlq_finished) {
           stq(io.dmem.resp(w).bits.uop.stq_idx).bits.debug_wb_data := io.dmem.resp(w).bits.data
         }
       }.elsewhen (io.dmem.resp(w).bits.uop.uses_stq && io.dmem.resp(w).bits.uop.is_vec) {
+        when(!dsq(io.dmem.resp(w).bits.uop.stq_idx).bits.succeeded && IsOlder(io.dmem.resp(w).bits.uop.stq_idx, dsq_execute_head, dsq_head)){
         dsq(io.dmem.resp(w).bits.uop.stq_idx).bits.succeeded := true.B
+        }
       }
     }
 
