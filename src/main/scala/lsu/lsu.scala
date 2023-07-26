@@ -657,6 +657,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dlq(dlq_tail).bits.isMask := io.core.VGen.reqHelp.bits.isMask
     dlq(dlq_tail).bits.Mask := io.core.VGen.reqHelp.bits.Mask
     dlq(dlq_tail).bits.isFake := io.core.VGen.reqHelp.bits.isFake
+    when (io.core.VGen.reqHelp.bits.isFake) {
+      dlq(dlq_tail).bits.addr.valid := true.B
+      dlq(dlq_tail).bits.addr_is_virtual := false.B
+    }
 
   }
 
@@ -1181,13 +1185,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
 
 when (dlq_finished) {
-        ldq(ldq_head).bits.succeeded := true.B 
-        ldq(ldq_head).bits.executed := true.B
+//        ldq(ldq_head).bits.succeeded := true.B 
+//        ldq(ldq_head).bits.executed := true.B
         dlq_finished := false.B
   }
 
   when (dsq_finished) {
-        stq(stq_execute_head).bits.succeeded := true.B 
+//        stq(stq_execute_head).bits.succeeded := true.B 
         dsq_finished := false.B 
          stq_execute_head                     := WrapInc(stq_execute_head, numStqEntries)
   }
@@ -2080,6 +2084,7 @@ when (dlq_finished) {
     when (dsq(dsq_head).bits.last) {
       dsq_finished := true.B
       sbIdDone := dsq(dsq_head).bits.sbId
+      stq(stq_execute_head).bits.succeeded := true.B 
     }
   }
 
@@ -2091,6 +2096,8 @@ when (dlq_finished) {
     when (dlq(dlq_head).bits.last) {
       dlq_finished := true.B
       sbIdDone := dlq(dlq_head).bits.sbId
+      ldq(ldq_head).bits.succeeded := true.B 
+      ldq(ldq_head).bits.executed := true.B
     }
   }
 

@@ -540,8 +540,11 @@ class VAgen(implicit p: Parameters) extends Module {
   val stride  = Reg(UInt(64.W))
   val working = RegInit(false.B)
   val isStride = Reg(Bool())
+  val fakeHold = RegInit(false.B)
+
+
+  io.isFake := fakeHold
   
-  io.isFake := false.B
 
   io.outAddr := currentAddr(39, 0)
 
@@ -549,7 +552,7 @@ class VAgen(implicit p: Parameters) extends Module {
   //  sliceSizeHold := io.sliceSize
     when (io.vl === 0.U) {
     vlHold := 0.U
-    io.isFake := true.B
+    fakeHold := true.B
     }.otherwise {
     vlHold := io.vl - 1.U
     }
@@ -566,7 +569,7 @@ class VAgen(implicit p: Parameters) extends Module {
     when (io.last) {
       working := false.B 
       currentIndex := 0.U
-      io.isFake := false.B
+      fakeHold := false.B
     }.otherwise {
       currentIndex := currentIndex + 1.U
       when (isStride) {
