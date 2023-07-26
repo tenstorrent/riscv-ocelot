@@ -135,6 +135,7 @@ class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   val dlqFull = Bool()
   val isMask = Bool()
   val Mask = Bits(64.W)
+//  val isFake = Bool()
 }
 
 class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
@@ -146,6 +147,7 @@ class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   val strideDir = Bool()
   val isMask = Bool()
   val Mask = Bits(64.W)
+  val isFake = Bool()
 }
 
 class VGenIO(implicit p: Parameters) extends BoomBundle()(p)
@@ -316,6 +318,7 @@ class DLQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val strideDir = Bool()
   val isMask = Bool()
   val Mask = Bits(64.W)
+  val isFake = Bool()
 
 //  val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
 //  val youngest_stq_idx    = UInt(stqAddrSz.W) // index of the oldest store younger than us
@@ -349,6 +352,7 @@ class DSQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val last                = Bool()
   val sent                = Bool()
   val succeeded           = Bool() // D$ has ack'd this, we don't need to maintain this anymore
+  val isFake              = Bool()
 }
 
 class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
@@ -621,6 +625,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dsq(dsq_tail).bits.last := io.core.VGen.req.bits.last
     dsq(dsq_tail).bits.sent := false.B 
     dsq(dsq_tail).bits.sbId := io.core.VGen.reqHelp.bits.sbId 
+    dsq(dsq_tail).bits.isFake := io.core.VGen.reqHelp.bits.isFake
 
   }
   
@@ -651,6 +656,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dlq(dlq_tail).bits.strideDir := io.core.VGen.reqHelp.bits.strideDir
     dlq(dlq_tail).bits.isMask := io.core.VGen.reqHelp.bits.isMask
     dlq(dlq_tail).bits.Mask := io.core.VGen.reqHelp.bits.Mask
+    dlq(dlq_tail).bits.isFake := io.core.VGen.reqHelp.bits.isFake
 
   }
 
@@ -1046,7 +1052,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dtlb.io.req(w).bits.prv         := io.ptw.status.prv
     }
     else if (w == memWidth) {
-      dtlb.io.req(w).valid := dsq_tlb_e.valid && (dsq_tlb_e.bits.addr_is_virtual || !dsq_tlb_e.bits.addr.valid) 
+      dtlb.io.req(w).valid := dsq_tlb_e.valid && (dsq_tlb_e.bits.addr_is_virtual || !dsq_tlb_e.bits.addr.valid) && !dsq_tlb_e.bits.isFake
       dtlb.io.req(w).bits.vaddr       := dsq_tlb_e.bits.addr.bits
       dtlb.io.req(w).bits.size        := dsq_tlb_e.bits.uop.mem_size
       dtlb.io.req(w).bits.cmd         := dsq_tlb_e.bits.uop.mem_cmd
@@ -1055,7 +1061,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dtlb.io.req(w).bits.prv         := io.ptw.status.prv
     }
     else {
-      dtlb.io.req(w).valid := dlq_tlb_e.valid && (dlq_tlb_e.bits.addr_is_virtual || !dlq_tlb_e.bits.addr.valid)  
+      dtlb.io.req(w).valid := dlq_tlb_e.valid && (dlq_tlb_e.bits.addr_is_virtual || !dlq_tlb_e.bits.addr.valid)  && !dlq_tlb_e.bits.isFake
       dtlb.io.req(w).bits.vaddr       := dlq_tlb_e.bits.addr.bits
       dtlb.io.req(w).bits.size        := dlq_tlb_e.bits.uop.mem_size
       dtlb.io.req(w).bits.cmd         := dlq_tlb_e.bits.uop.mem_cmd
@@ -1203,7 +1209,8 @@ when (dlq_finished) {
       }.elsewhen(dlq_commit_e.bits.succeeded){
 */
      when(!dlq_finished) {
-     when(dlq_commit_e.bits.succeeded){
+     when(dlq_commit_e.bits.succeeded || dlq_commit_e.bits.isFake){
+        dlq_commit_e.bits.succeeded := true.B
         when (dlq_execute_head =/= dlq_tail) {
         dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
       }
@@ -1256,7 +1263,7 @@ when (dlq_finished) {
         dsq_finished := false.B 
          stq_execute_head                     := WrapInc(stq_execute_head, numStqEntries)
          */
-      }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready){                //KYnew, revisit later
+      }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready && !dsq_commit_e.bits.isFake){                //KYnew, revisit later
 
 //      }.elsewhen (!dsq_finished && dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready){
         dmem_req(w).valid := true.B
@@ -1274,6 +1281,12 @@ when (dlq_finished) {
           }
          dsq(dsq_execute_head).bits.succeeded := false.B
          dsq(dsq_execute_head).bits.sent := true.B
+      }.elsewhen(dsq_commit_e.valid && dsq_commit_e.bits.isFake){
+        dsq_commit_e.bits.succeeded := true.B
+        when (dsq_execute_head =/= dsq_tail) {
+//          when (!dsq_commit_e.bits.last) {
+           dsq_execute_head :=  WrapInc(dsq_execute_head, numDsqEntries)
+          }
       }.otherwise{
         dmem_req(w).valid  := false.B                        //KYnew, placeholder
       }
@@ -1352,7 +1365,7 @@ when (dlq_finished) {
       dsq(dsq_tlb_head).bits.addr_is_virtual := dsq_tlb_miss     
     }
   
-    dsq_tlb_head := Mux((dtlb.io.req(memWidth).valid && !dsq_tlb_miss), WrapInc(dsq_tlb_head, numDsqEntries), dsq_tlb_head)
+    dsq_tlb_head := Mux(((dtlb.io.req(memWidth).valid && !dsq_tlb_miss) || dsq(dsq_tlb_head).bits.isFake), WrapInc(dsq_tlb_head, numDsqEntries), dsq_tlb_head)
     
     
     when (dtlb.io.req(memWidth+1).valid) {
@@ -1361,7 +1374,7 @@ when (dlq_finished) {
       dlq(dlq_tlb_head).bits.addr_is_virtual := dlq_tlb_miss     
     }
   
-    dlq_tlb_head := Mux((dtlb.io.req(memWidth+1).valid && !dlq_tlb_miss), WrapInc(dlq_tlb_head, numDlqEntries), dlq_tlb_head)
+    dlq_tlb_head := Mux(((dtlb.io.req(memWidth+1).valid && !dlq_tlb_miss) || dlq(dlq_tlb_head).bits.isFake), WrapInc(dlq_tlb_head, numDlqEntries), dlq_tlb_head)
 
     //-------------------------------------------------------------
     // Write data into the STQ
@@ -2207,6 +2220,7 @@ when (dlq_finished) {
         dsq(i).bits.uop        := NullMicroOp
         dsq(i).bits.data.bits := 0.U 
         dsq(i).bits.addr.bits := 0.U
+        dsq(i).bits.isFake := false.B
       }
       dlq_head := 0.U                                    // KYnew
       dlq_tail := 0.U
@@ -2220,6 +2234,7 @@ when (dlq_finished) {
         dlq(i).bits.addr_is_virtual := false.B
         dlq(i).bits.uop        := NullMicroOp
         dlq(i).bits.addr.bits := 0.U
+        dlq(i).bits.isFake := false.B
       }
     }
       .otherwise // exception

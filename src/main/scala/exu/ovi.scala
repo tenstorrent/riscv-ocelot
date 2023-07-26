@@ -324,6 +324,7 @@ val vAGen = Module (new VAgen ())
   io.vGenIO.reqHelp.bits.strideDir := strideDirHold 
   io.vGenIO.reqHelp.bits.isMask := DontCare
   io.vGenIO.reqHelp.bits.Mask := DontCare
+  io.vGenIO.reqHelp.bits.isFake := vAGen.io.isFake
 
   val MemSyncEnd = io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid && inMiddle 
   val MemSbId = io.vGenIO.resp.bits.sbId
@@ -528,6 +529,7 @@ class VAgen(implicit p: Parameters) extends Module {
     val pop = Input(Bool())
     val outAddr = Output(UInt(40.W))
     val last = Output(Bool())
+    val isFake = Output (Bool())
   })
 
 //  val sliceSizeHold = Reg(UInt(4.W))
@@ -539,12 +541,18 @@ class VAgen(implicit p: Parameters) extends Module {
   val working = RegInit(false.B)
   val isStride = Reg(Bool())
   
+  io.isFake := false.B
 
   io.outAddr := currentAddr(39, 0)
 
   when (io.configValid) {
   //  sliceSizeHold := io.sliceSize
+    when (io.vl === 0.U) {
+    vlHold := 0.U
+    io.isFake := true.B
+    }.otherwise {
     vlHold := io.vl - 1.U
+    }
     currentIndex := 0.U 
     currentAddr := io.startAddr
     isStride := io.isStride
@@ -558,6 +566,7 @@ class VAgen(implicit p: Parameters) extends Module {
     when (io.last) {
       working := false.B 
       currentIndex := 0.U
+      io.isFake := false.B
     }.otherwise {
       currentIndex := currentIndex + 1.U
       when (isStride) {
