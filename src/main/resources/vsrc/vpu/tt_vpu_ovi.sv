@@ -884,37 +884,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   assign enough_data = store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] &&
                        store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1];
-  // always_comb begin
-  //   store_fsm_next_state = 0;
-  //   case (store_fsm_state)
-  //     0: begin
-  //       if(vecldst_autogen_store && ocelot_read_req) begin
-  //         if(id_mem_lq_done)
-  //           store_fsm_next_state = 2;
-  //         else
-  //           store_fsm_next_state = 1;
-  //       end
-  //     end
-  //     1: begin
-  //       if(id_mem_lq_done)
-  //         store_fsm_next_state = 2;
-  //       else
-  //         store_fsm_next_state = 1;
-  //     end
-  //     2: begin
-  //       if(memop_sync_end)
-  //         store_fsm_next_state = 3;
-  //       else
-  //         store_fsm_next_state = 2;
-  //     end
-  //     3: begin
-  //       if(lq_empty)
-  //         store_fsm_next_state = 0;
-  //       else
-  //         store_fsm_next_state = 3;
-  //     end
-  //   endcase
-  // end
 
   always @(posedge clk) begin
     if(!reset_n)
@@ -1133,6 +1102,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
    .byte_en(byte_en)
   );
 
+  logic [2:0] load_buffer_rptr_start;
   always @(posedge clk) begin
     if(!reset_n)
       drain_load_buffer <= 0;
@@ -1146,10 +1116,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   always @(posedge clk) begin
     if(!reset_n)
-      load_buffer_rptr <= 0;
+      {load_buffer_rptr, load_buffer_rptr_start} <= '0;
     else begin
-      if(load_buffer_rptr == req_buffer_wptr - 1)
-        load_buffer_rptr <= 0;
+      if(vecldst_autogen_load && ex_id_rtr && id_ex_rts) begin
+        load_buffer_rptr <= read_issue_inst[9:7];
+        load_buffer_rptr_start <= read_issue_inst[9:7];
+      end
       else if(drain_load_buffer)
         load_buffer_rptr <= load_buffer_rptr + 1;
     end
@@ -1166,47 +1138,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
-  // always_comb begin
-  //   load_fsm_next_state = 2'd0;
-  //   case(load_fsm_state)
-  //     2'd0: begin
-  //       if(vecldst_autogen_load && ocelot_read_req)
-  //         load_fsm_next_state = 2'd1;
-  //       else
-  //         load_fsm_next_state = 2'd0;
-  //     end
-  //     2'd1: begin
-  //       if(!o_data_req && req_buffer_wptr != 0)
-  //         load_fsm_next_state = 2'd2;
-  //       else
-  //         load_fsm_next_state = 2'd1;
-  //     end
-  //     2'd2: begin
-  //       if(memop_sync_end)
-  //         load_fsm_next_state = 2'd3;
-  //       else
-  //         load_fsm_next_state = 2'd2;
-  //     end
-  //     2'd3: begin
-  //       if(lq_empty)
-  //         load_fsm_next_state = 2'd0;
-  //       else
-  //         load_fsm_next_state = 2'd3;
-  //     end
-  //   endcase
-  // end
-  // assign load_memsync_start = load_fsm_state == 2'd1 && load_fsm_next_state == 2'd2;
-  // assign load_commit = load_fsm_state == 2'd3 && lq_empty;
-
-  // assign ovi_stall = (store_fsm_state != 0 && store_fsm_state != 1) || (load_fsm_state != 0 && load_fsm_state != 1);
-
-  // always_ff@(posedge clk) begin
-  //   if(!reset_n)
-  //     load_fsm_state <= 0;
-  //   else
-  //     load_fsm_state <= load_fsm_next_state;
-  // end
-
   integer r;
   always @(posedge clk) begin
     if(!reset_n) begin
@@ -1215,8 +1146,11 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         req_buffer[r] <= 0;
     end
     else begin
-      if(id_mem_lqinfo.vec_load && fsm_completed_valid) begin
-        req_buffer_wptr <= 0;
+      // Not 100% sure about this, but I'm trying to capture the first request basically.
+      // Maybe I should have used `if(ocelot_read_req && read_valid)` ?
+      if(vecldst_autogen_load && ex_id_rtr && id_ex_rts && id_mem_lqalloc && id_ex_vecldst_autogen.ldst_iter_cnt == 0) begin
+        req_buffer_wptr <= read_issue_inst[9:7] + 1;
+        req_buffer[read_issue_inst[9:7]] <= mem_id_lqnxtid;
       end
       else if(id_mem_lqinfo.vec_load && id_mem_lqalloc) begin
         req_buffer[req_buffer_wptr[2:0]] <= mem_id_lqnxtid;

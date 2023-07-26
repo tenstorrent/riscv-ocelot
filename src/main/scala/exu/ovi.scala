@@ -496,6 +496,7 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   addResource("/vsrc/vpu/tt_decoder.sv")
   addResource("/vsrc/vpu/tt_reshape.sv")
   addResource("/vsrc/vpu/tt_memop_fsm.sv")
+  addResource("/vsrc/vpu/lrm_model.sv")
   addResource("/vsrc/vpu/tt_fifo.sv")
   addResource("/vsrc/vpu/tt_vpu_ovi.sv")  
   addResource("/vsrc/vpu/tt_vpu_ovi_assert.sv")  
@@ -619,14 +620,15 @@ class VIdGen(val M: Int, val N: Int)(implicit p: Parameters) extends Module {
   io.outID := currentID
   io.outVD := currentVD
   when (io.pop) {
-    currentID := currentID + 1.U 
+    //currentID := currentID + 1.U 
     when (count + io.sliceSize === M.U) {
       count := 0.U
  //     currentID := 0.U 
       currentVD := currentVD + 1.U
+      currentID := 0.U
     }.otherwise{
       count := count + io.sliceSize
- //     currentID := currentID + 1.U 
+      currentID := currentID + 1.U 
     }
   }
 
