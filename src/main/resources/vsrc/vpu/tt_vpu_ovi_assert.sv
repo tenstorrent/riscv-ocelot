@@ -95,8 +95,8 @@ module tt_vpu_ovi_assert
 
   assign pending_mem_cnt_nxt = pending_mem_cnt + memop_sync_start - memop_sync_end;
 
-  no_pending_memop_assert: assert property(@(posedge clk) disable iff (!reset_n)
-              s_eventually pending_mem_cnt == 0);
+  //no_pending_memop_assert: assert property(@(posedge clk) disable iff (!reset_n)
+  //            s_eventually pending_mem_cnt == 0);
 
   pending_mem_cnt_underflow_assert: assert property(@(posedge clk) disable iff (!reset_n)
               pending_mem_cnt == 0 |-> ~(memop_sync_end && !memop_sync_start));

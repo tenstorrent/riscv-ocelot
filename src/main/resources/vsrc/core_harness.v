@@ -18,7 +18,7 @@ import "DPI-C" function env_final();
 import "DPI-C" function monitor_instr(input string name, input int hartid, input longint cycle, input longint tag, input longint pc, input int opcode, input int trap);   
 import "DPI-C" function monitor_gpr(input string name, input int hartid, input longint cycle, input int rd_addr, input longint rd_wdata);
 import "DPI-C" function monitor_fpr(input string name, input int hartid, input longint cycle, input int frd_addr, input longint frd_wdata);
-import "DPI-C" function monitor_vr(input string name, input int hartid, input longint cycle, input int vrd_addr, input longint vrd_wdata[vLen/64]);
+import "DPI-C" function monitor_vr(input string name, input int hartid, input longint cycle, input int vrd_addr, input longint vrd_wdata[8*vLen/64], input byte mask);
 import "DPI-C" function monitor_csr(input string name, input int hartid, input longint cycle, input int csr_addr, input longint csr_wdata);
 
   // Info message logging
@@ -67,8 +67,8 @@ import "DPI-C" function monitor_csr(input string name, input int hartid, input l
   int rtype;
   int addr;
   longint data;
-  int vec_addr;
-  longint vec_wdata[vLen/64];
+  longint vec_wdata[8*vLen/64];
+  byte vec_mask;
   int csr_addr;
   longint csr_wdata;
 
@@ -101,24 +101,18 @@ import "DPI-C" function monitor_csr(input string name, input int hartid, input l
         end else if (rtype == 4) begin
           for (int lmul=0; lmul<8; lmul++) begin
             if (p0.commit.uops[port_ix].debug_vec_wmask[lmul]) begin
-              vec_addr = addr + lmul;
               if (tracer)
                 info($sformatf("<%0d> VR write: Hart=%0d, Addr=%0d", cycle, hart, addr));
-              for (int i=0; i<vLen/64; i++) begin
-                case (lmul)
-                  0: begin vec_wdata[i] = p0.commit.uops[port_ix].debug_vec_wdata[(vLen*lmul+64*i) +:64]; end
-                  1: begin vec_wdata[i] = p0.commit.uops[port_ix].debug_vec_wdata[(vLen*lmul+64*i) +:64]; end
-                  2: begin vec_wdata[i] = p0.commit.uops[port_ix].debug_vec_wdata[(vLen*lmul+64*i) +:64]; end
-                  3: begin vec_wdata[i] = p0.commit.uops[port_ix].debug_vec_wdata[(vLen*lmul+64*i) +:64]; end
-                  4: begin vec_wdata[i] = p0.commit.uops[port_ix].debug_vec_wdata[(vLen*lmul+64*i) +:64]; end
-                  5: begin vec_wdata[i] = p0.commit.uops[port_ix].debug_vec_wdata[(vLen*lmul+64*i) +:64]; end
-                  6: begin vec_wdata[i] = p0.commit.uops[port_ix].debug_vec_wdata[(vLen*lmul+64*i) +:64]; end
-                  7: begin vec_wdata[i] = p0.commit.uops[port_ix].debug_vec_wdata[(vLen*lmul+64*i) +:64]; end
-                endcase
-              end
-              if (cosim) 
-                monitor_vr("mon_instr", hart, cycle, vec_addr, vec_wdata);
             end
+          end
+          if (cosim) begin
+            for (int lmul=0; lmul<8; lmul++) begin
+              for (int i=0; i<vLen/64; i++) begin
+                vec_wdata[lmul*vLen/64+i] = p0.commit.uops[port_ix].debug_vec_wdata[(vLen*lmul+64*i) +:64];
+              end
+            end
+            vec_mask = p0.commit.uops[port_ix].debug_vec_wmask;
+            monitor_vr("mon_instr", hart, cycle, addr, vec_wdata, vec_mask);
           end
         end
         // Retire
