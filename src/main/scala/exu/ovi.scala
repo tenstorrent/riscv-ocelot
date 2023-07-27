@@ -183,15 +183,16 @@ val vIdGen = Module (new VIdGen(32, 8))
  vIdGen.io.pop := false.B
  vIdGen.io.sliceSize := 8.U
 
-val vAGen = Module (new VAgen (64, 64, 4))
+val vAGen = Module (new VAgen (64, 65, 4))
 
   vAGen.io.configValid := false.B 
   vAGen.io.maskData := 0.U 
   vAGen.io.maskValid := false.B 
   vAGen.io.startAddr := DontCare
   vAGen.io.stride := DontCare
-  vAGen.io.isStride := DontCare 
-//  vAGen.io.sliceSize := 8.U 
+  vAGen.io.isStride := false.B 
+  vAGen.io.isIndex := false.B 
+  vAGen.io.isMask := false.B 
   vAGen.io.vl := 4.U
   vAGen.io.pop := false.B  
   vAGen.io.initialSliceSize := 0.U
@@ -237,6 +238,7 @@ val vAGen = Module (new VAgen (64, 64, 4))
     val instElemSize = vLSIQueue.io.deq.bits.req.uop.inst(14, 12)
     val vldDest = vLSIQueue.io.deq.bits.req.uop.inst(11, 7)
     val instNf = vLSIQueue.io.deq.bits.req.uop.inst(31, 29)
+    val instMaskEnable = !vLSIQueue.io.deq.bits.req.uop.inst(25)  // 0: enable, 1 disable
     val isWholeStore = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 39.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 8.U && vLSIQueue.io.deq.bits.req.uop.inst(27, 26) === 0.U
     val isWholeLoad = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 7.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 8.U && vLSIQueue.io.deq.bits.req.uop.inst(27, 26) === 0.U
     val isStoreMask = vLSIQueue.io.deq.bits.req.uop.inst(6, 0) === 39.U && vLSIQueue.io.deq.bits.req.uop.inst(24, 20) === 11.U && vLSIQueue.io.deq.bits.req.uop.inst(27, 26) === 0.U
@@ -253,6 +255,7 @@ val vAGen = Module (new VAgen (64, 64, 4))
     vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
     vAGen.io.startAddr := vLSIQueue.io.deq.bits.req.rs1_data
     vAGen.io.stride := vLSIQueue.io.deq.bits.req.rs2_data 
+    vAGen.io.isMask := instMaskEnable
     when (isWholeLoad || isWholeStore) {
     vwhls.io.nf := instNf
     vwhls.io.wth := instElemSize 
@@ -268,42 +271,37 @@ val vAGen = Module (new VAgen (64, 64, 4))
     vIdGen.io.startVD := vldDest
     
     when (isWholeStore || isStoreMask || isLoadMask) {
-      sliceSizeHold := 1.U 
       vAGen.io.initialSliceSize := 1.U 
     }.otherwise {
     when (instElemSize === 0.U) {
-      sliceSizeHold := 1.U  
       vAGen.io.initialSliceSize := 1.U 
     }.elsewhen (instElemSize === 5.U){
-      sliceSizeHold := 2.U 
       vAGen.io.initialSliceSize := 2.U 
     }.elsewhen (instElemSize === 6.U){
-    sliceSizeHold := 4.U 
-    vAGen.io.initialSliceSize := 4.U 
+      vAGen.io.initialSliceSize := 4.U 
     }.otherwise{
-    sliceSizeHold := 8.U 
-    vAGen.io.initialSliceSize := 8.U 
+      vAGen.io.initialSliceSize := 8.U 
     }
     }
   
-    
+    strideDirHold := 0.U 
     val instMop = vLSIQueue.io.deq.bits.req.uop.inst(27, 26)
     when (instMop === 0.U) {
       vAGen.io.isStride := false.B 
-      strideDirHold := 0.U
-    }.otherwise {
+    }.elsewhen(instMop === 2.U) {
       vAGen.io.isStride := true.B 
       strideDirHold := vLSIQueue.io.deq.bits.req.rs2_data(31)
+    }.otherwise {
+      vAGen.io.isIndex := true.B
     }
   }
 
     vdb.io.sliceSize := vAGen.io.sliceSizeOut
-//    vAGen.io.sliceSize := sliceSizeHold 
     vIdGen.io.sliceSize := vAGen.io.sliceSizeOut
     
   
 
-  io.vGenIO.req.valid := vGenEnable && ((!s0l1 && vDBcount =/= 0.U) || s0l1)
+  io.vGenIO.req.valid := vGenEnable && ((!s0l1 && vDBcount =/= 0.U) || s0l1) && vAGen.io.canPop
   io.vGenIO.req.bits.uop := vGenHold.req.uop
   io.vGenIO.req.bits.data := Mux(s0l1, 0.U, vdb.io.outData) 
   io.vGenIO.req.bits.last := false.B 
@@ -313,8 +311,8 @@ val vAGen = Module (new VAgen (64, 64, 4))
   io.vGenIO.reqHelp.bits.vRegID := vIdGen.io.outVD
   io.vGenIO.reqHelp.bits.sbId   := sbIdHold
   io.vGenIO.reqHelp.bits.strideDir := strideDirHold 
-  io.vGenIO.reqHelp.bits.isMask := DontCare
-  io.vGenIO.reqHelp.bits.Mask := DontCare
+  io.vGenIO.reqHelp.bits.isMask := vAGen.io.isMaskOut
+  io.vGenIO.reqHelp.bits.Mask := vAGen.io.currentMaskOut
   io.vGenIO.reqHelp.bits.isFake := vAGen.io.isFake
 
   val MemSyncEnd = io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid && inMiddle 
@@ -337,13 +335,7 @@ val vAGen = Module (new VAgen (64, 64, 4))
   val seqVreg = WireInit(0.U(5.W)) // 5
 
 
- /*   
-  val seqSbId = io.vGenIO.resp.bits.sbId
-  val seqElCount = WireInit(1.U(7.W))
-  val seqElOff = WireInit(0.U(6.W))
-  val seqElId = io.vGenIO.resp.bits.elemID
-  val seqVreg = io.vGenIO.resp.bits.vRegID
-*/
+
   MEMSeqId := Cat (seqSbId, seqElCount, seqElOff, 0.U(3.W), seqElId, seqVreg)
 
   MEMLoadValid := io.vGenIO.resp.valid && io.vGenIO.resp.bits.s0l1 && !io.vGenIO.resp.bits.vectorDone  // needs fixing later if we are overlapping
@@ -360,35 +352,11 @@ val vAGen = Module (new VAgen (64, 64, 4))
   vReturnData.io.strideDir := io.vGenIO.resp.bits.strideDir
 
   val fakeLoadReturnQueue = Module(new Queue(UInt(21.W), 8))
-  fakeLoadReturnQueue.io.enq.valid := false.B 
+  fakeLoadReturnQueue.io.enq.valid := vAGen.io.popForce 
   fakeLoadReturnQueue.io.enq.bits := Cat(sbIdHold, vIdGen.io.outID, vIdGen.io.outVD)
   fakeLoadReturnQueue.io.deq.ready := false.B 
   MEMLoadValid := LSUReturnLoadValid || fakeLoadReturnQueue.io.deq.valid 
-/*
-  when (MEMLoadValid) {
-    when (io.vGenIO.resp.bits.strideDir){  // negative
-       when (io.vGenIO.resp.bits.memSize === 0.U) {
-        MEMLoadData := Cat(io.vGenIO.resp.bits.data (7, 0), 0.U(504.W)) 
-       }.elsewhen (io.vGenIO.resp.bits.memSize === 1.U) {
-        MEMLoadData := Cat(io.vGenIO.resp.bits.data (15, 0), 0.U(496.W))       
-       }.elsewhen (io.vGenIO.resp.bits.memSize === 2.U) {
-        MEMLoadData := Cat(io.vGenIO.resp.bits.data (31, 0), 0.U(480.W))
-       }.elsewhen (io.vGenIO.resp.bits.memSize === 3.U) {
-        MEMLoadData := Cat(io.vGenIO.resp.bits.data (63, 0), 0.U(448.W))
-       }
-    }.otherwise {
-      when (io.vGenIO.resp.bits.memSize === 0.U) {
-        MEMLoadData := Cat(0.U, io.vGenIO.resp.bits.data (7, 0)) 
-       }.elsewhen (io.vGenIO.resp.bits.memSize === 1.U) {
-        MEMLoadData := Cat(0.U, io.vGenIO.resp.bits.data (15, 0))       
-       }.elsewhen (io.vGenIO.resp.bits.memSize === 2.U) {
-        MEMLoadData := Cat(0.U, io.vGenIO.resp.bits.data (31, 0))
-       }.elsewhen (io.vGenIO.resp.bits.memSize === 3.U) {
-        MEMLoadData := Cat(0.U, io.vGenIO.resp.bits.data (63, 0))
-       }
-    }
-  }
-*/
+
   val MEMReturnMaskValid = WireInit(false.B) 
   val MEMReturnMask = WireInit(0.U(64.W))
   val MEMMaskCredit = WireInit(false.B)
@@ -414,9 +382,8 @@ val vAGen = Module (new VAgen (64, 64, 4))
 
 
   io.vGenIO.req.bits.last := vAGen.io.last 
-/*  when (io.vGenIO.req.valid && io.vGenIO.req.ready && 
-                              ((io.vGenIO.req.bits.uop.uses_stq && !io.vGenIO.resp.bits.dsqFull) || (io.vGenIO.req.bits.uop.uses_ldq && !io.vGenIO.resp.bits.dlqFull))) {*/
-  when (io.vGenIO.req.valid && io.vGenIO.req.ready) { 
+
+  when ((io.vGenIO.req.valid && io.vGenIO.req.ready) || vAGen.io.popForce) { 
                                                         
     vdb.io.pop := io.vGenIO.req.bits.uop.uses_stq
     vAGen.io.pop := true.B 
@@ -574,10 +541,17 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
     val startAddr = Input(UInt(64.W))
     val stride = Input(UInt(64.W))
     val isStride = Input(Bool())
+    val isMask = Input(Bool())
+    val isIndex = Input(Bool())
     val pop = Input(Bool())
     val outAddr = Output(UInt(40.W))
     val last = Output(Bool())
     val isFake = Output (Bool())
+    val isMaskOut   = Output (Bool())
+    val currentMaskOut = Output (UInt(N.W))
+    val popForce = Output (Bool())
+    val canPop = Output (Bool())
+
   })
 
 //  val sliceSizeHold = Reg(UInt(4.W))
@@ -588,17 +562,24 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
   val stride  = Reg(UInt(64.W))
   val working = RegInit(false.B)
   val isStride = Reg(Bool())
+  val isIndex = Reg(Bool())
+  val isMask = Reg(Bool())
   val fakeHold = RegInit(false.B)
 
   val sliceSizeHold = RegInit(0.U(log2Ceil(M/8 + 1).W))
   io.sliceSizeOut := sliceSizeHold  // this is only for V0
 
   io.release := false.B 
+  io.popForce := false.B 
+  io.canPop := false.B 
+  io.isMaskOut := isMask
+  io.currentMaskOut := false.B 
 
-  io.isFake := fakeHold
   
+  
+  val indexAddr = WireInit(0.U(64.W))
 
-  io.outAddr := currentAddr(39, 0)
+  io.outAddr := Mux(isIndex, indexAddr(39, 0), currentAddr(39, 0))  // leave it for now, as we don't support index yet
 
   when (io.configValid) {
     sliceSizeHold := io.initialSliceSize
@@ -611,26 +592,80 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
     currentIndex := 0.U 
     currentAddr := io.startAddr
     isStride := io.isStride
+    isIndex := io.isIndex 
+    isMask := io.isMask
     stride := io.stride 
     working := true.B 
   }
   
-  io.last := (currentIndex === vlHold) && working
+  val currentMask = WireInit (true.B)
+    
+  val buffer = RegInit(VecInit(Seq.fill(Depth)(0.U(N.W))))
+  val readPtr = RegInit(0.U(log2Ceil(Depth).W))
+  val writePtr = RegInit(0.U(log2Ceil(Depth).W))
+    
 
-  when (io.pop) {
-    when (io.last) {
-      working := false.B 
-      currentIndex := 0.U
-      fakeHold := false.B
-    }.otherwise {
-      currentIndex := currentIndex + 1.U
-      when (isStride) {
-          currentAddr := currentAddr + stride 
-      }.otherwise { 
-          currentAddr := currentAddr + io.sliceSizeOut 
-      }    
+  val currentEntry = buffer(readPtr)
+
+  when(io.maskValid) {
+    buffer(writePtr) := io.maskData
+    writePtr := WrapInc(writePtr, Depth)
+   }
+  currentMask := Mux(isIndex, currentEntry(64), currentEntry(currentIndex))
+
+  val vMaskcount = RegInit(0.U(3.W))
+    val vMaskud = Cat (io.maskValid, io.release)
+    when (vMaskud === 1.U) {
+      vMaskcount := vMaskcount - 1.U
+    }.elsewhen (vMaskud === 2.U) {
+      vMaskcount := vMaskcount + 1.U 
     }
-  }
+  val hasMask = WireInit(false.B)
+    hasMask := vMaskcount =/= 0.U
+
+  indexAddr := currentAddr + currentEntry(63, 0)
+
+  // TODO: disable popForce for last one but mask off
+
+  io.popForce := working && !currentMask && ((isMask || isIndex) && hasMask)  && !io.last 
+  val lastFake = working && !currentMask && ((isMask || isIndex) && hasMask)  && io.last 
+  io.canPop := working && ((currentMask && ((isMask || isIndex) && hasMask)) || (!isMask && !isIndex) || lastFake)
+
+  io.isFake := fakeHold || lastFake 
+
+  io.last := (currentIndex === vlHold) && working
+  when (isIndex) {
+       when(io.pop || io.popForce) {
+        readPtr := WrapInc(readPtr, Depth)
+        io.release := true.B 
+       }
+    }.otherwise{
+     when (io.pop || io.popForce) {
+       when (io.last) {
+    //     working := false.B 
+    //     currentIndex := 0.U
+         fakeHold := false.B
+         readPtr := WrapInc(readPtr, Depth)
+//         currentIndex := 0.U
+         io.release := true.B 
+       }.otherwise {
+    //     currentIndex := currentIndex + 1.U
+         when (isStride) {
+            currentAddr := currentAddr + stride 
+         }.otherwise { 
+            currentAddr := currentAddr + io.sliceSizeOut 
+         }    
+       }
+      }
+    }
+   when (io.pop || io.popForce) {
+      when (io.last) {
+         working := false.B 
+         currentIndex := 0.U
+      }.otherwise {
+         currentIndex := currentIndex + 1.U
+      }
+   }
 
 
 }
@@ -660,13 +695,11 @@ class VIdGen(val M: Int, val N: Int)(implicit p: Parameters) extends Module {
   val currentID = RegInit(0.U(I.W))
   val currentVD = RegInit(0.U(5.W))
   val count = RegInit(0.U(S.W))
-//  val step = RegInit(0.U(S.W))
 
   when (io.configValid) {
     currentID := io.startID
     currentVD := io.startVD
     count := 0.U  // for now
-//    step := io.sliceSize
   }
   io.outID := currentID
   io.outVD := currentVD
@@ -756,9 +789,6 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
       }
     } .otherwise {
      when (currentIndex + io.sliceSize === maxIndex.U) {
- //     when (miniIndex + io.sliceSize === 8.U) {
-  //      miniIndex := 0.U
-  //      when (currentIndex === (M/N - 1).U) {
           currentIndex := 0.U
           readPtr := WrapInc(readPtr, Depth)
           io.release := true.B 
@@ -768,12 +798,6 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
         }.otherwise {
           currentIndex := currentIndex + io.sliceSize
         }
-/*        
-      } .otherwise {
-//        currentIndex := currentIndex + io.sliceSize
-        miniIndex := miniIndex + io.sliceSize
-      }
-      */
     }
   }
   when (jumping) {
