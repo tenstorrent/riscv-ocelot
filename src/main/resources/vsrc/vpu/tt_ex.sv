@@ -405,8 +405,7 @@ assign ex_vecldst_done      = ex_mem_payload_fn.vecldst_idx_last;
 always_comb begin
    ex_mem_payload_fn = ex_mem_payload;
    ex_mem_payload_fn.mem_addr = vec_ldst_addr;
-   ex_mem_payload_fn.vecldst_idx_last = ex_mem_payload.vecldst_128 ? ((vec_ldst_addr[3:0] == 4'h0) | (ex_vecldst_elem_count == 'h1)) : // Element1 if not aligned to 128b 
-                                                  (ex_vecldst_data_num_elem == (ex_vecldst_data_elem_base + ex_vecldst_elem_count + 1'b1));  
+   ex_mem_payload_fn.vecldst_idx_last = 1;  
    casez({ex_mem_payload.vecldst_128, ex_mem_payload.mem_sz[1:0]})
       // 3'b1??: begin
       //   ex_mem_payload_fn.mem_byten = '0;

@@ -754,9 +754,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_data_vld_cancel_1      ('0),
     .i_data_resp_id_1         ('0),
     .i_data_rddata_1          ('0       ),
-    .i_data_vld_2             (i_rd_data_vld_2   ),
+    .i_data_vld_2             ('0   ),
     .i_data_vld_cancel_2      ('0),
-    .i_data_resp_id_2         (i_rd_data_resp_id_2),
+    .i_data_resp_id_2         ('0),
     .i_data_rddata_2          ('0),
 
     .o_mem_store              (o_mem_store ),
@@ -1118,7 +1118,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     if(!reset_n)
       {load_buffer_rptr, load_buffer_rptr_start} <= '0;
     else begin
-      if(vecldst_autogen_load && ex_id_rtr && id_ex_rts) begin
+      if(vecldst_autogen_load && ex_id_rtr && id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt == 0) begin
         load_buffer_rptr <= read_issue_inst[9:7];
         load_buffer_rptr_start <= read_issue_inst[9:7];
       end
