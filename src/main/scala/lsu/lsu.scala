@@ -842,7 +842,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                                                               && !(!stq_commit_e.bits.vectorCanGo && !stq_commit_e.bits.vectorNoYoung) && !dsq_finished))))
 
   val can_fire_vector_load = widthMap(w => (w == 0).B && 
-                                           ldq_commit_e.bits.isVector && (dlq_commit_e.valid && 
+                                           ldq_commit_e.bits.isVector && !ldq_commit_e.bits.succeeded && (dlq_commit_e.valid && 
                                            dlq_commit_e.bits.addr.valid && !dlq_commit_e.bits.addr_is_virtual &&
                                            !(ldq_commit_e.bits.hasOlderVst && stq(ldq_commit_e.bits.youngest_vst_idx).bits.isVector
                                                       && stq(ldq_commit_e.bits.youngest_vst_idx).bits.vst_count === ldq_commit_e.bits.youngest_vst_count
