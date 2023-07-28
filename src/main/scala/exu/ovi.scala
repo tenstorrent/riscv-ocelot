@@ -756,11 +756,13 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
   when(io.configValid) {
    currentIndex := 0.U
    miniIndex := 0.U
+/*
    needJump := false.B 
    when (io.vlmul > safeLmul.U) {
     needJump := false.B 
     finalJump := (1.U << (io.vlmul - preshift.U))
    }
+*/
   }
 
   val currentEntry = buffer(readPtr)
@@ -779,27 +781,34 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
   when (io.pop) {
     when (io.last) {
       readPtr := WrapInc(readPtr, Depth)
+/*
       when(needJump) {
       finalJump := finalJump - 1.U
       }
+*/
       currentIndex := 0.U
       io.release := true.B 
+/*
       when (finalJump > 1.U) {
         jumping := true.B 
       }
+*/
     } .otherwise {
      when (currentIndex + io.sliceSize === maxIndex.U) {
           currentIndex := 0.U
           readPtr := WrapInc(readPtr, Depth)
           io.release := true.B 
+/*
           when(needJump) {
             finalJump := finalJump - 1.U
           }
+*/
         }.otherwise {
           currentIndex := currentIndex + io.sliceSize
         }
     }
   }
+/*
   when (jumping) {
     readPtr := WrapInc(readPtr, Depth)
     finalJump := finalJump - 1.U
@@ -808,6 +817,7 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
       jumping := false.B 
     }
   }
+*/
 }
 
 class VWhLSDecoder(val M: Int) extends Module {
