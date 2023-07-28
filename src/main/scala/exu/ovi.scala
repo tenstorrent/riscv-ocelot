@@ -364,7 +364,7 @@ val vAGen = Module (new VAgen (64, 65, 4))
 
   when (LSUReturnLoadValid) {
     MEMLoadData := vReturnData.io.oviData
-    seqElId := io.vGenIO.resp.bits.elemID
+    seqElId := Cat(0.U(3.W), io.vGenIO.resp.bits.elemID)
     seqSbId := io.vGenIO.resp.bits.sbId
     seqVreg := io.vGenIO.resp.bits.vRegID
     MEMReturnMaskValid := io.vGenIO.resp.bits.isMask
