@@ -758,7 +758,7 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
    miniIndex := 0.U
    needJump := false.B 
    when (io.vlmul > safeLmul.U) {
-    needJump := true.B 
+    needJump := false.B 
     finalJump := (1.U << (io.vlmul - preshift.U))
    }
   }
