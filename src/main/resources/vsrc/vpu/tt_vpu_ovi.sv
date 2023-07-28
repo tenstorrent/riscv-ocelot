@@ -280,7 +280,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [8:0] el_id_lower_bound;
   logic [8:0] el_id_upper_bound;
   logic [7:0][VLEN-1:0] load_buffer;  
-  logic       is_load;
+  logic       commit_is_load;
+  logic       fsm_is_load;
 
   always_ff @(posedge clk) begin
     if(!reset_n) begin
@@ -767,7 +768,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_reset_pc               ('0),
     .o_trap                   (  ),
     .o_lq_empty               (lq_empty),
-    .o_is_load                (is_load)
+    .o_is_load                (commit_is_load)
   );
 
   logic [LQ_DEPTH     -1:0] lq_last;
@@ -880,7 +881,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                     .i_memop_sync_end(memop_sync_end),
                     .o_memop_sync_start(fsm_memop_sync_start),
                     .o_completed_valid(fsm_completed_valid),
-                    .o_ovi_stall(ovi_stall));
+                    .o_ovi_stall(ovi_stall),
+                    .o_is_load(fsm_is_load));
 
   assign enough_data = store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] &&
                        store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1];
@@ -1107,7 +1109,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     if(!reset_n)
       drain_load_buffer <= 0;
     else begin
-      if(memop_sync_end && is_load)
+      if(memop_sync_end && fsm_is_load)
         drain_load_buffer <= 1;
       else if(load_buffer_rptr == req_buffer_wptr - 1)
         drain_load_buffer <= 0;
@@ -1180,7 +1182,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
-  assign completed_valid_nxt = (ocelot_instrn_commit_valid && !is_load) || fsm_completed_valid;
+  assign completed_valid_nxt = (ocelot_instrn_commit_valid && !commit_is_load) || fsm_completed_valid;
 
   logic [VLEN*8-1:0] debug_wb_vec_wdata_saved;
   logic [7:0]        debug_wb_vec_wmask_saved;
@@ -1194,7 +1196,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     if(!reset_n) 
       committed_load <= 0;
     else begin
-      if(is_load && ocelot_instrn_commit_valid)
+      if(commit_is_load && ocelot_instrn_commit_valid)
         committed_load <= 1;
       else if(fsm_completed_valid && committed_load)
         committed_load <= 0;
@@ -1208,7 +1210,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       debug_wb_vec_wmask_next = debug_wb_vec_wmask_saved;
     end
     else begin
-      debug_wb_vec_valid_next = ocelot_instrn_commit_valid && !is_load;
+      debug_wb_vec_valid_next = ocelot_instrn_commit_valid && !commit_is_load;
       debug_wb_vec_wdata_next = ocelot_instrn_commit_data;
       debug_wb_vec_wmask_next = ocelot_instrn_commit_mask;
     end
@@ -1220,7 +1222,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       debug_wb_vec_wmask_saved <= '0;
     end
     else begin
-      if(ocelot_instrn_commit_valid && is_load) begin
+      if(ocelot_instrn_commit_valid && commit_is_load) begin
         debug_wb_vec_wdata_saved <= ocelot_instrn_commit_data;
         debug_wb_vec_wmask_saved <= ocelot_instrn_commit_mask;
       end

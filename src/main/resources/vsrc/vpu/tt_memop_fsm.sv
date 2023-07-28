@@ -1,16 +1,17 @@
-module tt_memop_fsm(input i_clk, 
-                    input i_reset_n,
-                    input i_load,  
-                    input i_store,
-                    input i_ex_rtr,
-                    input i_id_ex_rts,
-                    input i_last_uop,
-                    input i_lq_empty,
-                    input i_mem_req, // load memory request coming from ocelot
-                    input i_memop_sync_end,
-                    output o_memop_sync_start,
-                    output o_completed_valid,
-                    output o_ovi_stall);
+module tt_memop_fsm(input  logic i_clk, 
+                    input  logic i_reset_n,
+                    input  logic i_load,  
+                    input  logic i_store,
+                    input  logic i_ex_rtr,
+                    input  logic i_id_ex_rts,
+                    input  logic i_last_uop,
+                    input  logic i_lq_empty,
+                    input  logic i_mem_req, // load memory request coming from ocelot
+                    input  logic i_memop_sync_end,
+                    output logic o_memop_sync_start,
+                    output logic o_completed_valid,
+                    output logic o_ovi_stall,
+                    output logic o_is_load);
 
   // Unified FSM
   typedef enum logic [1:0] {
@@ -70,10 +71,19 @@ module tt_memop_fsm(input i_clk,
   end
 
   always @(posedge i_clk) begin
-    if(!i_reset_n)
+    if(!i_reset_n) begin
       memop_fsm_state <= IDLE;
-    else
+      o_is_load <= 1'b0;
+    end else begin
       memop_fsm_state <= memop_fsm_next_state;
+      if (memop_fsm_state == IDLE && (i_store || i_load) && i_id_ex_rts && i_ex_rtr) begin
+        o_is_load <= i_load;
+      end else
+      if (memop_fsm_state == COMMIT && i_lq_empty) begin
+        o_is_load <= 1'b0;
+      end
+    end
+      
   end
 
 endmodule
