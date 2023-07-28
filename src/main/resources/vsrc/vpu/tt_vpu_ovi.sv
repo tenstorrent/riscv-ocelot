@@ -1040,7 +1040,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic is_unit_stride;
   always_comb begin
     if(is_unit_stride)
-      load_stride_eew = 0;
+        load_stride_eew = 0;
     else if((eew == 0 && load_stride == 64'd8) ||
             (eew == 1 && load_stride == 64'd16) || 
             (eew == 2 && load_stride == 64'd32) || 
@@ -1050,29 +1050,29 @@ module tt_vpu_ovi #(parameter VLEN = 256)
             (eew == 1 && load_stride == 64'd32) || 
             (eew == 2 && load_stride == 64'd64) || 
             (eew == 3 && load_stride == 64'd128))
-              load_stride_eew = 1;
+        load_stride_eew = 1;
     else if((eew == 0 && load_stride == 64'd32) ||
             (eew == 1 && load_stride == 64'd64) || 
             (eew == 2 && load_stride == 64'd128) || 
             (eew == 3 && load_stride == 64'd256))
-              load_stride_eew = 2;
+        load_stride_eew = 2;
     else if((eew == 0 && load_stride == -64'd8) ||
             (eew == 1 && load_stride == -64'd16) || 
             (eew == 2 && load_stride == -64'd32) || 
             (eew == 3 && load_stride == -64'd64))
-              load_stride_eew = 4;
+        load_stride_eew = 4;
     else if((eew == 0 && load_stride == -64'd16) ||
             (eew == 1 && load_stride == -64'd32) || 
             (eew == 2 && load_stride == -64'd64) || 
             (eew == 3 && load_stride == -64'd128))
-              load_stride_eew = 5;
+        load_stride_eew = 5;
     else if((eew == 0 && load_stride == -64'd32) ||
             (eew == 1 && load_stride == -64'd64) || 
             (eew == 2 && load_stride == -64'd128) || 
             (eew == 3 && load_stride == -64'd256))
-              load_stride_eew = 6;
+        load_stride_eew = 6;
     else
-      load_stride_eew = 7;
+        load_stride_eew = 0;
   end
 
   always @(posedge clk) begin

@@ -336,7 +336,7 @@ val vAGen = Module (new VAgen (64, 65, 4))
 
 
 
-  MEMSeqId := Cat (seqSbId, seqElCount, seqElOff, 0.U(3.W), seqElId, seqVreg)
+  MEMSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg)
 
   MEMLoadValid := io.vGenIO.resp.valid && io.vGenIO.resp.bits.s0l1 && !io.vGenIO.resp.bits.vectorDone  // needs fixing later if we are overlapping
 
