@@ -282,6 +282,10 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [7:0][VLEN-1:0] load_buffer;  
   logic       commit_is_load;
   logic       fsm_is_load;
+  logic       id_is_whole_memop;
+  logic       is_whole_memop;
+  logic       id_is_vecmaskldst;
+  logic       is_vecmaskldst;
 
   always_ff @(posedge clk) begin
     if(!reset_n) begin
@@ -434,7 +438,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_mem_fe_skidbuffull                  (mem_fe_skidbuffull),    
     .i_mem_id_lqnxtid                      (mem_id_lqnxtid[LQ_DEPTH_LOG2-1:0]),
 
-    .i_ovi_stall                           (ovi_stall)
+    .i_ovi_stall                           (ovi_stall),
+    .o_is_whole_memop                      (id_is_whole_memop),
+    .o_is_vecmaskldst                      (id_is_vecmaskldst)
   );  
 
   //////////
@@ -915,6 +921,36 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   end
 
   // assign store_memsync_start = store_fsm_state == 0 && vecldst_autogen_store && ocelot_read_req;
+  logic [2:0] num_store_transactions;
+  logic [2:0] num_store_transactions_next;
+  logic [11:0] num_bits;
+  always_comb begin
+    // maybe if(id_ex_units_rts && ex_id_rtr && id_ex_last && vecldst_autogen_store)
+    if(vecldst_autogen_store) begin
+      num_bits = (vcsr[$clog2(VLEN+1)-1+14:14] << (vcsr[38:36]+3));
+      if(num_bits == 0)
+        num_store_transactions_next = 0;
+      else if(num_bits <= 512)
+        num_store_transactions_next = 1;
+      else if(num_bits <= 1024)
+        num_store_transactions_next = 2;
+      else if(num_bits <= 1536)
+        num_store_transactions_next = 3;
+      else
+        num_store_transactions_next = 4;
+    end
+    else if(store_valid)
+      num_store_transactions_next = num_store_transactions - 1;
+    else
+      num_store_transactions_next = num_store_transactions;
+  end
+  always @(posedge clk) begin
+    if(!reset_n)
+      num_store_transactions <= 0;
+    else 
+      num_store_transactions <= num_store_transactions_next;
+  end
+
   always_ff@(posedge clk) begin
     if(!reset_n)
       memop_sync_start <= 0;
@@ -929,9 +965,11 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       store_buffer_rptr <= 0;
       store_buffer_sent <= 0;
       drain_store_buffer <= 0;
+      is_whole_memop <= 0;
+      is_vecmaskldst <= 0;
     end
     else begin
-      if(drain_store_buffer && store_credits_nxt > 0) begin
+      if(drain_store_buffer && store_credits_nxt > 0 && (is_whole_memop || is_vecmaskldst || num_store_transactions_next > 0)) begin
         if(store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] && 
            store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1]) begin
           store_valid <= 1;
@@ -953,11 +991,16 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
       if(id_ex_units_rts && ex_id_rtr && id_ex_last && vecldst_autogen_store) begin
         drain_store_buffer <= 1;
+        is_whole_memop <= id_is_whole_memop;
+        is_vecmaskldst <= id_is_vecmaskldst;
       end else
       if(memop_sync_end) begin
         store_buffer_rptr <= '0;
         store_buffer_sent <= '0;
         drain_store_buffer <= 0;
+        is_whole_memop <= 0;
+        is_vecmaskldst <= 0;
+        store_buffer_sent <= 0;
       end
     end
   end
