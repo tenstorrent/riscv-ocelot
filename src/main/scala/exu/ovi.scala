@@ -352,7 +352,7 @@ val vAGen = Module (new VAgen (64, 66, 4))
   vReturnData.io.strideDir := io.vGenIO.resp.bits.strideDir
 
   val fakeLoadReturnQueue = Module(new Queue(UInt(21.W), 8))
-  fakeLoadReturnQueue.io.enq.valid := vAGen.io.popForce 
+  fakeLoadReturnQueue.io.enq.valid := vAGen.io.popForce && s0l1
   fakeLoadReturnQueue.io.enq.bits := Cat(sbIdHold, vIdGen.io.outID, vIdGen.io.outVD)
   fakeLoadReturnQueue.io.deq.ready := false.B 
   MEMLoadValid := LSUReturnLoadValid || fakeLoadReturnQueue.io.deq.valid 
