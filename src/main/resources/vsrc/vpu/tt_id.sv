@@ -323,7 +323,7 @@ wire       vm     = instrn_id[25]; // Only needed for V-Ext
 wire [1:0] mop    = instrn_id[27:26];
 wire [2:0] nf     = instrn_id[31:29]; // Only needed for V-Ext   
 assign o_is_whole_memop = instrn_id[24:20] == `BRISCV_VECLDST_WHOLE_REGISTER && instrn_id[6:0] == 7'b0100111 && instrn_id[27:26] == 2'b00;
-assign o_is_vecmaskldst = instrn_id[24:20] == `BRISCV_VECLDST_MASK && !instrn_id[25];
+assign o_is_vecmaskldst = (vecldst_autogen.load | vecldst_autogen.store) && !instrn_id[25];
 
 if (INCL_VEC == 1) begin
 // Logic to replay instructions for these cases -
