@@ -183,10 +183,10 @@ val vIdGen = Module (new VIdGen(32, 8))
  vIdGen.io.pop := false.B
  vIdGen.io.sliceSize := 8.U
 
-val vAGen = Module (new VAgen (64, 65, 4))
+val vAGen = Module (new VAgen (64, 66, 4))
 
   vAGen.io.configValid := false.B 
-  vAGen.io.maskData := Cat(vpuModule.io.mask_idx_item) 
+  vAGen.io.maskData := Cat(vpuModule.io.mask_idx_last_idx, vpuModule.io.mask_idx_item) 
   vAGen.io.maskValid := vpuModule.io.mask_idx_valid 
   vAGen.io.startAddr := DontCare
   vAGen.io.stride := DontCare
@@ -617,6 +617,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
     writePtr := WrapInc(writePtr, Depth)
    }
   currentMask := Mux(isIndex, currentEntry(64), currentEntry(currentIndex))
+  val isLast = currentEntry(65)
 
   val vMaskcount = RegInit(0.U(3.W))
     val vMaskud = Cat (io.maskValid, io.release)
@@ -638,7 +639,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
 
   io.isFake := fakeHold || lastFake 
 
-  io.last := (currentIndex === vlHold) && working
+  io.last := ((currentIndex === vlHold) || (isLast && isIndex)) && working
   when (isIndex) {
        when(io.pop || io.popForce) {
         readPtr := WrapInc(readPtr, Depth)
