@@ -36,6 +36,11 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                   input  logic         memop_sync_end,
                   output logic         memop_sync_start,
 
+                  input  logic         mask_idx_credit,
+                  output logic [64:0]  mask_idx_item,
+                  output logic         mask_idx_valid,
+                  output logic         mask_idx_last_idx,
+
                   // Debug signals for cosim checker
                   output logic              debug_wb_vec_valid,
                   output logic [VLEN*8-1:0] debug_wb_vec_wdata,
@@ -1203,6 +1208,23 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       end
     end
   end
+
+  tt_mask_fsm #(.VLEN(VLEN),
+                .MASK_CREDITS(2))
+               (.i_clk(clk),
+                .i_reset_n(reset_n),
+                .i_is_masked_memop(is_vecmaskldst),
+                .i_is_indexed('0),
+                .i_reg_data(vmask_rddata),
+                .i_reg_data_valid('1),
+                .i_memop_sync_start(fsm_memop_sync_start),
+                .i_memop_sync_end(i_memop_sync_end),
+                .i_vl(vcsr[$clog2(VLEN+1)-1+14:14]),
+                .i_mask_idx_credit(i_mask_idx_credit),
+                .o_mask_idx_item(mask_idx_item),
+                .o_mask_idx_valid(mask_idx_valid),
+                .o_mask_idx_last_idx(mask_idx_last_idx)
+               );
 
   always @(posedge clk) begin
     if(!reset_n) begin
