@@ -720,11 +720,13 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
    when (io.pop || io.popForce) {
       when (io.last) {
          working := false.B 
-         currentIndex := 0.U
-      }.elsewhen(currentIndex === 63.U) {
+         if (isMask) {
+           currentIndex := 0.U
+         }
+      }.elsewhen(currentIndex === 63.U && isMask) {
         currentIndex := 0.U
       }
-      }.otherwise {
+      }.elsewhen(isMask) {
          currentIndex := currentIndex + 1.U
       }
    }
