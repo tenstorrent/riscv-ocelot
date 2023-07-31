@@ -1211,6 +1211,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   tt_mask_fsm #(.VLEN(VLEN),
                 .MASK_CREDITS(2))
+                mask_fsm
                (.i_clk(clk),
                 .i_reset_n(reset_n),
                 .i_is_masked_memop(is_vecmaskldst),
@@ -1220,7 +1221,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                 .i_memop_sync_start(fsm_memop_sync_start),
                 .i_memop_sync_end(i_memop_sync_end),
                 .i_vl(vcsr[$clog2(VLEN+1)-1+14:14]),
-                .i_mask_idx_credit(i_mask_idx_credit),
+                .i_mask_idx_credit(mask_idx_credit),
                 .o_mask_idx_item(mask_idx_item),
                 .o_mask_idx_valid(mask_idx_valid),
                 .o_mask_idx_last_idx(mask_idx_last_idx)

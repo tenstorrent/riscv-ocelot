@@ -1,5 +1,5 @@
 module tt_mask_fsm #(parameter VLEN = 256,
-                     paramater MASK_CREDITS = 2)
+                     parameter MASK_CREDITS = 2)
                     (input  logic                      i_clk,
                      input  logic                      i_reset_n,
                      input  logic                      i_is_masked_memop,
@@ -21,7 +21,7 @@ module tt_mask_fsm #(parameter VLEN = 256,
   // FSM to drive the mask interface
   typedef enum logic {
   IDLE = 1'b0,
-  SEND = 1'b1,
+  SEND = 1'b1
   } mask_state_t;
   mask_state_t mask_fsm_state;
   mask_state_t mask_fsm_next_state;
@@ -33,13 +33,15 @@ module tt_mask_fsm #(parameter VLEN = 256,
   logic [2:0] num_transactions;
   logic [2:0] num_transactions_next;
 
-  logic                 mask_buffer; 
+  logic [VLEN-1:0]      mask_buffer; 
   logic [7:0][VLEN-1:0] idx_buffer;
   logic [2:0]           idx_buffer_wptr;
+  logic [64:0] mask_idx_item_next;
+  logic mask_idx_valid_next;
 
   integer k;
-  always @(posedge clk) begin
-    if(!reset_n)
+  always @(posedge i_clk) begin
+    if(!i_reset_n)
       for(k=0; k<8; k=k+1)
         idx_buffer[k] <= 0;
     else if(i_is_masked_memop && i_reg_data_valid) begin
@@ -48,8 +50,8 @@ module tt_mask_fsm #(parameter VLEN = 256,
     end
   end
 
-  always @(posedge clk) begin
-    if(!reset_n)
+  always @(posedge i_clk) begin
+    if(!i_reset_n)
       idx_buffer_wptr <= 0;
     else begin
       if(i_is_masked_memop && i_reg_data_valid)
@@ -59,19 +61,18 @@ module tt_mask_fsm #(parameter VLEN = 256,
     end
   end
 
-  always @(posedge clk) begin
-    if(!reset_n)
+  always @(posedge i_clk) begin
+    if(!i_reset_n)
       mask_buffer <= 0;
-    else if(i_is_masked_memop && i_reg_data_valid) begin
+    else if(i_is_masked_memop && i_reg_data_valid)
       mask_buffer <= i_reg_data;
     else if(o_mask_idx_valid)
       mask_buffer <= mask_buffer >> 64;
-    end
   end
 
   assign mask_credits_next = mask_credits + i_mask_idx_credit - o_mask_idx_valid;
-  always @(posedge clk) begin
-    if(!reset_n)
+  always @(posedge i_clk) begin
+    if(!i_reset_n)
       mask_credits <= MASK_CREDITS;
     else
       mask_credits <= mask_credits_next;
@@ -97,7 +98,7 @@ module tt_mask_fsm #(parameter VLEN = 256,
     endcase
   end
 
-  always @(posedge clk) begin
+  always @(posedge i_clk) begin
     if(!i_reset_n)
       num_transactions <= 0;
     else begin
@@ -122,26 +123,23 @@ module tt_mask_fsm #(parameter VLEN = 256,
     endcase
   end
 
-  always @(posedge clk) begin
+  always @(posedge i_clk) begin
     if(!i_reset_n)
       mask_fsm_state <= 0;
     else begin
       mask_fsm_state <= mask_fsm_next_state;
     end
   end
-
-  logic [64:0] mask_idx_item_next;
-  logic mask_idx_valid_next;
   assign o_mask_idx_last_idx = 0;
   assign mask_idx_item_next[64] = 0;
   assign mask_idx_item_next[63:0] = mask_buffer[63:0];
   assign mask_idx_valid_next = (mask_fsm_state==SEND) && (mask_credits_next > 0) && (num_transactions > 0);
-  always @(posedge clk) begin
-    if(!reset_n)
-      {mask_idx_valid, mask_idx_item} <= 0;
+  always @(posedge i_clk) begin
+    if(!i_reset_n)
+      {o_mask_idx_valid, o_mask_idx_item} <= 0;
     else begin
-      mask_idx_valid <= mask_idx_valid_next;
-      mask_idx_item <= mask_idx_item_next;
+      o_mask_idx_valid <= mask_idx_valid_next;
+      o_mask_idx_item <= mask_idx_item_next;
     end
   end
 
