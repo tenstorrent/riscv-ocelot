@@ -921,12 +921,13 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   end
 
   // assign store_memsync_start = store_fsm_state == 0 && vecldst_autogen_store && ocelot_read_req;
+  logic drain_store_buffer;
   logic [2:0] num_store_transactions;
   logic [2:0] num_store_transactions_next;
   logic [11:0] num_bits;
   always_comb begin
     // maybe if(id_ex_units_rts && ex_id_rtr && id_ex_last && vecldst_autogen_store)
-    if(vecldst_autogen_store) begin
+    if(vecldst_autogen_store && !drain_store_buffer) begin
       num_bits = (vcsr[$clog2(VLEN+1)-1+14:14] << (vcsr[38:36]+3));
       if(num_bits == 0)
         num_store_transactions_next = 0;
@@ -957,7 +958,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     else
       memop_sync_start <= fsm_memop_sync_start;
   end
-  logic drain_store_buffer;
   always_ff@(posedge clk) begin
     if(!reset_n) begin
       store_valid <= 0;
