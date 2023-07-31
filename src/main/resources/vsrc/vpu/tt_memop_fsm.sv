@@ -35,7 +35,7 @@ module tt_memop_fsm(input  logic i_clk,
     end
   end
 
-  assign o_memop_sync_start = memop_fsm_state == BUSY && (i_store || !i_mem_req) && !sent_sync;
+  assign o_memop_sync_start = memop_fsm_state == IDLE && (i_store || i_load) && i_id_ex_rts && i_ex_rtr;
   assign o_completed_valid = memop_fsm_state == COMMIT && i_lq_empty;
   assign o_ovi_stall = memop_fsm_state != 0 && memop_fsm_state != 1;
 
