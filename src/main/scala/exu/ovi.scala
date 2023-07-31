@@ -729,7 +729,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
       }.elsewhen(isMask) {
          currentIndex := currentIndex + 1.U
       }
-   }
+   
 
 
 }
