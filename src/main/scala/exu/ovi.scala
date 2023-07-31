@@ -186,8 +186,8 @@ val vIdGen = Module (new VIdGen(32, 8))
 val vAGen = Module (new VAgen (64, 65, 4))
 
   vAGen.io.configValid := false.B 
-  vAGen.io.maskData := 0.U 
-  vAGen.io.maskValid := false.B 
+  vAGen.io.maskData := Cat(vpuModule.io.mask_idx_item) 
+  vAGen.io.maskValid := vpuModule.io.mask_idx_valid 
   vAGen.io.startAddr := DontCare
   vAGen.io.stride := DontCare
   vAGen.io.isStride := false.B 
@@ -431,6 +431,7 @@ val vAGen = Module (new VAgen (64, 65, 4))
   vpuModule.io.load_valid := MEMLoadValid
   vpuModule.io.load_mask := MEMReturnMask
   vpuModule.io.load_mask_valid := MEMReturnMaskValid
+  vpuModule.io.mask_idx_credit := vAGen.io.release 
 
 
 }
@@ -469,6 +470,10 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
     val load_valid = Input (Bool())
     val load_mask = Input(UInt(64.W))
     val load_mask_valid = Input (Bool())
+    val mask_idx_credit = Input(Bool())
+    val mask_idx_item = Output (UInt(65.W))
+    val mask_idx_valid = Output(Bool())
+    val mask_idx_last_idx = Output(Bool())
   })
   addResource("/vsrc/vpu/briscv_defines.h")
   addResource("/vsrc/vpu/tt_briscv_pkg.vh")
