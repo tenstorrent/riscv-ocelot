@@ -631,57 +631,48 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
   val isMask = Reg(Bool())
   // special case for vl = 0
   val fakeHold = RegInit(false.B)
-
+  // holding the initial sliceSize, become more useful in V1
   val sliceSizeHold = RegInit(0.U(log2Ceil(M/8 + 1).W))
+
+  when (io.configValid) {
+     sliceSizeHold := io.initialSliceSize
+     when (io.vl === 0.U) {
+       vlHold := 0.U
+       fakeHold := true.B
+     }.otherwise {
+       vlHold := io.vl - 1.U
+     }
+     working := true.B 
+     isStride := io.isStride
+     isIndex := io.isIndex 
+     isMask := io.isMask
+     currentIndex := 0.U 
+     currentMaskIndex := 0.U
+     currentAddr := io.startAddr     
+     stride := io.stride     
+  }
+  
   io.sliceSizeOut := sliceSizeHold  // this is only for V0
 
-  io.release := false.B 
-  io.popForce := false.B 
-  io.canPop := false.B 
+  
   io.isMaskOut := isMask
   io.currentMaskOut := false.B 
 
-  
-  
-  val indexAddr = WireInit(0.U(64.W))
+  /*
+     Mask Buffer to handle the mask input
+  */
 
-  io.outAddr := Mux(isIndex, indexAddr(39, 0), currentAddr(39, 0))  // leave it for now, as we don't support index yet
-
-  when (io.configValid) {
-    sliceSizeHold := io.initialSliceSize
-    when (io.vl === 0.U) {
-    vlHold := 0.U
-    fakeHold := true.B
-    }.otherwise {
-    vlHold := io.vl - 1.U
-    }
-    currentIndex := 0.U 
-    currentMaskIndex := 0.U
-    currentAddr := io.startAddr
-    isStride := io.isStride
-    isIndex := io.isIndex 
-    isMask := io.isMask
-    stride := io.stride 
-    working := true.B 
-  }
-  
-  val currentMask = WireInit (true.B)
-    
   val buffer = RegInit(VecInit(Seq.fill(Depth)(0.U(N.W))))
   val readPtr = RegInit(0.U(log2Ceil(Depth).W))
   val writePtr = RegInit(0.U(log2Ceil(Depth).W))
-    
-
-  val currentEntry = buffer(readPtr)
-
   when(io.maskValid) {
     buffer(writePtr) := io.maskData
     writePtr := WrapInc(writePtr, Depth)
-   }
-  currentMask := Mux(isIndex, currentEntry(64), currentEntry(currentMaskIndex))
-  io.currentMaskOut := currentMask
-
-
+  }
+  
+  /*
+     Check if there is valid mask
+  */ 
   val vMaskcount = RegInit(0.U(3.W))
     val vMaskud = Cat (io.maskValid, io.release)
     when (vMaskud === 1.U) {
@@ -691,23 +682,54 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
     }
   val hasMask = WireInit(false.B)
     hasMask := vMaskcount =/= 0.U
+  assert (vMaskcount < (Depth+1).U)
+  
+  /*
+     CurrentEntry and Current Mask
+  */
 
+  val currentEntry = buffer(readPtr)
+  val currentMask = WireInit (true.B)
+  // current mask is 1 bit for now, will change for V1  
+  currentMask := Mux(isIndex, currentEntry(64), currentEntry(currentMaskIndex))
+  io.currentMaskOut := currentMask
+
+  /*
+     Calculate Index Address
+  */
+
+  val indexAddr = WireInit(0.U(64.W))
   indexAddr := currentAddr + currentEntry(63, 0)
+  io.outAddr := Mux(isIndex, indexAddr(39, 0), currentAddr(39, 0))  
+  
 
-  // TODO: disable popForce for last one but mask off
-
-  io.popForce := working && !currentMask && ((isMask || isIndex) && hasMask)  && !io.last 
-  val lastFake = working && !currentMask && ((isMask || isIndex) && hasMask)  && io.last 
-  io.canPop := working && ((currentMask && ((isMask || isIndex) && hasMask)) || (!isMask && !isIndex) || lastFake)
-  val isLast = currentEntry(65)
-
+    
+  // popForce will happen when hasMask, masked-off, not last
+  io.popForce := working && !currentMask && isMask && hasMask && !io.last 
+  // this happens when the last element is masked-off, still need to send something
+  val lastFake = working && !currentMask && isMask  && hasMask && io.last 
+  // can Pop happens when lastFake, !isMask && !isIndex, !isMask && isIndex && hasMask, isMask && hasMask && currentMask, fakeHold
+  io.canPop := working && ((currentMask && isMask && hasMask) || (!isMask && !isIndex) || (!isMask && isIndex && hasMask) || lastFake || fakeHold)
+//  io.canPop := working && ((currentMask && ((isMask || isIndex) && hasMask)) || (!isMask && !isIndex) || lastFake)
+  val isLastIndex = currentEntry(65)
+  
+  // fake happens when: no mask but vl = 0, with mask but last one masked off
   io.isFake := fakeHold || lastFake 
-
-  io.last := ((currentIndex === vlHold) || (isIndex && isLast)) && working
+  // last one happens either currentIndex touch vl or isIndex && isLastIndex
+  io.last := ((currentIndex === vlHold) || (isIndex && isLastIndex)) && working
+  
+  io.release := false.B 
   when (isIndex) {
+      // index increase readPtr anyway, last or not
        when(io.pop || io.popForce) {
         readPtr := WrapInc(readPtr, Depth)
         io.release := true.B 
+       }
+       // turn off working
+       // precaution for vl = 0 index load store
+       when(io.last) {
+        fakeHold := false.B 
+        working := false.B 
        }
     }.otherwise{
      when (io.pop || io.popForce) {
@@ -715,6 +737,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
           fakeHold := false.B
           working := false.B 
           currentIndex := 0.U
+          // pop off the current Mask regardless
           when (isMask) {
             readPtr := WrapInc(readPtr, Depth)
             currentMaskIndex := 0.U
@@ -722,6 +745,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
            }
           
        }.otherwise {
+        // pop off current mask if it reaches end
          when (currentMaskIndex === 63.U && isMask) {
           readPtr := WrapInc(readPtr, Depth)
           currentMaskIndex := 0.U
@@ -774,10 +798,8 @@ class VIdGen(val M: Int, val N: Int)(implicit p: Parameters) extends Module {
   io.outID := currentID
   io.outVD := currentVD
   when (io.pop) {
-    //currentID := currentID + 1.U 
     when (count + io.sliceSize === M.U) {
       count := 0.U
- //     currentID := 0.U 
       currentVD := currentVD + 1.U
       currentID := 0.U
     }.otherwise{
