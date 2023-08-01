@@ -136,8 +136,9 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
 
    input logic            i_ovi_stall,
    output logic       o_is_whole_memop,
-   output logic       o_is_vecmaskldst
-
+   output logic       o_is_masked_memop,
+   output logic       o_is_indexldst,
+   output logic       o_is_maskldst
 );
 
 wire i_ext, m_ext, a_ext, b_ext;
@@ -323,7 +324,9 @@ wire       vm     = instrn_id[25]; // Only needed for V-Ext
 wire [1:0] mop    = instrn_id[27:26];
 wire [2:0] nf     = instrn_id[31:29]; // Only needed for V-Ext   
 assign o_is_whole_memop = instrn_id[24:20] == `BRISCV_VECLDST_WHOLE_REGISTER && instrn_id[6:0] == 7'b0100111 && instrn_id[27:26] == 2'b00;
-assign o_is_vecmaskldst = (vecldst_autogen.load | vecldst_autogen.store) && !instrn_id[25];
+assign o_is_masked_memop = (vecldst_autogen.load | vecldst_autogen.store) && !instrn_id[25];
+assign o_is_indexldst = (vecldst_autogen.load | vecldst_autogen.store) && mop[0];
+assign o_is_maskldst = vecldst_autogen.ldst_mask;
 
 if (INCL_VEC == 1) begin
 // Logic to replay instructions for these cases -

@@ -289,8 +289,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic       fsm_is_load;
   logic       id_is_whole_memop;
   logic       is_whole_memop;
-  logic       id_is_vecmaskldst;
-  logic       is_vecmaskldst;
+  logic       id_is_masked_memop;
+  logic       is_masked_memop;
+  logic       id_is_indexldst;
+  logic       is_indexldst;
+  logic       id_is_maskldst;
+  logic       is_maskldst;
 
   always_ff @(posedge clk) begin
     if(!reset_n) begin
@@ -445,7 +449,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
     .i_ovi_stall                           (ovi_stall),
     .o_is_whole_memop                      (id_is_whole_memop),
-    .o_is_vecmaskldst                      (id_is_vecmaskldst)
+    .o_is_masked_memop                      (id_is_masked_memop),
+    .o_is_indexldst                        (id_is_indexldst),
+    .o_is_maskldst                         (id_is_maskldst)
   );  
 
   //////////
@@ -635,26 +641,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic                           i_dmem_brisc_memory_idle; 
   logic                           o_mem_store;
   logic                        o_mem_last_raw;
-
-  // fake signals to test the 128 switch
-  logic [VLEN-1:0] fake_data;
-  logic            fake_valid;
-  logic [DATA_REQ_ID_WIDTH-1:0] fake_req_id; 
-
-  always @(posedge clk) begin
-    if(!reset_n)
-      {fake_data,fake_valid,fake_req_id} <= '0;
-    else begin
-      if(o_data_req && o_mem_load) begin
-        // some random number
-        fake_data <= 256'h3E4A21B69D57C82F0B1346785A2F9D40B3C6D8A5E9F213B47896A52DB3C486F0;
-        fake_valid <= 1;
-        fake_req_id <= o_data_req_id;
-      end
-      else 
-        fake_valid <= 0;
-    end
-  end
 
   tt_mem 
   #(
@@ -933,7 +919,10 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   always_comb begin
     // maybe if(id_ex_units_rts && ex_id_rtr && id_ex_last && vecldst_autogen_store)
     if(vecldst_autogen_store && !drain_store_buffer) begin
-      num_bits = (vcsr[$clog2(VLEN+1)-1+14:14] << (vcsr[38:36]+3));
+      if(is_indexldst)
+        num_bits = (vcsr[$clog2(VLEN+1)-1+14:14] << (vcsr[38:36]+3));
+      else
+        num_bits = (vcsr[$clog2(VLEN+1)-1+14:14] << (eew+3));
       if(num_bits == 0)
         num_store_transactions_next = 0;
       else if(num_bits <= 512)
@@ -973,7 +962,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       is_whole_memop <= 0;
     end
     else begin
-      if(drain_store_buffer && store_credits_nxt > 0 && (is_whole_memop || num_store_transactions_next > 0)) begin
+      if(drain_store_buffer && store_credits_nxt > 0 && (is_whole_memop || is_maskldst || num_store_transactions_next > 0)) begin
         if(store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] && 
            store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1]) begin
           store_valid <= 1;
@@ -1008,12 +997,21 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   end
 
   always @(posedge clk) begin
-    if(!reset_n)
-      is_vecmaskldst <= 0;
-    else begin
-      if(fsm_memop_sync_start)
-        is_vecmaskldst <= id_is_vecmaskldst;
+    if(!reset_n) begin
+      is_masked_memop <= 0;
+      is_maskldst <= 0;
     end
+    else if(fsm_memop_sync_start) begin
+      is_masked_memop <= id_is_masked_memop;
+      is_maskldst <= id_is_maskldst;
+    end
+  end
+
+  always @(posedge clk ) begin
+    if(!reset_n)
+      is_indexldst <= 0;
+    else if(fsm_memop_sync_start)
+      is_indexldst <= id_is_indexldst;
   end
 
   // This queue should never overflow, so I'm not going to add phase bits
@@ -1220,13 +1218,16 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                 mask_fsm
                (.i_clk(clk),
                 .i_reset_n(reset_n),
-                .i_is_masked_memop(is_vecmaskldst),
-                .i_is_indexed('0),
-                .i_reg_data(vmask_rddata),
-                .i_reg_data_valid('1),
+                .i_is_masked_memop(is_masked_memop),
                 .i_memop_sync_start(memop_sync_start),
-                .i_memop_sync_end(i_memop_sync_end),
+                .i_is_indexed(is_indexldst),
+                .i_mask_data(vmask_rddata),
+                .i_index_data(vs2_rddata),
+                .i_index_data_valid(id_ex_units_rts && ex_id_rtr),
+                .i_last_index(id_ex_last),
+                .i_memop_sync_end(memop_sync_end),
                 .i_vl(vcsr[$clog2(VLEN+1)-1+14:14]),
+                .i_eew(eew),
                 .i_mask_idx_credit(mask_idx_credit),
                 .o_mask_idx_item(mask_idx_item),
                 .o_mask_idx_valid(mask_idx_valid),
