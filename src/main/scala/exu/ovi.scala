@@ -611,6 +611,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
   val vlHold = Reg(UInt(9.W))
 
   val currentIndex = Reg(UInt(9.W))
+  val currentMaskIndex = Reg(UInt(9.W))
   val currentAddr  = Reg(UInt(64.W))
   val stride  = Reg(UInt(64.W))
   val working = RegInit(false.B)
@@ -643,6 +644,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
     vlHold := io.vl - 1.U
     }
     currentIndex := 0.U 
+    currentMaskIndex := 0.U
     currentAddr := io.startAddr
     isStride := io.isStride
     isIndex := io.isIndex 
@@ -664,7 +666,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
     buffer(writePtr) := io.maskData
     writePtr := WrapInc(writePtr, Depth)
    }
-  currentMask := Mux(isIndex, currentEntry(64), currentEntry(currentIndex))
+  currentMask := Mux(isIndex, currentEntry(64), currentEntry(currentMaskIndex))
 
   val vMaskcount = RegInit(0.U(3.W))
     val vMaskud = Cat (io.maskValid, io.release)
@@ -696,19 +698,24 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
     }.otherwise{
      when (io.pop || io.popForce) {
        when (io.last) {
-    //     working := false.B 
-    //     currentIndex := 0.U
-         fakeHold := false.B
-         when (isMask) {
-         readPtr := WrapInc(readPtr, Depth)
-         }
-//         currentIndex := 0.U
-         io.release := true.B 
+          fakeHold := false.B
+          working := false.B 
+          currentIndex := 0.U
+          when (isMask) {
+            readPtr := WrapInc(readPtr, Depth)
+            currentMaskIndex := 0.U
+            io.release := true.B 
+           }
+          
        }.otherwise {
-         when (currentIndex === 63.U && isMask) {
+         when (currentMaskIndex === 63.U && isMask) {
           readPtr := WrapInc(readPtr, Depth)
+          currentMaskIndex := 0.U
+          io.release := true.B 
+         }.elsewhen(isMask) {
+          currentMaskIndex := currentMaskIndex + 1.U
          }
-    //     currentIndex := currentIndex + 1.U
+         currentIndex := currentIndex + 1.U 
          when (isStride) {
             currentAddr := currentAddr + stride 
          }.otherwise { 
@@ -717,19 +724,23 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
        }
       }
     }
+/*    
    when (io.pop || io.popForce) {
       when (io.last) {
-         working := false.B 
+         
          when (isMask) {
-           currentIndex := 0.U
+           currentMaskIndex := 0.U
          }
-      }.elsewhen(currentIndex === 63.U && isMask) {
-        currentIndex := 0.U
+      }.otherwise {
+        currentIndex := currentIndex + 1.U 
+        when(currentMaskIndex === 63.U && isMask) {
+           currentMaskIndex := 0.U
+        }.elsewhen(isMask) {
+          currentMaskIndex := currentMaskIndex + 1.U
+       }
       }
-      }.elsewhen(isMask) {
-         currentIndex := currentIndex + 1.U
-      }
-   
+   } 
+ */  
 
 
 }
