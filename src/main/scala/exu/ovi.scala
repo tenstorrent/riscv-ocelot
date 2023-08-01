@@ -585,23 +585,28 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
     val maskData = Input(UInt(N.W))
     val maskValid = Input(Bool())
     val release = Output (Bool())
-    // interface with VPU decode
-//    val sliceSize = Input(UInt(4.W))
+    // interface with OVI decode
+    val configValid = Input(Bool())
     val initialSliceSize = Input(UInt(log2Ceil(M/8 + 1).W))
     val sliceSizeOut = Output(UInt(log2Ceil(M/8 + 1).W))
     val vl = Input(UInt(9.W))
-    val configValid = Input(Bool())
-    val startAddr = Input(UInt(64.W))
-    val stride = Input(UInt(64.W))
+      // which types of load store
     val isStride = Input(Bool())
     val isMask = Input(Bool())
     val isIndex = Input(Bool())
+      // base address and stride    
+    val startAddr = Input(UInt(64.W))
+    val stride = Input(UInt(64.W))
+    // interface with OVI VAGen
+      // pop when there is handshake with LSU
     val pop = Input(Bool())
+      // payloads
     val outAddr = Output(UInt(40.W))
     val last = Output(Bool())
     val isFake = Output (Bool())
     val isMaskOut   = Output (Bool())
     val currentMaskOut = Output (UInt(N.W))
+      // control, canPop needs handshaking, popForce is masked off
     val popForce = Output (Bool())
     val canPop = Output (Bool())
 
@@ -667,6 +672,8 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
     writePtr := WrapInc(writePtr, Depth)
    }
   currentMask := Mux(isIndex, currentEntry(64), currentEntry(currentMaskIndex))
+  io.currentMaskOut := currentMask
+
 
   val vMaskcount = RegInit(0.U(3.W))
     val vMaskud = Cat (io.maskValid, io.release)
