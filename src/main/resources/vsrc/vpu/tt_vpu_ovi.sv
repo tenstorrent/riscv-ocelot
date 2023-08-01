@@ -971,7 +971,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       store_buffer_sent <= 0;
       drain_store_buffer <= 0;
       is_whole_memop <= 0;
-      is_vecmaskldst <= 0;
     end
     else begin
       if(drain_store_buffer && store_credits_nxt > 0 && (is_whole_memop || is_vecmaskldst || num_store_transactions_next > 0)) begin
@@ -997,16 +996,23 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       if(id_ex_units_rts && ex_id_rtr && id_ex_last && vecldst_autogen_store) begin
         drain_store_buffer <= 1;
         is_whole_memop <= id_is_whole_memop;
-        is_vecmaskldst <= id_is_vecmaskldst;
       end else
       if(memop_sync_end) begin
         store_buffer_rptr <= '0;
         store_buffer_sent <= '0;
         drain_store_buffer <= 0;
         is_whole_memop <= 0;
-        is_vecmaskldst <= 0;
         store_buffer_sent <= 0;
       end
+    end
+  end
+
+  always @(posedge clk) begin
+    if(!reset_n)
+      is_vecmaskldst <= 0;
+    else begin
+      if(fsm_memop_sync_start)
+        is_vecmaskldst <= id_is_vecmaskldst;
     end
   end
 
