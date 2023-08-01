@@ -612,17 +612,24 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
 
   })
 
-//  val sliceSizeHold = Reg(UInt(4.W))
-  val vlHold = Reg(UInt(9.W))
 
+  val vlHold = Reg(UInt(9.W))
+  // points at element
   val currentIndex = Reg(UInt(9.W))
+  // points at mask element in buffer
   val currentMaskIndex = Reg(UInt(9.W))
+
+  // in strided, this is used to calculate and accumulate address
+  // in index, this just stores the base address
   val currentAddr  = Reg(UInt(64.W))
   val stride  = Reg(UInt(64.W))
+  // working or not
   val working = RegInit(false.B)
+  // type of load / store
   val isStride = Reg(Bool())
   val isIndex = Reg(Bool())
   val isMask = Reg(Bool())
+  // special case for vl = 0
   val fakeHold = RegInit(false.B)
 
   val sliceSizeHold = RegInit(0.U(log2Ceil(M/8 + 1).W))
@@ -731,25 +738,6 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
        }
       }
     }
-/*    
-   when (io.pop || io.popForce) {
-      when (io.last) {
-         
-         when (isMask) {
-           currentMaskIndex := 0.U
-         }
-      }.otherwise {
-        currentIndex := currentIndex + 1.U 
-        when(currentMaskIndex === 63.U && isMask) {
-           currentMaskIndex := 0.U
-        }.elsewhen(isMask) {
-          currentMaskIndex := currentMaskIndex + 1.U
-       }
-      }
-   } 
- */  
-
-
 }
 
 // M is max number of byte per VLEN (32), N is max number of byte per memory interface (8) 
@@ -839,12 +827,6 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
    currentIndex := 0.U
    miniIndex := 0.U
    needJump := false.B 
- /*  
-   when (io.vlmul > safeLmul.U) {
-    needJump := true.B 
-    finalJump := (1.U << (io.vlmul - preshift.U))
-   }
-   */
   }
 
   val currentEntry = buffer(readPtr)
@@ -856,50 +838,24 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
 
  val paddedEntry = Cat(0.U((N-8).W), currentEntry)
  val slices = VecInit(Seq.tabulate(M/8)(i => paddedEntry(i*8+N-1, i*8)))
- // val slices = VecInit(Seq.tabulate(M/N)(i => paddedEntry(i*64+N-1, i*64)))
-  io.outData := slices(currentIndex) 
+ io.outData := slices(currentIndex) 
  
   io.release := false.B 
   when (io.pop) {
     when (io.last) {
       readPtr := WrapInc(readPtr, Depth)
-  /*    
-      when(needJump) {
-      finalJump := finalJump - 1.U
-      }
-  */
       currentIndex := 0.U
       io.release := true.B 
-  /*    
-      when (finalJump > 1.U) {
-        jumping := true.B 
-      }
-  */
     } .otherwise {
      when (currentIndex + io.sliceSize === maxIndex.U) {
           currentIndex := 0.U
           readPtr := WrapInc(readPtr, Depth)
           io.release := true.B 
-  /*
-          when(needJump) {
-            finalJump := finalJump - 1.U
-          }
-  */
         }.otherwise {
           currentIndex := currentIndex + io.sliceSize
         }
     }
   }
-/*
-  when (jumping) {
-    readPtr := WrapInc(readPtr, Depth)
-    finalJump := finalJump - 1.U
-    io.release := true.B 
-    when (finalJump === 1.U) {
-      jumping := false.B 
-    }
-  }
-*/
 }
 
 class VWhLSDecoder(val M: Int) extends Module {
