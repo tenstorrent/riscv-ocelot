@@ -973,7 +973,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       is_whole_memop <= 0;
     end
     else begin
-      if(drain_store_buffer && store_credits_nxt > 0 && (is_whole_memop || is_vecmaskldst || num_store_transactions_next > 0)) begin
+      if(drain_store_buffer && store_credits_nxt > 0 && (is_whole_memop || num_store_transactions_next > 0)) begin
         if(store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] && 
            store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1]) begin
           store_valid <= 1;
@@ -1224,7 +1224,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                 .i_is_indexed('0),
                 .i_reg_data(vmask_rddata),
                 .i_reg_data_valid('1),
-                .i_memop_sync_start(fsm_memop_sync_start),
+                .i_memop_sync_start(memop_sync_start),
                 .i_memop_sync_end(i_memop_sync_end),
                 .i_vl(vcsr[$clog2(VLEN+1)-1+14:14]),
                 .i_mask_idx_credit(mask_idx_credit),
