@@ -171,7 +171,7 @@ module tt_mask_fsm #(parameter VLEN = 256,
       mask_fsm_state <= mask_fsm_next_state;
     end
   end
-  assign o_mask_idx_last_idx = 0;
+
   always_comb begin
     mask_idx_item_next[64] = mask_buffer[0];
     if(is_indexed) begin
@@ -188,10 +188,11 @@ module tt_mask_fsm #(parameter VLEN = 256,
   assign mask_idx_valid_next = (mask_fsm_state==SEND) && (mask_credits_next > 0) && (num_transactions > 0);
   always @(posedge i_clk) begin
     if(!i_reset_n)
-      {o_mask_idx_valid, o_mask_idx_item} <= 0;
+      {o_mask_idx_valid, o_mask_idx_item, o_mask_idx_last_idx} <= 0;
     else begin
       o_mask_idx_valid <= mask_idx_valid_next;
       o_mask_idx_item <= mask_idx_item_next;
+      o_mask_idx_last_idx <= (num_transactions_next == 0) && mask_idx_valid_next;
     end
   end
 
