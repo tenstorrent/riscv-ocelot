@@ -1220,7 +1220,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                 .i_reset_n(reset_n),
                 .i_is_masked_memop(is_masked_memop),
                 .i_memop_sync_start(memop_sync_start),
-                .i_is_indexed(is_indexldst),
+                .i_is_indexed(id_is_indexldst),
                 .i_mask_data(vmask_rddata),
                 .i_index_data(vs2_rddata),
                 .i_index_data_valid(id_ex_units_rts && ex_id_rtr),
