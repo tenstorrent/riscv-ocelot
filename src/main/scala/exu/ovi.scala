@@ -278,6 +278,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   val s0l1 = RegInit(false.B)
   // holding the direction of the stride, only useful for strided
   val strideDirHold = RegInit(true.B)
+  val vlIsZero = RegInit(false.B)
 
   // Instruction Decoding
   
@@ -298,6 +299,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     vGenEnable := true.B 
     vGenHold.req.uop := vLSIQueue.io.deq.bits.req.uop
     sbIdHold := sbIdQueue.io.deq.bits 
+    vlIsZero := vLSIQueue.io.deq.bits.vconfig.vl === 0.U
     s0l1 := vLSIQueue.io.deq.bits.req.uop.uses_ldq    
     // only use vdb when it is store
     vdb.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_stq
@@ -358,7 +360,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 */
 
   val fakeLoadReturnQueue = Module(new Queue(UInt(21.W), 8))
-  fakeLoadReturnQueue.io.enq.valid := vAGen.io.popForce && s0l1
+  fakeLoadReturnQueue.io.enq.valid := vAGen.io.popForce && s0l1 && vAGen.io.popForceLast
   fakeLoadReturnQueue.io.enq.bits := Cat(sbIdHold, vIdGen.io.outID, vIdGen.io.outVD)
   fakeLoadReturnQueue.io.deq.ready := false.B 
 
@@ -370,7 +372,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
      Output to LSU
   */ 
 
-  io.vGenIO.req.valid := vGenEnable && ((!s0l1 && vDBcount =/= 0.U) || s0l1) && vAGen.io.canPop
+  io.vGenIO.req.valid := vGenEnable && ((!s0l1 && ((!vlIsZero && vDBcount =/= 0.U) || vlIsZero)) || s0l1) && vAGen.io.canPop
   io.vGenIO.req.bits.uop := vGenHold.req.uop
   io.vGenIO.req.bits.data := Mux(s0l1, 0.U, vdb.io.outData) 
   io.vGenIO.req.bits.last := vAGen.io.last 
@@ -389,12 +391,12 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 */
 
   when ((io.vGenIO.req.valid && io.vGenIO.req.ready) || vAGen.io.popForce) {                                                         
-    vdb.io.pop := io.vGenIO.req.bits.uop.uses_stq
+    vdb.io.pop := io.vGenIO.req.bits.uop.uses_stq && !vlIsZero
     vAGen.io.pop := true.B 
-    vIdGen.io.pop := io.vGenIO.req.bits.uop.uses_ldq
+    vIdGen.io.pop := io.vGenIO.req.bits.uop.uses_ldq && !vlIsZero
     when (vAGen.io.last) {
       vGenEnable := false.B         
-      vdb.io.last := io.vGenIO.req.bits.uop.uses_stq
+      vdb.io.last := io.vGenIO.req.bits.uop.uses_stq && !vlIsZero
     }
   }
 
@@ -609,6 +611,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
       // control, canPop needs handshaking, popForce is masked off
     val popForce = Output (Bool())
     val canPop = Output (Bool())
+    val popForceLast = Output (Bool())
 
   })
 
@@ -708,6 +711,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
   io.popForce := working && !currentMask && isMask && hasMask && !io.last 
   // this happens when the last element is masked-off, still need to send something
   val lastFake = working && !currentMask && isMask  && hasMask && io.last 
+  io.popForceLast := lastFake
   // can Pop happens when lastFake, !isMask && !isIndex, !isMask && isIndex && hasMask, isMask && hasMask && currentMask, fakeHold
   io.canPop := working && ((currentMask && isMask && hasMask) || (!isMask && !isIndex) || (!isMask && isIndex && hasMask) || lastFake || fakeHold)
 //  io.canPop := working && ((currentMask && ((isMask || isIndex) && hasMask)) || (!isMask && !isIndex) || lastFake)
