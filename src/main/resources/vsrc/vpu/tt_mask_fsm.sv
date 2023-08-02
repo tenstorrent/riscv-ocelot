@@ -103,7 +103,7 @@ module tt_mask_fsm #(parameter VLEN = 256,
     else if(i_is_masked_memop && mask_fsm_state == IDLE)
       mask_buffer <= i_mask_data;
     else if(mask_idx_valid_next)
-      mask_buffer <= i_is_indexed ? mask_buffer >> 1 : mask_buffer >> 64;
+      mask_buffer <= is_indexed ? mask_buffer >> 1 : mask_buffer >> 64;
   end
 
   assign mask_credits_next = mask_credits + i_mask_idx_credit - o_mask_idx_valid;
