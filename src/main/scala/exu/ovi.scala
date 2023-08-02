@@ -724,13 +724,15 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
        when(io.pop || io.popForce) {
         readPtr := WrapInc(readPtr, Depth)
         io.release := true.B 
-       }
-       // turn off working
+        currentIndex := currentIndex + 1.U
+        // turn off working
        // precaution for vl = 0 index load store
-       when(io.last) {
-        fakeHold := false.B 
-        working := false.B 
+         when(io.last) {
+           fakeHold := false.B 
+           working := false.B 
+        }
        }
+       
     }.otherwise{
      when (io.pop || io.popForce) {
        when (io.last) {
