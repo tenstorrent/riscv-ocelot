@@ -35,6 +35,7 @@ module tt_mask_fsm #(parameter VLEN = 256,
   logic [$clog2(VLEN+1):0] num_transactions;
   logic [$clog2(VLEN+1):0] num_transactions_next;
   logic drain_index_buffer;
+  logic drain_index_buffer_next;
 
   logic [VLEN-1:0]   mask_buffer; 
   logic [8*VLEN-1:0] idx_buffer;
@@ -68,7 +69,7 @@ module tt_mask_fsm #(parameter VLEN = 256,
         3'd7: idx_buffer[2047:1792] <= i_index_data;
       endcase
     end
-    else if(drain_index_buffer && mask_idx_valid_next) begin
+    else if(mask_idx_valid_next) begin
       case(i_eew)
         2'd0: idx_buffer <= idx_buffer >> 8;
         2'd1: idx_buffer <= idx_buffer >> 16;
@@ -88,13 +89,20 @@ module tt_mask_fsm #(parameter VLEN = 256,
         idx_buffer_wptr <= 0;
     end
   end
+
+  always_comb begin
+    if(i_index_data_valid && i_is_indexed && i_last_index)
+      drain_index_buffer_next = 1;
+    else if(i_memop_sync_end)
+      drain_index_buffer_next = 0;
+    else 
+      drain_index_buffer_next = drain_index_buffer;
+  end
   always @(posedge i_clk) begin
     if(!i_reset_n)
       drain_index_buffer <= 0;
-    else if(i_index_data_valid && i_is_indexed && i_last_index)
-      drain_index_buffer <= 1;
-    else if(i_memop_sync_end)
-      drain_index_buffer <= 0;
+    else
+      drain_index_buffer <= drain_index_buffer_next;
   end
 
   always @(posedge i_clk) begin
@@ -178,14 +186,14 @@ module tt_mask_fsm #(parameter VLEN = 256,
       case(i_eew)
         2'd0: mask_idx_item_next[63:0] = {{56{idx_buffer[7]}},idx_buffer[7:0]};
         2'd1: mask_idx_item_next[63:0] = {{48{idx_buffer[15]}},idx_buffer[15:0]};
-        2'd2: mask_idx_item_next[63:0] = {{40{idx_buffer[15]}},idx_buffer[31:0]};
+        2'd2: mask_idx_item_next[63:0] = {{32{idx_buffer[31]}},idx_buffer[31:0]};
         2'd3: mask_idx_item_next[63:0] = idx_buffer[63:0];
       endcase
     end
     else
       mask_idx_item_next[63:0] = mask_buffer[63:0];
   end
-  assign mask_idx_valid_next = (mask_fsm_state==SEND) && (mask_credits_next > 0) && (num_transactions > 0);
+  assign mask_idx_valid_next = (mask_fsm_state==SEND) && (mask_credits_next > 0) && (num_transactions > 0) && (!is_indexed || drain_index_buffer);
   always @(posedge i_clk) begin
     if(!i_reset_n)
       {o_mask_idx_valid, o_mask_idx_item, o_mask_idx_last_idx} <= 0;
