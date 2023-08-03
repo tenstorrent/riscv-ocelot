@@ -1373,7 +1373,7 @@ when (dlq_finished) {
     
     
     when (dtlb.io.req(memWidth+1).valid) {
-      dlq(dlq_tlb_head).bits.addr.valid := !pf_st_dsq
+      dlq(dlq_tlb_head).bits.addr.valid := !pf_st_dlq
       dlq(dlq_tlb_head).bits.addr.bits  := Mux(dlq_tlb_miss, dlq(dlq_tlb_head).bits.addr.bits, dlq_tlb_paddr)
       dlq(dlq_tlb_head).bits.addr_is_virtual := dlq_tlb_miss     
     }
@@ -2081,6 +2081,7 @@ when (dlq_finished) {
     dsq(dsq_head).bits.succeeded := false.B 
     dsq(dsq_head).bits.addr.valid := false.B
     dsq(dsq_head).bits.data.valid := false.B 
+    dsq(dsq_head).bits.isFake := false.B
     when (dsq(dsq_head).bits.last) {
       dsq_finished := true.B
       sbIdDone := dsq(dsq_head).bits.sbId
@@ -2093,6 +2094,7 @@ when (dlq_finished) {
     dlq(dlq_head).valid  := false.B 
     dlq(dlq_head).bits.succeeded := false.B 
     dlq(dlq_head).bits.addr.valid := false.B
+    dlq(dlq_head).bits.isFake := false.B 
     when (dlq(dlq_head).bits.last) {
       dlq_finished := true.B
       sbIdDone := dlq(dlq_head).bits.sbId
