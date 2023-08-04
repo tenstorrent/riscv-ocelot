@@ -463,7 +463,7 @@ assign ex_vecldst_idx_num_elem = ((ex_vecldst_idx_eew[1:0] == 2'h0) ? VLEN/8  :
                                                                       VLEN/64  ) >> ex_vecldst_idx_elem_top_shft;
 assign ex_vecldst_idx_elem_base = (ex_vecldst_base_elem_done%ex_vecldst_idx_num_elem);
 
-assign ex_vecldst_elem_per_iter = (ex_vecldst_autogen.ldst_index & (ex_vecldst_data_num_elem > ex_vecldst_idx_num_elem)) ? ex_vecldst_idx_num_elem : ex_vecldst_data_num_elem;
+assign ex_vecldst_elem_per_iter = ex_vecldst_data_num_elem;
 assign ex_vecldst_base_elem_done = (ex_vecldst_id_lmul_iter*ex_vecldst_elem_per_iter);
 					     
 assign ex_vecldst_store_val = (ex_vs3_reg >> ((ex_vs3_base + {ex_vecldst_elem_count,3'b0}) << ex_vecldst_data_eew));

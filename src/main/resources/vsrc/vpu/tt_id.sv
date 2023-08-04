@@ -170,8 +170,11 @@ always @* begin
   o_vec_autogen.rf_addrp0 = vec_autogen_nodbg.rf_addrp0;
 end
 
-assign o_vecldst_autogen = (id_replay ? vecldst_autogen_replay : vecldst_autogen)
+always_comb begin
+o_vecldst_autogen = (id_replay ? vecldst_autogen_replay : vecldst_autogen)
                        & {$bits(tt_briscv_pkg::vecldst_autogen_s){valid_vec_autogen}};
+o_vecldst_autogen.ldst_index = 0; 
+end
 assign o_id_replay = id_replay;
 wire [2:0] v_vsew;
 wire [2:0] v_lmul;
