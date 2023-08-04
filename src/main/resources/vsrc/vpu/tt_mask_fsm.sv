@@ -184,9 +184,9 @@ module tt_mask_fsm #(parameter VLEN = 256,
     mask_idx_item_next[64] = mask_buffer[0];
     if(is_indexed) begin
       case(i_eew)
-        2'd0: mask_idx_item_next[63:0] = {56'0,idx_buffer[7:0]};
-        2'd1: mask_idx_item_next[63:0] = {48'0,idx_buffer[15:0]};
-        2'd2: mask_idx_item_next[63:0] = {32'0,idx_buffer[31:0]};
+        2'd0: mask_idx_item_next[63:0] = {56'b0,idx_buffer[7:0]};
+        2'd1: mask_idx_item_next[63:0] = {48'b0,idx_buffer[15:0]};
+        2'd2: mask_idx_item_next[63:0] = {32'b0,idx_buffer[31:0]};
         2'd3: mask_idx_item_next[63:0] = idx_buffer[63:0];
       endcase
     end
