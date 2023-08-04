@@ -5,6 +5,7 @@
 package tt_briscv_pkg;
    typedef struct packed {
       logic 	   vrf_wr_flag;
+      logic 	   squash_vec_wr_flag;
       logic 	   fp_rf_wr_flag;
       logic        rf_wr_flag;
       logic [31:0] pc;

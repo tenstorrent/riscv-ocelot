@@ -78,6 +78,7 @@ module tt_mem #( parameter
 
    // To vec
    output wire 				o_mem_vrf_wr ,
+   output wire 				o_mem_vrf_wr_qual ,
    output wire [ 4:0] 			o_mem_vrf_wraddr ,
    output wire [VLEN-1:0] 			o_mem_vrf_wrdata ,
    output wire [4:0] 			o_mem_vrf_wrexc ,
@@ -533,6 +534,7 @@ assign o_mem_rf_wraddr[4:0]    = lq_mem_rf_wraddr[4:0];
 assign o_mem_rf_wrdata[63:0]   = lq_rddata[63:0]; 
 
 assign o_mem_vrf_wr            = lq_rden & lq_mem_vrf_wr_flag;   
+assign o_mem_vrf_wr_qual       = lq_rden & lq_mem_vrf_wr_flag & !lq_rdinfo.squash_vec_wr_flag;   
 assign o_mem_vrf_wraddr[4:0]   = lq_mem_rf_wraddr[4:0];    
 assign o_mem_vrf_wrdata[VLEN-1:0] = lq_rddata[VLEN-1:0];
 assign o_mem_vrf_wrexc         = lq_rdinfo.vec_load ? '0 : lq_rdexc;

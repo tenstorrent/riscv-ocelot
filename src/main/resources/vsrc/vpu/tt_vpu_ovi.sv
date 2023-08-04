@@ -134,6 +134,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [       4:0] mem_fp_rf_wraddr;
   logic [      63:0] mem_fp_rf_wrdata;
   logic              mem_vrf_wr;
+  logic              mem_vrf_wr_qual; // Can be squashed when vl=0
   logic [       4:0] mem_vrf_wraddr;
   logic [VLEN  -1:0] mem_vrf_wrdata;
   logic [VLEN*8-1:0] mem_vrf_wrdata_reg;
@@ -577,7 +578,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_vm0_0a            (vrf_vm0_rddata),
     // Inputs
     .i_rden_0a           ({vrf_p2_rden,vrf_p1_rden,vrf_p0_rden}),
-    .i_wren_0a           (mem_vrf_wr),
+    .i_wren_0a           (mem_vrf_wr_qual),
     .i_rdaddr_0a         ({vrf_p2_rdaddr, vrf_p1_rdaddr, vrf_p0_rdaddr}),
     .i_wraddr_0a         (mem_vrf_wraddr),
     .i_wrdata_0a         (mem_vrf_wrdata)
@@ -707,6 +708,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_mem_fp_rf_wrdata   (mem_fp_rf_wrdata),
 
     .o_mem_vrf_wr         (mem_vrf_wr),
+    .o_mem_vrf_wr_qual    (mem_vrf_wr_qual),
     .o_mem_vrf_wraddr     (mem_vrf_wraddr),
     .o_mem_vrf_wrdata     (mem_vrf_wrdata),
     .o_mem_vrf_wrexc      (mem_vrf_wrexc),
@@ -903,7 +905,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         store_buffer_wptr  <= '0;
         store_buffer_valid <= '0;
       end else
-      if(id_ex_units_rts && ex_id_rtr && vecldst_autogen_store) begin
+      if(id_ex_units_rts && ex_id_rtr && vecldst_autogen_store && !id_mem_lqinfo.squash_vec_wr_flag) begin
         store_buffer      [store_buffer_wptr] <= vs3_rddata;
         store_buffer_valid[store_buffer_wptr] <= 1;
         store_buffer_wptr                     <= store_buffer_wptr + 1;

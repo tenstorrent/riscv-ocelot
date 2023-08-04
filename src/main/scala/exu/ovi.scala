@@ -299,7 +299,9 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     vGenEnable := true.B 
     vGenHold.req.uop := vLSIQueue.io.deq.bits.req.uop
     sbIdHold := sbIdQueue.io.deq.bits 
-    vlIsZero := vLSIQueue.io.deq.bits.vconfig.vl === 0.U
+    vlIsZero := vLSIQueue.io.deq.bits.vconfig.vl === 0.U &&
+               !isWholeLoad &&
+               !isWholeStore
     s0l1 := vLSIQueue.io.deq.bits.req.uop.uses_ldq    
     // only use vdb when it is store
     vdb.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_stq

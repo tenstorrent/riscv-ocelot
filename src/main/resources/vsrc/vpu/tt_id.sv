@@ -285,7 +285,8 @@ assign o_id_mem_lq_done = ((o_id_vex_rts && i_vex_id_rtr) ||
                            (o_id_ex_rts  && i_ex_rtr    )   ) && (vec_autogen_incr.replay_cnt == 0);
 assign o_id_mem_lqinfo.pc[31:0] = o_id_ex_pc;
 assign o_id_mem_lqinfo.sim_instrn[31:0] = instrn_id;
-assign o_id_mem_lqinfo.vrf_wr_flag = o_vec_autogen.rf_wren && !squash_vec_wr_flag;
+assign o_id_mem_lqinfo.vrf_wr_flag = o_vec_autogen.rf_wren;
+assign o_id_mem_lqinfo.squash_vec_wr_flag = squash_vec_wr_flag;
 assign o_id_mem_lqinfo.fp_rf_wr_flag = (is_fp_instrn | is_vec_instrn) & o_fp_rf_wr_flag;
 assign o_id_mem_lqinfo.rf_wr_flag = (is_ex_instrn | is_fp_instrn | is_vec_instrn) & o_rf_wr_flag;
 assign o_id_mem_lqinfo.rf_wraddr[4:0] = ({5{o_rf_wr_flag}} &  o_rf_wraddr[4:0]) |
@@ -520,12 +521,11 @@ if (INCL_VEC == 1) begin
  assign vec_ldst_vld = v_ext & (vecldst_autogen.load | vecldst_autogen.store);
  assign vec_ldst_idx_vld = vec_ldst_vld & vecldst_autogen.ldst_index;
 			
- assign squash_vec_wr_flag = 1'b0; // FIXME
- //assign squash_vec_wr_flag =  is_vec_instrn                         && // A vector instruction
- //                            (i_ex_id_csr.v_vl == 0)                && // With VL set to 0
- //                           !(EncType == `BRISCV_INSTR_TYPE_Vvi &&     // Except: vmv<nf>r
- //                             funct7[6:1] == 6'b100111            ) &&
- //                           !vecldst_autogen.ldst_whole_register;      //         vl<nf>r
+ assign squash_vec_wr_flag =  is_vec_instrn                         && // A vector instruction
+                             (i_ex_id_csr.v_vl == 0)                && // With VL set to 0
+                            !(EncType == `BRISCV_INSTR_TYPE_Vvi &&     // Except: vmv<nf>r
+                              funct7[6:1] == 6'b100111            ) &&
+                            !vecldst_autogen.ldst_whole_register;      //         vl<nf>r
                              
 
 `ifdef SIM
