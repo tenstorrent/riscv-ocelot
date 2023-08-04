@@ -362,7 +362,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 */
 
   val fakeLoadReturnQueue = Module(new Queue(UInt(21.W), 8))
-  fakeLoadReturnQueue.io.enq.valid := vAGen.io.popForce && s0l1 && vAGen.io.popForceLast
+  fakeLoadReturnQueue.io.enq.valid := s0l1 && (vAGen.io.popForce || vAGen.io.popForceLast)
   fakeLoadReturnQueue.io.enq.bits := Cat(sbIdHold, vIdGen.io.outID, vIdGen.io.outVD)
   fakeLoadReturnQueue.io.deq.ready := false.B 
 
