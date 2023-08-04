@@ -1129,18 +1129,30 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         load_stride_eew = 0;
   end
 
+  logic [63:0] scalar_opnd_reg;
+  always @(posedge clk) begin
+    if(!reset_n)
+      scalar_opnd_reg <= 0;
+    else if(ocelot_read_req && read_valid)
+      scalar_opnd_reg <= read_issue_scalar_opnd;
+  end
+
   always @(posedge clk) begin
     if(!reset_n)
       {eew,load_stride,is_unit_stride,eew_log2} <= 0;
-    else if(read_valid && ocelot_read_req) begin
-      eew <= read_issue_inst[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
-             read_issue_inst[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
-             read_issue_inst[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
-      eew_log2 <= read_issue_inst[14:12] == 3'b000 ? 3'd3 : // 8-bit EEW
-                  read_issue_inst[14:12] == 3'b101 ? 3'd4 : // 16-bit EEW
-                  read_issue_inst[14:12] == 3'b110 ? 3'd5 : 3'd6; // 32-bit, 64-bit EEW
-      load_stride <= read_issue_scalar_opnd;
-      is_unit_stride <= read_issue_inst[27:26] == 2'b00;
+    else if(fsm_memop_sync_start) begin
+      eew <= id_is_indexldst ? vcsr[37:36] :
+             id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
+             id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
+             id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
+      eew_log2 <= id_ex_instrn[14:12] == 3'b000 ? 3'd3 : // 8-bit EEW
+                  id_ex_instrn[14:12] == 3'b101 ? 3'd4 : // 16-bit EEW
+                  id_ex_instrn[14:12] == 3'b110 ? 3'd5 : 3'd6; // 32-bit, 64-bit EEW
+      load_stride <= !id_is_indexldst ? scalar_opnd_reg : 
+                  vcsr[38:36] == 3'b000 ? 1 : // 8-bit EEW
+                  vcsr[38:36] == 3'b101 ? 2 : // 16-bit EEW
+                  vcsr[38:36] == 3'b110 ? 4 : 8; // 32-bit, 64-bit EEW;
+      is_unit_stride <= id_ex_instrn[27:26] == 2'b00;
     end
   end
 

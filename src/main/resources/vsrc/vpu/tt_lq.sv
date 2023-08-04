@@ -342,7 +342,7 @@ if (INCL_VEC == 1) begin: GenInclVec
    // Update the refcount for vector load entries
    for (genvar i=0; i<LQ_DEPTH; i++) begin
       assign lq_refcount_in[i][4:0] = lq_refcount[i]                                                                                + 
-                                      (i_vecld_elem_sent & (i_vecld_id == i))                                                       - 
+                                      (i_vecld_elem_sent & (i_vecld_id == i) & lq_refcount[i] != 1 )                                                       - 
                                       (i_data_vld_0 & ~i_data_vld_cancel_0 & o_lq_broadside_info[i].vec_load & (i_data_resp_id_0[LQ_DEPTH_LOG2-1:0] == i)) -
                                       (i_data_vld_1 & ~i_data_vld_cancel_1 & o_lq_broadside_info[i].vec_load & (i_data_resp_id_1[LQ_DEPTH_LOG2-1:0] == i)) -
                                       (i_data_vld_2 & ~i_data_vld_cancel_2 & o_lq_broadside_info[i].vec_load & (i_data_resp_id_2[LQ_DEPTH_LOG2-1:0] == i));
