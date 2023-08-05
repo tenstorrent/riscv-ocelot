@@ -293,11 +293,15 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   val isWholeLoad =  instOP === 7.U  && instUMop === 8.U  && instMop === 0.U
   val isStoreMask =  instOP === 39.U && instUMop === 11.U && instMop === 0.U
   val isLoadMask =   instOP === 7.U  && instUMop === 11.U && instMop === 0.U
+  val isIndex =                         instMop === 1.U || instMop === 3.U
 
   // start of a new round of vector load store
   when (newVGenConfig && !vGenEnable) {
     vGenEnable := true.B 
     vGenHold.req.uop := vLSIQueue.io.deq.bits.req.uop
+    // Override mem_size for indexed load/store with sew from vtype
+    vGenHold.req.uop.mem_size := Mux(isIndex, vLSIQueue.io.deq.bits.vconfig.vtype.vsew,
+                                               vLSIQueue.io.deq.bits.req.uop.mem_size)
     sbIdHold := sbIdQueue.io.deq.bits 
     vlIsZero := vLSIQueue.io.deq.bits.vconfig.vl === 0.U &&
                !isWholeLoad &&
@@ -334,7 +338,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     // initial SliceSize    
     when (isWholeStore || isStoreMask || isLoadMask) {
       vAGen.io.initialSliceSize := 1.U 
-    }.elsewhen (instMop === 1.U || instMop === 3.U) {
+    }.elsewhen (isIndex) {
       vAGen.io.initialSliceSize := 1.U << vLSIQueue.io.deq.bits.vconfig.vtype.vsew 
     }.otherwise {
     when (instElemSize === 0.U) {
