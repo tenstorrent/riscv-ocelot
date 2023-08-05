@@ -335,7 +335,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     when (isWholeStore || isStoreMask || isLoadMask) {
       vAGen.io.initialSliceSize := 1.U 
     }.elsewhen (instMop === 1.U || instMop === 3.U) {
-      vAGen.io.initialSliceSize := vLSIQueue.io.deq.bits.vconfig.vtype.vsew 
+      vAGen.io.initialSliceSize := 1.U << vLSIQueue.io.deq.bits.vconfig.vtype.vsew 
     }.otherwise {
     when (instElemSize === 0.U) {
       vAGen.io.initialSliceSize := 1.U 

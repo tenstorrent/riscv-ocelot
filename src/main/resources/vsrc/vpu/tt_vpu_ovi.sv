@@ -273,12 +273,10 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [6:0]   el_count;
   logic [4:0]   sb_id;
   // from 0 to 3, 8-bit to 64-bit EEW
-  logic [1:0]   eew;
-  logic [2:0]   eew_log2;
+  logic [1:0]   index_size;
+  logic [1:0]   data_size;
   // this is in bytes
   logic signed [63:0]  load_stride;
-  // this is in EEW(1,2,4)
-  logic [2:0]   load_stride_in_eew_log2;
   // this is the offset of the first element in the packed load data
   logic [5:0] packed_offset;
   logic [10:0] offset_diff;
@@ -465,6 +463,26 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   assign vecldst_autogen_store = id_ex_vecldst_autogen.store;
   assign vecldst_autogen_load = id_ex_vecldst_autogen.load;
 
+  logic squash_id_ex_rts;
+  always_comb begin
+     squash_id_ex_rts = 1'b0;
+
+     if (id_is_indexldst) begin
+        case ({id_ex_instrn[14:12], vcsr[37:36]})
+           // index : data = 2
+           5'b101_00,
+           5'b110_01,
+           5'b111_10: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[0] != 1'b0;
+           // index : data = 4
+           5'b110_00,
+           5'b111_01: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[1:0] != 2'b00;
+           // index : data = 4
+           5'b111_00: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[2:0] != 3'b000;
+           default  : squash_id_ex_rts = 1'b0;
+        endcase
+     end
+  end
+ 
   tt_ex
   #(.INCL_VEC(INCL_VEC),
     .VLEN(VLEN),
@@ -483,7 +501,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_exc_vfp_update    ('0    ),
     
     // From ID
-    .i_id_ex_rts         (id_ex_rts         ),
+    .i_id_ex_rts         (id_ex_rts && !squash_id_ex_rts),
     .o_ex_id_rtr         (ex_id_rtr         ),
     .i_id_type           (id_type           ),
     .i_id_rf_wr_flag     (id_rf_wr_flag     ),
@@ -924,7 +942,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       if(is_indexldst)
         num_bits = (vcsr[$clog2(VLEN+1)-1+14:14] << (vcsr[38:36]+3));
       else
-        num_bits = (vcsr[$clog2(VLEN+1)-1+14:14] << (eew+3));
+        num_bits = (vcsr[$clog2(VLEN+1)-1+14:14] << (data_size+3));
       if(num_bits == 0)
         num_store_transactions_next = 0;
       else if(num_bits <= 512)
@@ -1095,35 +1113,35 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   always_comb begin
     if(is_unit_stride)
         load_stride_eew = 0;
-    else if((eew == 0 && load_stride == 64'd8) ||
-            (eew == 1 && load_stride == 64'd16) || 
-            (eew == 2 && load_stride == 64'd32) || 
-            (eew == 3 && load_stride == 64'd64))
+    else if((data_size == 0 && load_stride == 64'd8) ||
+            (data_size == 1 && load_stride == 64'd16) || 
+            (data_size == 2 && load_stride == 64'd32) || 
+            (data_size == 3 && load_stride == 64'd64))
         load_stride_eew = 0;
-    else if((eew == 0 && load_stride == 64'd16) ||
-            (eew == 1 && load_stride == 64'd32) || 
-            (eew == 2 && load_stride == 64'd64) || 
-            (eew == 3 && load_stride == 64'd128))
+    else if((data_size == 0 && load_stride == 64'd16) ||
+            (data_size == 1 && load_stride == 64'd32) || 
+            (data_size == 2 && load_stride == 64'd64) || 
+            (data_size == 3 && load_stride == 64'd128))
         load_stride_eew = 1;
-    else if((eew == 0 && load_stride == 64'd32) ||
-            (eew == 1 && load_stride == 64'd64) || 
-            (eew == 2 && load_stride == 64'd128) || 
-            (eew == 3 && load_stride == 64'd256))
+    else if((data_size == 0 && load_stride == 64'd32) ||
+            (data_size == 1 && load_stride == 64'd64) || 
+            (data_size == 2 && load_stride == 64'd128) || 
+            (data_size == 3 && load_stride == 64'd256))
         load_stride_eew = 2;
-    else if((eew == 0 && load_stride == -64'd8) ||
-            (eew == 1 && load_stride == -64'd16) || 
-            (eew == 2 && load_stride == -64'd32) || 
-            (eew == 3 && load_stride == -64'd64))
+    else if((data_size == 0 && load_stride == -64'd8) ||
+            (data_size == 1 && load_stride == -64'd16) || 
+            (data_size == 2 && load_stride == -64'd32) || 
+            (data_size == 3 && load_stride == -64'd64))
         load_stride_eew = 4;
-    else if((eew == 0 && load_stride == -64'd16) ||
-            (eew == 1 && load_stride == -64'd32) || 
-            (eew == 2 && load_stride == -64'd64) || 
-            (eew == 3 && load_stride == -64'd128))
+    else if((data_size == 0 && load_stride == -64'd16) ||
+            (data_size == 1 && load_stride == -64'd32) || 
+            (data_size == 2 && load_stride == -64'd64) || 
+            (data_size == 3 && load_stride == -64'd128))
         load_stride_eew = 5;
-    else if((eew == 0 && load_stride == -64'd32) ||
-            (eew == 1 && load_stride == -64'd64) || 
-            (eew == 2 && load_stride == -64'd128) || 
-            (eew == 3 && load_stride == -64'd256))
+    else if((data_size == 0 && load_stride == -64'd32) ||
+            (data_size == 1 && load_stride == -64'd64) || 
+            (data_size == 2 && load_stride == -64'd128) || 
+            (data_size == 3 && load_stride == -64'd256))
         load_stride_eew = 6;
     else
         load_stride_eew = 0;
@@ -1139,15 +1157,15 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   always @(posedge clk) begin
     if(!reset_n)
-      {eew,load_stride,is_unit_stride,eew_log2} <= 0;
+      {index_size,data_size,load_stride,is_unit_stride} <= 0;
     else if(fsm_memop_sync_start) begin
-      eew <= id_is_indexldst ? vcsr[37:36] :
-             id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
-             id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
-             id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
-      eew_log2 <= id_ex_instrn[14:12] == 3'b000 ? 3'd3 : // 8-bit EEW
-                  id_ex_instrn[14:12] == 3'b101 ? 3'd4 : // 16-bit EEW
-                  id_ex_instrn[14:12] == 3'b110 ? 3'd5 : 3'd6; // 32-bit, 64-bit EEW
+      index_size <= id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
+                    id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
+                    id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
+      data_size <= id_is_indexldst ? vcsr[37:36] :
+                   id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
+                   id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
+                   id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
       load_stride <= !id_is_indexldst ? scalar_opnd_reg : 
                   vcsr[38:36] == 3'b000 ? 1 : // 8-bit EEW
                   vcsr[38:36] == 3'b101 ? 2 : // 16-bit EEW
@@ -1164,7 +1182,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
    .load_data(load_data),
    .load_seq_id(load_seq_id),
    .stride(load_stride_eew),
-   .eew(eew), 
+   .eew(data_size), 
 
    .packed_data(shifted_load_data),
    .byte_en(byte_en)
@@ -1241,7 +1259,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                 .i_last_index(id_ex_last),
                 .i_memop_sync_end(memop_sync_end),
                 .i_vl(vcsr[$clog2(VLEN+1)-1+14:14]),
-                .i_eew(eew),
+                .i_eew(index_size),
                 .i_mask_idx_credit(mask_idx_credit),
                 .o_mask_idx_item(mask_idx_item),
                 .o_mask_idx_valid(mask_idx_valid),
