@@ -118,7 +118,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
 
 
   val MemSyncEnd = WireInit(false.B)
-  val MemSbId = io.vGenIO.resp.bits.sbId 
+  val MemSbId = WireInit(0.U(5.W))
   val MemVstart = 0.U
   val MemLoadValid = WireInit (false.B)
   val MemSeqId = WireInit(0.U(34.W))
@@ -157,7 +157,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   // trying to dequeue VLSIQ 
   val tryDeqVLSIQ = RegInit(false.B)
   // this chunk is checking the number of outstanding mem_sync_start
-  val outStandingReq = RegInit(0.U)
+  val outStandingReq = RegInit(0.U(3.W))
   val vOSud = Cat (vpuModule.io.memop_sync_start, vpuModule.io.memop_sync_end)
   when (vOSud === 1.U) {
     outStandingReq := outStandingReq - 1.U
@@ -272,6 +272,12 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   val vGenEnable  = RegInit(false.B)
   // holding the microOp from vLSIQueue
   val vGenHold = Reg(new EnhancedFuncUnitReq(xLen, vLen))
+  // holding the sbId from sbIdQueue
+  val sbIdExQueue = Module(new Queue(UInt(5.W), vlsiQDepth))
+  sbIdExQueue.io.enq.valid := newVGenConfig
+  sbIdExQueue.io.enq.bits := sbIdQueue.io.deq.bits 
+  sbIdExQueue.io.deq.ready := MemSyncEnd 
+  MemSbId := sbIdExQueue.io.deq.bits 
   // holding the sbId from sbIdQueue(vLSIQueue)
   val sbIdHold = RegInit(0.U)
   // holding wheter it is store or load
@@ -367,9 +373,9 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
    Fake load response for masked-off elements
 */
 
-  val fakeLoadReturnQueue = Module(new Queue(UInt(21.W), 8))
+  val fakeLoadReturnQueue = Module(new Queue(UInt(34.W), 8))
   fakeLoadReturnQueue.io.enq.valid := s0l1 && (vAGen.io.popForce || vAGen.io.popForceLast)
-  fakeLoadReturnQueue.io.enq.bits := Cat(sbIdHold, vIdGen.io.outID, vIdGen.io.outVD)
+  fakeLoadReturnQueue.io.enq.bits := Cat(sbIdHold, vAGen.io.elemCount, vAGen.io.elemOffset, 0.U(3.W), vIdGen.io.outID, vIdGen.io.outVD)
   fakeLoadReturnQueue.io.deq.ready := false.B 
 
 
@@ -387,6 +393,8 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   io.vGenIO.req.bits.addr := vAGen.io.outAddr
 
   io.vGenIO.reqHelp.bits.elemID := vIdGen.io.outID 
+  io.vGenIO.reqHelp.bits.elemOffset := vAGen.io.elemOffset
+  io.vGenIO.reqHelp.bits.elemCount := vAGen.io.elemCount  
   io.vGenIO.reqHelp.bits.vRegID := vIdGen.io.outVD
   io.vGenIO.reqHelp.bits.sbId   := sbIdHold
   io.vGenIO.reqHelp.bits.strideDir := strideDirHold 
@@ -432,13 +440,18 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   when (LSUReturnLoadValid) {
     MemLoadData := vReturnData.io.oviData    
     seqSbId := io.vGenIO.resp.bits.sbId
+    seqElCount := io.vGenIO.resp.bits.elemCount
+    seqElOff := io.vGenIO.resp.bits.elemOffset
     seqElId := Cat(0.U(3.W), io.vGenIO.resp.bits.elemID)
     seqVreg := io.vGenIO.resp.bits.vRegID
+    
     MemReturnMaskValid := io.vGenIO.resp.bits.isMask
     MemReturnMask := io.vGenIO.resp.bits.Mask
   }.elsewhen (fakeLoadReturnQueue.io.deq.valid) {    
     MemLoadData := 0.U     
-    seqSbId := fakeLoadReturnQueue.io.deq.bits (20, 16)
+    seqSbId := fakeLoadReturnQueue.io.deq.bits (33, 29)
+    seqElCount := fakeLoadReturnQueue.io.deq.bits (28, 22)
+    seqElOff := fakeLoadReturnQueue.io.deq.bits (21, 16)
     seqElId := fakeLoadReturnQueue.io.deq.bits (15, 5)
     seqVreg := fakeLoadReturnQueue.io.deq.bits (4, 0)
     MemReturnMaskValid := true.B 
@@ -616,12 +629,17 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
     val isFake = Output (Bool())
     val isMaskOut   = Output (Bool())
     val currentMaskOut = Output (UInt(N.W))
+    val elemOffset = Output(UInt(6.W))
+    val elemCount = Output(UInt(7.W))
       // control, canPop needs handshaking, popForce is masked off
     val popForce = Output (Bool())
     val canPop = Output (Bool())
     val popForceLast = Output (Bool())
 
   })
+
+  io.elemOffset := 0.U 
+  io.elemCount := 1.U 
 
 
   val vlHold = Reg(UInt(9.W))
