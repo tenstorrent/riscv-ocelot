@@ -219,6 +219,7 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
   vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
   vAGen.io.pop := false.B  
   vAGen.io.initialSliceSize := 0.U
+  vAGen.io.memSize := 0.U
   MemMaskCredit := vAGen.io.release
 
   val vdb = Module (new VDB(oviWidth, lsuDmemWidth, vpuVlen, vdbDepth))
@@ -331,6 +332,8 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     vAGen.io.startAddr := vLSIQueue.io.deq.bits.req.rs1_data
     vAGen.io.stride := vLSIQueue.io.deq.bits.req.rs2_data 
     vAGen.io.isMask := instMaskEnable
+    vAGen.io.memSize := Mux(isIndex, vLSIQueue.io.deq.bits.vconfig.vtype.vsew,
+                                               vLSIQueue.io.deq.bits.req.uop.mem_size)
     // special case of whole load and whole store
     when (isWholeLoad || isWholeStore) {
     vwhls.io.nf := instNf
@@ -388,9 +391,10 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 
   io.vGenIO.req.valid := vGenEnable && ((!s0l1 && ((!vlIsZero && vDBcount =/= 0.U) || vlIsZero)) || s0l1) && vAGen.io.canPop
   io.vGenIO.req.bits.uop := vGenHold.req.uop
+  io.vGenIO.req.bits.uop.mem_size := Mux(s0l1, 3.U, vGenHold.req.uop.mem_size)
   io.vGenIO.req.bits.data := Mux(s0l1, 0.U, vdb.io.outData) 
   io.vGenIO.req.bits.last := vAGen.io.last 
-  io.vGenIO.req.bits.addr := vAGen.io.outAddr
+  io.vGenIO.req.bits.addr := Mux(s0l1, Cat(vAGen.io.outAddr(39, 3), 0.U(3.W)), vAGen.io.outAddr)
 
   io.vGenIO.reqHelp.bits.elemID := vIdGen.io.outID 
   io.vGenIO.reqHelp.bits.elemOffset := vAGen.io.elemOffset
@@ -603,16 +607,19 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
 
 // M is dmem bandwidth, N is mask interface width (66), Depth is mask buffer width (4)
 class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) extends Module {
-  val io = IO(new Bundle {
+    val k = log2Ceil(M/8+1)
+    val seg = k - 1  
+  val io = IO(new Bundle {    
     // inteface with the VPU
     val maskData = Input(UInt(N.W))
     val maskValid = Input(Bool())
     val release = Output (Bool())
     // interface with OVI decode
     val configValid = Input(Bool())
-    val initialSliceSize = Input(UInt(log2Ceil(M/8 + 1).W))
-    val sliceSizeOut = Output(UInt(log2Ceil(M/8 + 1).W))
+    val initialSliceSize = Input(UInt(k.W))
+    val sliceSizeOut = Output(UInt(k.W))
     val vl = Input(UInt(9.W))
+    val memSize = Input(UInt(2.W))
       // which types of load store
     val isStride = Input(Bool())
     val isMask = Input(Bool())
@@ -638,10 +645,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
 
   })
 
-  io.elemOffset := 0.U 
-  io.elemCount := 1.U 
-
-
+  
   val vlHold = Reg(UInt(9.W))
   // points at element
   val currentIndex = Reg(UInt(9.W))
@@ -661,10 +665,24 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
   // special case for vl = 0
   val fakeHold = RegInit(false.B)
   // holding the initial sliceSize, become more useful in V1
-  val sliceSizeHold = RegInit(0.U(log2Ceil(M/8 + 1).W))
+  val sliceSizeHold = RegInit(0.U(k.W))
+  val memSizeHold = RegInit(0.U(2.W))
+  val negativeStrideElemOffset = WireInit(0.U(k.W))
+  val positiveStrideElemOffset = WireInit(0.U(k.W))
+  negativeStrideElemOffset := k.U - memSizeHold - 1.U 
+  positiveStrideElemOffset := io.outAddr(k-2, 0) >> memSizeHold 
+
+  val isNegStride = isStride && stride(63)
+  
+  io.elemOffset := Mux(isNegStride, (negativeStrideElemOffset - positiveStrideElemOffset), positiveStrideElemOffset)
+ 
+//  io.elemOffset := 0.U 
+  io.elemCount := 1.U 
+  
 
   when (io.configValid) {
      sliceSizeHold := io.initialSliceSize
+     memSizeHold := io.memSize
      when (io.vl === 0.U) {
        vlHold := 0.U
        fakeHold := true.B
@@ -794,6 +812,8 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
        }
       }
     }
+  
+
 }
 
 // M is max number of byte per VLEN (32), N is max number of byte per memory interface (8) 
