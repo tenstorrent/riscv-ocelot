@@ -128,6 +128,8 @@ class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   val elemID = Bits(8.W)
   val vRegID = Bits(5.W)
   val sbId = Bits(5.W)
+  val elemOffset = Bits(6.W)
+  val elemCount = Bits(7.W)
   val strideDir = Bool()
   val s0l1 = Bool()
   val memSize = Bits(2.W)
@@ -143,6 +145,8 @@ class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
 {
   val elemID = Bits(8.W)
   val vRegID = Bits(5.W)
+  val elemOffset = Bits(6.W)
+  val elemCount = Bits(7.W)
   val sbId = Bits(5.W)
   val strideDir = Bool()
   val isMask = Bool()
@@ -315,6 +319,8 @@ class DLQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val sent                = Bool()
   val elemID = Bits(8.W)
   val vRegID = Bits(5.W)
+  val elemOffset = Bits(6.W)
+  val elemCount = Bits(7.W)
   val strideDir = Bool()
   val isMask = Bool()
   val Mask = Bits(64.W)
@@ -397,6 +403,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val dsq_head         = Reg(UInt(dsqAddrSz.W))
   val dsq_execute_head = Reg(UInt(dsqAddrSz.W))
   val dsq_tlb_head     = Reg(UInt(dsqAddrSz.W))
+
+  
+
  // val dsq_execute_save = Reg(Valid(UInt(stqAddrSz.W)))
   val dsq_finished     = Reg(Bool())
 
@@ -405,7 +414,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val dlq_execute_head = Reg(UInt(dlqAddrSz.W))
   val dlq_tlb_head     = Reg(UInt(dlqAddrSz.W))
   val dlq_finished     = Reg(Bool())
-  
+
+    
   val sbIdDone = RegInit(0.U(5.W))
 
   io.core.VGen.resp := DontCare 
@@ -413,6 +423,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.core.VGen.resp.valid := dsq_finished || dlq_finished
   io.core.VGen.resp.bits.elemID := DontCare 
   io.core.VGen.resp.bits.vRegID := DontCare
+  io.core.VGen.resp.bits.elemOffset := DontCare 
+  io.core.VGen.resp.bits.elemCount := DontCare
   io.core.VGen.resp.bits.sbId := sbIdDone 
   io.core.VGen.resp.bits.strideDir := DontCare 
   io.core.VGen.resp.bits.s0l1 := DontCare
@@ -648,10 +660,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dlq(dlq_tail).bits.addr_is_virtual := false.B 
     dlq(dlq_tail).bits.addr.bits    := io.core.VGen.req.bits.addr 
     dlq(dlq_tail).bits.succeeded  := false.B
+    dlq(dlq_tail).bits.executed  := false.B
     dlq(dlq_tail).bits.last := io.core.VGen.req.bits.last
     dlq(dlq_tail).bits.sent := false.B 
     dlq(dlq_tail).bits.sbId := io.core.VGen.reqHelp.bits.sbId
     dlq(dlq_tail).bits.elemID := io.core.VGen.reqHelp.bits.elemID
+    dlq(dlq_tail).bits.elemOffset := io.core.VGen.reqHelp.bits.elemOffset
+    dlq(dlq_tail).bits.elemCount := io.core.VGen.reqHelp.bits.elemCount
     dlq(dlq_tail).bits.vRegID := io.core.VGen.reqHelp.bits.vRegID
     dlq(dlq_tail).bits.strideDir := io.core.VGen.reqHelp.bits.strideDir
     dlq(dlq_tail).bits.isMask := io.core.VGen.reqHelp.bits.isMask
@@ -1218,7 +1233,11 @@ when (dlq_finished) {
         when (dlq_execute_head =/= dlq_tail) {
         dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
       }
-      }.otherwise {
+     }.elsewhen(dlq_commit_e.bits.executed) {
+        when (dlq_execute_head =/= dlq_tail) {
+        dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
+        }  
+     }.otherwise{
       dmem_req(w).valid := true.B
       dmem_req(w).bits.addr := dlq_commit_e.bits.addr.bits
       dmem_req(w).bits.uop := dlq_commit_e.bits.uop
@@ -1228,6 +1247,7 @@ when (dlq_finished) {
       }
       dlq(dlq_execute_head).bits.succeeded := false.B
       dlq(dlq_execute_head).bits.sent := true.B
+      dlq(dlq_execute_head).bits.executed := true.B
       } 
     }
     }.elsewhen (will_fire_load_incoming(w) && load_incoming_no_vst(w) && load_incoming_no_vld(w)) {
@@ -1810,8 +1830,11 @@ when (dlq_finished) {
         .elsewhen (io.dmem.nack(w).bits.uop.uses_ldq)
       {
         when (io.dmem.nack(w).bits.uop.is_vec) {
-          when (IsOlder(io.dmem.nack(w).bits.uop.ldq_idx, dlq_execute_head, dlq_head)) {
+          when(dlq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed){
+         when (IsOlder(io.dmem.nack(w).bits.uop.ldq_idx, dlq_execute_head, dlq_head) || io.dmem.nack(w).bits.uop.ldq_idx === dlq_execute_head) {
           dlq_execute_head := io.dmem.nack(w).bits.uop.ldq_idx  // TODO: do I reload everything? Maybe for now?
+          }
+          dlq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed := false.B 
 //          dlq_execute_save.valid := true.B 
 //          dlq_execute_save.bits := dlq_execute_head
           }
@@ -1826,7 +1849,7 @@ when (dlq_finished) {
         assert(io.dmem.nack(w).bits.uop.uses_stq)
         when (io.dmem.nack(w).bits.uop.is_vec) {
           when (IsOlder(io.dmem.nack(w).bits.uop.stq_idx, dsq_execute_head, dsq_head)) {
-          dsq_execute_head := io.dmem.nack(w).bits.uop.stq_idx
+          dsq_execute_head := io.dmem.nack(w).bits.uop.stq_idx          
 //          dsq_execute_save.valid := true.B 
 //          dsq_execute_save.bits := dsq_execute_head
           }
@@ -1844,10 +1867,15 @@ when (dlq_finished) {
     when (io.dmem.resp(w).valid)
     {
       when (io.dmem.resp(w).bits.uop.uses_ldq && io.dmem.resp(w).bits.uop.is_vec){
-        when(!dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded && IsOlder(io.dmem.resp(w).bits.uop.ldq_idx, dlq_execute_head, dlq_head)){
+/*        when(!dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded && ((IsOlder(io.dmem.resp(w).bits.uop.ldq_idx, dlq_execute_head, dlq_head) && !dlq(dlq_execute_head).bits.executed) || 
+                                                                       (dlq_execute_head === io.dmem.resp(w).bits.uop.ldq_idx && dlq(dlq_execute_head).bits.executed))){
+*/
+          when(dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.executed){
           dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded := true.B
           io.core.VGen.resp.valid := true.B 
-          io.core.VGen.resp.bits.elemID := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemID 
+          io.core.VGen.resp.bits.elemID := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemID
+          io.core.VGen.resp.bits.elemOffset := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemOffset 
+          io.core.VGen.resp.bits.elemCount := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemCount  
           io.core.VGen.resp.bits.vRegID := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.vRegID 
           io.core.VGen.resp.bits.sbId := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.sbId  
           io.core.VGen.resp.bits.strideDir := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.strideDir
@@ -2093,6 +2121,7 @@ when (dlq_finished) {
     dlq_head := WrapInc(dlq_head, numDlqEntries)
     dlq(dlq_head).valid  := false.B 
     dlq(dlq_head).bits.succeeded := false.B 
+    dlq(dlq_head).bits.executed := false.B 
     dlq(dlq_head).bits.addr.valid := false.B
     dlq(dlq_head).bits.isFake := false.B 
     when (dlq(dlq_head).bits.last) {
@@ -2244,6 +2273,7 @@ when (dlq_finished) {
         dlq(i).bits.uop        := NullMicroOp
         dlq(i).bits.addr.bits := 0.U
         dlq(i).bits.isFake := false.B
+        dlq(i).bits.executed := false.B
       }
     }
       .otherwise // exception
