@@ -281,13 +281,14 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 */
 
 
-  val vAGen = Module (new VAgen (lsuDmemWidth, 66, vAGenDepth))
+  val vAGen = Module (new VAgen (lsuDmemWidth, 66, vAGenDepth, vpuVlen))
 
   vAGen.io.configValid := false.B 
   vAGen.io.maskData := MemMaskId  
   vAGen.io.maskValid := MemMaskValid  
   vAGen.io.startAddr := vLSIQueue.io.deq.bits.req.rs1_data 
   vAGen.io.stride := vLSIQueue.io.deq.bits.req.rs2_data
+  vAGen.io.isUnit := false.B
   vAGen.io.isStride := false.B 
   vAGen.io.isIndex := false.B 
   vAGen.io.isMask := false.B 
@@ -296,7 +297,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   vAGen.io.initialSliceSize := 0.U
   vAGen.io.memSize := 0.U
   MemMaskCredit := vAGen.io.release
-
+// VDB stuff
   val vdb = Module (new VDB(oviWidth, lsuDmemWidth, vpuVlen, vdbDepth))
   
   vdb.io.writeValid := false.B 
@@ -329,9 +330,12 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
  vIdGen.io.startVD := 0.U  
  vIdGen.io.pop := false.B
  vIdGen.io.sliceSize := vAGen.io.sliceSizeOut
+ vIdGen.io.packOveride := vAGen.io.packOveride
+ vIdGen.io.packSkipVreg := vAGen.io.packSkipVreg
+ vIdGen.io.packId := vAGen.io.packId 
 
 
-
+// extra decoder for whole register / mask
   val vwhls = Module (new VWhLSDecoder (vpuVlen))
   vwhls.io.nf := 0.U 
   vwhls.io.wth := 0.U
@@ -376,6 +380,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   val isStoreMask =  instOP === 39.U && instUMop === 11.U && instMop === 0.U
   val isLoadMask =   instOP === 7.U  && instUMop === 11.U && instMop === 0.U
   val isIndex =                         instMop === 1.U || instMop === 3.U
+  val isUnit =                                             instMop === 0.U 
 
   // start of a new round of vector load store
   when (newVGenConfig && !vGenEnable) {
@@ -439,6 +444,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     strideDirHold := 0.U 
     when (instMop === 0.U) {
       vAGen.io.isStride := false.B 
+      vAGen.io.isUnit := true.B 
     }.elsewhen(instMop === 2.U) {
       vAGen.io.isStride := true.B 
       strideDirHold := vLSIQueue.io.deq.bits.req.rs2_data(31)
@@ -568,7 +574,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   vpuModule.io.dispatch_next_senior := reqQueue.io.deq.valid && reqQueue.io.deq.ready
   vpuModule.io.dispatch_kill := 0.B
   
-     vpuModule.io.memop_sync_end := MemSyncEnd
+   vpuModule.io.memop_sync_end := MemSyncEnd
 // vpuModule.io.mem_sb_id := MEMSbId 
 // vpuModule.io.mem_vstart := MEMVstart
    vpuModule.io.load_valid := MemLoadValid
@@ -680,10 +686,10 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   
 }
 
-// M is dmem bandwidth, N is mask interface width (66), Depth is mask buffer width (4)
-class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) extends Module {
+// M is dmem bandwidth, N is mask interface width (66), Depth is mask buffer width (4), VLEN is 256 for now
+class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: Parameters) extends Module {
     val k = log2Ceil(M/8+1)
-    val seg = k - 1  
+    val I = log2Ceil(VLEN)
   val io = IO(new Bundle {    
     // inteface with the VPU
     val maskData = Input(UInt(N.W))
@@ -696,13 +702,14 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
     val vl = Input(UInt(9.W))
     val memSize = Input(UInt(2.W))
       // which types of load store
+    val isUnit = Input (Bool())
     val isStride = Input(Bool())
     val isMask = Input(Bool())
     val isIndex = Input(Bool())
       // base address and stride    
     val startAddr = Input(UInt(64.W))
     val stride = Input(UInt(64.W))
-    // interface with OVI VAGen
+    // interface with OVI Vhelper
       // pop when there is handshake with LSU
     val pop = Input(Bool())
       // payloads
@@ -717,8 +724,15 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
     val popForce = Output (Bool())
     val canPop = Output (Bool())
     val popForceLast = Output (Bool())
-
+    // interface with VIdGen
+    val packOveride = Output (Bool())
+    val packId = Output (UInt(I.W))
+    val packSkipVreg = Output (Bool())  
   })
+
+  io.packOveride := false.B 
+  io.packId := 0.U 
+  io.packSkipVreg := false.B 
 
   
   val vlHold = Reg(UInt(9.W))
@@ -737,6 +751,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
   val isStride = Reg(Bool())
   val isIndex = Reg(Bool())
   val isMask = Reg(Bool())
+  val isUnit = Reg(Bool())
   // special case for vl = 0
   val fakeHold = RegInit(false.B)
   // holding the initial sliceSize, become more useful in V1
@@ -768,6 +783,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
      isStride := io.isStride
      isIndex := io.isIndex 
      isMask := io.isMask
+     isUnit := io.isUnit 
      currentIndex := 0.U 
      currentMaskIndex := 0.U
      currentAddr := io.startAddr     
@@ -881,7 +897,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int)(implicit p: Parameters) exte
          currentIndex := currentIndex + 1.U 
          when (isStride) {
             currentAddr := currentAddr + stride 
-         }.otherwise { 
+         }.elsewhen(isUnit) { 
             currentAddr := currentAddr + io.sliceSizeOut 
          }    
        }
@@ -907,10 +923,14 @@ class VIdGen(val M: Int, val N: Int)(implicit p: Parameters) extends Module {
     val configValid = Input(Bool())
     val startID = Input(UInt(I.W))
     val startVD = Input(UInt(5.W))
-    val pop = Input(Bool())
-    val sliceSize = Input(UInt(S.W))
+    val pop = Input(Bool())    
     val outID = Output(UInt(I.W))
     val outVD = Output(UInt(5.W))
+    // interface with VAGen
+    val sliceSize = Input(UInt(S.W))
+    val packOveride = Input (Bool())
+    val packId = Input (UInt(I.W))
+    val packSkipVreg = Input (Bool()) 
   }) 
 
   val currentID = RegInit(0.U(I.W))
@@ -925,6 +945,15 @@ class VIdGen(val M: Int, val N: Int)(implicit p: Parameters) extends Module {
   io.outID := currentID
   io.outVD := currentVD
   when (io.pop) {
+    when (io.packOveride) {
+      when (io.packSkipVreg) {
+        currentID := 0.U 
+        currentVD := currentVD + 1.U
+      }.otherwise {
+        currentID := currentID + io.packId
+      }
+
+    }.otherwise{
     when (count + io.sliceSize === M.U) {
       count := 0.U
       currentVD := currentVD + 1.U
@@ -933,6 +962,7 @@ class VIdGen(val M: Int, val N: Int)(implicit p: Parameters) extends Module {
       count := count + io.sliceSize
       currentID := currentID + 1.U 
     }
+  }
   }
 
 }  
@@ -1078,3 +1108,67 @@ class VReturnData (val M: Int, val N: Int) (implicit p: Parameters) extends Modu
        }
     }
 }
+
+/*
+class Vpacker(val M: Int, val VLEN: Int) extends Module {
+   val k = log2Ceil(M/8+1)
+    val I = log2Ceil(VLEN)
+  val io = IO(new Bundle {    
+    // interface with vAGen at start
+    val configValid = Input(Bool())
+    val initialSliceSize = Input(UInt(k.W))
+    val vl = Input(UInt(9.W))
+    val memSize = Input(UInt(2.W))
+      // which types of load store
+    val isUnit = Input (Bool())
+    val isStride = Input(Bool())
+    val isMask = Input(Bool())
+      // base address and stride    
+    val startAddr = Input(UInt(64.W))
+    val stride = Input(UInt(64.W))
+    // interface with OVI Vhelper
+    val elemOffset = Output(UInt(6.W))
+    val elemCount = Output(UInt(7.W))
+     // interface with VIdGen / VAGen
+    val packOveride = Output (Bool())
+    val packId = Output (UInt(I.W))
+    val packSkipVreg = Output (Bool())  
+    val packIncrement = Output (Bool())
+    val packLast = Output (Bool())
+  })
+}
+
+*/
+class StrideDetector extends Module {
+  val io = IO(new Bundle {
+    val mem_size = Input(UInt(2.W))
+    val stride = Input(UInt(64.W))
+    val isZero = Output(Bool())
+    val isOne = Output(Bool())
+    val isTwo = Output(Bool())
+    val isFour = Output(Bool())
+    val logStride = Output(UInt(2.W))
+  })
+
+  io.isZero := io.stride === 0.U
+
+  io.isOne := (io.mem_size === 0.U && (io.stride === 1.U || io.stride === "hFFFFFFFFFFFFFFFF".U)) ||
+              (io.mem_size === 1.U && (io.stride === 2.U || io.stride === "hFFFFFFFFFFFFFFFE".U)) ||
+              (io.mem_size === 2.U && (io.stride === 4.U || io.stride === "hFFFFFFFFFFFFFFFC".U)) ||
+              (io.mem_size === 3.U && (io.stride === 8.U || io.stride === "hFFFFFFFFFFFFFFF8".U))
+
+  io.isTwo := (io.mem_size === 0.U && (io.stride === 2.U || io.stride === "hFFFFFFFFFFFFFFFE".U)) ||
+              (io.mem_size === 1.U && (io.stride === 4.U || io.stride === "hFFFFFFFFFFFFFFFC".U)) ||
+              (io.mem_size === 2.U && (io.stride === 8.U || io.stride === "hFFFFFFFFFFFFFFF8".U))
+
+  io.isFour := (io.mem_size === 0.U && (io.stride === 4.U || io.stride === "hFFFFFFFFFFFFFFFC".U))
+  io.logStride := 3.U 
+  when (io.isTwo) {
+    io.logStride := 1.U 
+  }.elsewhen(io.isFour){
+    io.logStride := 2.U 
+  }.elsewhen(io.isOne){
+    io.logStride := 0.U 
+  }
+}
+
