@@ -292,6 +292,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   vAGen.io.isStride := false.B 
   vAGen.io.isIndex := false.B 
   vAGen.io.isMask := false.B 
+  vAGen.io.isLoad := false.B 
   vAGen.io.vl := vLSIQueue.io.deq.bits.vconfig.vl
   vAGen.io.pop := false.B  
   vAGen.io.initialSliceSize := 0.U
@@ -414,6 +415,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     vAGen.io.isMask := instMaskEnable
     vAGen.io.memSize := Mux(isIndex, vLSIQueue.io.deq.bits.vconfig.vtype.vsew,
                                                vLSIQueue.io.deq.bits.req.uop.mem_size)
+    vAGen.io.isLoad := vLSIQueue.io.deq.bits.req.uop.uses_ldq
     // special case of whole load and whole store
     when (isWholeLoad || isWholeStore) {
     vwhls.io.nf := instNf
@@ -690,6 +692,7 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
 class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: Parameters) extends Module {
     val k = log2Ceil(M/8+1)
     val I = log2Ceil(VLEN)
+    val numByte = (M/8)
   val io = IO(new Bundle {    
     // inteface with the VPU
     val maskData = Input(UInt(N.W))
@@ -706,6 +709,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
     val isStride = Input(Bool())
     val isMask = Input(Bool())
     val isIndex = Input(Bool())
+    val isLoad = Input (Bool())
       // base address and stride    
     val startAddr = Input(UInt(64.W))
     val stride = Input(UInt(64.W))
@@ -730,10 +734,25 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
     val packSkipVreg = Output (Bool())  
   })
 
-  io.packOveride := false.B 
-  io.packId := 0.U 
-  io.packSkipVreg := false.B 
+  
 
+  val vPacker = Module (new Vpacker (M, VLEN))
+
+  vPacker.io.configValid := io.configValid     
+  vPacker.io.vl := io.vl
+  vPacker.io.memSize := io.memSize
+  vPacker.io.isUnit := io.isUnit
+  vPacker.io.isStride := io.isUnit
+  vPacker.io.isMask := io.isMask
+  vPacker.io.isLoad := io.isLoad 
+  vPacker.io.startAddr := io.startAddr
+  vPacker.io.stride := io.stride 
+  vPacker.io.pop := io.pop 
+    
+  io.packOveride := vPacker.io.packOveride
+  io.packId := vPacker.io.packId 
+  io.packSkipVreg := vPacker.io.packSkipVreg     
+  
   
   val vlHold = Reg(UInt(9.W))
   // points at element
@@ -763,11 +782,10 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
   positiveStrideElemOffset := io.outAddr(k-2, 0) >> memSizeHold 
 
   val isNegStride = isStride && stride(63)
-  
-  io.elemOffset := Mux(isNegStride, (negativeStrideElemOffset - positiveStrideElemOffset), positiveStrideElemOffset)
- 
-//  io.elemOffset := 0.U 
-  io.elemCount := 1.U 
+  val internalElemOffset = WireInit(0.U(6.W))
+  internalElemOffset := Mux(isNegStride, (negativeStrideElemOffset - positiveStrideElemOffset), positiveStrideElemOffset)
+  io.elemOffset := Mux(vPacker.io.packOveride, vPacker.io.elemOffset, internalElemOffset)
+  io.elemCount := Mux(vPacker.io.packOveride, vPacker.io.elemCount, 1.U) 
   
 
   when (io.configValid) {
@@ -855,7 +873,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
   // fake happens when: no mask but vl = 0, with mask but last one masked off
   io.isFake := fakeHold || lastFake 
   // last one happens either currentIndex touch vl or isIndex && isLastIndex
-  io.last := ((currentIndex === vlHold) || (isIndex && isLastIndex)) && working
+  io.last := (((currentIndex === vlHold) || (isIndex && isLastIndex)) || vPacker.io.packOveride && vPacker.io.packLast) && working
   
   io.release := false.B 
   when (isIndex) {
@@ -895,6 +913,15 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
           currentMaskIndex := currentMaskIndex + 1.U
          }
          currentIndex := currentIndex + 1.U 
+         when (vPacker.io.packOveride){
+           when (vPacker.io.packIncrement) {
+            when(vPacker.io.packDir) {
+              currentAddr := currentAddr - numByte.U 
+            }.otherwise {
+              currentAddr := currentAddr + numByte.U 
+            }
+           }
+         }.otherwise {
          when (isStride) {
             currentAddr := currentAddr + stride 
          }.elsewhen(isUnit) { 
@@ -903,7 +930,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
        }
       }
     }
-  
+  }  
 
 }
 
@@ -1087,6 +1114,8 @@ class VReturnData (val M: Int, val N: Int) (implicit p: Parameters) extends Modu
   })
     io.oviData := 0.U 
     when (io.strideDir){  // negative
+       io.oviData := Cat(io.lsuData ((N-1), 0), 0.U((M-N).W))
+/*    
        when (io.memSize === 0.U) {
         io.oviData := Cat(io.lsuData (7, 0), 0.U(504.W)) 
        }.elsewhen (io.memSize === 1.U) {
@@ -1096,7 +1125,10 @@ class VReturnData (val M: Int, val N: Int) (implicit p: Parameters) extends Modu
        }.elsewhen (io.memSize === 3.U) {
         io.oviData := Cat(io.lsuData (63, 0), 0.U(448.W))
        }
+*/
     }.otherwise {
+      io.oviData := Cat(0.U, io.lsuData ((N-1), 0))
+/*
       when (io.memSize === 0.U) {
         io.oviData := Cat(0.U, io.lsuData (7, 0)) 
        }.elsewhen (io.memSize === 1.U) {
@@ -1106,23 +1138,26 @@ class VReturnData (val M: Int, val N: Int) (implicit p: Parameters) extends Modu
        }.elsewhen (io.memSize === 3.U) {
         io.oviData := Cat(0.U, io.lsuData (63, 0))
        }
+*/
     }
 }
 
-/*
+
 class Vpacker(val M: Int, val VLEN: Int) extends Module {
    val k = log2Ceil(M/8+1)
     val I = log2Ceil(VLEN)
+    val MByte = M/8
+    val VLENByte = VLEN/8
   val io = IO(new Bundle {    
     // interface with vAGen at start
     val configValid = Input(Bool())
-    val initialSliceSize = Input(UInt(k.W))
     val vl = Input(UInt(9.W))
     val memSize = Input(UInt(2.W))
       // which types of load store
     val isUnit = Input (Bool())
     val isStride = Input(Bool())
     val isMask = Input(Bool())
+    val isLoad = Input(Bool())
       // base address and stride    
     val startAddr = Input(UInt(64.W))
     val stride = Input(UInt(64.W))
@@ -1135,10 +1170,104 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
     val packSkipVreg = Output (Bool())  
     val packIncrement = Output (Bool())
     val packLast = Output (Bool())
+    val packDir = Output (Bool())
+     // pop 
+    val pop = Input (Bool())
   })
+
+    
+  // decode the stride to see if we can do packing
+    val canPack = WireInit (false.B)
+    val strideDetector = Module (new StrideDetector())
+    strideDetector.io.mem_size := io.memSize
+    strideDetector.io.stride := io.stride
+    val isZero = WireInit(false.B)
+    val isOne = WireInit(false.B)
+    val isTwo = WireInit(false.B)
+    val isFour = WireInit(false.B)
+    val logStride = WireInit(3.U(2.W)) // this is the log2 of stride
+    isZero := strideDetector.io.isZero
+    isOne := strideDetector.io.isOne
+    isTwo := strideDetector.io.isTwo
+    isFour := strideDetector.io.isFour
+    logStride := strideDetector.io.logStride 
+    canPack := io.configValid && (io.isUnit || (io.isStride && (isOne || isTwo || isFour))) && !io.isMask && io.isLoad
+    
+
+  // initializing element offset and logStride
+    val currentOffset = RegInit(0.U(6.W)) // offset, marking the position in cache line
+    val currentLogStride = RegInit(0.U(2.W))  // logStride, probably don't need to store
+    val currentLogStrideTemp = WireInit(0.U(2.W))
+    val currentMax = RegInit(0.U(6.W)) // max element count for now (for each transaction)
+    val currentVMax = RegInit(0.U(6.W)) // max element count per vReg
+    val currentDir = RegInit(false.B) // direction, might be useful
+    val currentIndex = RegInit(0.U(9.W)) // the index of element (as a whole in the vector)
+    val currentVIndex = RegInit(0.U(6.W))
+    val vlHold = RegInit(0.U(9.W))
+    val isPacking = RegInit(false.B)  // drive override
+    
+    io.packOveride := isPacking
+    io.packDir := currentDir
+
+    // calculating initial element offset
+    val internalConfigValid = WireInit (false.B)
+    val initialNegativeStrideElemOffset = WireInit(0.U(k.W))
+    val initailPositiveStrideElemOffset = WireInit(0.U(k.W))
+
+    when (canPack) {
+       initialNegativeStrideElemOffset := k.U - io.memSize - 1.U 
+       initailPositiveStrideElemOffset := io.startAddr(k-2, 0) >> io.memSize       
+       
+       currentOffset := Mux ((io.isStride && io.stride(63)), (initialNegativeStrideElemOffset - initailPositiveStrideElemOffset), initailPositiveStrideElemOffset)
+       currentLogStride := Mux(io.isUnit, 0.U(2.W), logStride)
+       currentLogStrideTemp := Mux(io.isUnit, 0.U(2.W), logStride)
+       currentDir := io.isStride && io.stride(63)
+       currentMax := MByte.U >> (io.memSize + currentLogStrideTemp)
+       currentVMax := VLENByte.U >> (io.memSize)
+       currentIndex := 0.U 
+       currentVIndex := 0.U 
+       vlHold := io.vl 
+       isPacking := true.B 
+    }
+
+    // calculation of offset and count
+    io.elemOffset := currentOffset
+    val theoreticalCount = WireInit(0.U(6.W)) //max count in this transaction if ignore vl and vReg boundary
+    theoreticalCount := currentMax - (currentOffset >> currentLogStride)
+    val vRegDistant = WireInit(0.U(6.W))
+    vRegDistant := currentVMax - currentVIndex
+    val vlDistant = WireInit(0.U(9.W))
+    vlDistant := vlHold - currentIndex 
+    val afterVRegCount = WireInit(0.U(6.W)) // we consider VReg first
+    afterVRegCount := Mux((theoreticalCount > vRegDistant), vRegDistant, theoreticalCount)
+    val afterVLCount = WireInit(0.U(6.W))
+    afterVLCount := Mux((afterVRegCount > vlDistant), vlDistant, afterVRegCount)
+
+    io.packId := afterVLCount 
+    io.elemCount := afterVLCount 
+    io.packSkipVreg := (afterVLCount === vRegDistant) && isPacking
+    io.packLast := (afterVLCount === vlDistant) && isPacking
+    io.packIncrement := (currentOffset + io.elemCount === currentMax) && isPacking
+
+    when(io.pop) {
+      when(io.packLast) {
+        isPacking := false.B 
+      }
+      currentIndex := currentIndex + io.elemCount
+      when (io.packSkipVreg) {
+        currentVIndex := 0.U 
+      }.otherwise {
+        currentVIndex := currentVIndex + io.elemCount 
+      }
+      when (currentOffset + io.elemCount === currentMax) {
+        currentOffset := 0.U 
+      }.otherwise {
+        currentOffset := currentOffset + io.elemCount 
+      }
+    }
 }
 
-*/
+
 class StrideDetector extends Module {
   val io = IO(new Bundle {
     val mem_size = Input(UInt(2.W))

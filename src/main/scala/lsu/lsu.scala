@@ -111,6 +111,8 @@ import boom.common._
 import boom.exu.{BrUpdateInfo, Exception, FuncUnitResp, CommitSignals, ExeUnitResp}
 import boom.util.{BoolToChar, AgePriorityEncoder, IsKilledByBranch, GetNewBrMask, WrapInc, IsOlder, UpdateBrMask}
 
+
+
 class LSUExeIO(implicit p: Parameters) extends BoomBundle()(p)
 {
   // The "resp" of the maddrcalc is really a "req" to the LSU
@@ -156,14 +158,10 @@ class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
 
 class VGenIO(implicit p: Parameters) extends BoomBundle()(p)
 {
-  // The "resp" of the maddrcalc is really a "req" to the LSU
-  val req       = Flipped(new DecoupledIO(new FuncUnitResp(xLen)))
+  
+  val req       = Flipped(new DecoupledIO(new FuncUnitResp(64)))
   val reqHelp   = Flipped (new ValidIO(new VGenReqHelp(0)))
   val resp    = new ValidIO(new VGenResp(xLen))
-//  val last      = Bool()
-  // Send load data to regfiles
-//  val iresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen))
-//  val fresp    = new DecoupledIO(new boom.exu.ExeUnitResp(xLen+1)) // TODO: Should this be fLen?
 }
 
 class BoomDCacheReq(implicit p: Parameters) extends BoomBundle()(p)
