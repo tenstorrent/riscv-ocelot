@@ -742,7 +742,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
   vPacker.io.vl := io.vl
   vPacker.io.memSize := io.memSize
   vPacker.io.isUnit := io.isUnit
-  vPacker.io.isStride := io.isUnit
+  vPacker.io.isStride := io.isStride
   vPacker.io.isMask := io.isMask
   vPacker.io.isLoad := io.isLoad 
   vPacker.io.startAddr := io.startAddr
@@ -1212,13 +1212,13 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
     // calculating initial element offset
     val internalConfigValid = WireInit (false.B)
     val initialNegativeStrideElemOffset = WireInit(0.U(k.W))
-    val initailPositiveStrideElemOffset = WireInit(0.U(k.W))
+    val initialPositiveStrideElemOffset = WireInit(0.U(k.W))
 
     when (canPack) {
        initialNegativeStrideElemOffset := k.U - io.memSize - 1.U 
-       initailPositiveStrideElemOffset := io.startAddr(k-2, 0) >> io.memSize       
+       initialPositiveStrideElemOffset := io.startAddr(k-2, 0) >> io.memSize       
        
-       currentOffset := Mux ((io.isStride && io.stride(63)), (initialNegativeStrideElemOffset - initailPositiveStrideElemOffset), initailPositiveStrideElemOffset)
+       currentOffset := Mux ((io.isStride && io.stride(63)), (initialNegativeStrideElemOffset - initialPositiveStrideElemOffset), initialPositiveStrideElemOffset)
        currentLogStride := Mux(io.isUnit, 0.U(2.W), logStride)
        currentLogStrideTemp := Mux(io.isUnit, 0.U(2.W), logStride)
        currentDir := io.isStride && io.stride(63)
