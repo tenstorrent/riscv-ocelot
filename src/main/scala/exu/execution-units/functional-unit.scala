@@ -177,7 +177,6 @@ abstract class FunctionalUnit(
   val io = IO(new Bundle {
     val req    = Flipped(new DecoupledIO(new FuncUnitReq(dataWidth)))
     val resp   = new DecoupledIO(new FuncUnitResp(dataWidth))
-    val vGenIO = if (isVecExeUnit) Flipped(new boom.lsu.VGenIO) else null 
     val brupdate = Input(new BrUpdateInfo())
 
     val bypass = Output(Vec(numBypassStages, Valid(new ExeUnitResp(dataWidth))))
@@ -201,10 +200,13 @@ abstract class FunctionalUnit(
     val vconfig         = if (isVecExeUnit) Input(new VConfig()) else null
     val vxrm            = if (isVecExeUnit) Input(UInt(2.W)) else null
     val set_vxsat       = if (isVecExeUnit) Output(Bool()) else null
+    val vGenIO          = if (isVecExeUnit) Flipped(new boom.lsu.VGenIO) else null 
     val debug_wb_vec_valid = if (isVecExeUnit) Output(Bool()) else null
     val debug_wb_vec_wdata = if (isVecExeUnit) Output(UInt((coreParams.vLen*8).W)) else null
     val debug_wb_vec_wmask = if (isVecExeUnit) Output(UInt(8.W)) else null
-
+    val rob_pnr_idx     = if (isVecExeUnit) Input(UInt(robAddrSz.W)) else null
+    val rob_head_idx    = if (isVecExeUnit) Input(UInt(robAddrSz.W)) else null
+    val exception       = if (isVecExeUnit) Input(Bool()) else null
   })
 }
 
@@ -725,7 +727,7 @@ class VecExeUnit(dataWidth: Int)(implicit p: Parameters)
 
   val io_req = io.req.bits
 
-  val sv_pipeline = Module(new OviWrapper(xLen=xLen, vLen=coreParams.vLen))
+  val sv_pipeline = Module(new OviWrapper())
 
   sv_pipeline.io.vconfig             := io.vconfig
   sv_pipeline.io.vxrm                := io.vxrm
@@ -738,6 +740,10 @@ class VecExeUnit(dataWidth: Int)(implicit p: Parameters)
   io.debug_wb_vec_wmask              := sv_pipeline.io.debug_wb_vec_wmask
   io.vGenIO                          <> sv_pipeline.io.vGenIO 
 
+  io.rob_pnr_idx                     <> sv_pipeline.io.rob_pnr_idx
+  io.rob_head_idx                    <> sv_pipeline.io.rob_head_idx
+  io.brupdate                        <> sv_pipeline.io.brupdate
+  io.exception                       <> sv_pipeline.io.exception
 }
 
 /**

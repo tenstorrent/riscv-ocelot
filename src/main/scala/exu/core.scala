@@ -1184,6 +1184,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   io.lsu.brupdate := brupdate
   io.lsu.rob_head_idx := rob.io.rob_head_idx
   io.lsu.rob_pnr_idx  := rob.io.rob_pnr_idx
+  
 
   io.lsu.tsc_reg := debug_tsc_reg
 
@@ -1649,6 +1650,12 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
   //-------------------------------------------------------------
   //-------------------------------------------------------------
+  if (usingVector) {
+    exe_units.vec_exe_unit.io.rob_pnr_idx := rob.io.rob_pnr_idx
+    exe_units.vec_exe_unit.io.rob_head_idx := rob.io.rob_head_idx
+    exe_units.vec_exe_unit.io.brupdate := brupdate
+    exe_units.vec_exe_unit.io.exception := csr.io.exception && csr.io.status.xs.orR
+  }
 
   io.rocc := DontCare
   io.rocc.exception := csr.io.exception && csr.io.status.xs.orR

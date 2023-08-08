@@ -16,23 +16,93 @@ import boom.lsu.{LSUExeIO}
 
 import hardfloat._
 
-class CombMemory[T <: Data](size: Int, gen: T) extends Module {
+class OviReqQueue(val num_entries: Int)(implicit p: Parameters) extends BoomModule {
   val io = IO(new Bundle {
-    val wrAddr = Input(UInt(log2Ceil(size).W))
-    val wrData = Input(gen.cloneType)
-    val wrEn   = Input(Bool())
-    val rdAddr = Input(UInt(log2Ceil(size).W))
-    val rdData = Output(gen.cloneType)
+    val enq = DeqIO(new EnhancedFuncUnitReq(xLen, vLen))
+    val deq = EnqIO(new EnhancedFuncUnitReq(xLen, vLen))
+    val count = Output(UInt(log2Ceil(num_entries + 1).W))
+
+    val rob_pnr_idx, rob_head_idx = Input(UInt(robAddrSz.W))
+    val brupdate = Input(new BrUpdateInfo())
+    val exception = Input(Bool())
   })
 
-  val mem = RegInit(VecInit(Seq.fill(size)(0.U.asTypeOf(gen))))
+  val entries = Reg(Vec(num_entries, new EnhancedFuncUnitReq(xLen, vLen)))
+  val entries_valid = RegInit(VecInit.fill(num_entries)(false.B))
+  val enq_ptr, deq_ptr = RegInit(0.U(log2Ceil(num_entries).W))
 
-  when(io.wrEn) {
-    mem(io.wrAddr) := io.wrData
+  ////////////////////////////////////////////////////////////////
+
+  val maybe_full = RegInit(false.B)
+  when(io.enq.fire =/= io.deq.fire) { maybe_full := io.enq.fire }
+
+  // Allow enqueue when not full
+  io.enq.ready := !(enq_ptr === deq_ptr && maybe_full)
+
+  // Allow dequeue when not empty and past PNR
+  io.deq.valid := !(enq_ptr === deq_ptr && !maybe_full) && (
+    IsOlder(io.deq.bits.req.uop.rob_idx, io.rob_pnr_idx, io.rob_head_idx)
+    || io.deq.bits.req.uop.rob_idx === io.rob_pnr_idx
+  )
+
+  io.count := Mux(
+    enq_ptr === deq_ptr,
+    Mux(maybe_full, num_entries.U, 0.U),
+    Mux(deq_ptr > enq_ptr, num_entries.U + enq_ptr - deq_ptr, enq_ptr - deq_ptr)
+  )
+
+  assert(PopCount(entries_valid) === io.count,
+         "mismatch between entries_valid and count")
+
+  ////////////////////////////////////////////////////////////////
+
+  // Keep branch masks up-to-date
+  for (idx <- 0 until num_entries) {
+    val new_mask = GetNewBrMask(io.brupdate, entries(idx).req.uop)
+    entries(idx).req.uop.br_mask := new_mask
   }
 
-  io.rdData := mem(io.rdAddr)
+  def is_killed(uop: MicroOp): Bool = (
+    // For exceptions, kill everything past the PNR
+    (io.exception && !IsOlder(uop.rob_idx, io.rob_pnr_idx, io.rob_head_idx))
+    // For branch mispredictions, kill based on branch masks
+    || IsKilledByBranch(io.brupdate, uop)
+  )
+  val killed_entries = VecInit.tabulate(num_entries)(idx =>
+    entries_valid(idx) && is_killed(entries(idx).req.uop)
+  )
+
+  for (idx <- 0 until num_entries)
+    when(killed_entries(idx)) { entries_valid(idx) := false.B }
+
+  // Calculate where the next entry should be enqueued
+  // TODO: do not use PopCount here
+  val num_killed = PopCount(killed_entries)
+  val new_enq_ptr = Mux(
+    num_killed > enq_ptr,
+    enq_ptr +& num_entries.U - num_killed,
+    enq_ptr - num_killed
+  )
+
+  when(io.deq.fire) {
+    entries_valid(deq_ptr) := false.B
+    deq_ptr := WrapInc(deq_ptr, num_entries)
+  }
+  io.deq.bits := entries(deq_ptr)
+
+  // Instructions might already be killed by the time they arrive
+  val do_enq = io.enq.fire && !(
+    IsKilledByBranch(io.brupdate, io.enq.bits.req.uop) ||
+    io.exception || RegNext(io.exception)
+  )
+  when(do_enq) {
+    entries(new_enq_ptr) := io.enq.bits
+    entries_valid(new_enq_ptr) := true.B
+  }
+  enq_ptr := Mux(do_enq, WrapInc(new_enq_ptr, num_entries), new_enq_ptr)
 }
+
+////////////////////////////////////////////////////////////////
 
 class EnhancedFuncUnitReq(xLen: Int, vLen: Int)(implicit p: Parameters) extends Bundle {
   val vconfig = new VConfig()
@@ -41,8 +111,7 @@ class EnhancedFuncUnitReq(xLen: Int, vLen: Int)(implicit p: Parameters) extends 
   val req = new FuncUnitReq(xLen)
 }
 
-class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
-    extends BoomModule
+class OviWrapper(implicit p: Parameters) extends BoomModule
     with freechips.rocketchip.rocket.constants.MemoryOpConstants {
   val io = IO(new Bundle {
     val vconfig = Input(new VConfig())
@@ -52,37 +121,46 @@ class OviWrapper(xLen: Int, vLen: Int)(implicit p: Parameters)
     val resp = new DecoupledIO(new FuncUnitResp(xLen))
     val set_vxsat = Output(Bool())
     val vGenIO = Flipped(new boom.lsu.VGenIO)
+
+    val rob_pnr_idx, rob_head_idx = Input(UInt(robAddrSz.W))
+    val brupdate = Input(new BrUpdateInfo())
+    val exception = Input(Bool())
     
     val debug_wb_vec_valid = Output(Bool())
-    val debug_wb_vec_wdata = Output(UInt((coreParams.vLen * 8).W))
+    val debug_wb_vec_wdata = Output(UInt((vLen * 8).W))
     val debug_wb_vec_wmask = Output(UInt(8.W))
   })
 
-  val reqQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), 4))
-  val uOpMem = Module(new CombMemory(32, new MicroOp()))
-  val vpuModule = Module(new tt_vpu_ovi(vLen))
-  val maxIssueCredit = 16
-  val issueCreditCnt = RegInit(maxIssueCredit.U(log2Ceil(maxIssueCredit + 1).W))
-  issueCreditCnt := issueCreditCnt + vpuModule.io.issue_credit - vpuModule.io.issue_valid
+  io := DontCare
 
+  val reqQueue = Module(new OviReqQueue(8))
+
+  // The request pipeline takes several cycles to stall
+  io.req.ready := reqQueue.io.count <= (reqQueue.num_entries - 3).U
+  assert(!(reqQueue.io.enq.valid && !reqQueue.io.enq.ready),
+         "OviReqQueue overflow")
+  
   reqQueue.io.enq.valid := io.req.valid
   reqQueue.io.enq.bits.req := io.req.bits
   reqQueue.io.enq.bits.vconfig := io.vconfig
   reqQueue.io.enq.bits.vxrm := io.vxrm
   reqQueue.io.enq.bits.fcsr_rm := io.fcsr_rm
 
-  val sbId = RegInit(0.U(5.W))
-  sbId := sbId + vpuModule.io.issue_valid
+  reqQueue.io.rob_pnr_idx := io.rob_pnr_idx
+  reqQueue.io.rob_head_idx := io.rob_head_idx
+  reqQueue.io.brupdate := io.brupdate
+  reqQueue.io.exception := io.exception
+  
+  val uOpMem = Mem(32, new MicroOp())
+  val vpuModule = Module(new tt_vpu_ovi(vLen))
+  val maxIssueCredit = 16
+  val issueCreditCnt = RegInit(maxIssueCredit.U)
+  issueCreditCnt := issueCreditCnt + vpuModule.io.issue_credit - vpuModule.io.issue_valid
 
-  uOpMem.io.wrEn := reqQueue.io.deq.valid
-  uOpMem.io.wrAddr := sbId
-  uOpMem.io.wrData := reqQueue.io.deq.bits.req.uop
-  uOpMem.io.rdAddr := vpuModule.io.completed_sb_id
+  val sbId = Counter(0 until 32, vpuModule.io.issue_valid)._1
+  when(reqQueue.io.deq.valid) { uOpMem.write(sbId, reqQueue.io.deq.bits.req.uop) }
+  val respUop = uOpMem.read(vpuModule.io.completed_sb_id)
 
-  val respUop = uOpMem.io.rdData
-
-  io := DontCare
-  io.req.ready := reqQueue.io.deq.ready
   io.resp.valid := vpuModule.io.completed_valid
   io.resp.bits.data := vpuModule.io.completed_dest_reg
   io.resp.bits.uop := respUop

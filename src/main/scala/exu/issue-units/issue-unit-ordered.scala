@@ -113,8 +113,8 @@ class IssueUnitOrdered(
       val can_allocate = (issue_slots(i).uop.fu_code & io.fu_types(w)) =/= 0.U
 
       when (requests(i) && !uop_issued && can_allocate && !port_issued(w)) {
-        issue_slots(i).grant := issue_slots(i).request && issue_slots(i).out_uop.br_mask === 0.U
-        io.iss_valids(w) := issue_slots(i).request && issue_slots(i).out_uop.br_mask === 0.U
+        issue_slots(i).grant := issue_slots(i).request
+        io.iss_valids(w) := issue_slots(i).request
         io.iss_uops(w) := issue_slots(i).uop
       }
       val was_port_issued_yet = port_issued(w)
