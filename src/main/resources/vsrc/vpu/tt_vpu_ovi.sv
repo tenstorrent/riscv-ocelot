@@ -1113,35 +1113,35 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   always_comb begin
     if(is_unit_stride)
         load_stride_eew = 0;
-    else if((data_size == 0 && load_stride == 64'd8) ||
-            (data_size == 1 && load_stride == 64'd16) || 
-            (data_size == 2 && load_stride == 64'd32) || 
-            (data_size == 3 && load_stride == 64'd64))
+    else if((data_size == 0 && load_stride == 64'd1) ||
+            (data_size == 1 && load_stride == 64'd2) || 
+            (data_size == 2 && load_stride == 64'd4) || 
+            (data_size == 3 && load_stride == 64'd8))
         load_stride_eew = 0;
-    else if((data_size == 0 && load_stride == 64'd16) ||
-            (data_size == 1 && load_stride == 64'd32) || 
-            (data_size == 2 && load_stride == 64'd64) || 
-            (data_size == 3 && load_stride == 64'd128))
+    else if((data_size == 0 && load_stride == 64'd2) ||
+            (data_size == 1 && load_stride == 64'd4) || 
+            (data_size == 2 && load_stride == 64'd8) || 
+            (data_size == 3 && load_stride == 64'd16))
         load_stride_eew = 1;
-    else if((data_size == 0 && load_stride == 64'd32) ||
-            (data_size == 1 && load_stride == 64'd64) || 
-            (data_size == 2 && load_stride == 64'd128) || 
-            (data_size == 3 && load_stride == 64'd256))
+    else if((data_size == 0 && load_stride == 64'd4) ||
+            (data_size == 1 && load_stride == 64'd8) || 
+            (data_size == 2 && load_stride == 64'd16) || 
+            (data_size == 3 && load_stride == 64'd32))
         load_stride_eew = 2;
-    else if((data_size == 0 && load_stride == -64'd8) ||
-            (data_size == 1 && load_stride == -64'd16) || 
-            (data_size == 2 && load_stride == -64'd32) || 
-            (data_size == 3 && load_stride == -64'd64))
+    else if((data_size == 0 && load_stride == -64'd1) ||
+            (data_size == 1 && load_stride == -64'd2) || 
+            (data_size == 2 && load_stride == -64'd4) || 
+            (data_size == 3 && load_stride == -64'd8))
         load_stride_eew = 4;
-    else if((data_size == 0 && load_stride == -64'd16) ||
-            (data_size == 1 && load_stride == -64'd32) || 
-            (data_size == 2 && load_stride == -64'd64) || 
-            (data_size == 3 && load_stride == -64'd128))
+    else if((data_size == 0 && load_stride == -64'd2) ||
+            (data_size == 1 && load_stride == -64'd4) || 
+            (data_size == 2 && load_stride == -64'd8) || 
+            (data_size == 3 && load_stride == -64'd16))
         load_stride_eew = 5;
-    else if((data_size == 0 && load_stride == -64'd32) ||
-            (data_size == 1 && load_stride == -64'd64) || 
-            (data_size == 2 && load_stride == -64'd128) || 
-            (data_size == 3 && load_stride == -64'd256))
+    else if((data_size == 0 && load_stride == -64'd4) ||
+            (data_size == 1 && load_stride == -64'd8) || 
+            (data_size == 2 && load_stride == -64'd16) || 
+            (data_size == 3 && load_stride == -64'd32))
         load_stride_eew = 6;
     else
         load_stride_eew = 0;
@@ -1166,7 +1166,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                    id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
                    id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
                    id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
-      load_stride <= !id_is_indexldst ? scalar_opnd_reg : 
+      load_stride <= !id_is_indexldst ? read_issue_scalar_opnd : 
                   vcsr[38:36] == 3'b000 ? 1 : // 8-bit EEW
                   vcsr[38:36] == 3'b101 ? 2 : // 16-bit EEW
                   vcsr[38:36] == 3'b110 ? 4 : 8; // 32-bit, 64-bit EEW;
