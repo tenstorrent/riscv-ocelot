@@ -509,6 +509,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     io.core.stq_full(w)    := stq_full
     io.core.dis_stq_idx(w) := st_enq_idx
 
+    val vld_exist = WireInit(false.B)
+    val vst_exist = WireInit(false.B)
+    val vld_count_incr = WireInit(false.B)
+    val vst_count_incr = WireInit(false.B)
+    val update_young_vst = WireInit(false.B)
+    val update_young_vld = WireInit(false.B)
     val dis_ld_val = io.core.dis_uops(w).valid && io.core.dis_uops(w).bits.uses_ldq && !io.core.dis_uops(w).bits.exception
     val dis_st_val = io.core.dis_uops(w).valid && io.core.dis_uops(w).bits.uses_stq && !io.core.dis_uops(w).bits.exception
     when (dis_ld_val)
@@ -524,30 +530,29 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(ld_enq_idx).bits.order_fail      := false.B
       ldq(ld_enq_idx).bits.observed        := false.B
       ldq(ld_enq_idx).bits.forward_std_val := false.B
-      ldq(ld_enq_idx).bits.isVector   := io.core.dis_uops(w).bits.is_vec   //KYnew: may remove afterwards given that we already have uop
+      ldq(ld_enq_idx).bits.isVector   := io.core.dis_uops(w).bits.is_vec   
       ldq(ld_enq_idx).bits.hasOlderVst := false.B
       ldq(ld_enq_idx).bits.hasOlderVld := false.B 
       ldq(ld_enq_idx).bits.vectorNoYoung := false.B 
       when (io.core.dis_uops(w).bits.is_vec) {
-//        ldq(ld_enq_idx).bits.addr.valid := true.B
         ldq(ld_enq_idx).bits.addr_is_virtual := false.B
-        youngest_vld := ld_enq_idx
-        ldq(ld_enq_idx).bits.vld_count := vld_count + 1.U
-        vld_count := vld_count + 1.U
-        vldExist := true.B
-        when (stq_tail === stq_head) {
+        update_young_vld := true.B         
+        ldq(ld_enq_idx).bits.vld_count := WrapInc(cur_vld_count, numLdqEntries)
+        vld_count_incr := true.B
+        vld_exist := true.B
+        when (st_enq_idx === stq_head) {
           ldq(ld_enq_idx).bits.vectorNoYoung := true.B 
         }.otherwise {
         ldq(ld_enq_idx).bits.vectorNoYoung := false.B 
         ldq(ld_enq_idx).bits.vectorCanGo := false.B 
         ldq(ld_enq_idx).bits.vectorHasCross := false.B
         } 
-        when (vstExist) {
+        when (cur_vst_exist) {  
           ldq(ld_enq_idx).bits.hasOlderVst := true.B 
           ldq(ld_enq_idx).bits.youngest_vst_count := vst_count
           ldq(ld_enq_idx).bits.youngest_vst_idx := youngest_vst
         }
-      }.elsewhen (vldExist) {
+      }.elsewhen (cur_vld_exist) {
          ldq(ld_enq_idx).bits.hasOlderVld := true.B 
          ldq(ld_enq_idx).bits.youngest_vld_count := vld_count
          ldq(ld_enq_idx).bits.youngest_vld_idx := youngest_vld
@@ -578,11 +583,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       when (io.core.dis_uops(w).bits.is_vec) {
         stq(st_enq_idx).bits.addr.valid := true.B
         stq(st_enq_idx).bits.addr_is_virtual := false.B
-        youngest_vst := st_enq_idx
-        stq(st_enq_idx).bits.vst_count := vst_count + 1.U
-        vst_count := vst_count + 1.U
-        vstExist := true.B 
-        when (ldq_tail === ldq_head) {
+        update_young_vst := true.B 
+        stq(st_enq_idx).bits.vst_count := WrapInc(cur_vst_count, numStqEntries)
+        vst_count_incr := true.B 
+        vst_exist := true.B
+        when (ld_enq_idx === ldq_head) {
           stq(st_enq_idx).bits.vectorNoYoung := true.B 
         }.otherwise {
         stq(st_enq_idx).bits.vectorNoYoung := false.B 
@@ -639,10 +644,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   }
   
-//  var dlq_full = Bool()
   val dlq_full = WireInit(false.B)
   dlq_full := WrapInc(dlq_tail, numDlqEntries) === dlq_head
-//  io.core.VGen.req.ready    := !dlq_full || !dsq_full  //TODO: I think this is fine for now, since we won't have them coexist
   io.core.VGen.req.ready    :=  ((io.core.VGen.req.bits.uop.uses_stq && !dsq_full) || (io.core.VGen.req.bits.uop.uses_ldq && !dlq_full))
   io.core.VGen.resp.bits.dsqFull := dsq_full
   io.core.VGen.resp.bits.dlqFull := dlq_full
@@ -1028,40 +1031,18 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                    Mux(will_fire_hella_incoming(w)  , io.hellacache.s1_kill,
                                                       false.B))
   
-  //val midReq = Vec(memWidth, new TLBReq(log2Ceil(coreDataBytes)))
-
   for (w <- 0 until numStqEntries) {
     when (stq(w).valid && stq(w).bits.isVector && !stq(w).bits.vectorNoYoung) {
-/*
-      when (stq(w).bits.vectorHasCross && !stq(w).bits.vectorCanGo) {
-        when ((ldq_head > stq(w).bits.youngest_ldq_idx) || ldq_head === WrapInc(stq(w).bits.youngest_ldq_idx, numLdqEntries)) {
-          stq(w).bits.vectorCanGo := true.B 
-        }
-      }.otherwise {
-*/
-//        when (ldq_head === stq(w).bits.youngest_ldq_idx) {
         when (ldq_head === stq(w).bits.youngest_ldq_idx && !stq(w).bits.vectorCanGo) {
-//          stq(w).bits.vectorHasCross := true.B 
           stq(w).bits.vectorCanGo := true.B
         }
-//      }
     }
   }
   for (w <- 0 until numLdqEntries) {
     when (ldq(w).valid && ldq(w).bits.isVector && !ldq(w).bits.vectorNoYoung) {
-/*
-      when (ldq(w).bits.vectorHasCross && !ldq(w).bits.vectorCanGo) {
-        when ((stq_head > ldq(w).bits.youngest_stq_idx) || stq_head === WrapInc(ldq(w).bits.youngest_stq_idx, numStqEntries)) {
-          ldq(w).bits.vectorCanGo := true.B 
-        }
-      }.otherwise {
-*/
-//        when (stq_head === ldq(w).bits.youngest_stq_idx) {
         when (stq_head === ldq(w).bits.youngest_stq_idx && !ldq(w).bits.vectorCanGo) {
-//          ldq(w).bits.vectorHasCross := true.B 
           ldq(w).bits.vectorCanGo := true.B
         }
-//      }
     }
   }
 
@@ -1206,13 +1187,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
 
 when (dlq_finished) {
-//        ldq(ldq_head).bits.succeeded := true.B 
-//        ldq(ldq_head).bits.executed := true.B
-        dlq_finished := false.B
+    dlq_finished := false.B
   }
 
   when (dsq_finished) {
-//        stq(stq_execute_head).bits.succeeded := true.B 
         dsq_finished := false.B 
          stq_execute_head                     := WrapInc(stq_execute_head, numStqEntries)
   }
@@ -1256,43 +1234,30 @@ when (dlq_finished) {
 
      stq_execute_head                     := Mux(dmem_req_fire(w),
                                                 WrapInc(stq_execute_head, numStqEntries),
-                                                stq_execute_head)
-
-       
+                                                stq_execute_head)     
 
       stq(stq_execute_head).bits.succeeded := false.B
-/*
-      }.elsewhen (dsq_finished) {
-        stq(stq_execute_head).bits.succeeded := true.B 
-        dsq_finished := false.B 
-         stq_execute_head                     := WrapInc(stq_execute_head, numStqEntries)
-         */
-      }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready && !dsq_commit_e.bits.isFake){                //KYnew, revisit later
-
-//      }.elsewhen (!dsq_finished && dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready){
+      }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready && !dsq_commit_e.bits.isFake){ 
         dmem_req(w).valid := true.B
         dmem_req(w).bits.addr := dsq_commit_e.bits.addr.bits
         dmem_req(w).bits.data     := (new freechips.rocketchip.rocket.StoreGen(
                                     dsq_commit_e.bits.uop.mem_size, 0.U,
                                     dsq_commit_e.bits.data.bits,
-                                    coreDataBytes)).data
-//        dmem_req(w).bits.data := dsq_commit_e.bits.data.bits
+                                    coreDataBytes)).data        
         dmem_req(w).bits.uop := dsq_commit_e.bits.uop
         dmem_req(w).bits.uop.stq_idx := dsq_execute_head
-          when (dsq_execute_head =/= dsq_tail) {
-//          when (!dsq_commit_e.bits.last) {
+          when (dsq_execute_head =/= dsq_tail) {          
            dsq_execute_head :=  WrapInc(dsq_execute_head, numDsqEntries)
           }
          dsq(dsq_execute_head).bits.succeeded := false.B
          dsq(dsq_execute_head).bits.sent := true.B
       }.elsewhen(dsq_commit_e.valid && dsq_commit_e.bits.isFake){
         dsq_commit_e.bits.succeeded := true.B
-        when (dsq_execute_head =/= dsq_tail) {
-//          when (!dsq_commit_e.bits.last) {
+        when (dsq_execute_head =/= dsq_tail) {         
            dsq_execute_head :=  WrapInc(dsq_execute_head, numDsqEntries)
-          }
+        }
       }.otherwise{
-        dmem_req(w).valid  := false.B                        //KYnew, placeholder
+        dmem_req(w).valid  := false.B                        
       }
     } .elsewhen (will_fire_load_wakeup(w) && load_wakeup_no_vst (w) && load_wakeup_no_vld(w)) {
       dmem_req(w).valid      := true.B
@@ -1840,8 +1805,6 @@ when (dlq_finished) {
           dlq_execute_head := io.dmem.nack(w).bits.uop.ldq_idx  // TODO: do I reload everything? Maybe for now?
           }
           dlq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed := false.B 
-//          dlq_execute_save.valid := true.B 
-//          dlq_execute_save.bits := dlq_execute_head
           }
         }.otherwise {
         assert(ldq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed)
@@ -1855,13 +1818,9 @@ when (dlq_finished) {
         when (io.dmem.nack(w).bits.uop.is_vec) {
           when (IsOlder(io.dmem.nack(w).bits.uop.stq_idx, dsq_execute_head, dsq_head)) {
           dsq_execute_head := io.dmem.nack(w).bits.uop.stq_idx          
-//          dsq_execute_save.valid := true.B 
-//          dsq_execute_save.bits := dsq_execute_head
           }
         }.elsewhen (IsOlder(io.dmem.nack(w).bits.uop.stq_idx, stq_execute_head, stq_head)) {
           stq_execute_head := io.dmem.nack(w).bits.uop.stq_idx
-//          stq_execute_save.valid := true.B 
-//          stq_execute_save.bits := stq_execute_head 
         }
       }
     }
@@ -2120,18 +2079,14 @@ when (dlq_finished) {
   }
 
   when (dlq(dlq_head).valid && dlq(dlq_head).bits.succeeded) {
+    dlq_head := WrapInc(dlq_head, numDlqEntries)
     dlq(dlq_head).valid  := false.B 
-    //dlq(dlq_head).bits.succeeded := false.B 
-    //dlq(dlq_head).bits.executed := false.B 
-    //dlq(dlq_head).bits.addr.valid := false.B
-    //dlq(dlq_head).bits.isFake := false.B 
     when (dlq(dlq_head).bits.last) {
       dlq_finished := true.B
       sbIdDone := dlq(dlq_head).bits.sbId
       ldq(ldq_head).bits.succeeded := true.B 
       ldq(ldq_head).bits.executed := true.B
-    }
-    dlq_head := WrapInc(dlq_head, numDlqEntries)
+    }    
   }
 
   
@@ -2236,7 +2191,7 @@ when (dlq_finished) {
         stq(i).bits.succeeded  := false.B 
         stq(i).bits.vectorNoYoung := false.B 
       }
-      dsq_head := 0.U                                    // KYnew
+      dsq_head := 0.U                                    
       dsq_tail := 0.U
       dsq_execute_head := 0.U 
       dsq_tlb_head := 0.U
@@ -2262,7 +2217,7 @@ when (dlq_finished) {
         dsq(i).bits.addr.bits := 0.U
         dsq(i).bits.isFake := false.B
       }
-      dlq_head := 0.U                                    // KYnew
+      dlq_head := 0.U                                    
       dlq_tail := 0.U
       dlq_execute_head := 0.U 
       dlq_tlb_head := 0.U

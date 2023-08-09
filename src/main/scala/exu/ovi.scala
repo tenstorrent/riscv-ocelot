@@ -242,6 +242,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 
   val vLSIQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), vlsiQDepth))
   val sbIdQueue = Module(new Queue(UInt(5.W), vlsiQDepth))
+  val canStartAnother = WireInit(false.B)
 
   // enqueue whenever VPU is ready && reqQueue is valid && there is ld or st 
   vLSIQueue.io.enq.valid := issueCreditCnt =/= 0.U && reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
@@ -268,7 +269,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
        inMiddle := true.B 
      }
   // finish one vector load stroe
-  }.elsewhen (MemSyncEnd) {
+  }.elsewhen (canStartAnother) {
     inMiddle := false.B
   }
   reqQueue.io.deq.ready := issueCreditCnt =/= 0.U && vLSIQueue.io.enq.ready
@@ -432,15 +433,15 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     }.elsewhen (isIndex) {
       vAGen.io.initialSliceSize := 1.U << vLSIQueue.io.deq.bits.vconfig.vtype.vsew 
     }.otherwise {
-    when (instElemSize === 0.U) {
-      vAGen.io.initialSliceSize := 1.U 
-    }.elsewhen (instElemSize === 5.U){
-      vAGen.io.initialSliceSize := 2.U 
-    }.elsewhen (instElemSize === 6.U){
-      vAGen.io.initialSliceSize := 4.U 
-    }.otherwise{
-      vAGen.io.initialSliceSize := 8.U 
-    }
+      when (instElemSize === 0.U) {
+         vAGen.io.initialSliceSize := 1.U 
+      }.elsewhen (instElemSize === 5.U){
+         vAGen.io.initialSliceSize := 2.U 
+      }.elsewhen (instElemSize === 6.U){
+         vAGen.io.initialSliceSize := 4.U 
+      }.otherwise{
+         vAGen.io.initialSliceSize := 8.U 
+      }
     }
     // check unit stride / strided / index
     strideDirHold := 0.U 
@@ -500,6 +501,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     when (vAGen.io.last) {
       vGenEnable := false.B         
       vdb.io.last := io.core.vGenIO.req.bits.uop.uses_stq && !vlIsZero
+      canStartAnother := true.B 
     }
   }
 
@@ -830,14 +832,14 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
      Check if there is valid mask
   */ 
   val vMaskcount = RegInit(0.U(3.W))
-    val vMaskud = Cat (io.maskValid, io.release)
-    when (vMaskud === 1.U) {
-      vMaskcount := vMaskcount - 1.U
-    }.elsewhen (vMaskud === 2.U) {
-      vMaskcount := vMaskcount + 1.U 
-    }
+  val vMaskud = Cat (io.maskValid, io.release)
+  when (vMaskud === 1.U) {
+    vMaskcount := vMaskcount - 1.U
+  }.elsewhen (vMaskud === 2.U) {
+    vMaskcount := vMaskcount + 1.U 
+  }
   val hasMask = WireInit(false.B)
-    hasMask := vMaskcount =/= 0.U
+  hasMask := vMaskcount =/= 0.U
   assert (vMaskcount < (Depth+1).U)
   
   /*
@@ -878,19 +880,17 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
   io.release := false.B 
   when (isIndex) {
       // index increase readPtr anyway, last or not
-       when(io.pop || io.popForce) {
-        readPtr := WrapInc(readPtr, Depth)
-        io.release := true.B 
-        currentIndex := currentIndex + 1.U
-        // turn off working
-       // precaution for vl = 0 index load store
-         when(io.last) {
-           fakeHold := false.B 
-           working := false.B 
-        }
-       }
-       
-    }.otherwise{
+    when(io.pop || io.popForce) {
+      readPtr := WrapInc(readPtr, Depth)
+      io.release := true.B 
+      currentIndex := currentIndex + 1.U
+      // turn off working, precaution for vl = 0 index load store
+      when(io.last) {
+        fakeHold := false.B 
+        working := false.B 
+      }
+    }
+  }.otherwise{
      when (io.pop || io.popForce) {
        when (io.last) {
           fakeHold := false.B
@@ -901,37 +901,35 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
             readPtr := WrapInc(readPtr, Depth)
             currentMaskIndex := 0.U
             io.release := true.B 
-           }
-          
+           }          
        }.otherwise {
         // pop off current mask if it reaches end
-         when (currentMaskIndex === 63.U && isMask) {
-          readPtr := WrapInc(readPtr, Depth)
-          currentMaskIndex := 0.U
-          io.release := true.B 
-         }.elsewhen(isMask) {
-          currentMaskIndex := currentMaskIndex + 1.U
-         }
-         currentIndex := currentIndex + 1.U 
-         when (vPacker.io.packOveride){
-           when (vPacker.io.packIncrement) {
-            when(vPacker.io.packDir) {
-              currentAddr := currentAddr - numByte.U 
-            }.otherwise {
-              currentAddr := currentAddr + numByte.U 
+          when (currentMaskIndex === 63.U && isMask) {
+            readPtr := WrapInc(readPtr, Depth)
+            currentMaskIndex := 0.U
+            io.release := true.B 
+          }.elsewhen(isMask) {
+            currentMaskIndex := currentMaskIndex + 1.U
+          }
+          currentIndex := currentIndex + 1.U 
+          when (vPacker.io.packOveride){
+            when (vPacker.io.packIncrement) {
+              when(vPacker.io.packDir) {
+                currentAddr := currentAddr - numByte.U 
+              }.otherwise {
+                currentAddr := currentAddr + numByte.U 
+              }
             }
-           }
-         }.otherwise {
-         when (isStride) {
-            currentAddr := currentAddr + stride 
-         }.elsewhen(isUnit) { 
-            currentAddr := currentAddr + io.sliceSizeOut 
-         }    
-       }
+          }.otherwise {
+            when (isStride) {
+              currentAddr := currentAddr + stride 
+            }.elsewhen(isUnit) { 
+              currentAddr := currentAddr + io.sliceSizeOut 
+            }    
+          }
+        }
       }
-    }
-  }  
-
+    }  
 }
 
 // M is max number of byte per VLEN (32), N is max number of byte per memory interface (8) 
@@ -1115,30 +1113,8 @@ class VReturnData (val M: Int, val N: Int) (implicit p: Parameters) extends Modu
     io.oviData := 0.U 
     when (io.strideDir){  // negative
        io.oviData := Cat(io.lsuData ((N-1), 0), 0.U((M-N).W))
-/*    
-       when (io.memSize === 0.U) {
-        io.oviData := Cat(io.lsuData (7, 0), 0.U(504.W)) 
-       }.elsewhen (io.memSize === 1.U) {
-        io.oviData := Cat(io.lsuData (15, 0), 0.U(496.W))       
-       }.elsewhen (io.memSize === 2.U) {
-        io.oviData := Cat(io.lsuData (31, 0), 0.U(480.W))
-       }.elsewhen (io.memSize === 3.U) {
-        io.oviData := Cat(io.lsuData (63, 0), 0.U(448.W))
-       }
-*/
     }.otherwise {
       io.oviData := Cat(0.U, io.lsuData ((N-1), 0))
-/*
-      when (io.memSize === 0.U) {
-        io.oviData := Cat(0.U, io.lsuData (7, 0)) 
-       }.elsewhen (io.memSize === 1.U) {
-        io.oviData := Cat(0.U, io.lsuData (15, 0))       
-       }.elsewhen (io.memSize === 2.U) {
-        io.oviData := Cat(0.U, io.lsuData (31, 0))
-       }.elsewhen (io.memSize === 3.U) {
-        io.oviData := Cat(0.U, io.lsuData (63, 0))
-       }
-*/
     }
 }
 
@@ -1300,4 +1276,60 @@ class StrideDetector extends Module {
     io.logStride := 0.U 
   }
 }
+
+class Spacker(val M: Int, val VLEN: Int) extends Module {
+   val k = log2Ceil(M/8+1)
+    val I = log2Ceil(VLEN)
+    val MByte = M/8
+    val VLENByte = VLEN/8
+  val io = IO(new Bundle {    
+    // interface with vAGen at start
+    val configValid = Input(Bool())
+    val vl = Input(UInt(9.W))
+    val memSize = Input(UInt(2.W))
+      // which types of load store
+    val isUnit = Input (Bool())
+    val isMask = Input(Bool())
+    val isLoad = Input(Bool())
+      // base address and stride    
+    val startAddr = Input(UInt(64.W))
+      // interface with OVI Vhelper
+    val elemOffset = Output(UInt(6.W))
+    val elemCount = Output(UInt(7.W))
+     // interface with VIdGen / VAGen
+    val packOveride = Output (Bool())
+    val packId = Output (UInt(I.W))
+    val packSkipVDB = Output (Bool())  
+    val packIncrement = Output (Bool())
+    val packLast = Output (Bool())
+     // pop 
+    val pop = Input (Bool())
+  })
+
+   val canPack = WireInit (false.B)
+   canPack := io.configValid && io.isUnit && !io.isMask && io.isLoad
+
+}
+
+
+
+// this will return the smallest power of 2
+// used for tracking VL distant and VReg distant in packed store
+class SmallPowerOfTwo(bitWidth: Int) extends Module {
+  val io = IO(new Bundle {
+    val inData = Input(UInt(bitWidth.W))
+    val outData = Output(UInt(bitWidth.W))
+  })
+
+  when(io.inData === 0.U) {
+    io.outData := 0.U
+  } .otherwise {
+    when(PopCount(io.inData) === 1.U) {
+      io.outData := io.inData
+    } .otherwise {
+      io.outData := MuxLookup(io.inData, 1.U, (0 until bitWidth).reverse.map(i => (1.U << (i + 1)).U -> (1.U << i).U))
+    }
+  }
+}
+// PriorityEncoderOH 
 
