@@ -94,7 +94,7 @@ class WithVector(coreWidth: Int = 1) extends Config((site, here, up) => {
       enableVector = true,
       enableFastLoadUse = false, // Vector Unit doesn't support replay
       setvLen = 256,
-      setvMemDataBits = 64,
+      setvMemDataBits = 128,
       issueParams = tp.tileParams.core.issueParams :+
                 IssueParams(issueWidth=1, numEntries=32, iqType=IQT_VEC.litValue, dispatchWidth=coreWidth)
     )))
