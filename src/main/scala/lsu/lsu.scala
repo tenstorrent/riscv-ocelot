@@ -650,8 +650,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.core.VGen.resp.bits.dlqFull := dlq_full
   val newDlqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_ldq && !io.core.VGen.resp.bits.dlqFull
 
-  dlq_tail := Mux(newDlqEntry, WrapInc(dlq_tail, numDlqEntries), dlq_tail)
-
   when (newDlqEntry) {
     
     dlq(dlq_tail).valid             := true.B
@@ -677,7 +675,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dlq(dlq_tail).bits.addr_is_virtual := false.B
     }
 
+    dlq_tail := WrapInc(dlq_tail, numDlqEntries)
   }
+
 
 
   //-------------------------------------------------------------
@@ -857,9 +857,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                                                               && !(!stq_commit_e.bits.vectorCanGo && !stq_commit_e.bits.vectorNoYoung) && !dsq_finished))))
 
   val can_fire_vector_load = widthMap(w => (w == memWidth-1).B && 
+                                           dlq_commit_e.bits.uop.ldq_idx === ldq_head &&
                                            ldq_commit_e.bits.isVector && !ldq_commit_e.bits.succeeded && (dlq_commit_e.valid && 
                                            dlq_commit_e.bits.addr.valid && !dlq_commit_e.bits.addr_is_virtual &&
-                                           !(ldq_commit_e.bits.hasOlderVst && stq(ldq_commit_e.bits.youngest_vst_idx).bits.isVector
+                                          !dlq_commit_e.bits.succeeded && !dlq_commit_e.bits.isFake && !dlq_commit_e.bits.executed &&
+                                           !(ldq_commit_e.bits.hasOlderVst && stq(ldq_commit_e.bits.youngest_vst_idx).bits.isVector && stq(ldq_commit_e.bits.youngest_vst_idx).valid
                                                       && stq(ldq_commit_e.bits.youngest_vst_idx).bits.vst_count === ldq_commit_e.bits.youngest_vst_count
                                                       && !stq(ldq_commit_e.bits.youngest_vst_idx).bits.succeeded) && !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung) ) && !dlq_finished)
 //&& !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung)
@@ -1220,36 +1222,10 @@ when (dlq_finished) {
 
     io.dmem.s1_kill(w) := false.B
     when (can_fire_vector_load(w) && io.dmem.req.ready){
-/*
-      when (dlq_finished) {
-        ldq(ldq_head).bits.succeeded := true.B 
-        ldq(ldq_head).bits.executed := true.B
-        dlq_finished := false.B
-      }.elsewhen(dlq_commit_e.bits.succeeded){
-*/
-     when(!dlq_finished) {
-     when(dlq_commit_e.bits.succeeded || dlq_commit_e.bits.isFake){
-        dlq_commit_e.bits.succeeded := true.B
-        when (dlq_execute_head =/= dlq_tail) {
-        dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
-      }
-     }.elsewhen(dlq_commit_e.bits.executed) {
-        when (dlq_execute_head =/= dlq_tail) {
-        dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
-        }  
-     }.otherwise{
       dmem_req(w).valid := true.B
       dmem_req(w).bits.addr := dlq_commit_e.bits.addr.bits
       dmem_req(w).bits.uop := dlq_commit_e.bits.uop
       dmem_req(w).bits.uop.ldq_idx := dlq_execute_head
-      when (dlq_execute_head =/= dlq_tail) {
-        dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
-      }
-      dlq(dlq_execute_head).bits.succeeded := false.B
-      dlq(dlq_execute_head).bits.sent := true.B
-      dlq(dlq_execute_head).bits.executed := true.B
-      } 
-    }
     }.elsewhen (will_fire_load_incoming(w) && load_incoming_no_vst(w) && load_incoming_no_vld(w)) {
       dmem_req(w).valid      := !exe_tlb_miss(w) && !exe_tlb_uncacheable(w)
       dmem_req(w).bits.addr  := exe_tlb_paddr(w)
@@ -1398,7 +1374,7 @@ when (dlq_finished) {
       dlq(dlq_tlb_head).bits.addr_is_virtual := dlq_tlb_miss     
     }
   
-    dlq_tlb_head := Mux(((dtlb.io.req(memWidth+1).valid && !dlq_tlb_miss) || dlq(dlq_tlb_head).bits.isFake), WrapInc(dlq_tlb_head, numDlqEntries), dlq_tlb_head)
+    dlq_tlb_head := Mux(((dtlb.io.req(memWidth+1).valid && !dlq_tlb_miss) || (dlq(dlq_tlb_head).valid && dlq(dlq_tlb_head).bits.isFake)), WrapInc(dlq_tlb_head, numDlqEntries), dlq_tlb_head)
 
     //-------------------------------------------------------------
     // Write data into the STQ
@@ -1819,6 +1795,31 @@ when (dlq_finished) {
   val dmem_resp_fired = WireInit(widthMap(w => false.B))
 
   for (w <- 0 until memWidth) {
+    // Advance dlq_execute_head
+    when(!dlq_finished && dlq_commit_e.valid) {
+      when(dlq_commit_e.bits.isFake && (dlq_commit_e.bits.uop.ldq_idx === ldq_head)){
+         dlq_commit_e.bits.succeeded := true.B
+         when (dlq_execute_head =/= dlq_tail) {
+           dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
+         }
+      }.elsewhen(dlq_commit_e.bits.succeeded){
+         when (dlq_execute_head =/= dlq_tail) {
+           dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
+         }
+      }.elsewhen(dlq_commit_e.bits.executed) {
+         when (dlq_execute_head =/= dlq_tail) {
+           dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
+         }  
+      }.elsewhen(can_fire_vector_load(w) && io.dmem.req.ready){
+         dlq(dlq_execute_head).bits.succeeded := false.B
+         dlq(dlq_execute_head).bits.sent := true.B
+         dlq(dlq_execute_head).bits.executed := true.B
+         when (dlq_execute_head =/= dlq_tail) {
+           dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
+         }
+      } 
+    }
+
     // Handle nacks
     when (io.dmem.nack(w).valid)
     {
@@ -1867,9 +1868,6 @@ when (dlq_finished) {
     when (io.dmem.resp(w).valid)
     {
       when (io.dmem.resp(w).bits.uop.uses_ldq && io.dmem.resp(w).bits.uop.is_vec){
-/*        when(!dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded && ((IsOlder(io.dmem.resp(w).bits.uop.ldq_idx, dlq_execute_head, dlq_head) && !dlq(dlq_execute_head).bits.executed) || 
-                                                                       (dlq_execute_head === io.dmem.resp(w).bits.uop.ldq_idx && dlq(dlq_execute_head).bits.executed))){
-*/
           when(dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.executed){
           dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded := true.B
           io.core.VGen.resp.valid := true.B 
@@ -2118,18 +2116,18 @@ when (dlq_finished) {
   }
 
   when (dlq(dlq_head).valid && dlq(dlq_head).bits.succeeded) {
-    dlq_head := WrapInc(dlq_head, numDlqEntries)
     dlq(dlq_head).valid  := false.B 
-    dlq(dlq_head).bits.succeeded := false.B 
-    dlq(dlq_head).bits.executed := false.B 
-    dlq(dlq_head).bits.addr.valid := false.B
-    dlq(dlq_head).bits.isFake := false.B 
+    //dlq(dlq_head).bits.succeeded := false.B 
+    //dlq(dlq_head).bits.executed := false.B 
+    //dlq(dlq_head).bits.addr.valid := false.B
+    //dlq(dlq_head).bits.isFake := false.B 
     when (dlq(dlq_head).bits.last) {
       dlq_finished := true.B
       sbIdDone := dlq(dlq_head).bits.sbId
       ldq(ldq_head).bits.succeeded := true.B 
       ldq(ldq_head).bits.executed := true.B
     }
+    dlq_head := WrapInc(dlq_head, numDlqEntries)
   }
 
   
@@ -2310,7 +2308,6 @@ when (dlq_finished) {
   live_store_mask := next_live_store_mask &
                     ~(st_brkilled_mask.asUInt) &
                     ~(st_exc_killed_mask.asUInt)
-
 
 }
 
