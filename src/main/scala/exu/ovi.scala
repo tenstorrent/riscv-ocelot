@@ -33,26 +33,16 @@ class OviReqQueue(val num_entries: Int)(implicit p: Parameters) extends BoomModu
 
   ////////////////////////////////////////////////////////////////
 
-  val maybe_full = RegInit(false.B)
-  when(io.enq.fire =/= io.deq.fire) { maybe_full := io.enq.fire }
+  io.count := PopCount(entries_valid)
 
   // Allow enqueue when not full
-  io.enq.ready := !(enq_ptr === deq_ptr && maybe_full)
+  io.enq.ready := entries_valid.asUInt =/= Fill(num_entries, 1.U)
 
   // Allow dequeue when not empty and past PNR
-  io.deq.valid := !(enq_ptr === deq_ptr && !maybe_full) && (
+  io.deq.valid := entries_valid.asUInt =/= 0.U && (
     IsOlder(io.deq.bits.req.uop.rob_idx, io.rob_pnr_idx, io.rob_head_idx)
     || io.deq.bits.req.uop.rob_idx === io.rob_pnr_idx
   )
-
-  io.count := Mux(
-    enq_ptr === deq_ptr,
-    Mux(maybe_full, num_entries.U, 0.U),
-    Mux(deq_ptr > enq_ptr, num_entries.U + enq_ptr - deq_ptr, enq_ptr - deq_ptr)
-  )
-
-  assert(PopCount(entries_valid) === io.count,
-         "mismatch between entries_valid and count")
 
   ////////////////////////////////////////////////////////////////
 
