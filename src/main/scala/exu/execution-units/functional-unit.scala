@@ -195,18 +195,9 @@ abstract class FunctionalUnit(
     val scontext = if (isMemAddrCalcUnit) Input(UInt(coreParams.scontextWidth.W)) else null
 
     // only used by vector unit
-    val set_vtype       = if (isVecConfigUnit) Valid(new VType) else null
-    val set_vl          = if (isVecConfigUnit) Valid(UInt(log2Up(maxVLMax + 1).W)) else null
-    val vconfig         = if (isVecExeUnit) Input(new VConfig()) else null
-    val vxrm            = if (isVecExeUnit) Input(UInt(2.W)) else null
-    val set_vxsat       = if (isVecExeUnit) Output(Bool()) else null
-    val vGenIO          = if (isVecExeUnit) Flipped(new boom.lsu.VGenIO) else null 
-    val debug_wb_vec_valid = if (isVecExeUnit) Output(Bool()) else null
-    val debug_wb_vec_wdata = if (isVecExeUnit) Output(UInt((coreParams.vLen*8).W)) else null
-    val debug_wb_vec_wmask = if (isVecExeUnit) Output(UInt(8.W)) else null
-    val rob_pnr_idx     = if (isVecExeUnit) Input(UInt(robAddrSz.W)) else null
-    val rob_head_idx    = if (isVecExeUnit) Input(UInt(robAddrSz.W)) else null
-    val exception       = if (isVecExeUnit) Input(Bool()) else null
+    val set_vtype = if (isVecConfigUnit) Valid(new VType) else null
+    val set_vl    = if (isVecConfigUnit) Valid(UInt(log2Up(maxVLMax + 1).W)) else null
+    val ovi       = if (isVecExeUnit) new OviWrapperCoreIO else null
   })
 }
 
@@ -724,26 +715,13 @@ class VecExeUnit(dataWidth: Int)(implicit p: Parameters)
     dataWidth = dataWidth,
     needsFcsr = true)
 {
-
-  val io_req = io.req.bits
-
   val sv_pipeline = Module(new OviWrapper())
 
-  sv_pipeline.io.vconfig             := io.vconfig
-  sv_pipeline.io.vxrm                := io.vxrm
-  sv_pipeline.io.fcsr_rm             := io.fcsr_rm
-  sv_pipeline.io.req                 <> io.req
-  io.resp                            <> sv_pipeline.io.resp
-  io.set_vxsat                       := sv_pipeline.io.set_vxsat
-  io.debug_wb_vec_valid              := sv_pipeline.io.debug_wb_vec_valid
-  io.debug_wb_vec_wdata              := sv_pipeline.io.debug_wb_vec_wdata
-  io.debug_wb_vec_wmask              := sv_pipeline.io.debug_wb_vec_wmask
-  io.vGenIO                          <> sv_pipeline.io.vGenIO 
-
-  io.rob_pnr_idx                     <> sv_pipeline.io.rob_pnr_idx
-  io.rob_head_idx                    <> sv_pipeline.io.rob_head_idx
-  io.brupdate                        <> sv_pipeline.io.brupdate
-  io.exception                       <> sv_pipeline.io.exception
+  sv_pipeline.io.fcsr_rm  <> io.fcsr_rm
+  sv_pipeline.io.req      <> io.req
+  sv_pipeline.io.resp     <> io.resp
+  sv_pipeline.io.core     <> io.ovi
+  sv_pipeline.io.brupdate <> io.brupdate
 }
 
 /**

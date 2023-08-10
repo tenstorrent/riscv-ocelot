@@ -289,9 +289,9 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   csr.io.counters foreach { c => c.inc := RegNext(perfEvents.evaluate(c.eventSel)) }
 
   if (usingVector) {
-    vec_exe_unit.io.vconfig := csr.io.vector.get.vconfig
-    vec_exe_unit.io.vxrm := csr.io.vector.get.vxrm
-    io.lsu.VGen <> vec_exe_unit.io.vGenIO 
+    vec_exe_unit.io.ovi.vconfig := csr.io.vector.get.vconfig
+    vec_exe_unit.io.ovi.vxrm := csr.io.vector.get.vxrm
+    io.lsu.VGen <> vec_exe_unit.io.ovi.vGenIO 
   }
 
   //****************************************
@@ -1118,7 +1118,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     csr.io.vector.get.set_vtype := exe_units.vecconfig_unit.io.set_vtype
     csr.io.vector.get.set_vl := exe_units.vecconfig_unit.io.set_vl
     csr.io.vector.get.set_vstart := DontCare
-    csr.io.vector.get.set_vxsat := exe_units.vec_exe_unit.io.set_vxsat
+    csr.io.vector.get.set_vxsat := exe_units.vec_exe_unit.io.ovi.set_vxsat
   }
 
 // TODO can we add this back in, but handle reset properly and save us
@@ -1320,9 +1320,9 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
         rob.io.debug_wb_wdata(cnt) := data
       }
       if (eu.hasVecExe) {
-        rob.io.debug_wb_vec_valids(cnt) := eu.io.debug_wb_vec_valid
-        rob.io.debug_wb_vec_wdata(cnt)  := eu.io.debug_wb_vec_wdata
-        rob.io.debug_wb_vec_wmask(cnt)  := eu.io.debug_wb_vec_wmask
+        rob.io.debug_wb_vec_valids(cnt) := eu.io.ovi.debug_wb_vec_valid
+        rob.io.debug_wb_vec_wdata(cnt)  := eu.io.ovi.debug_wb_vec_wdata
+        rob.io.debug_wb_vec_wmask(cnt)  := eu.io.ovi.debug_wb_vec_wmask
       } else {
         rob.io.debug_wb_vec_valids(cnt) := 0.B
         rob.io.debug_wb_vec_wdata(cnt)  := 0.U
@@ -1651,10 +1651,9 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   //-------------------------------------------------------------
   //-------------------------------------------------------------
   if (usingVector) {
-    exe_units.vec_exe_unit.io.rob_pnr_idx := rob.io.rob_pnr_idx
-    exe_units.vec_exe_unit.io.rob_head_idx := rob.io.rob_head_idx
-    exe_units.vec_exe_unit.io.brupdate := brupdate
-    exe_units.vec_exe_unit.io.exception := csr.io.exception && csr.io.status.xs.orR
+    exe_units.vec_exe_unit.io.ovi.rob_pnr_idx := rob.io.rob_pnr_idx
+    exe_units.vec_exe_unit.io.ovi.rob_head_idx := rob.io.rob_head_idx
+    exe_units.vec_exe_unit.io.ovi.exception := csr.io.exception && csr.io.status.xs.orR
   }
 
   io.rocc := DontCare
@@ -1819,4 +1818,3 @@ with HasBlackBoxResource {
   addResource("/vsrc/core_harness.v")
   addResource("/vsrc/core_harness_wrapper_8.v")
 }
-

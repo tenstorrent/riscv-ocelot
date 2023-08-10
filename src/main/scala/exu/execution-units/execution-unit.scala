@@ -139,21 +139,9 @@ abstract class ExecutionUnit(
     val scontext = if (hasMem) Input(UInt(coreParams.scontextWidth.W)) else null
 
     // only used by the vec unit
-    val set_vtype       = if (hasVecConfig) Valid(new VType) else null
-    val set_vl          = if (hasVecConfig) Valid(UInt(log2Up(maxVLMax + 1).W)) else null
-    val vconfig         = if (hasVecExe) Input(new VConfig) else null
-    val vxrm            = if (hasVecExe) Input(UInt(2.W)) else null
-    val set_vxsat       = if (hasVecExe) Output(Bool()) else null
-
-    val rob_pnr_idx     = if (hasVecExe) Input(UInt(robAddrSz.W)) else null
-    val rob_head_idx    = if (hasVecExe) Input(UInt(robAddrSz.W)) else null
-    val exception       = if (hasVecExe) Input(Bool()) else null
-
-    val vGenIO = if (hasVecExe) Flipped(new boom.lsu.VGenIO) else null 
-
-    val debug_wb_vec_valid = if (hasVecExe) Output(Bool()) else null
-    val debug_wb_vec_wdata = if (hasVecExe) Output(UInt((coreParams.vLen*8).W)) else null
-    val debug_wb_vec_wmask = if (hasVecExe) Output(UInt((coreParams.vLen*8).W)) else null
+    val set_vtype = if (hasVecConfig) Valid(new VType) else null
+    val set_vl    = if (hasVecConfig) Valid(UInt(log2Up(maxVLMax + 1).W)) else null
+    val ovi       = if (hasVecExe) new OviWrapperCoreIO else null
 
     // TODO move this out of ExecutionUnit
     val com_exception = if (hasMem || hasRocc) Input(Bool()) else null
@@ -460,27 +448,13 @@ class ALUExeUnit(
   var vecexe: VecExeUnit = null
   if (hasVecExe) {
     val vecexe = Module(new VecExeUnit(dataWidth))
-    vecexe.io.vconfig           := io.vconfig
-    vecexe.io.vxrm              := io.vxrm
     vecexe.io.fcsr_rm           := io.fcsr_rm
     vecexe.io.req               <> io.req
     vecexe.io.req.valid         := io.req.valid && io.req.bits.uop.fu_code_is(FU_VEC)
-    vecexe.io.req.bits.uop      := io.req.bits.uop
-    vecexe.io.req.bits.kill     := io.req.bits.kill
-    vecexe.io.req.bits.rs1_data := io.req.bits.rs1_data
-    vecexe.io.req.bits.rs2_data := io.req.bits.rs2_data
     vecexe.io.req.bits.rs3_data := ieee(io.req.bits.rs3_data) // FP
     vecexe.io.resp.ready        := DontCare
+    vecexe.io.ovi               <> io.ovi
     vecexe.io.brupdate          <> io.brupdate
-    io.set_vxsat                := vecexe.io.set_vxsat
-    io.debug_wb_vec_valid       := vecexe.io.debug_wb_vec_valid 
-    io.debug_wb_vec_wdata       := vecexe.io.debug_wb_vec_wdata 
-    io.debug_wb_vec_wmask       := vecexe.io.debug_wb_vec_wmask 
-    io.vGenIO                   <> vecexe.io.vGenIO
-
-    io.rob_pnr_idx <> vecexe.io.rob_pnr_idx
-    io.rob_head_idx <> vecexe.io.rob_head_idx
-    io.exception <> vecexe.io.exception
 
     vec_busy     := !vecexe.io.req.ready
 
@@ -490,7 +464,6 @@ class ALUExeUnit(
     io.ll_fresp.bits.uop    := vecexe.io.resp.bits.uop
     io.ll_fresp.bits.data   := vecexe.io.resp.bits.data
     io.ll_fresp.bits.fflags := DontCare
-
   }
 
   // Outputs (Write Port #0)  ---------------
