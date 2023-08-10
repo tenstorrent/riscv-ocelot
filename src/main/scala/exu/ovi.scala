@@ -284,7 +284,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 */
 
 
-  val vAGen = Module (new VAgen (lsuDmemWidth, 66, vAGenDepth, vpuVlen))
+  val vAGen = Module (new VAgen (lsuDmemWidth, 66, vAGenDepth, vpuVlen, oviWidth))
 
   vAGen.io.configValid := false.B 
   vAGen.io.maskData := MemMaskId  
@@ -313,6 +313,9 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   vdb.io.writeData := MemStoreData
   vdb.io.sliceSize := vAGen.io.sliceSizeOut 
   vdb.io.vlmul := vLSIQueue.io.deq.bits.vconfig.vtype.vlmul_mag
+  vdb.io.packOveride := vAGen.io.packOveride
+  vdb.io.packSkipVDB := vAGen.io.packSkipVDB
+  vdb.io.packId := vAGen.io.packVDBId 
   MemStoreCredit := vdb.io.release
 
   
@@ -694,9 +697,10 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
 }
 
 // M is dmem bandwidth, N is mask interface width (66), Depth is mask buffer width (4), VLEN is 256 for now
-class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: Parameters) extends Module {
+class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: Int)(implicit p: Parameters) extends Module {
     val k = log2Ceil(M/8+1)
     val I = log2Ceil(VLEN)
+    val T = log2Ceil(OVILEN + 1)
     val numByte = (M/8)
   val io = IO(new Bundle {    
     // inteface with the VPU
@@ -735,8 +739,11 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
     val popForceLast = Output (Bool())
     // interface with VIdGen
     val packOveride = Output (Bool())
+    val spackOveride = Output (Bool())
     val packId = Output (UInt(I.W))
-    val packSkipVreg = Output (Bool())  
+    val packVDBId = Output (UInt(T.W))
+    val packSkipVreg = Output (Bool()) 
+    val packSkipVDB = Output (Bool())   
   })
 
   
@@ -756,8 +763,24 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
     
   io.packOveride := vPacker.io.packOveride
   io.packId := vPacker.io.packId 
-  io.packSkipVreg := vPacker.io.packSkipVreg     
+  io.packSkipVreg := vPacker.io.packSkipVreg   
+
+
+  val sPacker = Module (new Spacker (M, OVILEN))  
+  sPacker.io.configValid := io.configValid     
+  sPacker.io.vl := io.vl
+  sPacker.io.memSize := io.memSize
+  sPacker.io.isUnit := io.isUnit
+  sPacker.io.isMask := io.isMask
+  sPacker.io.isLoad := io.isLoad 
+  sPacker.io.startAddr := io.startAddr
   
+  sPacker.io.pop := io.pop 
+  io.spackOveride := sPacker.io.packOveride
+  io.packVDBId := sPacker.io.packVDBId 
+  io.packSkipVDB := sPacker.io.packSkipVDB
+  
+    
   
   val vlHold = Reg(UInt(9.W))
   // points at element
@@ -876,7 +899,8 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
   val lastFake = working && io.last && isMask  && hasMask && ((!vPacker.io.packOveride && !currentMask) || (vPacker.io.packOveride && !vPackMask.io.validMask)) 
   io.popForceLast := lastFake
   // can Pop happens when lastFake, !isMask && !isIndex, !isMask && isIndex && hasMask, isMask && hasMask && currentMask, fakeHold
-  io.canPop := working && ((!vPacker.io.packOveride && ((currentMask && isMask && hasMask) || (!isMask && !isIndex) || (!isMask && isIndex && hasMask))) || lastFake || fakeHold ||
+  io.canPop := working && (((!vPacker.io.packOveride || sPacker.io.packOveride) && ((currentMask && isMask && hasMask) || (!isMask && !isIndex) || (!isMask && isIndex && hasMask))) || 
+                            lastFake || fakeHold ||
                             vPacker.io.packOveride && (!isMask || (hasMask && isMask && vPackMask.io.validMask)))
 //  io.canPop := working && ((currentMask && ((isMask || isIndex) && hasMask)) || (!isMask && !isIndex) || lastFake)
   val isLastIndex = currentEntry(65)
@@ -884,7 +908,8 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
   // fake happens when: no mask but vl = 0, with mask but last one masked off
   io.isFake := fakeHold || lastFake 
   // last one happens either currentIndex touch vl or isIndex && isLastIndex
-  io.last := ((!vPacker.io.packOveride && ((currentIndex === vlHold) || (isIndex && isLastIndex))) || (vPacker.io.packOveride && vPacker.io.packLast)) && working
+  io.last := ((!vPacker.io.packOveride && ((currentIndex === vlHold) || (isIndex && isLastIndex))) || (vPacker.io.packOveride && vPacker.io.packLast) 
+                                                                                                   || (sPacker.io.packOveride && sPacker.io.packLast)) && working
   
   io.release := false.B 
   when (isIndex) {
@@ -937,6 +962,8 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
                 currentAddr := currentAddr + numByte.U 
               }
             }
+          }.elsewhen(sPacker.io.packOveride){
+            currentAddr := currentAddr + sPacker.io.packIncrement
           }.otherwise {
             when (isStride) {
               currentAddr := currentAddr + stride 
@@ -1033,6 +1060,9 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
     val sliceSize = Input(UInt(S.W))
     val release = Output(Bool())
     val outData = Output(UInt(N.W))
+    val packOveride = Input (Bool())
+    val packId = Input (UInt(I.W))
+    val packSkipVDB = Input (Bool())
   })
 
   val buffer = RegInit(VecInit(Seq.fill(Depth)(0.U(M.W))))
@@ -1063,6 +1093,15 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
  
   io.release := false.B 
   when (io.pop) {
+    when (io.packOveride) {
+        when (io.packSkipVDB) {
+          readPtr := WrapInc(readPtr, Depth)
+          currentIndex := 0.U
+          io.release := true.B
+        }.otherwise {
+          currentIndex := currentIndex + io.packId
+        }
+    }.otherwise {
     when (io.last) {
       readPtr := WrapInc(readPtr, Depth)
       currentIndex := 0.U
@@ -1076,6 +1115,7 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
           currentIndex := currentIndex + io.sliceSize
         }
     }
+  }
   }
 }
 
@@ -1319,12 +1359,12 @@ class VPackMask (val VLEN: Int) extends Module {
 }
 
 
-/*
-class Spacker(val M: Int, val VLEN: Int) extends Module {
+
+class Spacker(val M: Int, val VDBLEN: Int) extends Module {
    val k = log2Ceil(M/8+1)
-    val I = log2Ceil(VLEN)
+    val I = log2Ceil(VDBLEN + 1)
     val MByte = M/8
-    val VLENByte = VLEN/8
+    val VDBLENByte = VDBLEN/8
   val io = IO(new Bundle {    
     // interface with vAGen at start
     val configValid = Input(Bool())
@@ -1337,29 +1377,103 @@ class Spacker(val M: Int, val VLEN: Int) extends Module {
       // base address and stride    
     val startAddr = Input(UInt(64.W))
       // interface with OVI Vhelper
-    val elemOffset = Output(UInt(6.W))
-    val elemCount = Output(UInt(7.W))
+  //  val elemOffset = Output(UInt(6.W))
+  //  val elemCount = Output(UInt(7.W))
      // interface with VIdGen / VAGen
     val packOveride = Output (Bool())
-    val packId = Output (UInt(I.W))
+    val packVDBId = Output (UInt(I.W))
     val packSkipVDB = Output (Bool())  
-    val packIncrement = Output (Bool())
+    val packIncrement = Output (UInt(64.W))
     val packLast = Output (Bool())
      // pop 
     val pop = Input (Bool())
   })
 
    val canPack = WireInit (false.B)
-   canPack := io.configValid && io.isUnit && !io.isMask && io.isLoad
+   canPack := io.configValid && io.isUnit && !io.isMask && !io.isLoad
+
+   val currentOffset = RegInit(0.U(6.W)) // offset, marking the position in cache line
+   val currentMax = RegInit(0.U(6.W)) // max element count for now (for each transaction)
+   val currentVMax = RegInit(0.U(6.W)) // max element count per vReg
+   val currentIndex = RegInit(0.U(9.W)) // the index of element (as a whole in the vector)
+   val currentVIndex = RegInit(0.U(6.W))
+   val vlHold = RegInit(0.U(9.W))
+   val memSize = RegInit(0.U(2.W))
+   val isPacking = RegInit(false.B)  // drive override
+
+
+   io.packOveride := isPacking
+  // io.packOveride := false.B 
+
+    when (canPack) {
+       currentOffset := io.startAddr(k-2, 0) >> io.memSize          
+       currentMax := MByte.U >> (io.memSize)
+       currentVMax := VDBLENByte.U >> (io.memSize)
+       currentIndex := 0.U 
+       currentVIndex := 0.U        
+       vlHold := io.vl 
+       memSize := io.memSize
+       isPacking := true.B        
+    }
+
+    // calculation of offset and count
+  //  io.elemOffset := currentOffset
+    val theoreticalCount = WireInit(0.U(6.W)) //max count in this transaction if ignore vl and vReg boundary
+    theoreticalCount := currentMax - currentOffset
+    val actualTheoreticalCount = WireInit(0.U(6.W)) //max count in this transaction if ignore vl and vReg boundary
+    actualTheoreticalCount := PriorityEncoderOH (theoreticalCount)
+    val vRegDistant = WireInit(0.U(6.W))
+    vRegDistant := currentVMax - currentVIndex
+    val actualVRegDistant = WireInit(0.U(6.W))
+    val vRegPower2 = Module (new SmallPowerOfTwo(6))
+    vRegPower2.io.inData := vRegDistant 
+    actualVRegDistant := vRegPower2.io.outData 
+
+    val vlDistant = WireInit(0.U(9.W))
+    vlDistant := vlHold - currentIndex 
+    val actualVlDistant = WireInit(0.U(9.W))
+    val vlPower2 = Module (new SmallPowerOfTwo(9))
+    vlPower2.io.inData := vlDistant 
+    actualVlDistant := vlPower2.io.outData 
+    
+    
+    val afterVRegCount = WireInit(0.U(6.W)) // we consider VReg first
+    afterVRegCount := Mux((actualTheoreticalCount > actualVRegDistant), actualVRegDistant, actualTheoreticalCount)
+    val afterVLCount = WireInit(0.U(6.W))
+    afterVLCount := Mux((afterVRegCount > actualVlDistant), actualVlDistant, afterVRegCount)
+
+
+    io.packVDBId := afterVLCount << memSize
+  //  io.elemCount := afterVLCount 
+    io.packSkipVDB := (afterVLCount === vRegDistant) && isPacking
+    io.packLast := (afterVLCount === vlDistant) && isPacking
+    io.packIncrement := afterVLCount << memSize 
+
+    when(io.pop) {
+      when(io.packLast) {
+        isPacking := false.B 
+      }
+      currentIndex := currentIndex + afterVLCount
+      when (io.packSkipVDB) {
+        currentVIndex := 0.U 
+      }.otherwise {
+        currentVIndex := currentVIndex + afterVLCount
+      }
+      when (currentOffset  + afterVLCount === currentMax) {
+        currentOffset := 0.U 
+      }.otherwise {
+        currentOffset := currentOffset + afterVLCount
+      }
+    }
 
 }
-*/
+
 
 
 
 // this will return the smallest power of 2
 // used for tracking VL distant and VReg distant in packed store
-/*
+
 class SmallPowerOfTwo(bitWidth: Int) extends Module {
   val io = IO(new Bundle {
     val inData = Input(UInt(bitWidth.W))
@@ -1372,11 +1486,10 @@ class SmallPowerOfTwo(bitWidth: Int) extends Module {
     when(PopCount(io.inData) === 1.U) {
       io.outData := io.inData
     } .otherwise {
-      io.outData := MuxLookup(io.inData, 1.U, (0 until bitWidth).reverse.map(i => (1.U << (i + 1)).U -> (1.U << i).U))
       io.outData := MuxLookup(io.inData, 1.U, (0 until bitWidth).reverse.map(i => (1.U << (i + 1)) -> (1.U << i)))
     }
   }
 }
-*/
+
 // PriorityEncoderOH 
 
