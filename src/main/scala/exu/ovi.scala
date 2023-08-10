@@ -313,7 +313,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   vdb.io.writeData := MemStoreData
   vdb.io.sliceSize := vAGen.io.sliceSizeOut 
   vdb.io.vlmul := vLSIQueue.io.deq.bits.vconfig.vtype.vlmul_mag
-  vdb.io.packOveride := vAGen.io.packOveride
+  vdb.io.packOveride := vAGen.io.spackOveride
   vdb.io.packSkipVDB := vAGen.io.packSkipVDB
   vdb.io.packId := vAGen.io.packVDBId 
   MemStoreCredit := vdb.io.release
@@ -480,7 +480,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 
   io.core.vGenIO.req.valid := vGenEnable && ((!s0l1 && ((!vlIsZero && vDBcount =/= 0.U) || vlIsZero)) || s0l1) && vAGen.io.canPop
   io.core.vGenIO.req.bits.uop := vGenHold.req.uop
-  io.core.vGenIO.req.bits.uop.mem_size := Mux(s0l1, addrBreak.U, vGenHold.req.uop.mem_size)
+  io.core.vGenIO.req.bits.uop.mem_size := Mux(s0l1, addrBreak.U, vAGen.io.memSizeOut)
   io.core.vGenIO.req.bits.data := Mux(s0l1, 0.U, vdb.io.outData) 
   io.core.vGenIO.req.bits.last := vAGen.io.last 
   io.core.vGenIO.req.bits.addr := Mux(s0l1, Cat(vAGen.io.outAddr(39, addrBreak), 0.U(addrBreak.W)), vAGen.io.outAddr)
@@ -713,6 +713,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
     val sliceSizeOut = Output(UInt(k.W))
     val vl = Input(UInt(9.W))
     val memSize = Input(UInt(2.W))
+    val memSizeOut = Output(UInt(3.W))
       // which types of load store
     val isUnit = Input (Bool())
     val isStride = Input(Bool())
@@ -815,6 +816,8 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   io.elemOffset := Mux(vPacker.io.packOveride, vPacker.io.elemOffset, internalElemOffset)
   io.elemCount := Mux(vPacker.io.packOveride, vPacker.io.elemCount, 1.U) 
   
+  io.memSizeOut := Mux (io.spackOveride, sPacker.io.memSizeOut, memSizeHold)
+
 
   when (io.configValid) {
      sliceSizeHold := io.initialSliceSize
@@ -1094,7 +1097,7 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
   io.release := false.B 
   when (io.pop) {
     when (io.packOveride) {
-        when (io.packSkipVDB) {
+        when (io.packSkipVDB || io.last) {
           readPtr := WrapInc(readPtr, Depth)
           currentIndex := 0.U
           io.release := true.B
@@ -1370,6 +1373,7 @@ class Spacker(val M: Int, val VDBLEN: Int) extends Module {
     val configValid = Input(Bool())
     val vl = Input(UInt(9.W))
     val memSize = Input(UInt(2.W))
+    val memSizeOut = Output(UInt(3.W))
       // which types of load store
     val isUnit = Input (Bool())
     val isMask = Input(Bool())
@@ -1466,6 +1470,11 @@ class Spacker(val M: Int, val VDBLEN: Int) extends Module {
       }
     }
 
+    val countLog = WireInit(0.U(3.W))
+    countLog := PriorityEncoder(afterVLCount)
+    io.memSizeOut := memSize + countLog 
+
+
 }
 
 
@@ -1486,7 +1495,12 @@ class SmallPowerOfTwo(bitWidth: Int) extends Module {
     when(PopCount(io.inData) === 1.U) {
       io.outData := io.inData
     } .otherwise {
-      io.outData := MuxLookup(io.inData, 1.U, (0 until bitWidth).reverse.map(i => (1.U << (i + 1)) -> (1.U << i)))
+      // Reverse the bits of the input and take the position of the most significant '1' bit.
+    val reversedBits = Reverse(io.inData)
+    val positionOfMSB = PriorityEncoder(reversedBits)
+    
+    // Shift 1 left by the position of the most significant '1' bit to get the closest power of 2.
+    io.outData := 1.U << positionOfMSB
     }
   }
 }
