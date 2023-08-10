@@ -780,11 +780,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val can_fire_load_incoming = widthMap(w => exe_req(w).valid && exe_req(w).bits.uop.ctrl.is_load)  
   val load_incoming_no_vst   =  widthMap(w => !(ldq(exe_req(w).bits.uop.ldq_idx).bits.hasOlderVst 
                                                    && !ldq(exe_req(w).bits.uop.ldq_idx).bits.isVector  
+                                                   && stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).valid
                                                    && stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.isVector
                                                    && stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.vst_count === ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_count
                                                    && !stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).bits.succeeded))
   val load_incoming_no_vld   =  widthMap(w => !(ldq(exe_req(w).bits.uop.ldq_idx).bits.hasOlderVld 
                                                    && !ldq(exe_req(w).bits.uop.ldq_idx).bits.isVector  
+                                                   && ldq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vld_idx).valid
                                                    && ldq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vld_idx).bits.isVector
                                                    && ldq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vld_idx).bits.vld_count === ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vld_count
                                                    && !ldq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vld_idx).bits.succeeded))
@@ -821,11 +823,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                 (w == memWidth-1).B                           && // TODO: Is this best scheduling?
                                 !ldq_retry_e.bits.order_fail))                 
   val load_retry_no_vst  = widthMap (w => !(ldq(ldq_retry_idx).bits.hasOlderVst && !ldq(ldq_retry_idx).bits.isVector
+                                  && stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).valid
                                   && stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.isVector
                                   && stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.vst_count === ldq(ldq_retry_idx).bits.youngest_vst_count
                                   && !stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.succeeded))
 
   val load_retry_no_vld   =  widthMap(w => !(ldq(ldq_retry_idx).bits.hasOlderVld && !ldq(ldq_retry_idx).bits.isVector  
+                                                   && ldq(ldq(ldq_retry_idx).bits.youngest_vld_idx).valid
                                                    && ldq(ldq(ldq_retry_idx).bits.youngest_vld_idx).bits.isVector
                                                    && ldq(ldq(ldq_retry_idx).bits.youngest_vld_idx).bits.vld_count === ldq(ldq_retry_idx).bits.youngest_vld_count
                                                    && !ldq(ldq(ldq_retry_idx).bits.youngest_vld_idx).bits.succeeded))
@@ -884,11 +888,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                                           ldq_wakeup_e.bits.st_dep_mask.asUInt === 0.U)))) 
 
   val load_wakeup_no_vst =   widthMap (w => !(ldq(ldq_wakeup_idx).bits.hasOlderVst && !ldq(ldq_wakeup_idx).bits.isVector
+                                && stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).valid
                                 && stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.isVector
                                 && stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.vst_count === ldq(ldq_wakeup_idx).bits.youngest_vst_count
                                 && !stq(ldq(ldq_wakeup_idx).bits.youngest_vst_idx).bits.succeeded))
   
   val load_wakeup_no_vld   =  widthMap(w => !(ldq(ldq_wakeup_idx).bits.hasOlderVld && !ldq(ldq_wakeup_idx).bits.isVector  
+                                                   && ldq(ldq(ldq_wakeup_idx).bits.youngest_vld_idx).valid
                                                    && ldq(ldq(ldq_wakeup_idx).bits.youngest_vld_idx).bits.isVector
                                                    && ldq(ldq(ldq_wakeup_idx).bits.youngest_vld_idx).bits.vld_count === ldq(ldq_wakeup_idx).bits.youngest_vld_count
                                                    && !ldq(ldq(ldq_wakeup_idx).bits.youngest_vld_idx).bits.succeeded))
