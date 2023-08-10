@@ -527,8 +527,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 */
 
   
-//  MemSyncEnd := io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid && inMiddle
-  MemSyncEnd := io.core.vGenIO.resp.bits.vectorDone && io.core.vGenIO.resp.valid
+  MemSyncEnd := io.core.vGenIO.resp.bits.vectorDone && io.core.vGenIO.resp.valid 
   MemLoadValid := LSUReturnLoadValid || fakeLoadReturnQueue.io.deq.valid
   MemSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg) 
 
@@ -584,8 +583,8 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   vpuModule.io.dispatch_next_senior := reqQueue.io.deq.valid && reqQueue.io.deq.ready
   vpuModule.io.dispatch_kill := 0.B
   
-   vpuModule.io.memop_sync_end := MemSyncEnd
-// vpuModule.io.mem_sb_id := MEMSbId 
+     vpuModule.io.memop_sync_end := MemSyncEnd
+   vpuModule.io.memop_sb_id := MemSbId 
 // vpuModule.io.mem_vstart := MEMVstart
    vpuModule.io.load_valid := MemLoadValid
    vpuModule.io.load_seq_id := MemSeqId
@@ -626,6 +625,7 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
     val store_credit = Input(Bool())
     val memop_sync_end = Input(Bool())
     val memop_sync_start = Output(Bool())
+    val memop_sb_id = Input(UInt(5.W))
     val debug_wb_vec_valid = Output(Bool())
     val debug_wb_vec_wdata = Output(UInt((vLen * 8).W))
     val debug_wb_vec_wmask = Output(UInt(8.W))
@@ -747,7 +747,6 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
     val packSkipVreg = Output (Bool()) 
     val packSkipVDB = Output (Bool())   
   })
-
   
 
   val vPacker = Module (new Vpacker (M, VLEN))
