@@ -216,7 +216,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 */  
    val vlsiQDepth = 4
    val oviWidth   = 512
-   val lsuDmemWidth = 64
+   val lsuDmemWidth = 128
    val vpuVlen = 256
    val vdbDepth = 4
    val byteVreg = vpuVlen / 8
@@ -233,7 +233,8 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   val tryDeqVLSIQ = RegInit(false.B)
   // this chunk is checking the number of outstanding mem_sync_start
   val outStandingReq = RegInit(0.U(3.W))
-  val vOSud = Cat (vpuModule.io.memop_sync_start, vpuModule.io.memop_sync_end)
+  val canStartAnother = WireInit(false.B)
+  val vOSud = Cat (vpuModule.io.memop_sync_start, canStartAnother)
   when (vOSud === 1.U) {
     outStandingReq := outStandingReq - 1.U
   }.elsewhen (vOSud === 2.U) {
@@ -242,7 +243,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 
   val vLSIQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), vlsiQDepth))
   val sbIdQueue = Module(new Queue(UInt(5.W), vlsiQDepth))
-  val canStartAnother = WireInit(false.B)
+  
 
   // enqueue whenever VPU is ready && reqQueue is valid && there is ld or st 
   vLSIQueue.io.enq.valid := issueCreditCnt =/= 0.U && reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
@@ -522,7 +523,8 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 */
 
   
-  MemSyncEnd := io.core.vGenIO.resp.bits.vectorDone && io.core.vGenIO.resp.valid && inMiddle
+//  MemSyncEnd := io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid && inMiddle
+  MemSyncEnd := io.core.vGenIO.resp.bits.vectorDone && io.core.vGenIO.resp.valid
   MemLoadValid := LSUReturnLoadValid || fakeLoadReturnQueue.io.deq.valid
   MemSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg) 
 
@@ -1182,7 +1184,8 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
     val vlHold = RegInit(0.U(9.W))
     val isPacking = RegInit(false.B)  // drive override
     
-    io.packOveride := isPacking
+  //  io.packOveride := isPacking
+    io.packOveride := false.B 
     io.packDir := currentDir
 
     // calculating initial element offset
@@ -1276,7 +1279,7 @@ class StrideDetector extends Module {
     io.logStride := 0.U 
   }
 }
-
+/*
 class Spacker(val M: Int, val VLEN: Int) extends Module {
    val k = log2Ceil(M/8+1)
     val I = log2Ceil(VLEN)
@@ -1310,11 +1313,13 @@ class Spacker(val M: Int, val VLEN: Int) extends Module {
    canPack := io.configValid && io.isUnit && !io.isMask && io.isLoad
 
 }
+*/
 
 
 
 // this will return the smallest power of 2
 // used for tracking VL distant and VReg distant in packed store
+/*
 class SmallPowerOfTwo(bitWidth: Int) extends Module {
   val io = IO(new Bundle {
     val inData = Input(UInt(bitWidth.W))
@@ -1328,8 +1333,10 @@ class SmallPowerOfTwo(bitWidth: Int) extends Module {
       io.outData := io.inData
     } .otherwise {
       io.outData := MuxLookup(io.inData, 1.U, (0 until bitWidth).reverse.map(i => (1.U << (i + 1)).U -> (1.U << i).U))
+      io.outData := MuxLookup(io.inData, 1.U, (0 until bitWidth).reverse.map(i => (1.U << (i + 1)) -> (1.U << i)))
     }
   }
 }
+*/
 // PriorityEncoderOH 
 
