@@ -153,7 +153,7 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   def rf_wen           = dst_rtype =/= RT_X
 
   // Is it possible for this uop to misspeculate, preventing the commit of subsequent uops?
-  def unsafe           = uses_ldq || (uses_stq && !is_fence) || is_br || is_jalr
+  def unsafe           = (uses_ldq && !is_vec) || ((uses_stq && !is_vec) && !is_fence) || is_br || is_jalr
 
   def fu_code_is(_fu: UInt) = (fu_code & _fu) =/= 0.U
 }
