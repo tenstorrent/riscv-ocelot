@@ -222,6 +222,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
    val byteVreg = vpuVlen / 8
    val byteDmem = lsuDmemWidth / 8
    val vAGenDepth = 4
+   val addrBreak = log2Ceil(lsuDmemWidth/8)
 
 /*
   vLSIQ start
@@ -476,10 +477,10 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 
   io.core.vGenIO.req.valid := vGenEnable && ((!s0l1 && ((!vlIsZero && vDBcount =/= 0.U) || vlIsZero)) || s0l1) && vAGen.io.canPop
   io.core.vGenIO.req.bits.uop := vGenHold.req.uop
-  io.core.vGenIO.req.bits.uop.mem_size := Mux(s0l1, 3.U, vGenHold.req.uop.mem_size)
+  io.core.vGenIO.req.bits.uop.mem_size := Mux(s0l1, addrBreak.U, vGenHold.req.uop.mem_size)
   io.core.vGenIO.req.bits.data := Mux(s0l1, 0.U, vdb.io.outData) 
   io.core.vGenIO.req.bits.last := vAGen.io.last 
-  io.core.vGenIO.req.bits.addr := Mux(s0l1, Cat(vAGen.io.outAddr(39, 3), 0.U(3.W)), vAGen.io.outAddr)
+  io.core.vGenIO.req.bits.addr := Mux(s0l1, Cat(vAGen.io.outAddr(39, addrBreak), 0.U(addrBreak.W)), vAGen.io.outAddr)
 
   io.core.vGenIO.reqHelp.bits.elemID := vIdGen.io.outID 
   io.core.vGenIO.reqHelp.bits.elemOffset := vAGen.io.elemOffset
@@ -513,7 +514,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 */
   val LSUReturnLoadValid = WireInit(false.B)
   LSUReturnLoadValid := io.core.vGenIO.resp.valid && io.core.vGenIO.resp.bits.s0l1 && !io.core.vGenIO.resp.bits.vectorDone  // needs fixing later if we are overlapping
-  val vReturnData = Module(new VReturnData(512, 64))
+  val vReturnData = Module(new VReturnData(oviWidth, lsuDmemWidth))
   vReturnData.io.memSize := io.core.vGenIO.resp.bits.memSize
   vReturnData.io.lsuData := io.core.vGenIO.resp.bits.data
   vReturnData.io.strideDir := io.core.vGenIO.resp.bits.strideDir
@@ -877,7 +878,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
   // fake happens when: no mask but vl = 0, with mask but last one masked off
   io.isFake := fakeHold || lastFake 
   // last one happens either currentIndex touch vl or isIndex && isLastIndex
-  io.last := (((currentIndex === vlHold) || (isIndex && isLastIndex)) || vPacker.io.packOveride && vPacker.io.packLast) && working
+  io.last := ((!vPacker.io.packOveride && ((currentIndex === vlHold) || (isIndex && isLastIndex))) || (vPacker.io.packOveride && vPacker.io.packLast)) && working
   
   io.release := false.B 
   when (isIndex) {
@@ -1184,8 +1185,8 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
     val vlHold = RegInit(0.U(9.W))
     val isPacking = RegInit(false.B)  // drive override
     
-  //  io.packOveride := isPacking
-    io.packOveride := false.B 
+    io.packOveride := isPacking
+  //  io.packOveride := false.B 
     io.packDir := currentDir
 
     // calculating initial element offset
@@ -1226,7 +1227,7 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
     io.elemCount := afterVLCount 
     io.packSkipVreg := (afterVLCount === vRegDistant) && isPacking
     io.packLast := (afterVLCount === vlDistant) && isPacking
-    io.packIncrement := (currentOffset + io.elemCount === currentMax) && isPacking
+    io.packIncrement := ((currentOffset >> currentLogStride) + io.elemCount === currentMax) && isPacking
 
     when(io.pop) {
       when(io.packLast) {
@@ -1238,10 +1239,10 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
       }.otherwise {
         currentVIndex := currentVIndex + io.elemCount 
       }
-      when (currentOffset + io.elemCount === currentMax) {
+      when ((currentOffset >> currentLogStride) + io.elemCount === currentMax) {
         currentOffset := 0.U 
       }.otherwise {
-        currentOffset := currentOffset + io.elemCount 
+        currentOffset := currentOffset + (io.elemCount << currentLogStride)
       }
     }
 }
