@@ -23,6 +23,9 @@ module tt_memop_fsm(input  logic i_clk,
   memop_state_t memop_fsm_state;
   memop_state_t memop_fsm_next_state;
 
+  // sometimes memsync_end comes in before we see the last microop from the id stage
+  // so we need to save sync_end when we get it
+  logic got_sync_end;
   logic sent_sync;
   always @(posedge i_clk) begin
     if(!i_reset_n)
@@ -32,6 +35,17 @@ module tt_memop_fsm(input  logic i_clk,
         sent_sync <= 1;
       else if(memop_fsm_state != BUSY)
         sent_sync <= 0;
+    end
+  end
+
+  always @(posedge i_clk) begin
+    if(!i_reset_n)
+      got_sync_end <= 0;
+    else begin
+      if(o_memop_sync_start)
+        got_sync_end <= 0;
+      else if(i_memop_sync_end)
+        got_sync_end <= 1;
     end
   end
 
@@ -56,7 +70,7 @@ module tt_memop_fsm(input  logic i_clk,
           memop_fsm_next_state = PREPARE;
       end
       BUSY: begin
-        if(i_memop_sync_end)
+        if(i_memop_sync_end || got_sync_end)
           memop_fsm_next_state = COMMIT;
         else
           memop_fsm_next_state = BUSY;
