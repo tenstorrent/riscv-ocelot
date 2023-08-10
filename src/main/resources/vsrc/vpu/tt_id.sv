@@ -134,11 +134,12 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    
    output 				     o_id_ex_instdisp,
 
-   input logic            i_ovi_stall,
    output logic       o_is_whole_memop,
    output logic       o_is_masked_memop,
    output logic       o_is_indexldst,
-   output logic       o_is_maskldst
+   output logic       o_is_maskldst,
+   input logic  [4:0] i_if_sb_id,
+   output logic [4:0] o_id_sb_id
 );
 
 wire i_ext, m_ext, a_ext, b_ext;
@@ -233,8 +234,7 @@ logic no_lq_load_pending;
                          & (id_replay | ~sync_stall )
                             // Need all units to be ready to dispatch anything
                          & (is_ex_instrn | is_fp_instrn | is_vec_instrn) & units_rtr & !i_ex_bp_mispredict;
-
-  assign o_id_instrn_rtr = units_rtr & ~id_replay & ~raw_hazard_stall & ~(i_mem_fe_lqfull | i_mem_fe_skidbuffull) & ~sync_stall & ~i_ovi_stall;
+  assign o_id_instrn_rtr = units_rtr & ~id_replay & ~raw_hazard_stall & ~(i_mem_fe_lqfull | i_mem_fe_skidbuffull) & ~sync_stall;
 `else
 tt_rts_rtr_pipe_stage #(.WIDTH(32)) id_instrn_flops
 (
@@ -246,6 +246,17 @@ tt_rts_rtr_pipe_stage #(.WIDTH(32)) id_instrn_flops
    .o_rts     (id_rts       ), // output side handshake
    .i_data    (i_if_instrn     ),
    .o_data    (instrn_id       )
+);
+tt_rts_rtr_pipe_stage #(.WIDTH(32)) id_sb_id_flops
+(
+   .i_clk     (i_clk           ),
+   .i_reset_n (i_reset_n       ),
+   .i_rts     (i_if_instrn_rts ), // input side handshake
+   .o_rtr     (o_id_instrn_rtr ), // input side handshake
+   .i_rtr     ((units_rtr) & (~raw_hazard_stall) ), // if EX is ready to accept next instruction and no raw hazard requiring a stall was detected
+   .o_rts     (id_rts       ), // output side handshake
+   .i_data    (i_if_sb_id     ),
+   .o_data    (o_id_sb_id       )
 );
 tt_rts_rtr_pipe_stage #(.WIDTH(32)) id_pc_flops
 (

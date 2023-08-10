@@ -33,8 +33,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                   input  logic [63:0]  load_mask,
                   input  logic         load_mask_valid,
 
-                  input  logic         memop_sync_end,
                   output logic         memop_sync_start,
+                  input  logic         memop_sync_end,
+                  input  logic [4:0]   memop_sb_id,
 
                   input  logic         mask_idx_credit,
                   output logic [64:0]  mask_idx_item,
@@ -259,14 +260,34 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic       load_commit;
   logic       load_memsync_start;
 
+  logic [4:0] id_sb_id; // sb_id of the instruction at id stage
+  logic [2:0] load_stride_eew;
+  logic is_unit_stride;
+
   logic [7:0][2:0] req_buffer;
   logic [3:0] req_buffer_wptr;
   logic drain_load_buffer;
-  logic [3:0] load_buffer_rptr;
+  logic [2:0] load_buffer_rptr;
 
+  logic [63:0] scalar_opnd_reg;
   logic [511:0] packed_load_data;
   logic [511:0] shifted_load_data;
   logic [63:0]  byte_en;
+  logic [4:0]   sb_vd;
+  logic [2:0]   sb_lqid;
+  logic [1:0]   sb_data_size;
+  logic [1:0]   sb_index_size;
+  logic [2:0]   sb_load_stride_eew;
+  logic         sb_drain_load_buffer;
+  logic [2:0]   sb_drain_lqid_start;
+  logic [2:0]   sb_ref_count;
+  logic         sb_completed_valid;
+  logic [4:0]   sb_completed_sb_id;
+  logic [63:0]  sb_completed_dest_reg;
+  logic drain_store_buffer;
+  logic [2:0] num_store_transactions;
+  logic [2:0] num_store_transactions_next;
+  logic [11:0] num_bits;
   logic [4:0]   v_reg;
   logic [10:0]  el_id;
   logic [5:0]   el_off;
@@ -446,11 +467,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_mem_fe_skidbuffull                  (mem_fe_skidbuffull),    
     .i_mem_id_lqnxtid                      (mem_id_lqnxtid[LQ_DEPTH_LOG2-1:0]),
 
-    .i_ovi_stall                           (ovi_stall),
     .o_is_whole_memop                      (id_is_whole_memop),
     .o_is_masked_memop                      (id_is_masked_memop),
     .o_is_indexldst                        (id_is_indexldst),
-    .o_is_maskldst                         (id_is_maskldst)
+    .o_is_maskldst                         (id_is_maskldst),
+    .i_if_sb_id                            (read_issue_sb_id),
+    .o_id_sb_id                            (id_sb_id)
   );  
 
   //////////
@@ -566,7 +588,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     // Debug
     .i_reset_pc             ('0),
 
-    .i_ovi_stall(ovi_stall),
+    .i_draining_store_buffer(drain_store_buffer),
+    .i_id_store(vecldst_autogen_store),
     .o_ex_last(ex_last)
   );
 
@@ -766,7 +789,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_data_req_rtr           ('1    ),
     .i_data_vld_0             (drain_load_buffer),
     .i_data_vld_cancel_0      ('0),
-    .i_data_resp_id_0         (DATA_REQ_ID_WIDTH'({7'b0,req_buffer[load_buffer_rptr[2:0]]})),
+    .i_data_resp_id_0         (DATA_REQ_ID_WIDTH'({7'b0,load_buffer_rptr[2:0]})),
     .i_data_rddata_0          (load_buffer[load_buffer_rptr[2:0]]),
     .i_data_vld_1             ('0   ),
     .i_data_vld_cancel_1      ('0),
@@ -886,21 +909,20 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   logic fsm_memop_sync_start;
   logic fsm_completed_valid;
-  tt_memop_fsm memop_fsm(.i_clk(clk), 
-                    .i_reset_n(reset_n),
-                    .i_load(vecldst_autogen_load),  
-                    .i_store(vecldst_autogen_store),
-                    .i_ex_rtr(ex_id_rtr),
-                    .i_id_ex_rts(id_ex_rts),
-                    .i_last_uop(id_ex_last),
-                    .i_lq_empty(lq_empty),
-                    .i_mem_req(o_data_req), // load memory request coming from ocelot
-                    .i_memop_sync_end(memop_sync_end),
-                    .o_memop_sync_start(fsm_memop_sync_start),
-                    .o_completed_valid(fsm_completed_valid),
-                    .o_ovi_stall(ovi_stall),
-                    .o_is_load(fsm_is_load));
-
+  // tt_memop_fsm memop_fsm(.i_clk(clk), 
+  //                   .i_reset_n(reset_n),
+  //                   .i_load(vecldst_autogen_load),  
+  //                   .i_store(vecldst_autogen_store),
+  //                   .i_ex_rtr(ex_id_rtr),
+  //                   .i_id_ex_rts(id_ex_rts),
+  //                   .i_last_uop(id_ex_last),
+  //                   .i_lq_empty(lq_empty),
+  //                   .i_mem_req(o_data_req), // load memory request coming from ocelot
+  //                   .i_memop_sync_end(memop_sync_end),
+  //                   .o_memop_sync_start(fsm_memop_sync_start),
+  //                   .o_completed_valid(fsm_completed_valid),
+  //                   .o_ovi_stall(ovi_stall),
+  //                   .o_is_load(fsm_is_load));
   assign enough_data = store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] &&
                        store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1];
 
@@ -919,7 +941,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       store_buffer_wptr  <= '0;
       store_buffer_valid <= '0;
     end else begin
-      if(memop_sync_end) begin
+      if(num_store_transactions_next == 0) begin
         store_buffer_wptr  <= '0;
         store_buffer_valid <= '0;
       end else
@@ -932,10 +954,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   end
 
   // assign store_memsync_start = store_fsm_state == 0 && vecldst_autogen_store && ocelot_read_req;
-  logic drain_store_buffer;
-  logic [2:0] num_store_transactions;
-  logic [2:0] num_store_transactions_next;
-  logic [11:0] num_bits;
+
   always_comb begin
     // maybe if(id_ex_units_rts && ex_id_rtr && id_ex_last && vecldst_autogen_store)
     if(vecldst_autogen_store && !drain_store_buffer) begin
@@ -970,7 +989,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     if(!reset_n)
       memop_sync_start <= 0;
     else
-      memop_sync_start <= fsm_memop_sync_start;
+      memop_sync_start <= (vecldst_autogen_store || vecldst_autogen_load) && id_ex_rts && ex_id_rtr && id_ex_vecldst_autogen.ldst_iter_cnt == 0;
   end
   always_ff@(posedge clk) begin
     if(!reset_n) begin
@@ -1006,7 +1025,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         drain_store_buffer <= 1;
         is_whole_memop <= id_is_whole_memop;
       end else
-      if(memop_sync_end) begin
+      if(num_store_transactions_next == 0) begin
         store_buffer_rptr <= '0;
         store_buffer_sent <= '0;
         drain_store_buffer <= 0;
@@ -1090,6 +1109,49 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .read_issue_vcsr_lmulb2(read_issue_vcsr_lmulb2)
   );
 
+  tt_scoreboard_ovi(.clk(clk),
+                    .reset_n(reset_n),
+                    .i_vd(id_ex_instrn[14:10]),
+                    .i_rd(ocelot_instrn_commit_data[63:0]),
+                    .i_rd_valid(ocelot_instrn_commit_valid),
+                    .i_rd_lqid(mem_dst_lqid),
+                    .i_lqnxtid(mem_id_lqnxtid),
+                    .i_data_size(data_size),
+                    .i_index_size(index_size),
+                    .i_load_stride_eew(load_stride_eew),
+                    .i_memop_sync_end(memop_sync_end),
+                    .i_memop_sync_end_sb_id(memop_sb_id),
+                    .i_id_store(vecldst_autogen_store),
+                    .i_id_load(vecldst_autogen_load),
+                    .i_id_ex_rts(id_ex_rts),
+                    .i_ex_id_rtr(ex_id_rtr),
+                    .i_vex_id_rtr(vex_id_rtr),
+                    .i_id_vex_rts(id_vex_rts),
+                    .i_id_sb_id(id_sb_id),
+                    .i_id_mem_lqalloc(id_mem_lqalloc),
+                    .i_lq_commit(mem_lq_commit),
+                    .i_dest_lqid(mem_dst_lqid),
+                    .i_first_alloc(id_ex_vecldst_autogen.ldst_iter_cnt == 0),
+                    .i_last_alloc(id_ex_last),
+                    .i_load_sb_id(load_seq_id[33:29]),
+
+                    .o_vd(sb_vd),
+                    .o_lqid(sb_lqid),
+                    .o_data_size(sb_data_size),
+                    .o_index_size(sb_index_size),
+                    .o_load_stride_eew(sb_load_stride_eew),
+
+                    .o_drain_load_buffer(sb_drain_load_buffer),
+                    .i_draining_load_buffer(drain_load_buffer),
+                    .o_drain_ref_count(sb_ref_count),
+                    .o_drain_lqid_start(sb_drain_lqid_start),
+
+                    .o_completed_valid(sb_completed_valid),
+                    .o_completed_sb_id(sb_completed_sb_id),
+                    .o_completed_dest_reg(sb_completed_dest_reg),
+                    .i_debug_commit_data(ocelot_instrn_commit_data),
+                    .i_debug_commit_mask(ocelot_instrn_commit_mask));
+
   assign vcsr        = ocelot_read_req && read_valid ? read_issue_vcsr : vcsr_reg;
   assign vcsr_lmulb2 = ocelot_read_req && read_valid ? read_issue_vcsr_lmulb2 : vcsr_lmulb2_reg;
 
@@ -1108,9 +1170,19 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   assign el_count = load_seq_id[28:22];
   assign sb_id = load_seq_id[33:29];
 
-  logic [2:0] load_stride_eew;
-  logic is_unit_stride;
   always_comb begin
+    is_unit_stride = id_ex_instrn[27:26] == 2'b00;
+    data_size = id_is_indexldst ? vcsr[37:36] :
+                id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
+                id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
+                id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
+    index_size =  id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
+                  id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
+                  id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW      
+    load_stride = !id_is_indexldst ? scalar_opnd_reg : 
+                vcsr[38:36] == 3'b000 ? 1 : // 8-bit EEW
+                vcsr[38:36] == 3'b101 ? 2 : // 16-bit EEW
+                vcsr[38:36] == 3'b110 ? 4 : 8; // 32-bit, 64-bit EEW;                            
     if(is_unit_stride)
         load_stride_eew = 0;
     else if((data_size == 0 && load_stride == 64'd1) ||
@@ -1147,31 +1219,11 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         load_stride_eew = 0;
   end
 
-  logic [63:0] scalar_opnd_reg;
   always @(posedge clk) begin
     if(!reset_n)
       scalar_opnd_reg <= 0;
     else if(ocelot_read_req && read_valid)
       scalar_opnd_reg <= read_issue_scalar_opnd;
-  end
-
-  always @(posedge clk) begin
-    if(!reset_n)
-      {index_size,data_size,load_stride,is_unit_stride} <= 0;
-    else if(fsm_memop_sync_start) begin
-      index_size <= id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
-                    id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
-                    id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
-      data_size <= id_is_indexldst ? vcsr[37:36] :
-                   id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
-                   id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
-                   id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
-      load_stride <= !id_is_indexldst ? read_issue_scalar_opnd : 
-                  vcsr[38:36] == 3'b000 ? 1 : // 8-bit EEW
-                  vcsr[38:36] == 3'b101 ? 2 : // 16-bit EEW
-                  vcsr[38:36] == 3'b110 ? 4 : 8; // 32-bit, 64-bit EEW;
-      is_unit_stride <= id_ex_instrn[27:26] == 2'b00;
-    end
   end
 
   lrm_model lrm
@@ -1181,33 +1233,36 @@ module tt_vpu_ovi #(parameter VLEN = 256)
    .load_valid(load_valid),
    .load_data(load_data),
    .load_seq_id(load_seq_id),
-   .stride(load_stride_eew),
-   .eew(data_size), 
+   .stride(sb_load_stride_eew),
+   .eew(sb_data_size), 
 
    .packed_data(shifted_load_data),
    .byte_en(byte_en)
   );
 
-  logic [2:0] load_buffer_rptr_start;
+  logic [2:0] load_buffer_drain_cntr;
   always @(posedge clk) begin
     if(!reset_n)
-      drain_load_buffer <= 0;
+      {drain_load_buffer,load_buffer_drain_cntr} <= 0;
     else begin
-      if(memop_sync_end && fsm_is_load)
+      if(sb_drain_load_buffer)
         drain_load_buffer <= 1;
-      else if(load_buffer_rptr == req_buffer_wptr - 1)
+      else if(load_buffer_drain_cntr == 0)
         drain_load_buffer <= 0;
+
+      if(sb_drain_load_buffer && !drain_load_buffer)
+        load_buffer_drain_cntr <= sb_ref_count - 1;
+      else if(drain_load_buffer)
+        load_buffer_drain_cntr <= load_buffer_drain_cntr - 1;
     end
   end
 
   always @(posedge clk) begin
     if(!reset_n)
-      {load_buffer_rptr, load_buffer_rptr_start} <= '0;
+      {load_buffer_rptr} <= '0;
     else begin
-      if(vecldst_autogen_load && ex_id_rtr && id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt == 0) begin
-        load_buffer_rptr <= read_issue_inst[9:7];
-        load_buffer_rptr_start <= read_issue_inst[9:7];
-      end
+      if(!drain_load_buffer && sb_drain_load_buffer)
+        load_buffer_rptr <= sb_drain_lqid_start;
       else if(drain_load_buffer)
         load_buffer_rptr <= load_buffer_rptr + 1;
     end
@@ -1220,7 +1275,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         load_buffer[k] <= 0;
     else if(load_valid) begin
       for(k=0; k<VLEN; k=k+8)
-        load_buffer[v_reg[2:0]][k+:8] <= byte_en[k/8] ? shifted_load_data[k+:8] : load_buffer[v_reg[2:0]][k+:8];
+        load_buffer[v_reg-sb_vd+sb_lqid][k+:8] <= byte_en[k/8] ? shifted_load_data[k+:8] : load_buffer[v_reg-sb_vd+sb_lqid][k+:8];
     end
   end
 
@@ -1277,17 +1332,17 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       completed_illegal <= 0;
     end
     else begin
-      completed_valid <= completed_valid_nxt;
-      completed_sb_id <= sbid_queue[sbid_queue_rptr];
+      completed_valid <= sb_completed_valid;
+      completed_sb_id <= sb_completed_sb_id;
       completed_fflags <= ocelot_instrn_commit_fflags;
-      completed_dest_reg <= ocelot_instrn_commit_data[63:0];
+      completed_dest_reg <= sb_completed_dest_reg;
       completed_vxsat <= 0;
       completed_vstart <= 0;
       completed_illegal <= 0;
     end
   end
 
-  assign completed_valid_nxt = (ocelot_instrn_commit_valid && !commit_is_load) || fsm_completed_valid;
+  //assign completed_valid_nxt = (ocelot_instrn_commit_valid && !commit_is_load) || fsm_completed_valid;
 
   logic [VLEN*8-1:0] debug_wb_vec_wdata_saved;
   logic [7:0]        debug_wb_vec_wmask_saved;
