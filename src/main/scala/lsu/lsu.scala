@@ -138,7 +138,7 @@ class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   val dsqFull = Bool()
   val dlqFull = Bool()
   val isMask = Bool()
-  val Mask = Bits(64.W)
+  val Mask = Bits(32.W)
 //  val isFake = Bool()
 }
 
@@ -152,7 +152,7 @@ class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   val sbId = Bits(5.W)
   val strideDir = Bool()
   val isMask = Bool()
-  val Mask = Bits(64.W)
+  val Mask = Bits(32.W)
   val isFake = Bool()
 }
 
@@ -321,7 +321,7 @@ class DLQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val elemCount = Bits(7.W)
   val strideDir = Bool()
   val isMask = Bool()
-  val Mask = Bits(64.W)
+  val Mask = Bits(32.W)
   val isFake = Bool()
 
 //  val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us

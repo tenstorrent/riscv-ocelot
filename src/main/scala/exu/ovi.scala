@@ -853,7 +853,12 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
   val currentMask = WireInit (true.B)
   // current mask is 1 bit for now, will change for V1  
   currentMask := Mux(isIndex, currentEntry(64), currentEntry(currentMaskIndex))
-  io.currentMaskOut := currentMask
+  io.currentMaskOut := Mux(vPacker.io.packOveride, currentEntry((VLEN/8 - 1), 0), currentMask)
+
+  val vPackMask = Module (new VPackMask (VLEN))
+  vPackMask.io.elemCount := io.elemCount
+  vPackMask.io.currentMask := currentEntry((VLEN/8 - 1), 0)
+
 
   /*
      Calculate Index Address
@@ -866,12 +871,13 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
 
     
   // popForce will happen when hasMask, masked-off, not last
-  io.popForce := working && !currentMask && isMask && hasMask && !io.last 
+  io.popForce := working && !io.last && isMask && hasMask && ((!vPacker.io.packOveride && !currentMask) || (vPacker.io.packOveride && !vPackMask.io.validMask)) 
   // this happens when the last element is masked-off, still need to send something
-  val lastFake = working && !currentMask && isMask  && hasMask && io.last 
+  val lastFake = working && io.last && isMask  && hasMask && ((!vPacker.io.packOveride && !currentMask) || (vPacker.io.packOveride && !vPackMask.io.validMask)) 
   io.popForceLast := lastFake
   // can Pop happens when lastFake, !isMask && !isIndex, !isMask && isIndex && hasMask, isMask && hasMask && currentMask, fakeHold
-  io.canPop := working && ((currentMask && isMask && hasMask) || (!isMask && !isIndex) || (!isMask && isIndex && hasMask) || lastFake || fakeHold)
+  io.canPop := working && ((!vPacker.io.packOveride && ((currentMask && isMask && hasMask) || (!isMask && !isIndex) || (!isMask && isIndex && hasMask))) || lastFake || fakeHold ||
+                            vPacker.io.packOveride && (!isMask || (hasMask && isMask && vPackMask.io.validMask)))
 //  io.canPop := working && ((currentMask && ((isMask || isIndex) && hasMask)) || (!isMask && !isIndex) || lastFake)
   val isLastIndex = currentEntry(65)
   
@@ -907,13 +913,21 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int)(implicit p: P
            }          
        }.otherwise {
         // pop off current mask if it reaches end
-          when (currentMaskIndex === 63.U && isMask) {
+          when (vPacker.io.packOveride) {
+            when (vPacker.io.packSkipVMask) {
+              readPtr := WrapInc(readPtr, Depth)
+              io.release := true.B 
+            }.otherwise {
+              buffer(readPtr) := buffer(readPtr) >> io.elemCount 
+            }
+          }.otherwise {when (currentMaskIndex === 63.U && isMask) {
             readPtr := WrapInc(readPtr, Depth)
             currentMaskIndex := 0.U
             io.release := true.B 
           }.elsewhen(isMask) {
             currentMaskIndex := currentMaskIndex + 1.U
           }
+        }
           currentIndex := currentIndex + 1.U 
           when (vPacker.io.packOveride){
             when (vPacker.io.packIncrement) {
@@ -1146,7 +1160,8 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
      // interface with VIdGen / VAGen
     val packOveride = Output (Bool())
     val packId = Output (UInt(I.W))
-    val packSkipVreg = Output (Bool())  
+    val packSkipVreg = Output (Bool())
+    val packSkipVMask = Output (Bool())  
     val packIncrement = Output (Bool())
     val packLast = Output (Bool())
     val packDir = Output (Bool())
@@ -1164,13 +1179,15 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
     val isOne = WireInit(false.B)
     val isTwo = WireInit(false.B)
     val isFour = WireInit(false.B)
+    val isMask = RegInit(false.B)
     val logStride = WireInit(3.U(2.W)) // this is the log2 of stride
     isZero := strideDetector.io.isZero
     isOne := strideDetector.io.isOne
     isTwo := strideDetector.io.isTwo
     isFour := strideDetector.io.isFour
     logStride := strideDetector.io.logStride 
-    canPack := io.configValid && (io.isUnit || (io.isStride && (isOne || isTwo || isFour))) && !io.isMask && io.isLoad
+    canPack := io.configValid && (io.isUnit || (io.isStride && (isOne || isTwo || isFour))) && io.isLoad
+  //  isMask := canPack && io.isMask && io.isLoad 
     
 
   // initializing element offset and logStride
@@ -1182,6 +1199,7 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
     val currentDir = RegInit(false.B) // direction, might be useful
     val currentIndex = RegInit(0.U(9.W)) // the index of element (as a whole in the vector)
     val currentVIndex = RegInit(0.U(6.W))
+    val currentMIndex = RegInit(0.U(7.W))
     val vlHold = RegInit(0.U(9.W))
     val isPacking = RegInit(false.B)  // drive override
     
@@ -1206,8 +1224,10 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
        currentVMax := VLENByte.U >> (io.memSize)
        currentIndex := 0.U 
        currentVIndex := 0.U 
+       currentMIndex := 0.U
        vlHold := io.vl 
        isPacking := true.B 
+       isMask := io.isMask
     }
 
     // calculation of offset and count
@@ -1228,7 +1248,7 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
     io.packSkipVreg := (afterVLCount === vRegDistant) && isPacking
     io.packLast := (afterVLCount === vlDistant) && isPacking
     io.packIncrement := ((currentOffset >> currentLogStride) + io.elemCount === currentMax) && isPacking
-
+    io.packSkipVMask := ((currentMIndex + io.elemCount) === 64.U) && isMask && isPacking 
     when(io.pop) {
       when(io.packLast) {
         isPacking := false.B 
@@ -1238,6 +1258,11 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
         currentVIndex := 0.U 
       }.otherwise {
         currentVIndex := currentVIndex + io.elemCount 
+      }
+      when (io.packSkipVMask) {
+        currentMIndex := 0.U 
+      }.elsewhen(isMask) {
+        currentMIndex := currentMIndex + io.elemCount 
       }
       when ((currentOffset >> currentLogStride) + io.elemCount === currentMax) {
         currentOffset := 0.U 
@@ -1280,6 +1305,20 @@ class StrideDetector extends Module {
     io.logStride := 0.U 
   }
 }
+
+class VPackMask (val VLEN: Int) extends Module {
+  val EffMaskLength = VLEN / 8
+  val io = IO (new Bundle{
+    val elemCount = Input(UInt(7.W))
+    val currentMask = Input (UInt(EffMaskLength.W))
+    val validMask = Output (Bool())
+  })
+  val internalMask = WireInit(0.U(EffMaskLength.W))
+  internalMask := (1.U << io.elemCount) - 1.U 
+  io.validMask := (io.currentMask & internalMask).orR
+}
+
+
 /*
 class Spacker(val M: Int, val VLEN: Int) extends Module {
    val k = log2Ceil(M/8+1)
