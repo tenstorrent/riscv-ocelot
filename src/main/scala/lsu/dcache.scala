@@ -828,7 +828,7 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
 
   val loadgen = (0 until memWidth).map { w =>
     new LoadGen(s2_req(w).uop.mem_size, s2_req(w).uop.mem_signed, s2_req(w).addr,
-                s2_data_word(w), s2_sc && (w == 0).B, wordBytes)
+                s2_data_word(w), s2_sc && (w == 0).B, coreDataBytes)
   }
   // Mux between cache responses and uncache responses
   val cache_resp   = Wire(Vec(memWidth, Valid(new BoomDCacheResp)))
@@ -898,8 +898,8 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
                        Mux(s5_bypass(w), s5_req.data,
                                          s2_data_word_prebypass(w))))
   }
-  val amoalu   = Module(new AMOALU(xLen))
-  amoalu.io.mask := new StoreGen(s2_req(0).uop.mem_size, s2_req(0).addr, 0.U, xLen/8).mask
+  val amoalu   = Module(new AMOALU(coreDataBits))
+  amoalu.io.mask := new StoreGen(s2_req(0).uop.mem_size, s2_req(0).addr, 0.U, coreDataBytes).mask
   amoalu.io.cmd  := s2_req(0).uop.mem_cmd
   amoalu.io.lhs  := s2_data_word(0)
   amoalu.io.rhs  := s2_req(0).data
