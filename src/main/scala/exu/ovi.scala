@@ -16,6 +16,10 @@ import boom.lsu.{LSUExeIO}
 
 import hardfloat._
 
+/** Request queue that supports speculation.
+ * 
+ * This allows requests to be killed much closer to the OVI boundary.
+ */ 
 class OviReqQueue(val num_entries: Int)(implicit p: Parameters) extends BoomModule {
   val io = IO(new Bundle {
     val enq = DeqIO(new EnhancedFuncUnitReq(xLen, vLen))
@@ -65,28 +69,12 @@ class OviReqQueue(val num_entries: Int)(implicit p: Parameters) extends BoomModu
   for (idx <- 0 until num_entries)
     when(killed_entries(idx)) { entries_valid(idx) := false.B }
 
-  // Calculate where the next entry should be enqueued
-  // TODO: do not use PopCount here
-  val num_killed = PopCount(killed_entries)
+  // Take killed entries into account when finding a place for the next entry
   val new_enq_ptr = Mux(
-    num_killed > enq_ptr,
-    enq_ptr +& num_entries.U - num_killed,
-    enq_ptr - num_killed
+    killed_entries.asUInt === 0.U,
+    enq_ptr,
+    AgePriorityEncoder(killed_entries, deq_ptr)
   )
-
-  val mispredict = io.brupdate.b2.mispredict
-  val killed_dbg = Cat(killed_entries)
-  val valid_dbg = Cat(entries_valid)
-  dontTouch(killed_dbg)
-  dontTouch(valid_dbg)
-  dontTouch(num_killed)
-  dontTouch(mispredict)
-
-  when(io.deq.fire) {
-    entries_valid(deq_ptr) := false.B
-    deq_ptr := WrapInc(deq_ptr, num_entries)
-  }
-  io.deq.bits := entries(deq_ptr)
 
   // Instructions might already be killed by the time they arrive
   val do_enq = io.enq.fire && !(
@@ -98,6 +86,12 @@ class OviReqQueue(val num_entries: Int)(implicit p: Parameters) extends BoomModu
     entries_valid(new_enq_ptr) := true.B
   }
   enq_ptr := Mux(do_enq, WrapInc(new_enq_ptr, num_entries), new_enq_ptr)
+
+  when(io.deq.fire) {
+    entries_valid(deq_ptr) := false.B
+    deq_ptr := WrapInc(deq_ptr, num_entries)
+  }
+  io.deq.bits := entries(deq_ptr)
 }
 
 ////////////////////////////////////////////////////////////////
