@@ -1398,9 +1398,9 @@ class Spacker(val M: Int, val VDBLEN: Int) extends Module {
 
    val currentOffset = RegInit(0.U(6.W)) // offset, marking the position in cache line
    val currentMax = RegInit(0.U(6.W)) // max element count for now (for each transaction)
-   val currentVMax = RegInit(0.U(6.W)) // max element count per vReg
+   val currentVMax = RegInit(0.U(7.W)) // max element count per vReg
    val currentIndex = RegInit(0.U(9.W)) // the index of element (as a whole in the vector)
-   val currentVIndex = RegInit(0.U(6.W))
+   val currentVIndex = RegInit(0.U(7.W))
    val vlHold = RegInit(0.U(9.W))
    val memSize = RegInit(0.U(2.W))
    val isPacking = RegInit(false.B)  // drive override
@@ -1426,10 +1426,10 @@ class Spacker(val M: Int, val VDBLEN: Int) extends Module {
     theoreticalCount := currentMax - currentOffset
     val actualTheoreticalCount = WireInit(0.U(6.W)) //max count in this transaction if ignore vl and vReg boundary
     actualTheoreticalCount := PriorityEncoderOH (theoreticalCount)
-    val vRegDistant = WireInit(0.U(6.W))
+    val vRegDistant = WireInit(0.U(7.W))
     vRegDistant := currentVMax - currentVIndex
-    val actualVRegDistant = WireInit(0.U(6.W))
-    val vRegPower2 = Module (new SmallPowerOfTwo(6))
+    val actualVRegDistant = WireInit(0.U(7.W))
+    val vRegPower2 = Module (new SmallPowerOfTwo(7))
     vRegPower2.io.inData := vRegDistant 
     actualVRegDistant := vRegPower2.io.outData 
 
