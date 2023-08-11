@@ -1229,7 +1229,7 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
     isTwo := strideDetector.io.isTwo
     isFour := strideDetector.io.isFour
     logStride := strideDetector.io.logStride 
-    canPack := io.configValid && (io.isUnit || (io.isStride && (isOne || isTwo || isFour))) && io.isLoad
+    canPack := io.configValid && (io.isUnit || (io.isStride && (isOne || isTwo || isFour))) && io.isLoad && (io.vl =/= 0.U)
   //  isMask := canPack && io.isMask && io.isLoad 
     
 
@@ -1394,7 +1394,7 @@ class Spacker(val M: Int, val VDBLEN: Int) extends Module {
   })
 
    val canPack = WireInit (false.B)
-   canPack := io.configValid && io.isUnit && !io.isMask && !io.isLoad
+   canPack := io.configValid && io.isUnit && !io.isMask && !io.isLoad && (io.vl =/= 0.U)
 
    val currentOffset = RegInit(0.U(6.W)) // offset, marking the position in cache line
    val currentMax = RegInit(0.U(6.W)) // max element count for now (for each transaction)
