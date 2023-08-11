@@ -1290,7 +1290,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         load_buffer[k] <= 0;
     else if(load_valid) begin
       for(k=0; k<VLEN; k=k+8)
-        load_buffer[v_reg-sb_vd+sb_lqid][k+:8] <= byte_en[k/8] ? shifted_load_data[k+:8] : load_buffer[v_reg-sb_vd+sb_lqid][k+:8];
+        load_buffer[(v_reg-sb_vd+sb_lqid)%8][k+:8] <= byte_en[k/8] ? shifted_load_data[k+:8] : load_buffer[(v_reg-sb_vd+sb_lqid)%8][k+:8];
     end
   end
 
