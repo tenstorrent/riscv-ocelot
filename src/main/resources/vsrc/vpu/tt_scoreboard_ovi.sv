@@ -2,6 +2,7 @@ module tt_scoreboard_ovi(input logic       clk,
                          input logic       reset_n,
                          input logic [4:0] i_vd,
                          input logic [63:0] i_rd,
+                         input logic [4:0] i_fflags,
                          input logic        i_rd_valid,
                          input logic [2:0] i_rd_lqid,
                          input logic [2:0] i_lqnxtid,
@@ -38,6 +39,7 @@ module tt_scoreboard_ovi(input logic       clk,
 
                          output logic      o_completed_valid,
                          output logic [4:0]  o_completed_sb_id,
+                         output logic [4:0]  o_completed_fflags,
                          output logic [63:0] o_completed_dest_reg,
                          
                          input logic [2047:0] i_debug_commit_data,
@@ -57,6 +59,7 @@ module tt_scoreboard_ovi(input logic       clk,
     logic       got_sync_end;
     logic [3:0] ref_count; // counts the number of lq entries allocated for this instruction
     logic       got_last_alloc;
+    logic [4:0] fflags;
     logic [2047:0] debug_commit_data;
     logic [7:0] debug_commit_mask;
   } scoreboard_entry;
@@ -146,6 +149,7 @@ module tt_scoreboard_ovi(input logic       clk,
 
       if(i_rd_valid) begin
         scoreboard[sb_id_buffer[i_rd_lqid]].rd <= i_rd;
+        scoreboard[sb_id_buffer[i_rd_lqid]].fflags <= i_fflags;
         scoreboard[sb_id_buffer[i_rd_lqid]].debug_commit_data <= i_debug_commit_data;
         scoreboard[sb_id_buffer[i_rd_lqid]].debug_commit_mask <= i_debug_commit_mask;
       end
@@ -186,6 +190,7 @@ module tt_scoreboard_ovi(input logic       clk,
            .req_out(),
            .enc_req_out(o_completed_sb_id));
 
+  assign o_completed_fflags  = completed_entry.fflags;
   assign o_completed_dest_reg = completed_entry.rd;
   assign o_debug_commit_data = completed_entry.debug_commit_data;
   assign o_debug_commit_mask = completed_entry.debug_commit_mask;
