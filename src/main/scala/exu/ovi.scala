@@ -527,7 +527,8 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 */
 
   
-  MemSyncEnd := io.core.vGenIO.resp.bits.vectorDone && io.core.vGenIO.resp.valid 
+//  MemSyncEnd := io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid && inMiddle
+  MemSyncEnd := io.core.vGenIO.resp.bits.vectorDone && io.core.vGenIO.resp.valid
   MemLoadValid := LSUReturnLoadValid || fakeLoadReturnQueue.io.deq.valid
   MemSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg) 
 
@@ -583,7 +584,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   vpuModule.io.dispatch_next_senior := reqQueue.io.deq.valid && reqQueue.io.deq.ready
   vpuModule.io.dispatch_kill := 0.B
   
-     vpuModule.io.memop_sync_end := MemSyncEnd
+   vpuModule.io.memop_sync_end := MemSyncEnd
    vpuModule.io.memop_sb_id := MemSbId 
 // vpuModule.io.mem_vstart := MEMVstart
    vpuModule.io.load_valid := MemLoadValid
@@ -672,7 +673,7 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   addResource("/vsrc/vpu/tt_decoded_mux.sv")
   addResource("/vsrc/vpu/tt_decoder.sv")
   addResource("/vsrc/vpu/tt_reshape.sv")
-  //addResource("/vsrc/vpu/tt_memop_fsm.sv")
+  addResource("/vsrc/vpu/tt_memop_fsm.sv")
   addResource("/vsrc/vpu/tt_mask_fsm.sv")
   addResource("/vsrc/vpu/tt_scoreboard_ovi.sv")
   addResource("/vsrc/vpu/lrm_model.sv")
@@ -747,6 +748,41 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
     val packSkipVreg = Output (Bool()) 
     val packSkipVDB = Output (Bool())   
   })
+  
+
+  val vPacker = Module (new Vpacker (M, VLEN))
+
+  vPacker.io.configValid := io.configValid     
+  vPacker.io.vl := io.vl
+  vPacker.io.memSize := io.memSize
+  vPacker.io.isUnit := io.isUnit
+  vPacker.io.isStride := io.isStride
+  vPacker.io.isMask := io.isMask
+  vPacker.io.isLoad := io.isLoad 
+  vPacker.io.startAddr := io.startAddr
+  vPacker.io.stride := io.stride 
+  vPacker.io.pop := io.pop 
+    
+  io.packOveride := vPacker.io.packOveride
+  io.packId := vPacker.io.packId 
+  io.packSkipVreg := vPacker.io.packSkipVreg   
+
+
+  val sPacker = Module (new Spacker (M, OVILEN))  
+  sPacker.io.configValid := io.configValid     
+  sPacker.io.vl := io.vl
+  sPacker.io.memSize := io.memSize
+  sPacker.io.isUnit := io.isUnit
+  sPacker.io.isMask := io.isMask
+  sPacker.io.isLoad := io.isLoad 
+  sPacker.io.startAddr := io.startAddr
+  
+  sPacker.io.pop := io.pop 
+  io.spackOveride := sPacker.io.packOveride
+  io.packVDBId := sPacker.io.packVDBId 
+  io.packSkipVDB := sPacker.io.packSkipVDB
+  
+    
   
 
   val vPacker = Module (new Vpacker (M, VLEN))
