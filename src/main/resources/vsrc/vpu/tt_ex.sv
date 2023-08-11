@@ -90,7 +90,9 @@ module tt_ex #(parameter INCL_VEC=0, VLEN=128, ADDRWIDTH=40, ST_DATA_WIDTH_BITS=
    // Unique indentifier for debug
    input [31:0] 		    i_reset_pc,
    input logic          i_draining_store_buffer,
-   input logic          i_id_store
+   input logic          i_id_store,
+   input logic          i_draining_mask_idx,
+   input logic          i_masked_or_indexed
 );
 
 tt_briscv_pkg::vecldst_autogen_s ex_vecldst_autogen;
@@ -197,7 +199,7 @@ wire mem_pipe_rtr     = (i_mem_ex_rtr & ~int_div_stall & (~(ex_vld & ex_type_vec
 reg ex_disp_vld;
 logic ex_last;
 
-assign o_ex_id_rtr = mem_pipe_rtr && !(i_id_store && i_draining_store_buffer);
+assign o_ex_id_rtr = mem_pipe_rtr && !(i_id_store && i_draining_store_buffer) && !(i_draining_mask_idx && i_masked_or_indexed);
 assign o_ex_last = ex_last;
 
 // Create a single cycle EX branch vld based on new instr popped out of the instrn_fifo

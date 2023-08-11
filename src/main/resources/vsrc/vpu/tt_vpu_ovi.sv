@@ -317,6 +317,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic       is_indexldst;
   logic       id_is_maskldst;
   logic       is_maskldst;
+  logic       draining_mask_idx;
 
   always_ff @(posedge clk) begin
     if(!reset_n) begin
@@ -592,6 +593,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
     .i_draining_store_buffer(drain_store_buffer),
     .i_id_store(vecldst_autogen_store),
+    .i_draining_mask_idx(draining_mask_idx),
+    .i_masked_or_indexed(id_is_masked_memop || id_is_indexldst),
     .o_ex_last(ex_last)
   );
 
@@ -1107,7 +1110,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .read_issue_vcsr_lmulb2(read_issue_vcsr_lmulb2)
   );
 
-  tt_scoreboard_ovi(.clk(clk),
+  tt_scoreboard_ovi scoreboard
+                   (.clk(clk),
                     .reset_n(reset_n),
                     .i_vd(id_ex_instrn[11:7]),
                     .i_rd(ocelot_instrn_commit_data[63:0]),
@@ -1130,7 +1134,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                     .i_lq_commit(mem_lq_commit),
                     .i_dest_lqid(mem_dst_lqid),
                     .i_first_alloc(id_ex_vecldst_autogen.ldst_iter_cnt == 0),
-                    .i_last_alloc(id_ex_last),
+                    .i_last_alloc(id_mem_lq_done),
                     .i_load_sb_id(load_seq_id[33:29]),
 
                     .o_vd(sb_vd),
@@ -1306,13 +1310,13 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                (.i_clk(clk),
                 .i_reset_n(reset_n),
                 .i_is_masked_memop(id_is_masked_memop),
-                .i_memop_sync_start(memop_sync_start_nxt),
+                .i_memop_sync_start_next(memop_sync_start_nxt),
                 .i_is_indexed(id_is_indexldst),
                 .i_mask_data(vmask_rddata),
                 .i_index_data(vs2_rddata),
                 .i_index_data_valid(id_ex_units_rts && ex_id_rtr),
                 .i_last_index(id_ex_last),
-                .i_memop_sync_end(memop_sync_end),
+                .o_draining_mask_idx(draining_mask_idx),
                 .i_vl(vcsr[$clog2(VLEN+1)-1+14:14]),
                 .i_eew(index_size),
                 .i_mask_idx_credit(mask_idx_credit),

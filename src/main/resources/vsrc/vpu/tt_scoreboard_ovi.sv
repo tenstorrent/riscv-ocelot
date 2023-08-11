@@ -52,7 +52,6 @@ module tt_scoreboard_ovi(input logic       clk,
     logic [1:0] data_size;
     logic [1:0] index_size;
     logic [2:0] load_stride_eew;
-    logic       valid;
     logic       is_load;
     logic       drained;
     logic       got_sync_end;
@@ -118,11 +117,8 @@ module tt_scoreboard_ovi(input logic       clk,
         else
           scoreboard[i_id_sb_id].got_last_alloc <= 0;
       end
-      else if(i_id_mem_lqalloc) begin
-        if(i_last_alloc)
+      else if(i_last_alloc) begin
           scoreboard[i_id_sb_id].got_last_alloc <= 1;
-        else
-          scoreboard[i_id_sb_id].got_last_alloc <= 0;
       end
 
       for(c=0; c<32; c=c+1) begin
