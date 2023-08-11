@@ -384,15 +384,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val stq_execute_head = Reg(UInt(stqAddrSz.W)) // point to next store to execute
 //  val stq_execute_save = Reg(Valid(UInt(stqAddrSz.W)))
   val vstCountWidth = stqAddrSz + 1
-  val youngest_vst     = Reg(UInt(stqAddrSz.W))
-  val vst_count        = Reg(UInt((vstCountWidth).W))
-  val vstExist         = Reg(Bool())
+  val youngest_vst     = RegInit(0.U(stqAddrSz.W))
+  val vst_count        = RegInit(0.U(vstCountWidth.W))
+  val vstExist         = RegInit(false.B)
   val vldCountWidth = ldqAddrSz + 1
-  val youngest_vld     = Reg(UInt(ldqAddrSz.W))
-  val vld_count        = Reg(UInt((vldCountWidth).W))
-  val vldExist         = Reg(Bool())
-  val stExist          = Reg(Bool())
-  val ldExist          = Reg(Bool())
+  val youngest_vld     = RegInit(0.U(ldqAddrSz.W))
+  val vld_count        = RegInit(0.U(vldCountWidth.W))
+  val vldExist         = RegInit(false.B)
+  val stExist          = RegInit(false.B)
+  val ldExist          = RegInit(false.B)
 
   // trying to detach the bundle so that we can move things around in the future
 //  val ioVGen           = io.core.VGen
@@ -497,6 +497,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   var ldq_full = Bool()
   var stq_full = Bool()
 
+  var cur_vst_count = vst_count 
+  var cur_vld_count = vld_count
+  var cur_vst_exist = vstExist 
+
+  var cur_vld_exist = vldExist 
+  var cur_youngest_vst = youngest_vst 
+  var cur_youngest_vld = youngest_vld
+
+
 
 
   for (w <- 0 until coreWidth)
@@ -549,22 +558,22 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         } 
         when (cur_vst_exist) {  
           ldq(ld_enq_idx).bits.hasOlderVst := true.B 
-          ldq(ld_enq_idx).bits.youngest_vst_count := vst_count
-          ldq(ld_enq_idx).bits.youngest_vst_idx := youngest_vst
+          ldq(ld_enq_idx).bits.youngest_vst_count := cur_vst_count
+          ldq(ld_enq_idx).bits.youngest_vst_idx := cur_youngest_vst
         }
       }.elsewhen (cur_vld_exist) {
          ldq(ld_enq_idx).bits.hasOlderVld := true.B 
-         ldq(ld_enq_idx).bits.youngest_vld_count := vld_count
-         ldq(ld_enq_idx).bits.youngest_vld_idx := youngest_vld
-         when (vstExist) {
+         ldq(ld_enq_idx).bits.youngest_vld_count := cur_vld_count
+         ldq(ld_enq_idx).bits.youngest_vld_idx := cur_youngest_vld
+         when (cur_vst_exist) {
           ldq(ld_enq_idx).bits.hasOlderVst := true.B 
-          ldq(ld_enq_idx).bits.youngest_vst_count := vst_count
-          ldq(ld_enq_idx).bits.youngest_vst_idx := youngest_vst
+          ldq(ld_enq_idx).bits.youngest_vst_count := cur_vst_count
+          ldq(ld_enq_idx).bits.youngest_vst_idx := cur_youngest_vst
          }
-      }.elsewhen (vstExist) {
+      }.elsewhen (cur_vst_exist) {
         ldq(ld_enq_idx).bits.hasOlderVst := true.B 
-        ldq(ld_enq_idx).bits.youngest_vst_count := vst_count
-        ldq(ld_enq_idx).bits.youngest_vst_idx := youngest_vst
+        ldq(ld_enq_idx).bits.youngest_vst_count := cur_vst_count
+        ldq(ld_enq_idx).bits.youngest_vst_idx := cur_youngest_vst
         
       }
 
@@ -603,6 +612,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
     ld_enq_idx = Mux(dis_ld_val, WrapInc(ld_enq_idx, numLdqEntries),
                                  ld_enq_idx)
+    cur_vld_exist = vld_exist || cur_vld_exist
+    cur_vld_count = Mux(vld_count_incr, WrapInc(cur_vld_count, numLdqEntries), cur_vld_count)
+    cur_vst_count = Mux(vst_count_incr, WrapInc(cur_vst_count, numStqEntries), cur_vst_count)
+    cur_youngest_vld = Mux(update_young_vld, ld_enq_idx, cur_youngest_vld)
+    cur_youngest_vst = Mux(update_young_vst, st_enq_idx, cur_youngest_vst)
+    cur_vst_exist = vst_exist || cur_vst_exist
+
 
     next_live_store_mask = Mux(dis_st_val, next_live_store_mask | (1.U << st_enq_idx),
                                            next_live_store_mask)
@@ -614,6 +630,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   ldq_tail := ld_enq_idx
   stq_tail := st_enq_idx
+
+  vst_count := cur_vst_count 
+  vld_count := cur_vld_count
+  vstExist := cur_vst_exist
+  vldExist := cur_vld_exist 
+  youngest_vst := cur_youngest_vst 
+  youngest_vld := cur_youngest_vld
+
 
   io.dmem.force_order   := io.core.fence_dmem
   io.core.fencei_rdy    := !stq_nonempty && io.dmem.ordered
