@@ -897,7 +897,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                           !dlq_commit_e.bits.succeeded && !dlq_commit_e.bits.isFake && !dlq_commit_e.bits.executed &&
                                            !(ldq_commit_e.bits.hasOlderVst && stq(ldq_commit_e.bits.youngest_vst_idx).bits.isVector && stq(ldq_commit_e.bits.youngest_vst_idx).valid
                                                       && stq(ldq_commit_e.bits.youngest_vst_idx).bits.vst_count === ldq_commit_e.bits.youngest_vst_count
-                                                      && !stq(ldq_commit_e.bits.youngest_vst_idx).bits.succeeded) && !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung) ) && !dlq_finished)
+                                                      && !stq(ldq_commit_e.bits.youngest_vst_idx).bits.succeeded) && !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung) ))
 //&& !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung)
   // Can we wakeup a load that was nack'd
   val block_load_wakeup = WireInit(false.B)
@@ -1794,7 +1794,7 @@ when (dlq_finished) {
 
   for (w <- 0 until memWidth) {
     // Advance dlq_execute_head
-    when(!dlq_finished && dlq_commit_e.valid) {
+    when(dlq_commit_e.valid) {
     //  when(dlq_commit_e.bits.isFake && (dlq_commit_e.bits.uop.ldq_idx === ldq_v_head)){
       when(dlq_commit_e.bits.isFake){
          dlq_commit_e.bits.succeeded := true.B
@@ -2117,6 +2117,11 @@ when (dlq_finished) {
       sbIdDone := dlq(dlq_head).bits.sbId
       ldq(dlq(dlq_head).bits.uop.ldq_idx).bits.succeeded := true.B 
       ldq(dlq(dlq_head).bits.uop.ldq_idx).bits.executed := true.B
+      
+      when ((ldq_v_head =/= ldq_tail) && (ldq_v_head === dlq(dlq_head).bits.uop.ldq_idx)) {
+        ldq_v_head := WrapInc(ldq_v_head, numLdqEntries)
+      }
+
     }    
   }
 
