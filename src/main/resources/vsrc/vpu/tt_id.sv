@@ -196,6 +196,7 @@ wire units_rtr = (i_ex_rtr & i_fp_ex0_id_rtr & i_vex_id_rtr) & !i_ex_bp_mispredi
 // FP/VEX rtr can always be held high
 // EX RTL will be low for div and vec ldst. See if this can be optimized
 logic [31:0] instrn_id_replay;
+logic [4:0]  id_sb_id_replay;
 logic [31:0] id_ex_pc_replay;
 logic [$clog2(VLEN):0] id_replay_cnt_start;
 logic  [5:0] lmul_replay_cnt;
@@ -225,6 +226,7 @@ logic no_lq_load_pending;
 `define HIGH_PERF_FETCH
 `ifdef HIGH_PERF_FETCH
   assign instrn_id       = id_replay ? instrn_id_replay : i_if_instrn;
+  assign o_id_sb_id      = id_replay ? id_sb_id_replay : i_if_sb_id;
   assign o_id_ex_pc      = id_replay ? id_ex_pc_replay : i_if_pc;
  
   assign id_rts          = (i_if_instrn_rts | id_replay)
@@ -246,17 +248,6 @@ tt_rts_rtr_pipe_stage #(.WIDTH(32)) id_instrn_flops
    .o_rts     (id_rts       ), // output side handshake
    .i_data    (i_if_instrn     ),
    .o_data    (instrn_id       )
-);
-tt_rts_rtr_pipe_stage #(.WIDTH(32)) id_sb_id_flops
-(
-   .i_clk     (i_clk           ),
-   .i_reset_n (i_reset_n       ),
-   .i_rts     (i_if_instrn_rts ), // input side handshake
-   .o_rtr     (o_id_instrn_rtr ), // input side handshake
-   .i_rtr     ((units_rtr) & (~raw_hazard_stall) ), // if EX is ready to accept next instruction and no raw hazard requiring a stall was detected
-   .o_rts     (id_rts       ), // output side handshake
-   .i_data    (i_if_sb_id     ),
-   .o_data    (o_id_sb_id       )
 );
 tt_rts_rtr_pipe_stage #(.WIDTH(32)) id_pc_flops
 (
@@ -351,6 +342,7 @@ if (INCL_VEC == 1) begin
  always @(posedge i_clk) begin
    if(~i_reset_n) begin
       instrn_id_replay <= '0;
+      id_sb_id_replay <= '0;
       id_ex_pc_replay <= '0;
       id_replay_type <= `BRISCV_REPLAY_TYPE_NONE;
       vec_autogen_replay <= '0;
@@ -368,6 +360,7 @@ if (INCL_VEC == 1) begin
    end
    else if (valid_vec_instrn) begin				// Start replay mode
       instrn_id_replay <= instrn_id;
+      id_sb_id_replay <= o_id_sb_id;
       id_ex_pc_replay <= o_id_ex_pc;
       vec_autogen_replay <= vec_autogen_incr;
       vecldst_autogen_replay <= vecldst_autogen_incr;

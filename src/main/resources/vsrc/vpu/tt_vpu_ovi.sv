@@ -230,6 +230,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   logic [VLEN*8-1:0] ocelot_instrn_commit_data;
   logic [7:0] ocelot_instrn_commit_mask;
+  logic [VLEN*8-1:0] sb_debug_commit_data;
+  logic [7:0] sb_debug_commit_mask;  
   logic [4:0] ocelot_instrn_commit_fflags;
   logic       ocelot_sat_csr;
   logic       ocelot_instrn_commit_valid;
@@ -1111,7 +1113,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   tt_scoreboard_ovi(.clk(clk),
                     .reset_n(reset_n),
-                    .i_vd(id_ex_instrn[14:10]),
+                    .i_vd(id_ex_instrn[11:7]),
                     .i_rd(ocelot_instrn_commit_data[63:0]),
                     .i_rd_valid(ocelot_instrn_commit_valid),
                     .i_rd_lqid(mem_dst_lqid),
@@ -1150,7 +1152,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                     .o_completed_sb_id(sb_completed_sb_id),
                     .o_completed_dest_reg(sb_completed_dest_reg),
                     .i_debug_commit_data(ocelot_instrn_commit_data),
-                    .i_debug_commit_mask(ocelot_instrn_commit_mask));
+                    .i_debug_commit_mask(ocelot_instrn_commit_mask),
+                    .o_debug_commit_data(sb_debug_commit_data),
+                    .o_debug_commit_mask(sb_debug_commit_mask));
 
   assign vcsr        = ocelot_read_req && read_valid ? read_issue_vcsr : vcsr_reg;
   assign vcsr_lmulb2 = ocelot_read_req && read_valid ? read_issue_vcsr_lmulb2 : vcsr_lmulb2_reg;
@@ -1342,53 +1346,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
-  //assign completed_valid_nxt = (ocelot_instrn_commit_valid && !commit_is_load) || fsm_completed_valid;
-
-  logic [VLEN*8-1:0] debug_wb_vec_wdata_saved;
-  logic [7:0]        debug_wb_vec_wmask_saved;
-
-  logic              debug_wb_vec_valid_next;
-  logic [VLEN*8-1:0] debug_wb_vec_wdata_next;
-  logic [7:0]        debug_wb_vec_wmask_next;
-  logic              committed_load;
-
-  always @(posedge clk ) begin
-    if(!reset_n) 
-      committed_load <= 0;
-    else begin
-      if(commit_is_load && ocelot_instrn_commit_valid)
-        committed_load <= 1;
-      else if(fsm_completed_valid && committed_load)
-        committed_load <= 0;
-    end
-  end
-
-  always_comb begin
-    if(committed_load && fsm_completed_valid) begin
-      debug_wb_vec_valid_next = 1;
-      debug_wb_vec_wdata_next = debug_wb_vec_wdata_saved;
-      debug_wb_vec_wmask_next = debug_wb_vec_wmask_saved;
-    end
-    else begin
-      debug_wb_vec_valid_next = ocelot_instrn_commit_valid && !commit_is_load;
-      debug_wb_vec_wdata_next = ocelot_instrn_commit_data;
-      debug_wb_vec_wmask_next = ocelot_instrn_commit_mask;
-    end
-  end
-
-  always @(posedge clk) begin
-    if(!reset_n) begin
-      debug_wb_vec_wdata_saved <= '0;
-      debug_wb_vec_wmask_saved <= '0;
-    end
-    else begin
-      if(ocelot_instrn_commit_valid && commit_is_load) begin
-        debug_wb_vec_wdata_saved <= ocelot_instrn_commit_data;
-        debug_wb_vec_wmask_saved <= ocelot_instrn_commit_mask;
-      end
-    end
-  end
-
   always_ff @(posedge clk) begin
     if (~reset_n) begin
       debug_wb_vec_valid <= '0;
@@ -1396,9 +1353,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       debug_wb_vec_wmask <= '0;
     end 
     else begin
-      debug_wb_vec_valid <= debug_wb_vec_valid_next;
-      debug_wb_vec_wdata <= debug_wb_vec_wdata_next;
-      debug_wb_vec_wmask <= debug_wb_vec_wmask_next;
+      debug_wb_vec_valid <= sb_completed_valid;
+      debug_wb_vec_wdata <= sb_debug_commit_data;
+      debug_wb_vec_wmask <= sb_debug_commit_mask;
     end
   end
 
