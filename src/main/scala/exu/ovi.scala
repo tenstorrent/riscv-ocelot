@@ -749,42 +749,6 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
     val packSkipVDB = Output (Bool())   
   })
   
-
-  val vPacker = Module (new Vpacker (M, VLEN))
-
-  vPacker.io.configValid := io.configValid     
-  vPacker.io.vl := io.vl
-  vPacker.io.memSize := io.memSize
-  vPacker.io.isUnit := io.isUnit
-  vPacker.io.isStride := io.isStride
-  vPacker.io.isMask := io.isMask
-  vPacker.io.isLoad := io.isLoad 
-  vPacker.io.startAddr := io.startAddr
-  vPacker.io.stride := io.stride 
-  vPacker.io.pop := io.pop 
-    
-  io.packOveride := vPacker.io.packOveride
-  io.packId := vPacker.io.packId 
-  io.packSkipVreg := vPacker.io.packSkipVreg   
-
-
-  val sPacker = Module (new Spacker (M, OVILEN))  
-  sPacker.io.configValid := io.configValid     
-  sPacker.io.vl := io.vl
-  sPacker.io.memSize := io.memSize
-  sPacker.io.isUnit := io.isUnit
-  sPacker.io.isMask := io.isMask
-  sPacker.io.isLoad := io.isLoad 
-  sPacker.io.startAddr := io.startAddr
-  
-  sPacker.io.pop := io.pop 
-  io.spackOveride := sPacker.io.packOveride
-  io.packVDBId := sPacker.io.packVDBId 
-  io.packSkipVDB := sPacker.io.packSkipVDB
-  
-    
-  
-
   val vPacker = Module (new Vpacker (M, VLEN))
 
   vPacker.io.configValid := io.configValid     
