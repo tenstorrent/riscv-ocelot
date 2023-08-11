@@ -516,7 +516,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
    Parse LSU response
 */
   val LSUReturnLoadValid = WireInit(false.B)
-  LSUReturnLoadValid := io.core.vGenIO.resp.valid && io.core.vGenIO.resp.bits.s0l1 && !io.core.vGenIO.resp.bits.vectorDone  // needs fixing later if we are overlapping
+  LSUReturnLoadValid := io.core.vGenIO.resp.valid && io.core.vGenIO.resp.bits.s0l1  // needs fixing later if we are overlapping
   val vReturnData = Module(new VReturnData(oviWidth, lsuDmemWidth))
   vReturnData.io.memSize := io.core.vGenIO.resp.bits.memSize
   vReturnData.io.lsuData := io.core.vGenIO.resp.bits.data

@@ -417,17 +417,19 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     
   val sbIdDone = RegInit(0.U(5.W))
 
-  io.core.VGen.resp := DontCare 
+  val vldata_back = WireInit(false.B)
+
+  io.core.VGen.resp := DontCare
   io.core.VGen.resp.bits.vectorDone := dsq_finished || dlq_finished 
-  io.core.VGen.resp.valid := dsq_finished || dlq_finished
-  io.core.VGen.resp.bits.elemID := DontCare 
-  io.core.VGen.resp.bits.vRegID := DontCare
-  io.core.VGen.resp.bits.elemOffset := DontCare 
-  io.core.VGen.resp.bits.elemCount := DontCare
+  io.core.VGen.resp.valid := dsq_finished || dlq_finished || vldata_back
+  io.core.VGen.resp.bits.elemID := 0.U  
+  io.core.VGen.resp.bits.vRegID := 0.U
+  io.core.VGen.resp.bits.elemOffset := 0.U 
+  io.core.VGen.resp.bits.elemCount := 0.U
   io.core.VGen.resp.bits.sbId := sbIdDone 
-  io.core.VGen.resp.bits.strideDir := DontCare 
-  io.core.VGen.resp.bits.s0l1 := DontCare
-  io.core.VGen.resp.bits.memSize  := DontCare 
+  io.core.VGen.resp.bits.strideDir := false.B 
+  io.core.VGen.resp.bits.s0l1 := false.B
+  io.core.VGen.resp.bits.memSize  := 0.U 
 
   // If we got a mispredict, the tail will be misaligned for 1 extra cycle
   assert (io.core.brupdate.b2.mispredict ||
@@ -799,6 +801,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   val dlq_commit_e = dlq(dlq_execute_head)
   val ldq_commit_e = ldq(ldq_v_head)
+  //val ldq_commit_e = ldq(ldq_head)
+
 
   // -----------------------
   // Determine what can fire
@@ -888,7 +892,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                                                               && !(!stq_commit_e.bits.vectorCanGo && !stq_commit_e.bits.vectorNoYoung) && !dsq_finished))))
 
   val can_fire_vector_load = widthMap(w => (w == memWidth-1).B && 
-                                           dlq_commit_e.bits.uop.ldq_idx === ldq_v_head &&
                                            ldq_commit_e.bits.isVector && !ldq_commit_e.bits.succeeded && (dlq_commit_e.valid && 
                                            dlq_commit_e.bits.addr.valid && !dlq_commit_e.bits.addr_is_virtual &&
                                           !dlq_commit_e.bits.succeeded && !dlq_commit_e.bits.isFake && !dlq_commit_e.bits.executed &&
@@ -1792,7 +1795,8 @@ when (dlq_finished) {
   for (w <- 0 until memWidth) {
     // Advance dlq_execute_head
     when(!dlq_finished && dlq_commit_e.valid) {
-      when(dlq_commit_e.bits.isFake && (dlq_commit_e.bits.uop.ldq_idx === ldq_v_head)){
+    //  when(dlq_commit_e.bits.isFake && (dlq_commit_e.bits.uop.ldq_idx === ldq_v_head)){
+      when(dlq_commit_e.bits.isFake){
          dlq_commit_e.bits.succeeded := true.B
          when (dlq_execute_head =/= dlq_tail) {
            dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
@@ -1859,7 +1863,8 @@ when (dlq_finished) {
       when (io.dmem.resp(w).bits.uop.uses_ldq && io.dmem.resp(w).bits.uop.is_vec){
           when(dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.executed){
           dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded := true.B
-          io.core.VGen.resp.valid := true.B 
+        //  io.core.VGen.resp.valid := true.B
+          vldata_back := true.B  
           io.core.VGen.resp.bits.elemID := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemID
           io.core.VGen.resp.bits.elemOffset := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemOffset 
           io.core.VGen.resp.bits.elemCount := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemCount  
@@ -2110,8 +2115,8 @@ when (dlq_finished) {
     when (dlq(dlq_head).bits.last) {
       dlq_finished := true.B
       sbIdDone := dlq(dlq_head).bits.sbId
-      ldq(ldq_v_head).bits.succeeded := true.B 
-      ldq(ldq_v_head).bits.executed := true.B
+      ldq(dlq(dlq_head).bits.uop.ldq_idx).bits.succeeded := true.B 
+      ldq(dlq(dlq_head).bits.uop.ldq_idx).bits.executed := true.B
     }    
   }
 
