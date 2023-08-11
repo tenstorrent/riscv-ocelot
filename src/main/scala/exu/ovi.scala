@@ -1500,7 +1500,7 @@ class SmallPowerOfTwo(bitWidth: Int) extends Module {
     val positionOfMSB = PriorityEncoder(reversedBits)
     
     // Shift 1 left by the position of the most significant '1' bit to get the closest power of 2.
-    io.outData := 1.U << positionOfMSB
+    io.outData := 1.U << (bitWidth.U - 1.U - positionOfMSB)
     }
   }
 }
