@@ -286,6 +286,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic         sb_completed_valid;
   logic [4:0]   sb_completed_sb_id;
   logic [63:0]  sb_completed_dest_reg;
+  logic [4:0]   sb_completed_fflags;
   logic drain_store_buffer;
   logic [2:0] num_store_transactions;
   logic [2:0] num_store_transactions_next;
@@ -1116,6 +1117,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                     .i_vd(id_ex_instrn[11:7]),
                     .i_rd(ocelot_instrn_commit_data[63:0]),
                     .i_rd_valid(ocelot_instrn_commit_valid),
+                    .i_fflags(ocelot_instrn_commit_fflags),
                     .i_rd_lqid(mem_dst_lqid),
                     .i_lqnxtid(mem_id_lqnxtid),
                     .i_data_size(data_size),
@@ -1151,6 +1153,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                     .o_completed_valid(sb_completed_valid),
                     .o_completed_sb_id(sb_completed_sb_id),
                     .o_completed_dest_reg(sb_completed_dest_reg),
+                    .o_completed_fflags(sb_completed_fflags),
                     .i_debug_commit_data(ocelot_instrn_commit_data),
                     .i_debug_commit_mask(ocelot_instrn_commit_mask),
                     .o_debug_commit_data(sb_debug_commit_data),
@@ -1338,7 +1341,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     else begin
       completed_valid <= sb_completed_valid;
       completed_sb_id <= sb_completed_sb_id;
-      completed_fflags <= ocelot_instrn_commit_fflags;
+      completed_fflags <= sb_completed_fflags;
       completed_dest_reg <= sb_completed_dest_reg;
       completed_vxsat <= 0;
       completed_vstart <= 0;
