@@ -159,9 +159,9 @@ class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
 class VGenIO(implicit p: Parameters) extends BoomBundle()(p)
 {
   
-  val req       = Flipped(new DecoupledIO(new FuncUnitResp(128)))
+  val req       = Flipped(new DecoupledIO(new FuncUnitResp(coreDataBits)))
   val reqHelp   = Flipped (new ValidIO(new VGenReqHelp(0)))
-  val resp    = new ValidIO(new VGenResp(128))
+  val resp    = new ValidIO(new VGenResp(coreDataBits))
 }
 
 class BoomDCacheReq(implicit p: Parameters) extends BoomBundle()(p)
@@ -351,7 +351,7 @@ class DSQEntry(implicit p: Parameters) extends BoomBundle()(p)
 {
   val addr                = Valid(UInt(coreMaxAddrBits.W))
   val addr_is_virtual     = Bool() // Virtual address, we got a TLB miss
-  val data                = Valid(UInt(128.W))
+  val data                = Valid(UInt(coreDataBits.W))
   val sbId = Bits(5.W)
   val last                = Bool()
   val sent                = Bool()

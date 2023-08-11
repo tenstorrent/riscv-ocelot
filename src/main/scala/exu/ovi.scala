@@ -216,7 +216,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 */  
    val vlsiQDepth = 4
    val oviWidth   = 512
-   val lsuDmemWidth = 128
+   val lsuDmemWidth = coreDataBits
    val vpuVlen = 256
    val vdbDepth = 4
    val byteVreg = vpuVlen / 8
