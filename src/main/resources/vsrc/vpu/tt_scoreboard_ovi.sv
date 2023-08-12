@@ -115,6 +115,7 @@ module tt_scoreboard_ovi(input logic       clk,
         scoreboard[i_id_sb_id].index_size <= i_index_size;
         scoreboard[i_id_sb_id].load_stride_eew <= i_load_stride_eew;
         scoreboard[i_id_sb_id].is_load <= i_id_load;
+        scoreboard[i_id_sb_id].fflags <= '0;
         if(i_last_alloc)
           scoreboard[i_id_sb_id].got_last_alloc <= 1;
         else

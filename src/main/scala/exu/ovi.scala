@@ -165,7 +165,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
                                     RT_X,
                                     respUop.dst_rtype)
   io.resp.bits.uop.uses_stq := 0.B // Trick Rob to acknowledge Vector Store
-  io.resp.bits.fflags.valid := vpuModule.io.completed_fflags.orR
+  io.resp.bits.fflags.valid := vpuModule.io.completed_valid && vpuModule.io.completed_fflags.orR
   io.resp.bits.fflags.bits.uop.rob_idx := io.resp.bits.uop.rob_idx
   io.resp.bits.fflags.bits.flags := vpuModule.io.completed_fflags
 

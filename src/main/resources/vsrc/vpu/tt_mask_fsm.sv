@@ -22,9 +22,11 @@ module tt_mask_fsm #(parameter VLEN = 256,
   // if indexed, send vl transactions 
 
   // FSM to drive the mask interface
-  typedef enum logic {
-  IDLE = 1'b0,
-  SEND = 1'b1
+  typedef enum logic [1:0] {
+  IDLE = 2'b00,
+  WAIT = 2'b01, // Wait for ID finish cracking
+  SEND = 2'b10, // Send mask packets
+  RSVD = 2'b11
   } mask_state_t;
   mask_state_t mask_fsm_state;
   mask_state_t mask_fsm_next_state;
@@ -144,11 +146,9 @@ module tt_mask_fsm #(parameter VLEN = 256,
           num_transactions_next = i_vl;
         end
       end
-      SEND:
-        if(mask_idx_valid_next)
-          num_transactions_next = num_transactions - 1;
-        else
-          num_transactions_next = num_transactions;
+      SEND: begin
+        num_transactions_next = num_transactions - 1;
+      end
     endcase
   end
 
@@ -156,18 +156,31 @@ module tt_mask_fsm #(parameter VLEN = 256,
     if(!i_reset_n)
       num_transactions <= 0;
     else begin
-      num_transactions <= num_transactions_next;
+      if (i_memop_sync_start_next || mask_idx_valid_next) begin
+        num_transactions <= num_transactions_next;
+      end
     end
   end
 
   always_comb begin
     case(mask_fsm_state)
       IDLE: begin
-        if((i_is_masked_memop || i_is_indexed) && i_memop_sync_start_next)
-          mask_fsm_next_state = SEND;
-        else
+        if((i_is_masked_memop || i_is_indexed) && i_memop_sync_start_next) begin
+          if (i_last_index) begin
+            mask_fsm_next_state = SEND;
+          end else begin
+            mask_fsm_next_state = WAIT;
+          end
+        end else
           mask_fsm_next_state = IDLE;
       end
+      WAIT: begin
+        if (i_index_data_valid && i_last_index) begin
+          mask_fsm_next_state = SEND;
+        end else begin
+          mask_fsm_next_state = WAIT;
+        end
+      end 
       SEND: begin
         if(num_transactions == 0)
           mask_fsm_next_state = IDLE;
