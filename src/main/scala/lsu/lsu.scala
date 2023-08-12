@@ -287,8 +287,6 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val vectorHasCross      = Bool()
   val vectorNoYoung       = Bool()
 
-  val vPass               = Bool()
-  
   val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
   val hasOlderVst         = Bool()
   val hasOlderVld         = Bool()
@@ -377,7 +375,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
 
   val ldq_head         = Reg(UInt(ldqAddrSz.W))
-  val ldq_v_head         = Reg(UInt(ldqAddrSz.W))
+  val ldq_v_head       = Reg(UInt(ldqAddrSz.W))
   val ldq_tail         = Reg(UInt(ldqAddrSz.W))
   val stq_head         = Reg(UInt(stqAddrSz.W)) // point to next store to clear from STQ (i.e., send to memory)
   val stq_tail         = Reg(UInt(stqAddrSz.W))
@@ -542,7 +540,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(ld_enq_idx).bits.order_fail      := false.B
       ldq(ld_enq_idx).bits.observed        := false.B
       ldq(ld_enq_idx).bits.forward_std_val := false.B
-      ldq(ld_enq_idx).bits.vPass := false.B
       ldq(ld_enq_idx).bits.isVector   := io.core.dis_uops(w).bits.is_vec   
       ldq(ld_enq_idx).bits.hasOlderVst := false.B
       ldq(ld_enq_idx).bits.hasOlderVld := false.B 
@@ -2125,8 +2122,7 @@ when (dlq_finished) {
     }    
   }
 
-  when (ldq(ldq_v_head).valid && ldq(ldq_v_head).bits.succeeded && ldq_v_head =/= ldq_tail) {
-    ldq(ldq_v_head).bits.vPass := true.B
+  when ((!ldq(ldq_v_head).valid || ldq(ldq_v_head).bits.succeeded) && ldq_v_head =/= ldq_tail) {
     ldq_v_head := WrapInc(ldq_v_head, numLdqEntries)
   }
 
@@ -2297,7 +2293,6 @@ when (dlq_finished) {
       ldq(i).bits.addr.valid := false.B
       ldq(i).bits.executed   := false.B
       ldq(i).bits.isVector   := false.B 
-      ldq(i).bits.vPass   := false.B
     }
   }
 
