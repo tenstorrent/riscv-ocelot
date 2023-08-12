@@ -1259,7 +1259,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
       if(sb_drain_load_buffer && !drain_load_buffer)
         load_buffer_drain_cntr <= sb_ref_count - 1;
-      else if(drain_load_buffer)
+      else if(drain_load_buffer && load_buffer_drain_cntr != 0)
         load_buffer_drain_cntr <= load_buffer_drain_cntr - 1;
     end
   end
