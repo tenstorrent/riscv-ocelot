@@ -147,7 +147,7 @@ module tt_mask_fsm #(parameter VLEN = 256,
         end
       end
       SEND: begin
-        num_transactions_next = num_transactions - 1;
+        num_transactions_next = num_transactions - mask_idx_valid_next;
       end
     endcase
   end

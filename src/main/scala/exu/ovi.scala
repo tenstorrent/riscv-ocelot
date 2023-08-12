@@ -324,7 +324,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 
   
   // make sure that we have enough data
-  val vDBcount = RegInit(0.U(log2Ceil(vdbDepth).W))
+  val vDBcount = RegInit(0.U(log2Ceil(vdbDepth+1).W))
   val vDBud = Cat (MemStoreValid, MemStoreCredit)
   when (vDBud === 1.U) {
     vDBcount := vDBcount - 1.U
