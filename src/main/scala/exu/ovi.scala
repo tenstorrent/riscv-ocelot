@@ -216,13 +216,17 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 */  
    val vlsiQDepth = 4
    val oviWidth   = 512
-   val lsuDmemWidth = coreDataBits
+   val outStandingLSCount = 6
    val vpuVlen = 256
    val vdbDepth = 4
+   val vAGenDepth = 4
+   val fakeLoadDepth = 8
+
+   val lsuDmemWidth = coreDataBits
    val byteVreg = vpuVlen / 8
    val byteDmem = lsuDmemWidth / 8
-   val vAGenDepth = 4
    val addrBreak = log2Ceil(lsuDmemWidth/8)
+   
 
 /*
   vLSIQ start
@@ -233,7 +237,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   // trying to dequeue VLSIQ 
   val tryDeqVLSIQ = RegInit(false.B)
   // this chunk is checking the number of outstanding mem_sync_start
-  val outStandingReq = RegInit(0.U(3.W))
+  val outStandingReq = RegInit(0.U(log2Ceil(outStandingLSCount).W))
   val canStartAnother = WireInit(false.B)
   val vOSud = Cat (vpuModule.io.memop_sync_start, canStartAnother)
   when (vOSud === 1.U) {
@@ -320,14 +324,14 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 
   
   // make sure that we have enough data
-  val vDBcount = RegInit(0.U(3.W))
+  val vDBcount = RegInit(0.U(log2Ceil(vdbDepth).W))
   val vDBud = Cat (MemStoreValid, MemStoreCredit)
   when (vDBud === 1.U) {
     vDBcount := vDBcount - 1.U
   }.elsewhen (vDBud === 2.U) {
     vDBcount := vDBcount + 1.U 
   }
-  assert (vDBcount < 5.U)
+  assert (vDBcount <= (vdbDepth).U)
 
    
 
@@ -465,9 +469,9 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
    Fake load response for masked-off elements
 */
 
-  val fakeLoadReturnQueue = Module(new Queue(UInt(34.W), 8))
+  val fakeLoadReturnQueue = Module(new Queue(UInt(34.W), fakeLoadDepth))
   fakeLoadReturnQueue.io.enq.valid := s0l1 && (vAGen.io.popForce || vAGen.io.popForceLast)
-  fakeLoadReturnQueue.io.enq.bits := Cat(sbIdHold, vAGen.io.elemCount, vAGen.io.elemOffset, 0.U(3.W), vIdGen.io.outID, vIdGen.io.outVD)
+  fakeLoadReturnQueue.io.enq.bits := Cat(sbIdHold, vAGen.io.elemCount, vAGen.io.elemOffset, 0.U((11 - log2Ceil(byteVreg + 1)).W), vIdGen.io.outID, vIdGen.io.outVD)
   fakeLoadReturnQueue.io.deq.ready := false.B 
 
 
@@ -585,7 +589,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   vpuModule.io.dispatch_kill := 0.B
   
    vpuModule.io.memop_sync_end := MemSyncEnd
-   vpuModule.io.memop_sb_id := MemSbId 
+ vpuModule.io.memop_sb_id := MemSbId  
 // vpuModule.io.mem_vstart := MEMVstart
    vpuModule.io.load_valid := MemLoadValid
    vpuModule.io.load_seq_id := MemSeqId
@@ -675,7 +679,7 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   addResource("/vsrc/vpu/tt_reshape.sv")
   addResource("/vsrc/vpu/tt_memop_fsm.sv")
   addResource("/vsrc/vpu/tt_mask_fsm.sv")
-  addResource("/vsrc/vpu/tt_scoreboard_ovi.sv")
+  addResource("/vsrc/vpu/tt_scoreboard_ovi.sv") 
   addResource("/vsrc/vpu/lrm_model.sv")
   addResource("/vsrc/vpu/tt_fifo.sv")
   addResource("/vsrc/vpu/tt_vpu_ovi.sv")  
@@ -748,7 +752,9 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
     val packSkipVreg = Output (Bool()) 
     val packSkipVDB = Output (Bool())   
   })
+
   
+
   val vPacker = Module (new Vpacker (M, VLEN))
 
   vPacker.io.configValid := io.configValid     
@@ -987,25 +993,25 @@ class VIdGen(val M: Int, val N: Int)(implicit p: Parameters) extends Module {
   require(M % 8 == 0, "M must be a multiple of 8")
   require(N % 8 == 0, "N must be a multiple of 8")
   val S = log2Ceil(M + 1)
-  val I = log2Ceil(M) + 3
-  val K = log2Ceil(M)
+//  val I = log2Ceil(M) + 3
+//  val K = log2Ceil(M)
   
 
   val io = IO(new Bundle {
     val configValid = Input(Bool())
-    val startID = Input(UInt(I.W))
+    val startID = Input(UInt(S.W))
     val startVD = Input(UInt(5.W))
     val pop = Input(Bool())    
-    val outID = Output(UInt(I.W))
+    val outID = Output(UInt(S.W))
     val outVD = Output(UInt(5.W))
     // interface with VAGen
     val sliceSize = Input(UInt(S.W))
     val packOveride = Input (Bool())
-    val packId = Input (UInt(I.W))
+    val packId = Input (UInt(S.W))
     val packSkipVreg = Input (Bool()) 
   }) 
 
-  val currentID = RegInit(0.U(I.W))
+  val currentID = RegInit(0.U(S.W))
   val currentVD = RegInit(0.U(5.W))
   val count = RegInit(0.U(S.W))
 
