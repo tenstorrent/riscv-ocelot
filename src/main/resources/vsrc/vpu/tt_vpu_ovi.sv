@@ -1135,7 +1135,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                     .i_id_mem_lqalloc(id_mem_lqalloc),
                     .i_lq_commit(mem_lq_commit),
                     .i_dest_lqid(mem_dst_lqid),
-                    .i_first_alloc(id_ex_vecldst_autogen.ldst_iter_cnt == 0),
+                    .i_first_alloc(id_vec_autogen.replay_cnt == 0),
                     .i_last_alloc(id_mem_lq_done),
                     .i_load_sb_id(load_seq_id[33:29]),
 
