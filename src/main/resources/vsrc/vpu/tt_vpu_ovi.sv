@@ -168,6 +168,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   wire                     ex_dst_vld_2c;
   wire [LQ_DEPTH_LOG2-1:0] ex_dst_lqid_2c;
   wire [31:0]              ex_fwd_data_2c;
+  wire                     ex_id_rtr_raw; // before mask/store fsm stall
   wire                     ex_id_rtr;
   logic                    ex_last; // Indicates this is the last micro-op
   
@@ -208,7 +209,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [63:0]  fprf_vex_p0_sel;
 
  // stall the ID stage when there is a load/store 
-  logic ovi_stall;
+  logic mask_fsm_stall;
+  logic store_fsm_stall;
   logic ocelot_read_req;
 
   logic        read_valid;
@@ -241,21 +243,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic        vcsr_lmulb2_reg;
   logic [39:0] vcsr;
   logic        vcsr_lmulb2;
-
-  // Store logic
-  logic [7:0][VLEN-1:0] store_buffer;
-  logic [7:0] store_buffer_valid;
-  // Indicates if the corresponding entry was sent to the CPU
-  logic [7:0] store_buffer_sent;
-  logic [2:0] store_buffer_wptr;
-  logic [2:0] store_buffer_rptr;
-  logic [1:0] store_fsm_state; // 0: idle, 1: send, 2: wait, 3: commit
-  logic [1:0] store_fsm_next_state;
-  logic       store_memsync_start;
-  logic [$clog2(STORE_CREDITS+1)-1:0] store_credits, store_credits_nxt;
   logic       vecldst_autogen_store;
-  // Indicates if there is at least 2 full entries in the store buffer
-  logic       enough_data;
   // Load logic - finite state machine
   logic [1:0] load_fsm_state, load_fsm_next_state;
   logic       vecldst_autogen_load;
@@ -287,10 +275,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [4:0]   sb_completed_sb_id;
   logic [63:0]  sb_completed_dest_reg;
   logic [4:0]   sb_completed_fflags;
-  logic drain_store_buffer;
-  logic [2:0] num_store_transactions;
-  logic [2:0] num_store_transactions_next;
-  logic [11:0] num_bits;
   logic [4:0]   v_reg;
   logic [10:0]  el_id;
   logic [5:0]   el_off;
@@ -315,10 +299,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic       id_is_masked_memop;
   logic       is_masked_memop;
   logic       id_is_indexldst;
-  logic       is_indexldst;
   logic       id_is_maskldst;
-  logic       is_maskldst;
-  logic       draining_mask_idx;
 
   always_ff @(posedge clk) begin
     if(!reset_n) begin
@@ -528,7 +509,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     
     // From ID
     .i_id_ex_rts         (id_ex_rts && !squash_id_ex_rts),
-    .o_ex_id_rtr         (ex_id_rtr         ),
+    .o_ex_id_rtr         (ex_id_rtr_raw     ),
     .i_id_type           (id_type           ),
     .i_id_rf_wr_flag     (id_rf_wr_flag     ),
     .i_id_rf_wraddr      (id_rf_wraddr      ),
@@ -592,12 +573,15 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     // Debug
     .i_reset_pc             ('0),
 
-    .i_draining_store_buffer(drain_store_buffer),
-    .i_id_store(vecldst_autogen_store),
-    .i_draining_mask_idx(draining_mask_idx),
-    .i_masked_or_indexed(id_is_masked_memop || id_is_indexldst),
+    //.i_draining_store_buffer(drain_store_buffer),
+    //.i_id_store(vecldst_autogen_store),
+    //.i_draining_mask_idx(draining_mask_idx),
+    //.i_masked_or_indexed(id_is_masked_memop || id_is_indexldst),
     .o_ex_last(ex_last)
   );
+
+  // Adding stalls from Store/Mask FSM
+  assign ex_id_rtr = ex_id_rtr_raw && !store_fsm_stall && !mask_fsm_stall;
 
   assign vrf_p2_rden    = id_vec_autogen.rf_rden2; // FIXME | ex_vec_csr.v_lmul[2];
   assign vrf_p1_rden    = id_vec_autogen.rf_rden1;
@@ -913,78 +897,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
-  assign enough_data = store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] &&
-                       store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1];
-
-  always @(posedge clk) begin
-    if(!reset_n)
-      store_credits <= STORE_CREDITS;
-    else begin
-      store_credits <= store_credits_nxt;
-    end
-  end
-
-  assign store_credits_nxt = store_credits + store_credit - store_valid;
-
-  always_ff@(posedge clk) begin
-    if(!reset_n) begin
-      store_buffer_wptr  <= '0;
-      store_buffer_valid <= '0;
-    end else begin
-      if(num_store_transactions_next == 0) begin
-        store_buffer_wptr  <= '0;
-        store_buffer_valid <= '0;
-      end else
-      if(id_ex_units_rts && ex_id_rtr && vecldst_autogen_store && !id_mem_lqinfo.squash_vec_wr_flag) begin
-        store_buffer      [store_buffer_wptr] <= vs3_rddata;
-        store_buffer_valid[store_buffer_wptr] <= 1;
-        store_buffer_wptr                     <= store_buffer_wptr + 1;
-      end
-    end
-  end
-
-  // assign store_memsync_start = store_fsm_state == 0 && vecldst_autogen_store && ocelot_read_req;
-
-  always_comb begin
-    // maybe if(id_ex_units_rts && ex_id_rtr && id_ex_last && vecldst_autogen_store)
-    if(vecldst_autogen_store && !drain_store_buffer) begin
-      if(is_indexldst)
-        num_bits = (vcsr[$clog2(VLEN+1)-1+14:14] << (vcsr[38:36]+3));
-      else if(id_is_whole_memop) begin
-        num_bits = (vcsr[$clog2(VLEN+1)-1+14:14] << (vcsr[38:36]+3));
-        case (id_ex_instrn[31:29])
-           3'h0: num_bits = 256;
-           3'h1: num_bits = 512;
-           3'h3: num_bits = 1024;
-           3'h7: num_bits = 2048;
-           default: num_bits = '0;
-        endcase
-      end else
-        num_bits = (vcsr[$clog2(VLEN+1)-1+14:14] << (data_size+3));
-
-      if(num_bits == 0)
-        num_store_transactions_next = 0;
-      else if(num_bits <= 512)
-        num_store_transactions_next = 1;
-      else if(num_bits <= 1024)
-        num_store_transactions_next = 2;
-      else if(num_bits <= 1536)
-        num_store_transactions_next = 3;
-      else
-        num_store_transactions_next = 4;
-    end
-    else if(store_valid)
-      num_store_transactions_next = num_store_transactions - 1;
-    else
-      num_store_transactions_next = num_store_transactions;
-  end
-  always @(posedge clk) begin
-    if(!reset_n)
-      num_store_transactions <= 0;
-    else 
-      num_store_transactions <= num_store_transactions_next;
-  end
-
   logic memop_sync_start_nxt;
   assign memop_sync_start_nxt = (vecldst_autogen_store || vecldst_autogen_load) && id_ex_rts && ex_id_rtr && id_ex_vecldst_autogen.ldst_iter_cnt == 0;
   always_ff@(posedge clk) begin
@@ -992,67 +904,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       memop_sync_start <= 0;
     else
       memop_sync_start <= memop_sync_start_nxt;
-  end
-  always_ff@(posedge clk) begin
-    if(!reset_n) begin
-      store_valid <= 0;
-      store_data <= 0;
-      store_buffer_rptr <= 0;
-      store_buffer_sent <= 0;
-      drain_store_buffer <= 0;
-      is_whole_memop <= 0;
-    end
-    else begin
-      if(drain_store_buffer && store_credits_nxt > 0 && (is_whole_memop || is_maskldst || num_store_transactions_next > 0)) begin
-        if(store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr] && 
-           store_buffer_valid[store_buffer_rptr+1] && !store_buffer_sent[store_buffer_rptr+1]) begin
-          store_valid <= 1;
-          store_data[255:0] <= store_buffer[store_buffer_rptr];
-          store_data[511:256] <= store_buffer[store_buffer_rptr+1];
-          store_buffer_sent[store_buffer_rptr] <= 1;
-          store_buffer_sent[store_buffer_rptr+1] <= 1;
-          store_buffer_rptr <= store_buffer_rptr + 2;
-        end else
-        if(store_buffer_valid[store_buffer_rptr] && !store_buffer_sent[store_buffer_rptr]) begin
-          store_valid <= 1;
-          store_data[255:0] <= store_buffer[store_buffer_rptr];
-          store_buffer_sent[store_buffer_rptr] <= 1;
-          store_buffer_rptr <= store_buffer_rptr + 1;
-        end else
-          store_valid <= 0;
-      end else
-        store_valid <= 0;
-
-      if(id_ex_units_rts && ex_id_rtr && id_ex_last && vecldst_autogen_store) begin
-        drain_store_buffer <= 1;
-        is_whole_memop <= id_is_whole_memop;
-      end else
-      if(num_store_transactions_next == 0) begin
-        store_buffer_rptr <= '0;
-        store_buffer_sent <= '0;
-        drain_store_buffer <= 0;
-        is_whole_memop <= 0;
-        store_buffer_sent <= 0;
-      end
-    end
-  end
-
-  always @(posedge clk) begin
-    if(!reset_n) begin
-      is_masked_memop <= 0;
-      is_maskldst <= 0;
-    end
-    else if(memop_sync_start_nxt) begin
-      is_masked_memop <= id_is_masked_memop;
-      is_maskldst <= id_is_maskldst;
-    end
-  end
-
-  always @(posedge clk ) begin
-    if(!reset_n)
-      is_indexldst <= 0;
-    else if(memop_sync_start_nxt)
-      is_indexldst <= id_is_indexldst;
   end
 
   // This queue should never overflow, so I'm not going to add phase bits
@@ -1307,6 +1158,33 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
+  logic         store_valid_nxt;
+  logic [511:0] store_data_nxt;
+
+  tt_store_fsm #(.VLEN(VLEN),
+                .STORE_CREDITS(STORE_CREDITS))
+                store_fsm
+               (.i_clk(clk),
+                .i_reset_n(reset_n),
+                .i_uop_fire(id_ex_units_rts && ex_id_rtr && !id_mem_lqinfo.squash_vec_wr_flag),
+                .i_uop_first(id_ex_vecldst_autogen.ldst_iter_cnt == 0),
+                .i_uop_last(id_ex_last),
+                .i_uop_is_store(vecldst_autogen_store),
+                .i_uop_is_vsm(id_is_maskldst),
+                .i_uop_is_vsx(id_is_indexldst),
+                .i_uop_is_vsr(id_is_whole_memop),
+                .i_uop_index_size(index_size),
+                .i_uop_data_size(data_size),
+                .i_uop_vl(vcsr[$clog2(VLEN+1)-1+14:14]),
+                .i_uop_nfield(id_ex_instrn[31:29]),
+                .i_store_data(vs3_rddata),
+                .i_store_credit(store_credit),
+                .o_store_valid(store_valid_nxt),
+                .o_store_data(store_data_nxt),
+                .o_stall(store_fsm_stall)
+              );
+
+
   tt_mask_fsm #(.VLEN(VLEN),
                 .MASK_CREDITS(2))
                 mask_fsm
@@ -1319,7 +1197,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                 .i_index_data(vs2_rddata),
                 .i_index_data_valid(id_ex_units_rts && ex_id_rtr),
                 .i_last_index(id_ex_last),
-                .o_draining_mask_idx(draining_mask_idx),
+                .o_draining_mask_idx(mask_fsm_stall),
                 .i_vl(vcsr[$clog2(VLEN+1)-1+14:14]),
                 .i_eew(index_size),
                 .i_mask_idx_credit(mask_idx_credit),
@@ -1328,8 +1206,11 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                 .o_mask_idx_last_idx(mask_idx_last_idx)
                );
 
+  // OVI Outputs
   always @(posedge clk) begin
     if(!reset_n) begin
+      store_valid <= 0;
+      store_data <= 0;
       completed_valid <= 0;
       completed_sb_id <= 0;
       completed_fflags <= 0;
@@ -1339,6 +1220,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       completed_illegal <= 0;
     end
     else begin
+      store_valid <= store_valid_nxt;
+      store_data <= store_data_nxt;
       completed_valid <= sb_completed_valid;
       completed_sb_id <= sb_completed_sb_id;
       completed_fflags <= sb_completed_fflags;

@@ -1,3 +1,4 @@
+// See LICENSE.TT for license details.
 module tt_mask_fsm #(parameter VLEN = 256,
                      parameter MASK_CREDITS = 2)
                     (input  logic                      i_clk,
