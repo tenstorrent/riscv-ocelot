@@ -316,7 +316,6 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   vdb.io.writeValid := MemStoreValid
   vdb.io.writeData := MemStoreData
   vdb.io.sliceSize := vAGen.io.sliceSizeOut 
-  vdb.io.vlmul := vLSIQueue.io.deq.bits.vconfig.vtype.vlmul_mag
   vdb.io.packOveride := vAGen.io.spackOveride
   vdb.io.packSkipVDB := vAGen.io.packSkipVDB
   vdb.io.packId := vAGen.io.packVDBId 
@@ -407,8 +406,6 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     s0l1 := vLSIQueue.io.deq.bits.req.uop.uses_ldq    
     // only use vdb when it is store
     vdb.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_stq
-       // default lmul
-    vdb.io.vlmul := vLSIQueue.io.deq.bits.vconfig.vtype.vlmul_mag
     // only use vID when it is load
     vIdGen.io.configValid := vLSIQueue.io.deq.bits.req.uop.uses_ldq
        // vstart = 0 for now
@@ -431,10 +428,8 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     vwhls.io.nf := instNf
     vwhls.io.wth := instElemSize 
     vAGen.io.vl := vwhls.io.overVl 
-    vdb.io.vlmul := vwhls.io.overVlmul
     }.elsewhen (isStoreMask || isLoadMask) {
       vAGen.io.vl := (vLSIQueue.io.deq.bits.vconfig.vl + 7.U) >> 3
-      vdb.io.vlmul := 0.U
     }
     // initial SliceSize    
     when (isWholeStore || isStoreMask || isLoadMask) {
@@ -521,10 +516,12 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 */
   val LSUReturnLoadValid = WireInit(false.B)
   LSUReturnLoadValid := io.core.vGenIO.resp.valid && io.core.vGenIO.resp.bits.s0l1  // needs fixing later if we are overlapping
-  val vReturnData = Module(new VReturnData(oviWidth, lsuDmemWidth))
-  vReturnData.io.memSize := io.core.vGenIO.resp.bits.memSize
-  vReturnData.io.lsuData := io.core.vGenIO.resp.bits.data
-  vReturnData.io.strideDir := io.core.vGenIO.resp.bits.strideDir
+  val LSUReturnData = WireInit(0.U(oviWidth.W))
+  when (io.core.vGenIO.resp.bits.strideDir){  // negative
+       LSUReturnData := Cat(io.core.vGenIO.resp.bits.data ((lsuDmemWidth-1), 0), 0.U((oviWidth-lsuDmemWidth).W))
+    }.otherwise {
+      LSUReturnData := Cat(0.U, io.core.vGenIO.resp.bits.data ((lsuDmemWidth-1), 0))
+    }
 
 /*
    Data back to VPU
@@ -537,7 +534,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   MemSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg) 
 
   when (LSUReturnLoadValid) {
-    MemLoadData := vReturnData.io.oviData    
+    MemLoadData := LSUReturnData    
     seqSbId := io.core.vGenIO.resp.bits.sbId
     seqElCount := io.core.vGenIO.resp.bits.elemCount
     seqElOff := io.core.vGenIO.resp.bits.elemOffset
@@ -589,7 +586,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   vpuModule.io.dispatch_kill := 0.B
   
    vpuModule.io.memop_sync_end := MemSyncEnd
- vpuModule.io.memop_sb_id := MemSbId  
+   vpuModule.io.memop_sb_id := MemSbId  
 // vpuModule.io.mem_vstart := MEMVstart
    vpuModule.io.load_valid := MemLoadValid
    vpuModule.io.load_seq_id := MemSeqId
@@ -867,7 +864,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   /*
      Check if there is valid mask
   */ 
-  val vMaskcount = RegInit(0.U(3.W))
+  val vMaskcount = RegInit(0.U(log2Ceil(Depth+1).W))
   val vMaskud = Cat (io.maskValid, io.release)
   when (vMaskud === 1.U) {
     vMaskcount := vMaskcount - 1.U
@@ -876,7 +873,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   }
   val hasMask = WireInit(false.B)
   hasMask := vMaskcount =/= 0.U
-  assert (vMaskcount < (Depth+1).U)
+  assert (vMaskcount <= Depth.U)
   
   /*
      CurrentEntry and Current Mask
@@ -912,7 +909,6 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   io.canPop := working && (((!vPacker.io.packOveride || sPacker.io.packOveride) && ((currentMask && isMask && hasMask) || (!isMask && !isIndex) || (!isMask && isIndex && hasMask))) || 
                             lastFake || fakeHold ||
                             vPacker.io.packOveride && (!isMask || (hasMask && isMask && vPackMask.io.validMask)))
-//  io.canPop := working && ((currentMask && ((isMask || isIndex) && hasMask)) || (!isMask && !isIndex) || lastFake)
   val isLastIndex = currentEntry(65)
   
   // fake happens when: no mask but vl = 0, with mask but last one masked off
@@ -994,8 +990,6 @@ class VIdGen(val M: Int, val N: Int)(implicit p: Parameters) extends Module {
   require(M % 8 == 0, "M must be a multiple of 8")
   require(N % 8 == 0, "N must be a multiple of 8")
   val S = log2Ceil(M + 1)
-//  val I = log2Ceil(M) + 3
-//  val K = log2Ceil(M)
   
 
   val io = IO(new Bundle {
@@ -1057,8 +1051,6 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
   val S = log2Ceil(N / 8 + 1)
   val I = log2Ceil(M / 8 + 1)
   val maxIndex = (M / 8)
-  val safeLmul = log2Ceil(M/Vlen)  // 2 in our case, however this needs to be logged (LMUL = 2, but vlmul = 1)
-  val preshift = log2Ceil(M/Vlen) // 1 in our case
 
   val io = IO(new Bundle {
     val configValid = Input(Bool())
@@ -1066,7 +1058,7 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
     val writeData = Input(UInt(M.W))
     val pop = Input(Bool())
     val last = Input(Bool())
-    val vlmul = Input(UInt(3.W))
+//    val vlmul = Input(UInt(3.W))
     val sliceSize = Input(UInt(S.W))
     val release = Output(Bool())
     val outData = Output(UInt(N.W))
@@ -1078,16 +1070,10 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
   val buffer = RegInit(VecInit(Seq.fill(Depth)(0.U(M.W))))
   val readPtr = RegInit(0.U(log2Ceil(Depth).W))
   val writePtr = RegInit(0.U(log2Ceil(Depth).W))
-  val finalJump = RegInit(0.U((log2Ceil(Depth+1)).W))
   val currentIndex = Reg(UInt(I.W))
-  val needJump = RegInit(false.B)
-  val jumping = RegInit(false.B)
-  val miniIndex = RegInit(0.U(log2Ceil(N+1).W))
 
   when(io.configValid) {
    currentIndex := 0.U
-   miniIndex := 0.U
-   needJump := false.B 
   }
 
   val currentEntry = buffer(readPtr)
@@ -1168,24 +1154,6 @@ class VWhLSDecoder(val M: Int) extends Module {
 }
 
 
-// M is the return bus width: 512 for now, N is the DMEM width: 64 for now
-class VReturnData (val M: Int, val N: Int) (implicit p: Parameters) extends Module {
-    val io = IO(new Bundle {
-    val lsuData = Input(UInt(N.W))
-    val oviData = Output(UInt(M.W))
-    // 0 for pos, 1 for neg
-    val strideDir     = Input (Bool())
-    val memSize = Input (UInt(2.W))
-  })
-    io.oviData := 0.U 
-    when (io.strideDir){  // negative
-       io.oviData := Cat(io.lsuData ((N-1), 0), 0.U((M-N).W))
-    }.otherwise {
-      io.oviData := Cat(0.U, io.lsuData ((N-1), 0))
-    }
-}
-
-
 class Vpacker(val M: Int, val VLEN: Int) extends Module {
    val k = log2Ceil(M/8+1)
     val I = log2Ceil(VLEN)
@@ -1237,7 +1205,6 @@ class Vpacker(val M: Int, val VLEN: Int) extends Module {
     isFour := strideDetector.io.isFour
     logStride := strideDetector.io.logStride 
     canPack := io.configValid && (io.isUnit || (io.isStride && (isOne || isTwo || isFour))) && io.isLoad && (io.vl =/= 0.U)
-  //  isMask := canPack && io.isMask && io.isLoad 
     
 
   // initializing element offset and logStride
