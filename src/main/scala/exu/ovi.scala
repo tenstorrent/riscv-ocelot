@@ -908,7 +908,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   // can Pop happens when lastFake, !isMask && !isIndex, !isMask && isIndex && hasMask, isMask && hasMask && currentMask, fakeHold
   io.canPop := working && (((!vPacker.io.packOveride || sPacker.io.packOveride) && ((currentMask && isMask && hasMask) || (!isMask && !isIndex) || (!isMask && isIndex && hasMask))) || 
                             lastFake || fakeHold ||
-                            vPacker.io.packOveride && (!isMask || (hasMask && isMask && vPackMask.io.validMask)))
+                            (vPacker.io.packOveride && (!isMask || (hasMask && isMask && vPackMask.io.validMask))))
   val isLastIndex = currentEntry(65)
   
   // fake happens when: no mask but vl = 0, with mask but last one masked off
@@ -921,9 +921,11 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   when (isIndex) {
       // index increase readPtr anyway, last or not
     when(io.pop || io.popForce) {
-      readPtr := WrapInc(readPtr, Depth)
-      io.release := true.B 
-      currentIndex := currentIndex + 1.U
+      when (!fakeHold) {
+        readPtr := WrapInc(readPtr, Depth)
+        io.release := true.B 
+        currentIndex := currentIndex + 1.U
+      }
       // turn off working, precaution for vl = 0 index load store
       when(io.last) {
         fakeHold := false.B 
@@ -937,7 +939,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
           working := false.B 
           currentIndex := 0.U
           // pop off the current Mask regardless
-          when (isMask) {
+          when (isMask && !fakeHold) {
             readPtr := WrapInc(readPtr, Depth)
             currentMaskIndex := 0.U
             io.release := true.B 
