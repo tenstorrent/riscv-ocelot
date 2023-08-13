@@ -1218,7 +1218,6 @@ when (dlq_finished) {
 
   when (dsq_finished) {
         dsq_finished := false.B 
-         stq_execute_head                     := WrapInc(stq_execute_head, numStqEntries)
   }
 
   for (w <- 0 until memWidth) {
@@ -2103,6 +2102,7 @@ when (dlq_finished) {
       dsq_finished := true.B
       sbIdDone := dsq(dsq_head).bits.sbId
       stq(stq_execute_head).bits.succeeded := true.B 
+      stq_execute_head := WrapInc(stq_execute_head, numStqEntries)
     }
   }
 
