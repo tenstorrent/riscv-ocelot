@@ -399,8 +399,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // scalar store are committed first, then sent to DMEM
   // vector store are sent to DMEM first, then complete by VPU, then committed by ROB
   val stq_commit_head  = Reg(UInt(stqAddrSz.W)) // point to next store to commit
+  // pointer that moves around
   val stq_execute_head = Reg(UInt(stqAddrSz.W)) // point to next store to execute
 
+  // keeping track of age logic for vector store and vector loads
   val vstCountWidth = stqAddrSz + 1
   val youngest_vst     = RegInit(0.U(stqAddrSz.W))
   val vst_count        = RegInit(0.U(vstCountWidth.W))
@@ -412,30 +414,27 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val stExist          = RegInit(false.B)
   val ldExist          = RegInit(false.B)
 
-  // trying to detach the bundle so that we can move things around in the future
-//  val ioVGen           = io.core.VGen
-
+ 
+  // allocation
   val dsq_tail         = Reg(UInt(dsqAddrSz.W))
+  // succeeded
   val dsq_head         = Reg(UInt(dsqAddrSz.W))
+  // !succeeded && !executed, isFake is ok
   val dsq_execute_head = Reg(UInt(dsqAddrSz.W))
+  // TLB, ignore isFake, just proceed
   val dsq_tlb_head     = Reg(UInt(dsqAddrSz.W))
-
-  
-
- // val dsq_execute_save = Reg(Valid(UInt(stqAddrSz.W)))
-//  val dsq_finished     = Reg(Bool())
+  // signal to be sent back to OVI
   val dsq_finished     = WireInit(false.B)
 
+  // similar to DSQ
   val dlq_tail         = Reg(UInt(dlqAddrSz.W))
   val dlq_head         = Reg(UInt(dlqAddrSz.W))
   val dlq_execute_head = Reg(UInt(dlqAddrSz.W))
   val dlq_tlb_head     = Reg(UInt(dlqAddrSz.W))
-//  val dlq_finished     = Reg(Bool())
   val dlq_finished     = WireInit(false.B)
 
     
-//  val sbIdDoneSt = RegInit(0.U(5.W))
-//  val sbIdDoneLd = RegInit(0.U(5.W))
+  // the sbId to be sent back when individual dsq / dlq is done (last)
   val sbIdDoneSt = WireInit(0.U(5.W))
   val sbIdDoneLd = WireInit(0.U(5.W))
 

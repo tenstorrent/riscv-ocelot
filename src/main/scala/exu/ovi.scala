@@ -1329,7 +1329,7 @@ class StrideDetector extends Module {
               (io.mem_size === 1.U && (io.stride === 4.U || io.stride === "hFFFFFFFFFFFFFFFC".U)) ||
               (io.mem_size === 2.U && (io.stride === 8.U || io.stride === "hFFFFFFFFFFFFFFF8".U))
 
-  io.isFour := (io.mem_size === 0.U && (io.stride === 4.U || io.stride === "hFFFFFFFFFFFFFFFC".U))validMask
+  io.isFour := (io.mem_size === 0.U && (io.stride === 4.U || io.stride === "hFFFFFFFFFFFFFFFC".U))
   io.logStride := 3.U 
   when (io.isTwo) {
     io.logStride := 1.U 
