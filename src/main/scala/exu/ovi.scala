@@ -367,7 +367,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   sbIdExQueue.io.enq.valid := newVGenConfig
   sbIdExQueue.io.enq.bits := sbIdQueue.io.deq.bits 
   sbIdExQueue.io.deq.ready := MemSyncEnd 
-  MemSbId := sbIdExQueue.io.deq.bits 
+  MemSbId := io.core.vGenIO.resp.bits.sbIdDone 
   // holding the sbId from sbIdQueue(vLSIQueue)
   val sbIdHold = RegInit(0.U)
   // holding wheter it is store or load

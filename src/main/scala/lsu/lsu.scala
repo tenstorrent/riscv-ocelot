@@ -128,6 +128,7 @@ class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   val elemID = Bits(8.W)
   val vRegID = Bits(5.W)
   val sbId = Bits(5.W)
+  val sbIdDone = Bits(5.W)
   val elemOffset = Bits(6.W)
   val elemCount = Bits(7.W)
   val strideDir = Bool()
@@ -413,7 +414,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val dlq_finished     = Reg(Bool())
 
     
-  val sbIdDone = RegInit(0.U(5.W))
+  val sbIdDoneSt = RegInit(0.U(5.W))
+  val sbIdDoneLd = RegInit(0.U(5.W))
 
   val vldata_back = WireInit(false.B)
 
@@ -424,7 +426,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.core.VGen.resp.bits.vRegID := 0.U
   io.core.VGen.resp.bits.elemOffset := 0.U 
   io.core.VGen.resp.bits.elemCount := 0.U
-  io.core.VGen.resp.bits.sbId := sbIdDone 
+  io.core.VGen.resp.bits.sbId := 0.U 
+  io.core.VGen.resp.bits.sbIdDone := Mux (dlq_finished, sbIdDoneLd, sbIdDoneSt)
   io.core.VGen.resp.bits.strideDir := false.B 
   io.core.VGen.resp.bits.s0l1 := false.B
   io.core.VGen.resp.bits.memSize  := 0.U 
@@ -886,10 +889,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                                  !stq_commit_e.bits.addr_is_virtual &&
                                                                   stq_commit_e.bits.data.valid) || 
                                                                   (stq_commit_e.bits.isVector && (stq_head === stq_execute_head) && dsq_commit_e.valid 
-                                                                                              && !(!stq_commit_e.bits.vectorCanGo && !stq_commit_e.bits.vectorNoYoung) && !dsq_finished))))
+                                                                                              && !(!stq_commit_e.bits.vectorCanGo && !stq_commit_e.bits.vectorNoYoung) 
+                                                                                              && (stq_head === dsq_commit_e.bits.uop.stq_idx) && !dsq_finished))))
 
   val can_fire_vector_load = widthMap(w => (w == memWidth-1).B && 
-                                           ldq_commit_e.bits.isVector && !ldq_commit_e.bits.succeeded && (dlq_commit_e.valid && 
+                                           ldq_commit_e.bits.isVector && !ldq_commit_e.bits.succeeded && (ldq_v_head === dlq_commit_e.bits.uop.ldq_idx) &&
+                                           (dlq_commit_e.valid && 
                                            dlq_commit_e.bits.addr.valid && !dlq_commit_e.bits.addr_is_virtual &&
                                           !dlq_commit_e.bits.succeeded && !dlq_commit_e.bits.isFake && !dlq_commit_e.bits.executed &&
                                            !(ldq_commit_e.bits.hasOlderVst && stq(ldq_commit_e.bits.youngest_vst_idx).bits.isVector && stq(ldq_commit_e.bits.youngest_vst_idx).valid
@@ -1216,7 +1221,7 @@ when (dlq_finished) {
     dlq_finished := false.B
   }
 
-  when (dsq_finished) {
+  when (dsq_finished && !dlq_finished) {
         dsq_finished := false.B 
   }
 
@@ -1792,7 +1797,7 @@ when (dlq_finished) {
     // Advance dlq_execute_head
     when(dlq_commit_e.valid) {
     //  when(dlq_commit_e.bits.isFake && (dlq_commit_e.bits.uop.ldq_idx === ldq_v_head)){
-      when(dlq_commit_e.bits.isFake){
+      when(dlq_commit_e.bits.isFake && (ldq_v_head === dlq_commit_e.bits.uop.ldq_idx)){
          dlq_commit_e.bits.succeeded := true.B
          when (dlq_execute_head =/= dlq_tail) {
            dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
@@ -2092,17 +2097,22 @@ when (dlq_finished) {
   }
 
   when (dsq(dsq_head).valid && dsq(dsq_head).bits.succeeded) {
-    dsq_head := WrapInc(dsq_head, numDsqEntries)
+    
     dsq(dsq_head).valid  := false.B 
     dsq(dsq_head).bits.succeeded := false.B 
     dsq(dsq_head).bits.addr.valid := false.B
     dsq(dsq_head).bits.data.valid := false.B 
     dsq(dsq_head).bits.isFake := false.B
     when (dsq(dsq_head).bits.last) {
+      when (!dsq_finished) {
       dsq_finished := true.B
-      sbIdDone := dsq(dsq_head).bits.sbId
+      sbIdDoneSt := dsq(dsq_head).bits.sbId
       stq(stq_execute_head).bits.succeeded := true.B 
       stq_execute_head := WrapInc(stq_execute_head, numStqEntries)
+      dsq_head := WrapInc(dsq_head, numDsqEntries)
+      }
+    }.otherwise {
+      dsq_head := WrapInc(dsq_head, numDsqEntries)
     }
   }
 
@@ -2111,7 +2121,7 @@ when (dlq_finished) {
     dlq(dlq_head).valid  := false.B 
     when (dlq(dlq_head).bits.last) {
       dlq_finished := true.B
-      sbIdDone := dlq(dlq_head).bits.sbId
+      sbIdDoneLd := dlq(dlq_head).bits.sbId
       ldq(dlq(dlq_head).bits.uop.ldq_idx).bits.succeeded := true.B 
       ldq(dlq(dlq_head).bits.uop.ldq_idx).bits.executed := true.B
       
