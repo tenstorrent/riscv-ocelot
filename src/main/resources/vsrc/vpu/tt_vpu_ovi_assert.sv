@@ -72,10 +72,10 @@ module tt_vpu_ovi_assert
               ((dispatch_next_senior || dispatch_kill) |-> (issue_valid && issue_sb_id == dispatch_sb_id) || issue_sb_ids[dispatch_sb_id]));
   
   cannot_issue_twice_assume: assume property(@(posedge clk) disable iff (!reset_n)
-              (issue_valid && !issue_sb_ids[issue_sb_id]);
+              (issue_valid |-> !issue_sb_ids[issue_sb_id]));
 
   cannot_dispatch_twice_assume: assume property(@(posedge clk) disable iff (!reset_n)
-              (dispatch_next_senior && !dispatch_sb_ids[dispatch_sb_id]);
+              (dispatch_next_senior |-> !dispatch_sb_ids[dispatch_sb_id]));
   
   // complete bus must have a different sb_id than issue/dispatch in a given cycle.
   // issue and dispatch may have the same sb_id.
