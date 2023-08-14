@@ -148,22 +148,27 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   reqQueue.io.brupdate := io.brupdate
   reqQueue.io.exception := io.core.exception
   
-  val uOpMem = Mem(32, new MicroOp())
   val vpuModule = Module(new tt_vpu_ovi(vLen))
   val maxIssueCredit = 16
   val issueCreditCnt = RegInit(maxIssueCredit.U)
   issueCreditCnt := issueCreditCnt + vpuModule.io.issue_credit - vpuModule.io.issue_valid
 
-  val sbId = Counter(0 until 32, vpuModule.io.issue_valid)._1
-  when(reqQueue.io.deq.valid && reqQueue.io.deq.ready) { uOpMem.write(sbId, reqQueue.io.deq.bits.req.uop) }
-  val respUop = uOpMem.read(vpuModule.io.completed_sb_id)
+  val sb_uop = Reg(Vec(32, new MicroOp()))
+  val sb_valid = RegInit(VecInit.fill(32)(false.B))
+  val next_sb_id = PriorityEncoder(sb_valid.map(!_))
+  when(reqQueue.io.deq.fire) {
+    sb_uop(next_sb_id) := reqQueue.io.deq.bits.req.uop
+    sb_valid(next_sb_id) := true.B
+  }
 
-  io.resp.valid := vpuModule.io.completed_valid
+  val resp_valid = vpuModule.io.completed_valid
+  val resp_uop = sb_uop(vpuModule.io.completed_sb_id)
+  when(resp_valid) { sb_valid(vpuModule.io.completed_sb_id) := false.B }
+
+  io.resp.valid := resp_valid
   io.resp.bits.data := vpuModule.io.completed_dest_reg
-  io.resp.bits.uop := respUop
-  io.resp.bits.uop.dst_rtype := Mux(respUop.dst_rtype === RT_VEC,
-                                    RT_X,
-                                    respUop.dst_rtype)
+  io.resp.bits.uop := resp_uop
+  io.resp.bits.uop.dst_rtype := Mux(resp_uop.dst_rtype === RT_VEC, RT_X, resp_uop.dst_rtype)
   io.resp.bits.uop.uses_stq := 0.B // Trick Rob to acknowledge Vector Store
   io.resp.bits.fflags.valid := vpuModule.io.completed_valid && vpuModule.io.completed_fflags.orR
   io.resp.bits.fflags.bits.uop.rob_idx := io.resp.bits.uop.rob_idx
@@ -251,15 +256,15 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   
 
   // enqueue whenever VPU is ready && reqQueue is valid && there is ld or st 
-  vLSIQueue.io.enq.valid := issueCreditCnt =/= 0.U && reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
+  vLSIQueue.io.enq.valid := issueCreditCnt =/= 0.U && reqQueue.io.deq.fire && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
   // grab everything from reqQueue
   vLSIQueue.io.enq.bits := reqQueue.io.deq.bits
   // can only dequeue vLSIQueue when it is not in the middle of handling vector load store and
   // 1. memSyncStart 2. pop out outStanding 3. previously tried
   vLSIQueue.io.deq.ready := !inMiddle && (outStandingReq =/= 0.U || MemSyncStart || tryDeqVLSIQ)
   // sbIdQueue is the same as vLSIQueue
-  sbIdQueue.io.enq.valid := issueCreditCnt =/= 0.U && reqQueue.io.deq.valid && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
-  sbIdQueue.io.enq.bits := sbId
+  sbIdQueue.io.enq.valid := issueCreditCnt =/= 0.U && reqQueue.io.deq.fire && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
+  sbIdQueue.io.enq.bits := next_sb_id
   sbIdQueue.io.deq.ready := !inMiddle && (outStandingReq =/= 0.U || MemSyncStart || tryDeqVLSIQ)
   when (!inMiddle) {
     // success transaction
@@ -578,9 +583,9 @@ MemSyncEnd := (io.core.vGenIO.resp.bits.vectorDone && io.core.vGenIO.resp.valid)
   vpuModule.io := DontCare
   vpuModule.io.clk := clock
   vpuModule.io.reset_n := ~reset.asBool
-  vpuModule.io.issue_valid := reqQueue.io.deq.valid && reqQueue.io.deq.ready
+  vpuModule.io.issue_valid := reqQueue.io.deq.fire
   vpuModule.io.issue_inst := reqQueue.io.deq.bits.req.uop.inst
-  vpuModule.io.issue_sb_id := sbId
+  vpuModule.io.issue_sb_id := next_sb_id
   vpuModule.io.issue_scalar_opnd := Mux( (reqQueue.io.deq.bits.req.uop.lrs1_rtype === RT_FLT), reqQueue.io.deq.bits.req.rs3_data,
                                     Mux( (reqQueue.io.deq.bits.req.uop.uses_ldq ||
                                           reqQueue.io.deq.bits.req.uop.uses_stq             ), reqQueue.io.deq.bits.req.rs2_data,
@@ -596,8 +601,8 @@ MemSyncEnd := (io.core.vGenIO.resp.bits.vectorDone && io.core.vGenIO.resp.valid)
     0.U(14.W) // vstart
   )
   vpuModule.io.issue_vcsr_lmulb2 := reqQueue.io.deq.bits.vconfig.vtype.vlmul_sign
-  vpuModule.io.dispatch_sb_id := sbId
-  vpuModule.io.dispatch_next_senior := reqQueue.io.deq.valid && reqQueue.io.deq.ready
+  vpuModule.io.dispatch_sb_id := next_sb_id
+  vpuModule.io.dispatch_next_senior := reqQueue.io.deq.fire
   vpuModule.io.dispatch_kill := 0.B
   
    vpuModule.io.memop_sync_end := MemSyncEnd
@@ -1494,7 +1499,6 @@ class SmallPowerOfTwo(bitWidth: Int) extends Module {
 }
 
 // PriorityEncoderOH 
-
 /*
 class MaskSkipper(val M: Int, val VLEN: Int) extends Module {
    val k = log2Ceil(M/8+1)
