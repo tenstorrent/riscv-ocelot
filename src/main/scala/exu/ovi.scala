@@ -522,7 +522,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
    Data back to VPU
 */
 
-MemSbId := io.core.vGenIO.resp.bits.sbIdDone 
+MemSbId := 0.U
 val MemSb = RegInit(0.U(32.W))
 val vectorDone = WireInit(0.U(2.W))
 val MemSbResidue = WireInit(false.B)
