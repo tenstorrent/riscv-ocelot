@@ -155,7 +155,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   issueCreditCnt := issueCreditCnt + vpuModule.io.issue_credit - vpuModule.io.issue_valid
 
   val sbId = Counter(0 until 32, vpuModule.io.issue_valid)._1
-  when(reqQueue.io.deq.valid) { uOpMem.write(sbId, reqQueue.io.deq.bits.req.uop) }
+  when(reqQueue.io.deq.valid && reqQueue.io.deq.ready) { uOpMem.write(sbId, reqQueue.io.deq.bits.req.uop) }
   val respUop = uOpMem.read(vpuModule.io.completed_sb_id)
 
   io.resp.valid := vpuModule.io.completed_valid
