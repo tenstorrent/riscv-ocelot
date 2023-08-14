@@ -259,6 +259,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic drain_load_buffer;
   logic [2:0] load_buffer_rptr;
 
+  logic [63:0] scalar_opnd;
   logic [63:0] scalar_opnd_reg;
   logic [511:0] packed_load_data;
   logic [511:0] shifted_load_data;
@@ -1037,7 +1038,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     index_size =  id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
                   id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
                   id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW      
-    load_stride = !id_is_indexldst ? scalar_opnd_reg : 
+    load_stride = !id_is_indexldst ? scalar_opnd : 
                 vcsr[38:36] == 3'b000 ? 1 : // 8-bit EEW
                 vcsr[38:36] == 3'b101 ? 2 : // 16-bit EEW
                 vcsr[38:36] == 3'b110 ? 4 : 8; // 32-bit, 64-bit EEW;                            
@@ -1083,6 +1084,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     else if(ocelot_read_req && read_valid)
       scalar_opnd_reg <= read_issue_scalar_opnd;
   end
+  assign scalar_opnd = (ocelot_read_req && read_valid) ? read_issue_scalar_opnd : scalar_opnd_reg;
 
   lrm_model lrm
   (
