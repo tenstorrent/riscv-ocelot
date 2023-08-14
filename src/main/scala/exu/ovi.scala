@@ -961,7 +961,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
            }          
        }.otherwise {
         // pop off current mask if it reaches end
-          when (vPacker.io.packOveride) {
+          when (vPacker.io.packOveride && isMask) {
             when (vPacker.io.packSkipVMask) {
               readPtr := WrapInc(readPtr, Depth)
               io.release := true.B 
@@ -1329,7 +1329,7 @@ class StrideDetector extends Module {
               (io.mem_size === 1.U && (io.stride === 4.U || io.stride === "hFFFFFFFFFFFFFFFC".U)) ||
               (io.mem_size === 2.U && (io.stride === 8.U || io.stride === "hFFFFFFFFFFFFFFF8".U))
 
-  io.isFour := (io.mem_size === 0.U && (io.stride === 4.U || io.stride === "hFFFFFFFFFFFFFFFC".U))
+  io.isFour := (io.mem_size === 0.U && (io.stride === 4.U || io.stride === "hFFFFFFFFFFFFFFFC".U))validMask
   io.logStride := 3.U 
   when (io.isTwo) {
     io.logStride := 1.U 
@@ -1371,10 +1371,7 @@ class Spacker(val M: Int, val VDBLEN: Int) extends Module {
     val isLoad = Input(Bool())
       // base address and stride    
     val startAddr = Input(UInt(64.W))
-      // interface with OVI Vhelper
-  //  val elemOffset = Output(UInt(6.W))
-  //  val elemCount = Output(UInt(7.W))
-     // interface with VIdGen / VAGen
+       // interface with VIdGen / VAGen
     val packOveride = Output (Bool())
     val packVDBId = Output (UInt(I.W))
     val packSkipVDB = Output (Bool())  
@@ -1498,3 +1495,57 @@ class SmallPowerOfTwo(bitWidth: Int) extends Module {
 
 // PriorityEncoderOH 
 
+/*
+class MaskSkipper(val M: Int, val VLEN: Int) extends Module {
+   val k = log2Ceil(M/8+1)
+    val I = log2Ceil(VLEN)
+    val MByte = M/8
+    val VLENByte = VLEN/8
+  val io = IO(new Bundle {    
+    // interface with vAGen at start
+    val configValid = Input(Bool())
+    val vl = Input(UInt(9.W))
+    val memSize = Input(UInt(2.W))
+      // which types of load store
+    val isUnit = Input (Bool())
+    val isStride = Input(Bool())
+    val isMask = Input(Bool())
+    val isLoad = Input(Bool())
+      // base address and stride    
+    val startAddr = Input(UInt(64.W))
+    val stride = Input(UInt(64.W))
+      // interface with VIdGen / VAGen / VDB
+    // for load
+    val packOveride = Output (Bool())
+    val packId = Output (UInt(I.W))
+    val packSkipVreg = Output (Bool())    
+    val packIncrement = Output (UInt(64.W))
+    // for store
+    val spackOveride = Output (Bool())
+    val packVDBId = Output (UInt(I.W))
+    val packSkipVDB = Output (Bool()) 
+    // general 
+    val packLast = Output (Bool())
+    val packDir = Output (Bool())
+    // mask itself
+    val currentMask = Input (UInt(VLENByte.W))
+    val validMask = Output (Bool())
+    val packSkipVMask = Output (Bool())  
+     // pop 
+    val pop = Input (Bool())
+  })
+
+  // decode the stride to see if we can do packing
+    val canPack = WireInit (false.B)
+    val strideDetector = Module (new StrideDetector())
+    strideDetector.io.mem_size := io.memSize
+    strideDetector.io.stride := io.stride
+    val isMask = RegInit(false.B)
+    val logStride = WireInit(3.U(2.W)) // this is the log2 of stride
+    logStride := strideDetector.io.logStride 
+    canPack := io.configValid && io.isMask && ((!io.isLoad && !io.isUnit) || (io.isLoad && !(io.isUnit || (io.isStride && (logStride =/= 3.U))))) && (io.vl =/= 0.U)
+
+
+}
+
+*/

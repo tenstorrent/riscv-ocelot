@@ -129,8 +129,6 @@ class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   val sbIdDoneSt = Bits(5.W)
   val sbIdDoneLd = Bits(5.W)
   val vectorDone = Bool()
-//  val sbIdDone = Bits(5.W)
-  
   // For Seq ID
   val elemID = Bits(8.W)
   val vRegID = Bits(5.W)
@@ -309,7 +307,7 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val youngest_vld_idx    = UInt(ldqAddrSz.W) // index of youngest vector store older than us
   val youngest_vld_count  = UInt((ldqAddrSz + 1).W)
   // a vector load should have this
-  val vld_count  = UInt((stqAddrSz + 1).W)
+  val vld_count  = UInt((ldqAddrSz + 1).W)
   val forward_std_val     = Bool()
   val forward_stq_idx     = UInt(stqAddrSz.W) // Which store did we get the store-load forward from?
 
@@ -326,18 +324,18 @@ class DLQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val executed            = Bool() // load sent to memory, reset by NACKs
   val succeeded           = Bool()
   val last                = Bool()
-  val sent                = Bool()
+  // seqId
   val elemID = Bits(8.W)
   val vRegID = Bits(5.W)
   val elemOffset = Bits(6.W)
   val elemCount = Bits(7.W)
+  // pack load data
   val strideDir = Bool()
+  // mask interface
   val isMask = Bool()
   val Mask = Bits(32.W)
+  // fake entry
   val isFake = Bool()
-
-//  val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
-//  val youngest_stq_idx    = UInt(stqAddrSz.W) // index of the oldest store younger than us
 }
 
 class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
@@ -349,8 +347,10 @@ class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
 
   val committed           = Bool() // committed by ROB
   val succeeded           = Bool() // D$ has ack'd this, we don't need to maintain this anymore
-  val isVector            = Bool() // KYnew: placeholder for now
+  // vector store only
+  val isVector            = Bool() 
   val vst_count  = UInt((stqAddrSz + 1).W)
+  // vector store only, check if all load are gone
   val vectorCanGo         = Bool()
   val vectorNoYoung       = Bool()
   val youngest_ldq_idx    = UInt(ldqAddrSz.W)
@@ -365,7 +365,6 @@ class DSQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val data                = Valid(UInt(coreDataBits.W))
   val sbId = Bits(5.W)
   val last                = Bool()
-  val sent                = Bool()
   val succeeded           = Bool() // D$ has ack'd this, we don't need to maintain this anymore
   val isFake              = Bool()
 }
@@ -386,12 +385,19 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val dsq = Reg(Vec(numDsqEntries, Valid(new DSQEntry)))
   val dlq = Reg(Vec(numDlqEntries, Valid(new DLQEntry)))
 
-
+  // for committing load entry
   val ldq_head         = Reg(UInt(ldqAddrSz.W))
+  // a pointer that works like ldq_head but doesn't need commit from ROB
   val ldq_v_head       = Reg(UInt(ldqAddrSz.W))
+  // allocation
   val ldq_tail         = Reg(UInt(ldqAddrSz.W))
+  
+  // committed and succeeded
   val stq_head         = Reg(UInt(stqAddrSz.W)) // point to next store to clear from STQ (i.e., send to memory)
+  // allocation
   val stq_tail         = Reg(UInt(stqAddrSz.W))
+  // scalar store are committed first, then sent to DMEM
+  // vector store are sent to DMEM first, then complete by VPU, then committed by ROB
   val stq_commit_head  = Reg(UInt(stqAddrSz.W)) // point to next store to commit
   val stq_execute_head = Reg(UInt(stqAddrSz.W)) // point to next store to execute
 
@@ -695,7 +701,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dsq(dsq_tail).bits.data.bits    := io.core.VGen.req.bits.data
     dsq(dsq_tail).bits.succeeded  := false.B
     dsq(dsq_tail).bits.last := io.core.VGen.req.bits.last
-    dsq(dsq_tail).bits.sent := false.B 
     dsq(dsq_tail).bits.sbId := io.core.VGen.reqHelp.bits.sbId 
     dsq(dsq_tail).bits.isFake := io.core.VGen.reqHelp.bits.isFake
 
@@ -718,7 +723,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dlq(dlq_tail).bits.succeeded  := false.B
     dlq(dlq_tail).bits.executed  := false.B
     dlq(dlq_tail).bits.last := io.core.VGen.req.bits.last
-    dlq(dlq_tail).bits.sent := false.B 
     dlq(dlq_tail).bits.sbId := io.core.VGen.reqHelp.bits.sbId
     dlq(dlq_tail).bits.elemID := io.core.VGen.reqHelp.bits.elemID
     dlq(dlq_tail).bits.elemOffset := io.core.VGen.reqHelp.bits.elemOffset
@@ -1307,7 +1311,6 @@ when (dlq_finished) {
            dsq_execute_head :=  WrapInc(dsq_execute_head, numDsqEntries)
           }
          dsq(dsq_execute_head).bits.succeeded := false.B
-         dsq(dsq_execute_head).bits.sent := true.B
       }.elsewhen(dsq_commit_e.valid && dsq_commit_e.bits.isFake){
         dsq_commit_e.bits.succeeded := true.B
         when (dsq_execute_head =/= dsq_tail) {         
@@ -1839,7 +1842,6 @@ when (dlq_finished) {
          }  
       }.elsewhen(can_fire_vector_load(w) && io.dmem.req.ready){
          dlq(dlq_execute_head).bits.succeeded := false.B
-         dlq(dlq_execute_head).bits.sent := true.B
          dlq(dlq_execute_head).bits.executed := true.B
          when (dlq_execute_head =/= dlq_tail) {
            dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
