@@ -394,7 +394,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val stq_tail         = Reg(UInt(stqAddrSz.W))
   val stq_commit_head  = Reg(UInt(stqAddrSz.W)) // point to next store to commit
   val stq_execute_head = Reg(UInt(stqAddrSz.W)) // point to next store to execute
-//  val stq_execute_save = Reg(Valid(UInt(stqAddrSz.W)))
+
   val vstCountWidth = stqAddrSz + 1
   val youngest_vst     = RegInit(0.U(stqAddrSz.W))
   val vst_count        = RegInit(0.U(vstCountWidth.W))
@@ -417,19 +417,21 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   
 
  // val dsq_execute_save = Reg(Valid(UInt(stqAddrSz.W)))
-  val dsq_finished     = Reg(Bool())
-//  val dsq_finished     = WireInit(false.B)
+//  val dsq_finished     = Reg(Bool())
+  val dsq_finished     = WireInit(false.B)
 
   val dlq_tail         = Reg(UInt(dlqAddrSz.W))
   val dlq_head         = Reg(UInt(dlqAddrSz.W))
   val dlq_execute_head = Reg(UInt(dlqAddrSz.W))
   val dlq_tlb_head     = Reg(UInt(dlqAddrSz.W))
-  val dlq_finished     = Reg(Bool())
-//  val dlq_finished     = WireInit(false.B)
+//  val dlq_finished     = Reg(Bool())
+  val dlq_finished     = WireInit(false.B)
 
     
-  val sbIdDoneSt = RegInit(0.U(5.W))
-  val sbIdDoneLd = RegInit(0.U(5.W))
+//  val sbIdDoneSt = RegInit(0.U(5.W))
+//  val sbIdDoneLd = RegInit(0.U(5.W))
+  val sbIdDoneSt = WireInit(0.U(5.W))
+  val sbIdDoneLd = WireInit(0.U(5.W))
 
   val vldata_back = WireInit(false.B)
 
@@ -441,7 +443,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.core.VGen.resp.bits.elemOffset := 0.U 
   io.core.VGen.resp.bits.elemCount := 0.U
   io.core.VGen.resp.bits.sbId := 0.U 
-  io.core.VGen.resp.bits.sbIdDone := Mux (dlq_finished, sbIdDoneLd, sbIdDoneSt)
+//  io.core.VGen.resp.bits.sbIdDone := Mux (dlq_finished, sbIdDoneLd, sbIdDoneSt)
   io.core.VGen.resp.bits.strideDir := false.B 
   io.core.VGen.resp.bits.s0l1 := false.B
 
@@ -1241,7 +1243,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   val s0_executing_loads = WireInit(VecInit((0 until numLdqEntries).map(x=>false.B)))
 
-
+/*
 when (dlq_finished) {
     dlq_finished := false.B
   }
@@ -1249,7 +1251,7 @@ when (dlq_finished) {
   when (dsq_finished) {
         dsq_finished := false.B 
   }
-
+*/
   for (w <- 0 until memWidth) {
     dmem_req(w).valid := false.B
     dmem_req(w).bits.uop   := NullMicroOp
