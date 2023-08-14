@@ -293,7 +293,6 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val observed            = Bool()
   val isVector            = Bool() // KYnew: placeholder for now
   val vectorCanGo         = Bool()
-  val vectorHasCross      = Bool()
   val vectorNoYoung       = Bool()
 
   val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
@@ -348,7 +347,6 @@ class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val vst_count  = UInt((stqAddrSz + 1).W)
   val vectorCanGo         = Bool()
   val vectorNoYoung       = Bool()
-  val vectorHasCross      = Bool()
   val youngest_ldq_idx    = UInt(ldqAddrSz.W)
   val debug_wb_data       = UInt(xLen.W)
 }
@@ -558,7 +556,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(ld_enq_idx).bits.youngest_vst_idx := cur_youngest_vst
       ldq(ld_enq_idx).bits.youngest_vst_count := cur_vst_count
       ldq(ld_enq_idx).bits.youngest_vld_count := cur_vld_count
-         ldq(ld_enq_idx).bits.youngest_vld_idx := cur_youngest_vld
+      ldq(ld_enq_idx).bits.youngest_vld_idx := cur_youngest_vld
+      ldq(ld_enq_idx).bits.vectorCanGo := false.B 
       when (io.core.dis_uops(w).bits.is_vec) {
         ldq(ld_enq_idx).bits.addr_is_virtual := false.B
         update_young_vld := true.B         
@@ -570,7 +569,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         }.otherwise {
         ldq(ld_enq_idx).bits.vectorNoYoung := false.B 
         ldq(ld_enq_idx).bits.vectorCanGo := false.B 
-        ldq(ld_enq_idx).bits.vectorHasCross := false.B
         } 
       } 
 /*             
@@ -622,7 +620,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         stq(st_enq_idx).bits.vectorNoYoung := false.B 
         stq(st_enq_idx).bits.youngest_ldq_idx  := ld_enq_idx
         stq(st_enq_idx).bits.vectorCanGo := false.B 
-        stq(st_enq_idx).bits.vectorHasCross := false.B
         } 
       }
 
@@ -630,8 +627,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       assert (!stq(st_enq_idx).valid, "[lsu] Enqueuing uop is overwriting stq entries")
     }
 
-    ld_enq_idx = Mux(dis_ld_val, WrapInc(ld_enq_idx, numLdqEntries),
-                                 ld_enq_idx)
+    
     cur_vld_exist = vld_exist || cur_vld_exist
     cur_vld_count = Mux(vld_count_incr, WrapInc(cur_vld_count, numLdqEntries), cur_vld_count)
     cur_vst_count = Mux(vst_count_incr, WrapInc(cur_vst_count, numStqEntries), cur_vst_count)
@@ -644,6 +640,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                            next_live_store_mask)
     st_enq_idx = Mux(dis_st_val, WrapInc(st_enq_idx, numStqEntries),
                                  st_enq_idx)
+    ld_enq_idx = Mux(dis_ld_val, WrapInc(ld_enq_idx, numLdqEntries),
+                                 ld_enq_idx)                             
 
     assert(!(dis_ld_val && dis_st_val), "A UOP is trying to go into both the LDQ and the STQ")
   }
@@ -1078,14 +1076,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   
   for (w <- 0 until numStqEntries) {
     when (stq(w).valid && stq(w).bits.isVector && !stq(w).bits.vectorNoYoung) {
-        when (ldq_head === stq(w).bits.youngest_ldq_idx && !stq(w).bits.vectorCanGo) {
+        when ((ldq_head === stq(w).bits.youngest_ldq_idx) && !stq(w).bits.vectorCanGo) {
           stq(w).bits.vectorCanGo := true.B
         }
     }
   }
   for (w <- 0 until numLdqEntries) {
     when (ldq(w).valid && ldq(w).bits.isVector && !ldq(w).bits.vectorNoYoung) {
-        when (stq_head === ldq(w).bits.youngest_stq_idx && !ldq(w).bits.vectorCanGo) {
+        when ((stq_head === ldq(w).bits.youngest_stq_idx) && !ldq(w).bits.vectorCanGo) {
           ldq(w).bits.vectorCanGo := true.B
         }
     }
