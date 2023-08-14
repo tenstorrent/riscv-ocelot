@@ -189,7 +189,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
    val MemStoreData = vpuModule.io.store_data
    val MemMaskValid = vpuModule.io.mask_idx_valid
    val MemMaskId    = Cat(vpuModule.io.mask_idx_last_idx, vpuModule.io.mask_idx_item)
-//   val MemLastId    = false.B 
+
 
 
   val MemSyncEnd = WireInit(false.B)
@@ -362,7 +362,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   val vGenEnable  = RegInit(false.B)
   // holding the microOp from vLSIQueue
   val vGenHold = Reg(new EnhancedFuncUnitReq(xLen, vLen))
-  MemSbId := io.core.vGenIO.resp.bits.sbIdDone 
+  
   // holding the sbId from sbIdQueue(vLSIQueue)
   val sbIdHold = RegInit(0.U)
   // holding wheter it is store or load
@@ -522,9 +522,29 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
    Data back to VPU
 */
 
+MemSbId := io.core.vGenIO.resp.bits.sbIdDone 
+val MemSb = RegInit(0.U(32.W))
+val vectorDone = WireInit(0.U(2.W))
+val MemSbResidue = WireInit(false.B)
+vectorDone := Cat (io.core.vGenIO.resp.bits.vectorDoneLd, io.core.vGenIO.resp.bits.vectorDoneSt)
+when (vectorDone === 1.U) {
+   MemSbId := io.core.vGenIO.resp.bits.sbIdDoneSt  
+}.elsewhen (vectorDone === 2.U) {
+   MemSbId := io.core.vGenIO.resp.bits.sbIdDoneLd 
+}.elsewhen (vectorDone === 3.U) {
+   MemSbId := io.core.vGenIO.resp.bits.sbIdDoneLd
+   MemSb := MemSb.bitSet (io.core.vGenIO.resp.bits.sbIdDoneSt, true.B)
+}.elsewhen (MemSb =/= 0.U) {
+   MemSbResidue := true.B 
+   MemSbId := PriorityEncoder (MemSb)
+   MemSb := MemSb.bitSet (MemSbId, false.B)
+//   MemSb(MemSbId) := 0.U 
+}
+MemSyncEnd := (io.core.vGenIO.resp.bits.vectorDone && io.core.vGenIO.resp.valid) || MemSbResidue
+
   
 //  MemSyncEnd := io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid && inMiddle
-  MemSyncEnd := io.core.vGenIO.resp.bits.vectorDone && io.core.vGenIO.resp.valid
+  
   MemLoadValid := LSUReturnLoadValid || fakeLoadReturnQueue.io.deq.valid
   MemSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg) 
 

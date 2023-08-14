@@ -128,9 +128,8 @@ class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   val vectorDoneLd = Bool()
   val sbIdDoneSt = Bits(5.W)
   val sbIdDoneLd = Bits(5.W)
-  // 
   val vectorDone = Bool()
-  val sbIdDone = Bits(5.W)
+//  val sbIdDone = Bits(5.W)
   
   // For Seq ID
   val elemID = Bits(8.W)
@@ -153,14 +152,18 @@ class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
 class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   with HasBoomUOP
 {
+  // seq ID
   val elemID = Bits(8.W)
   val vRegID = Bits(5.W)
   val elemOffset = Bits(6.W)
   val elemCount = Bits(7.W)
   val sbId = Bits(5.W)
+  // load data packing
   val strideDir = Bool()
+  // mask interface
   val isMask = Bool()
   val Mask = Bits(32.W)
+  // for cases where vl = 0 or last element is masked off
   val isFake = Bool()
 }
 
@@ -291,18 +294,21 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val succeeded           = Bool()
   val order_fail          = Bool()
   val observed            = Bool()
-  val isVector            = Bool() // KYnew: placeholder for now
+  // vector load only
+  val isVector            = Bool() 
   val vectorCanGo         = Bool()
   val vectorNoYoung       = Bool()
 
   val st_dep_mask         = UInt(numStqEntries.W) // list of stores older than us
-  val hasOlderVst         = Bool()
-  val hasOlderVld         = Bool()
   val youngest_stq_idx    = UInt(stqAddrSz.W) // index of the oldest store younger than us
+  // blocked by older VST and VLD, scalar only
+  val hasOlderVst         = Bool()
+  val hasOlderVld         = Bool()  
   val youngest_vst_idx    = UInt(stqAddrSz.W) // index of youngest vector store older than us
   val youngest_vst_count  = UInt((stqAddrSz + 1).W)
   val youngest_vld_idx    = UInt(ldqAddrSz.W) // index of youngest vector store older than us
   val youngest_vld_count  = UInt((ldqAddrSz + 1).W)
+  // a vector load should have this
   val vld_count  = UInt((stqAddrSz + 1).W)
   val forward_std_val     = Bool()
   val forward_stq_idx     = UInt(stqAddrSz.W) // Which store did we get the store-load forward from?
@@ -412,12 +418,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
  // val dsq_execute_save = Reg(Valid(UInt(stqAddrSz.W)))
   val dsq_finished     = Reg(Bool())
+//  val dsq_finished     = WireInit(false.B)
 
   val dlq_tail         = Reg(UInt(dlqAddrSz.W))
   val dlq_head         = Reg(UInt(dlqAddrSz.W))
   val dlq_execute_head = Reg(UInt(dlqAddrSz.W))
   val dlq_tlb_head     = Reg(UInt(dlqAddrSz.W))
   val dlq_finished     = Reg(Bool())
+//  val dlq_finished     = WireInit(false.B)
 
     
   val sbIdDoneSt = RegInit(0.U(5.W))
@@ -436,6 +444,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.core.VGen.resp.bits.sbIdDone := Mux (dlq_finished, sbIdDoneLd, sbIdDoneSt)
   io.core.VGen.resp.bits.strideDir := false.B 
   io.core.VGen.resp.bits.s0l1 := false.B
+
+  io.core.VGen.resp.bits.sbIdDoneSt := sbIdDoneSt 
+  io.core.VGen.resp.bits.sbIdDoneLd := sbIdDoneLd 
+  io.core.VGen.resp.bits.vectorDoneLd := dlq_finished
+  io.core.VGen.resp.bits.vectorDoneSt := dsq_finished  
 
 
   // If we got a mispredict, the tail will be misaligned for 1 extra cycle
@@ -904,7 +917,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                                   stq_commit_e.bits.data.valid) || 
                                                                   (stq_commit_e.bits.isVector && (stq_head === stq_execute_head) && dsq_commit_e.valid 
                                                                                               && !(!stq_commit_e.bits.vectorCanGo && !stq_commit_e.bits.vectorNoYoung) 
-                                                                                              && (stq_head === dsq_commit_e.bits.uop.stq_idx) && !dsq_finished))))
+                                                                                              && (stq_head === dsq_commit_e.bits.uop.stq_idx)))))
 
   val can_fire_vector_load = widthMap(w => (w == memWidth-1).B && 
                                            ldq_commit_e.bits.isVector && !ldq_commit_e.bits.succeeded && (ldq_v_head === dlq_commit_e.bits.uop.ldq_idx) &&
@@ -1233,7 +1246,7 @@ when (dlq_finished) {
     dlq_finished := false.B
   }
 
-  when (dsq_finished && !dlq_finished) {
+  when (dsq_finished) {
         dsq_finished := false.B 
   }
 
@@ -2108,22 +2121,22 @@ when (dlq_finished) {
   }
 
   when (dsq(dsq_head).valid && dsq(dsq_head).bits.succeeded) {
-    
+    dsq_head := WrapInc(dsq_head, numDsqEntries)
     dsq(dsq_head).valid  := false.B 
     dsq(dsq_head).bits.succeeded := false.B 
     dsq(dsq_head).bits.addr.valid := false.B
     dsq(dsq_head).bits.data.valid := false.B 
     dsq(dsq_head).bits.isFake := false.B
     when (dsq(dsq_head).bits.last) {
-      when (!dsq_finished) {
+//      when (!dsq_finished) {
       dsq_finished := true.B
       sbIdDoneSt := dsq(dsq_head).bits.sbId
       stq(stq_execute_head).bits.succeeded := true.B 
       stq_execute_head := WrapInc(stq_execute_head, numStqEntries)
-      dsq_head := WrapInc(dsq_head, numDsqEntries)
-      }
-    }.otherwise {
-      dsq_head := WrapInc(dsq_head, numDsqEntries)
+//      dsq_head := WrapInc(dsq_head, numDsqEntries)
+//      }
+//    }.otherwise {
+//      dsq_head := WrapInc(dsq_head, numDsqEntries)
     }
   }
 
