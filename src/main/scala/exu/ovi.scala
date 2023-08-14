@@ -362,11 +362,6 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   val vGenEnable  = RegInit(false.B)
   // holding the microOp from vLSIQueue
   val vGenHold = Reg(new EnhancedFuncUnitReq(xLen, vLen))
-  // holding the sbId from sbIdQueue
-  val sbIdExQueue = Module(new Queue(UInt(5.W), vlsiQDepth))
-  sbIdExQueue.io.enq.valid := newVGenConfig
-  sbIdExQueue.io.enq.bits := sbIdQueue.io.deq.bits 
-  sbIdExQueue.io.deq.ready := MemSyncEnd 
   MemSbId := io.core.vGenIO.resp.bits.sbIdDone 
   // holding the sbId from sbIdQueue(vLSIQueue)
   val sbIdHold = RegInit(0.U)

@@ -123,22 +123,31 @@ class LSUExeIO(implicit p: Parameters) extends BoomBundle()(p)
 class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   with HasBoomUOP
 {
-  val data = Bits(dataWidth.W)
+  // mem syn end
+  val vectorDoneSt = Bool()
+  val vectorDoneLd = Bool()
+  val sbIdDoneSt = Bits(5.W)
+  val sbIdDoneLd = Bits(5.W)
+  // 
   val vectorDone = Bool()
+  val sbIdDone = Bits(5.W)
+  
+  // For Seq ID
   val elemID = Bits(8.W)
   val vRegID = Bits(5.W)
-  val sbId = Bits(5.W)
-  val sbIdDone = Bits(5.W)
+  val sbId = Bits(5.W)  
   val elemOffset = Bits(6.W)
   val elemCount = Bits(7.W)
+  // packing load return data
   val strideDir = Bool()
   val s0l1 = Bool()
-  val memSize = Bits(2.W)
+  val data = Bits(dataWidth.W)
+  // allocation
   val dsqFull = Bool()
   val dlqFull = Bool()
+  // mask interface
   val isMask = Bool()
   val Mask = Bits(32.W)
-//  val isFake = Bool()
 }
 
 class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
@@ -265,7 +274,6 @@ class LSUIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
   val ptw   = new rocket.TLBPTWIO
   val core  = new LSUCoreIO
   val dmem  = new LSUDMemIO
-//  val vgen  = new VGenIO
 
   
 
@@ -430,7 +438,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.core.VGen.resp.bits.sbIdDone := Mux (dlq_finished, sbIdDoneLd, sbIdDoneSt)
   io.core.VGen.resp.bits.strideDir := false.B 
   io.core.VGen.resp.bits.s0l1 := false.B
-  io.core.VGen.resp.bits.memSize  := 0.U 
+
 
   // If we got a mispredict, the tail will be misaligned for 1 extra cycle
   assert (io.core.brupdate.b2.mispredict ||
@@ -544,9 +552,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(ld_enq_idx).bits.observed        := false.B
       ldq(ld_enq_idx).bits.forward_std_val := false.B
       ldq(ld_enq_idx).bits.isVector   := io.core.dis_uops(w).bits.is_vec   
-      ldq(ld_enq_idx).bits.hasOlderVst := false.B
-      ldq(ld_enq_idx).bits.hasOlderVld := false.B 
+      ldq(ld_enq_idx).bits.hasOlderVst := cur_vst_exist
+      ldq(ld_enq_idx).bits.hasOlderVld := cur_vld_exist
       ldq(ld_enq_idx).bits.vectorNoYoung := false.B 
+      ldq(ld_enq_idx).bits.youngest_vst_idx := cur_youngest_vst
+      ldq(ld_enq_idx).bits.youngest_vst_count := cur_vst_count
+      ldq(ld_enq_idx).bits.youngest_vld_count := cur_vld_count
+         ldq(ld_enq_idx).bits.youngest_vld_idx := cur_youngest_vld
       when (io.core.dis_uops(w).bits.is_vec) {
         ldq(ld_enq_idx).bits.addr_is_virtual := false.B
         update_young_vld := true.B         
@@ -560,6 +572,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         ldq(ld_enq_idx).bits.vectorCanGo := false.B 
         ldq(ld_enq_idx).bits.vectorHasCross := false.B
         } 
+      } 
+/*             
         when (cur_vst_exist) {  
           ldq(ld_enq_idx).bits.hasOlderVst := true.B 
           ldq(ld_enq_idx).bits.youngest_vst_count := cur_vst_count
@@ -580,6 +594,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         ldq(ld_enq_idx).bits.youngest_vst_idx := cur_youngest_vst
         
       }
+*/
+
 
       assert (ld_enq_idx === io.core.dis_uops(w).bits.ldq_idx, "[lsu] mismatch enq load tag.")
       assert (!ldq(ld_enq_idx).valid, "[lsu] Enqueuing uop is overwriting ldq entries")
@@ -897,9 +913,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                            (dlq_commit_e.valid && 
                                            dlq_commit_e.bits.addr.valid && !dlq_commit_e.bits.addr_is_virtual &&
                                           !dlq_commit_e.bits.succeeded && !dlq_commit_e.bits.isFake && !dlq_commit_e.bits.executed &&
-                                           !(ldq_commit_e.bits.hasOlderVst && stq(ldq_commit_e.bits.youngest_vst_idx).bits.isVector && stq(ldq_commit_e.bits.youngest_vst_idx).valid
-                                                      && stq(ldq_commit_e.bits.youngest_vst_idx).bits.vst_count === ldq_commit_e.bits.youngest_vst_count
-                                                      && !stq(ldq_commit_e.bits.youngest_vst_idx).bits.succeeded) && !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung) ))
+                                           !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung) ))
 //&& !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung)
   // Can we wakeup a load that was nack'd
   val block_load_wakeup = WireInit(false.B)
@@ -1875,8 +1889,7 @@ when (dlq_finished) {
           io.core.VGen.resp.bits.isMask := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.isMask
           io.core.VGen.resp.bits.Mask := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.Mask
           io.core.VGen.resp.bits.s0l1 := true.B 
-          io.core.VGen.resp.bits.memSize  := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.uop.mem_size
-          io.core.VGen.resp.bits.data := io.dmem.resp(w).bits.data
+           io.core.VGen.resp.bits.data := io.dmem.resp(w).bits.data
       }
       }.elsewhen (io.dmem.resp(w).bits.uop.uses_ldq){
         assert(!io.dmem.resp(w).bits.is_hella)
