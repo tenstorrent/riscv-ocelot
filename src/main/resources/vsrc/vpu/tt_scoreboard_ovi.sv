@@ -67,7 +67,7 @@ module tt_scoreboard_ovi(input logic       clk,
   scoreboard_entry [31:0] scoreboard;
   // maps lqid to an sb_id
   logic [7:0][4:0] sb_id_buffer;
-  logic [31:0] sync_ends;
+  logic [31:0] ready_to_drain;
   logic [4:0] drain_sb_id;
 
   integer k;
@@ -159,13 +159,13 @@ module tt_scoreboard_ovi(input logic       clk,
 
   always_comb begin
     for(int i=0; i<32; i++)
-      sync_ends[i] = scoreboard[i].got_sync_end && scoreboard[i].is_load && scoreboard_valid[i] && !scoreboard[i].drained;
+      ready_to_drain[i] = scoreboard[i].got_sync_end && scoreboard[i].is_load && scoreboard_valid[i] && !scoreboard[i].drained && scoreboard[i].got_last_alloc;
   end
 
   scoreboard_entry selected_entry;
   tt_ffs #(.WIDTH(32), //Number of inputs.
           .DATA_WIDTH($bits(scoreboard_entry)))              //Width of data 
-        (.req_in(sync_ends),
+        (.req_in(ready_to_drain),
           .data_in(scoreboard),
           .req_sum(o_drain_load_buffer), 
           .data_out(selected_entry),
