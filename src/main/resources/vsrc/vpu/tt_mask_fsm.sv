@@ -166,7 +166,7 @@ module tt_mask_fsm #(parameter VLEN = 256,
   always_comb begin
     case(mask_fsm_state)
       IDLE: begin
-        if((i_is_masked_memop || i_is_indexed) && i_memop_sync_start_next) begin
+        if((i_is_masked_memop || i_is_indexed) && i_memop_sync_start_next && i_vl != 0) begin
           if (i_last_index) begin
             mask_fsm_next_state = SEND;
           end else begin
