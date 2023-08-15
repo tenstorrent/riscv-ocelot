@@ -1499,7 +1499,7 @@ class SmallPowerOfTwo(bitWidth: Int) extends Module {
 }
 
 // PriorityEncoderOH 
-/*
+
 class MaskSkipper(val M: Int, val VLEN: Int) extends Module {
    val k = log2Ceil(M/8+1)
     val I = log2Ceil(VLEN)
@@ -1519,11 +1519,11 @@ class MaskSkipper(val M: Int, val VLEN: Int) extends Module {
     val startAddr = Input(UInt(64.W))
     val stride = Input(UInt(64.W))
       // interface with VIdGen / VAGen / VDB
+    val packIncrement = Output (UInt(64.W))
     // for load
     val packOveride = Output (Bool())
     val packId = Output (UInt(I.W))
-    val packSkipVreg = Output (Bool())    
-    val packIncrement = Output (UInt(64.W))
+    val packSkipVreg = Output (Bool())  
     // for store
     val spackOveride = Output (Bool())
     val packVDBId = Output (UInt(I.W))
@@ -1549,7 +1549,23 @@ class MaskSkipper(val M: Int, val VLEN: Int) extends Module {
     logStride := strideDetector.io.logStride 
     canPack := io.configValid && io.isMask && ((!io.isLoad && !io.isUnit) || (io.isLoad && !(io.isUnit || (io.isStride && (logStride =/= 3.U))))) && (io.vl =/= 0.U)
 
+    val isPacking = RegInit(false.B)  // drive override
+    val isLoad = RegInit(false.B)
+
+
+   io.packOveride := isPacking && isLoad
+   io.spackOveride := isPacking && !isLoad
+
+   val stride = RegInit(0.U(64.W))
+
+   val currentVMax = RegInit(0.U(7.W)) // max element count per vReg for load, max element count per VDB entry for store
+   val currentIndex = RegInit(0.U(9.W)) // the index of element (as a whole in the vector)
+   val currentVIndex = RegInit(0.U(7.W))
+   val currentMIndex = RegInit(0.U(7.W))
+   val vlHold = RegInit(0.U(9.W))
+   val memSize = RegInit(0.U(2.W))
+
 
 }
 
-*/
+
