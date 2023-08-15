@@ -129,55 +129,62 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   })
 
   io := DontCare
+  val vpu = Module(new tt_vpu_ovi(vLen))
 
-  val reqQueue = Module(new OviReqQueue(8))
+  ////////////////////////////////////////////////////////////////
+
+  val req_queue = Module(new OviReqQueue(8))
 
   // The request pipeline takes several cycles to stall
-  io.req.ready := reqQueue.io.count <= (reqQueue.num_entries - 3).U
-  assert(!(reqQueue.io.enq.valid && !reqQueue.io.enq.ready),
+  io.req.ready := req_queue.io.count <= (req_queue.num_entries - 3).U
+  assert(!(req_queue.io.enq.valid && !req_queue.io.enq.ready),
          "OviReqQueue overflow")
   
-  reqQueue.io.enq.valid := io.req.valid
-  reqQueue.io.enq.bits.req := io.req.bits
-  reqQueue.io.enq.bits.vconfig := io.core.vconfig
-  reqQueue.io.enq.bits.vxrm := io.core.vxrm
-  reqQueue.io.enq.bits.fcsr_rm := io.fcsr_rm
+  req_queue.io.enq.valid := io.req.valid
+  req_queue.io.enq.bits.req := io.req.bits
+  req_queue.io.enq.bits.vconfig := io.core.vconfig
+  req_queue.io.enq.bits.vxrm := io.core.vxrm
+  req_queue.io.enq.bits.fcsr_rm := io.fcsr_rm
 
-  reqQueue.io.rob_pnr_idx := io.core.rob_pnr_idx
-  reqQueue.io.rob_head_idx := io.core.rob_head_idx
-  reqQueue.io.brupdate := io.brupdate
-  reqQueue.io.exception := io.core.exception
-  
-  val vpuModule = Module(new tt_vpu_ovi(vLen))
-  val maxIssueCredit = 16
-  val issueCreditCnt = RegInit(maxIssueCredit.U)
-  issueCreditCnt := issueCreditCnt + vpuModule.io.issue_credit - vpuModule.io.issue_valid
+  req_queue.io.rob_pnr_idx := io.core.rob_pnr_idx
+  req_queue.io.rob_head_idx := io.core.rob_head_idx
+  req_queue.io.brupdate := io.brupdate
+  req_queue.io.exception := io.core.exception
+
+  ////////////////////////////////////////////////////////////////
 
   val sb_uop = Reg(Vec(32, new MicroOp()))
   val sb_valid = RegInit(VecInit.fill(32)(false.B))
   val next_sb_id = PriorityEncoder(sb_valid.map(!_))
-  when(reqQueue.io.deq.fire) {
-    sb_uop(next_sb_id) := reqQueue.io.deq.bits.req.uop
+  when(req_queue.io.deq.fire) {
+    sb_uop(next_sb_id) := req_queue.io.deq.bits.req.uop
     sb_valid(next_sb_id) := true.B
   }
 
-  val resp_valid = vpuModule.io.completed_valid
-  val resp_uop = sb_uop(vpuModule.io.completed_sb_id)
-  when(resp_valid) { sb_valid(vpuModule.io.completed_sb_id) := false.B }
+  val resp_valid = vpu.io.completed_valid
+  val resp_uop = sb_uop(vpu.io.completed_sb_id)
+  when(resp_valid) { sb_valid(vpu.io.completed_sb_id) := false.B }
 
   io.resp.valid := resp_valid
-  io.resp.bits.data := vpuModule.io.completed_dest_reg
+  io.resp.bits.data := vpu.io.completed_dest_reg
   io.resp.bits.uop := resp_uop
   io.resp.bits.uop.dst_rtype := Mux(resp_uop.dst_rtype === RT_VEC, RT_X, resp_uop.dst_rtype)
   io.resp.bits.uop.uses_stq := 0.B // Trick Rob to acknowledge Vector Store
-  io.resp.bits.fflags.valid := vpuModule.io.completed_valid && vpuModule.io.completed_fflags.orR
+  io.resp.bits.fflags.valid := vpu.io.completed_valid && vpu.io.completed_fflags.orR
   io.resp.bits.fflags.bits.uop.rob_idx := io.resp.bits.uop.rob_idx
-  io.resp.bits.fflags.bits.flags := vpuModule.io.completed_fflags
+  io.resp.bits.fflags.bits.flags := vpu.io.completed_fflags
 
   io.core.set_vxsat := DontCare
-  io.core.debug_wb_vec_valid := vpuModule.io.debug_wb_vec_valid
-  io.core.debug_wb_vec_wdata := vpuModule.io.debug_wb_vec_wdata
-  io.core.debug_wb_vec_wmask := vpuModule.io.debug_wb_vec_wmask
+  io.core.debug_wb_vec_valid := vpu.io.debug_wb_vec_valid
+  io.core.debug_wb_vec_wdata := vpu.io.debug_wb_vec_wdata
+  io.core.debug_wb_vec_wmask := vpu.io.debug_wb_vec_wmask
+
+  ////////////////////////////////////////////////////////////////
+
+  val MAX_ISSUE_CREDIT = 16
+  val issue_credit_cnt = RegInit(MAX_ISSUE_CREDIT.U)
+  issue_credit_cnt := issue_credit_cnt + vpu.io.issue_credit - vpu.io.issue_valid 
+  val vpu_ready = issue_credit_cnt =/= 0.U
 
 /*
    OVI LS helper start
@@ -189,13 +196,11 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 */
   
 
-   val MemSyncStart = vpuModule.io.memop_sync_start
-   val MemStoreValid = vpuModule.io.store_valid 
-   val MemStoreData = vpuModule.io.store_data
-   val MemMaskValid = vpuModule.io.mask_idx_valid
-   val MemMaskId    = Cat(vpuModule.io.mask_idx_last_idx, vpuModule.io.mask_idx_item)
-
-
+   val MemSyncStart = vpu.io.memop_sync_start
+   val MemStoreValid = vpu.io.store_valid 
+   val MemStoreData = vpu.io.store_data
+   val MemMaskValid = vpu.io.mask_idx_valid
+   val MemMaskId    = Cat(vpu.io.mask_idx_last_idx, vpu.io.mask_idx_item)
 
   val MemSyncEnd = WireInit(false.B)
   val MemSbId = WireInit(0.U(5.W))
@@ -214,8 +219,6 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   val seqElId = WireInit(0.U(11.W))   // 11
   val seqVreg = WireInit(0.U(5.W))    // 5
 
-
-
 /*
    Constants Definition
 */  
@@ -231,7 +234,6 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
    val byteVreg = vpuVlen / 8
    val byteDmem = lsuDmemWidth / 8
    val addrBreak = log2Ceil(lsuDmemWidth/8)
-   
 
 /*
   vLSIQ start
@@ -244,7 +246,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   // this chunk is checking the number of outstanding mem_sync_start
   val outStandingReq = RegInit(0.U(log2Ceil(outStandingLSCount).W))
   val canStartAnother = WireInit(false.B)
-  val vOSud = Cat (vpuModule.io.memop_sync_start, canStartAnother)
+  val vOSud = Cat (vpu.io.memop_sync_start, canStartAnother)
   when (vOSud === 1.U) {
     outStandingReq := outStandingReq - 1.U
   }.elsewhen (vOSud === 2.U) {
@@ -253,39 +255,44 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 
   val vLSIQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), vlsiQDepth))
   val sbIdQueue = Module(new Queue(UInt(5.W), vlsiQDepth))
-  
 
-  // enqueue whenever VPU is ready && reqQueue is valid && there is ld or st 
-  vLSIQueue.io.enq.valid := issueCreditCnt =/= 0.U && reqQueue.io.deq.fire && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
-  // grab everything from reqQueue
-  vLSIQueue.io.enq.bits := reqQueue.io.deq.bits
+  // Dequeue a request whenever VPU and vLSIQueue are ready
+  req_queue.io.deq.ready := vpu_ready && vLSIQueue.io.enq.ready
+
+  val req_uop = req_queue.io.deq.bits.req.uop
+  when(req_queue.io.deq.fire && (req_uop.uses_stq || req_uop.uses_ldq)) {
+    vLSIQueue.io.enq.enq(req_queue.io.deq.bits)
+    sbIdQueue.io.enq.enq(next_sb_id)
+  }.otherwise {
+    vLSIQueue.io.enq.noenq()
+    sbIdQueue.io.enq.noenq()
+  }
+
   // can only dequeue vLSIQueue when it is not in the middle of handling vector load store and
   // 1. memSyncStart 2. pop out outStanding 3. previously tried
   vLSIQueue.io.deq.ready := !inMiddle && (outStandingReq =/= 0.U || MemSyncStart || tryDeqVLSIQ)
-  // sbIdQueue is the same as vLSIQueue
-  sbIdQueue.io.enq.valid := issueCreditCnt =/= 0.U && reqQueue.io.deq.fire && (reqQueue.io.deq.bits.req.uop.uses_stq || reqQueue.io.deq.bits.req.uop.uses_ldq)
-  sbIdQueue.io.enq.bits := next_sb_id
-  sbIdQueue.io.deq.ready := !inMiddle && (outStandingReq =/= 0.U || MemSyncStart || tryDeqVLSIQ)
+  sbIdQueue.io.deq.ready := vLSIQueue.io.deq.ready
+
   when (!inMiddle) {
     // success transaction
-     when (vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready) {
-       inMiddle := true.B 
+    when (vLSIQueue.io.deq.fire) {
+      inMiddle := true.B 
     // active pop failed
-     }.elsewhen ((outStandingReq =/= 0.U || MemSyncStart) && !vLSIQueue.io.deq.valid) {
-       tryDeqVLSIQ := true.B 
-       inMiddle := true.B 
+    }.elsewhen ((outStandingReq =/= 0.U || MemSyncStart) && !vLSIQueue.io.deq.valid) {
+      tryDeqVLSIQ := true.B 
+      inMiddle := true.B 
     // passive pop successful
-     }.elsewhen (tryDeqVLSIQ && vLSIQueue.io.deq.valid) {
-       tryDeqVLSIQ := false.B
-       inMiddle := true.B 
-     }
+    }.elsewhen (tryDeqVLSIQ && vLSIQueue.io.deq.valid) {
+      tryDeqVLSIQ := false.B
+      inMiddle := true.B 
+    }
   // finish one vector load stroe
   }.elsewhen (canStartAnother) {
     inMiddle := false.B
   }
-  reqQueue.io.deq.ready := issueCreditCnt =/= 0.U && vLSIQueue.io.enq.ready
+
   // a new set has dequeued from vLSIQueue
-  val newVGenConfig = vLSIQueue.io.deq.valid && vLSIQueue.io.deq.ready 
+  val newVGenConfig = vLSIQueue.io.deq.fire
 
 
 /*
@@ -580,45 +587,41 @@ MemSyncEnd := (io.core.vGenIO.resp.bits.vectorDone && io.core.vGenIO.resp.valid)
       OVI LS helper end
   */
 
-  vpuModule.io := DontCare
-  vpuModule.io.clk := clock
-  vpuModule.io.reset_n := ~reset.asBool
-  vpuModule.io.issue_valid := reqQueue.io.deq.fire
-  vpuModule.io.issue_inst := reqQueue.io.deq.bits.req.uop.inst
-  vpuModule.io.issue_sb_id := next_sb_id
-  vpuModule.io.issue_scalar_opnd := Mux( (reqQueue.io.deq.bits.req.uop.lrs1_rtype === RT_FLT), reqQueue.io.deq.bits.req.rs3_data,
-                                    Mux( (reqQueue.io.deq.bits.req.uop.uses_ldq ||
-                                          reqQueue.io.deq.bits.req.uop.uses_stq             ), reqQueue.io.deq.bits.req.rs2_data,
-                                                                                               reqQueue.io.deq.bits.req.rs1_data))
-  vpuModule.io.issue_vcsr := Cat(
+  vpu.io := DontCare
+  vpu.io.clk := clock
+  vpu.io.reset_n := ~reset.asBool
+  vpu.io.issue_valid := req_queue.io.deq.fire
+  vpu.io.issue_inst := req_queue.io.deq.bits.req.uop.inst
+  vpu.io.issue_sb_id := next_sb_id
+  vpu.io.issue_scalar_opnd := Mux( (req_queue.io.deq.bits.req.uop.lrs1_rtype === RT_FLT), req_queue.io.deq.bits.req.rs3_data,
+                                    Mux( (req_queue.io.deq.bits.req.uop.uses_ldq ||
+                                          req_queue.io.deq.bits.req.uop.uses_stq             ), req_queue.io.deq.bits.req.rs2_data,
+                                                                                               req_queue.io.deq.bits.req.rs1_data))
+  vpu.io.issue_vcsr := Cat(
     0.U(1.W), // vill
-    reqQueue.io.deq.bits.vconfig.vtype.vsew, // vsew
-    reqQueue.io.deq.bits.vconfig.vtype.vlmul_mag, // vlmul
-    reqQueue.io.deq.bits.fcsr_rm, // frm
-    reqQueue.io.deq.bits.vxrm, // vxrm
+    req_queue.io.deq.bits.vconfig.vtype.vsew, // vsew
+    req_queue.io.deq.bits.vconfig.vtype.vlmul_mag, // vlmul
+    req_queue.io.deq.bits.fcsr_rm, // frm
+    req_queue.io.deq.bits.vxrm, // vxrm
     Cat(0.U((15-log2Ceil(vLen+1)).W),
-        reqQueue.io.deq.bits.vconfig.vl), // vl
+        req_queue.io.deq.bits.vconfig.vl), // vl
     0.U(14.W) // vstart
   )
-  vpuModule.io.issue_vcsr_lmulb2 := reqQueue.io.deq.bits.vconfig.vtype.vlmul_sign
-  vpuModule.io.dispatch_sb_id := next_sb_id
-  vpuModule.io.dispatch_next_senior := reqQueue.io.deq.fire
-  vpuModule.io.dispatch_kill := 0.B
+  vpu.io.issue_vcsr_lmulb2 := req_queue.io.deq.bits.vconfig.vtype.vlmul_sign
+  vpu.io.dispatch_sb_id := next_sb_id
+  vpu.io.dispatch_next_senior := req_queue.io.deq.fire
+  vpu.io.dispatch_kill := 0.B
   
-   vpuModule.io.memop_sync_end := MemSyncEnd
-   vpuModule.io.memop_sb_id := MemSbId  
-// vpuModule.io.mem_vstart := MEMVstart
-   vpuModule.io.load_valid := MemLoadValid
-   vpuModule.io.load_seq_id := MemSeqId
-   vpuModule.io.load_data := MemLoadData
-   vpuModule.io.load_mask_valid := MemReturnMaskValid
-   vpuModule.io.load_mask := MemReturnMask
-   vpuModule.io.store_credit := MemStoreCredit
-   vpuModule.io.mask_idx_credit := vAGen.io.release
-
-
-
-
+   vpu.io.memop_sync_end := MemSyncEnd
+   vpu.io.memop_sb_id := MemSbId  
+// vpu.io.mem_vstart := MEMVstart
+   vpu.io.load_valid := MemLoadValid
+   vpu.io.load_seq_id := MemSeqId
+   vpu.io.load_data := MemLoadData
+   vpu.io.load_mask_valid := MemReturnMaskValid
+   vpu.io.load_mask := MemReturnMask
+   vpu.io.store_credit := MemStoreCredit
+   vpu.io.mask_idx_credit := vAGen.io.release
 }
 
 class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN" -> IntParam(vLen))) with HasBlackBoxResource {
@@ -660,8 +663,8 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
     val mask_idx_item = Output (UInt(65.W))
     val mask_idx_valid = Output(Bool())
     val mask_idx_last_idx = Output(Bool())
-
   })
+
   addResource("/vsrc/vpu/briscv_defines.h")
   addResource("/vsrc/vpu/tt_briscv_pkg.vh")
   addResource("/vsrc/vpu/autogen_riscv_imabfv.v")
@@ -717,7 +720,6 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   addResource("/vsrc/HardFloat/source/recFNToFN.v")
   addResource("/vsrc/HardFloat/source/recFNToIN.v")
   addResource("/vsrc/HardFloat/source/recFNToRecFN.v")
-  
 }
 
 // M is dmem bandwidth, N is mask interface width (66), Depth is mask buffer width (4), VLEN is 256 for now
@@ -771,8 +773,6 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
     val packSkipVDB = Output (Bool())   
   })
 
-  
-
   val vPacker = Module (new Vpacker (M, VLEN))
 
   vPacker.io.configValid := io.configValid     
@@ -790,7 +790,6 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   io.packId := vPacker.io.packId 
   io.packSkipVreg := vPacker.io.packSkipVreg   
 
-
   val sPacker = Module (new Spacker (M, OVILEN))  
   sPacker.io.configValid := io.configValid     
   sPacker.io.vl := io.vl
@@ -804,8 +803,6 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   io.spackOveride := sPacker.io.packOveride
   io.packVDBId := sPacker.io.packVDBId 
   io.packSkipVDB := sPacker.io.packSkipVDB
-  
-    
   
   val vlHold = Reg(UInt(9.W))
   // points at element
@@ -842,7 +839,6 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   
   io.memSizeOut := Mux (io.spackOveride, sPacker.io.memSizeOut, memSizeHold)
 
-
   when (io.configValid) {
      sliceSizeHold := io.initialSliceSize
      memSizeHold := io.memSize
@@ -864,7 +860,6 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   }
   
   io.sliceSizeOut := sliceSizeHold  // this is only for V0
-
   
   io.isMaskOut := isMask
   io.currentMaskOut := false.B 
@@ -1148,7 +1143,7 @@ class VWhLSDecoder(val M: Int) extends Module {
 
   val nf_wth = Cat(io.nf, io.wth)
 
-  io.overVl := MuxLookup(nf_wth, 0.U, Array(
+  io.overVl := MuxLookup(nf_wth, 0.U, Seq(
     0.U  -> (Mbyte.U),
     5.U  -> (Mbyte.U >> 1),
     6.U  -> (Mbyte.U >> 2),
