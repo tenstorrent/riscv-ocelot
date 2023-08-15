@@ -1500,11 +1500,11 @@ class SmallPowerOfTwo(bitWidth: Int) extends Module {
 
 // PriorityEncoderOH 
 
-class MaskSkipper(val M: Int, val VLEN: Int) extends Module {
-   val k = log2Ceil(M/8+1)
+class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
+//   val k = log2Ceil(M/8+1)
     val I = log2Ceil(VLEN)
-    val MByte = M/8
     val VLENByte = VLEN/8
+    val VDBLENByte = VDBLEN/8
   val io = IO(new Bundle {    
     // interface with vAGen at start
     val configValid = Input(Bool())
@@ -1524,6 +1524,7 @@ class MaskSkipper(val M: Int, val VLEN: Int) extends Module {
     val packOveride = Output (Bool())
     val packId = Output (UInt(I.W))
     val packSkipVreg = Output (Bool())  
+    val elemCount = Output(UInt(7.W))
     // for store
     val spackOveride = Output (Bool())
     val packVDBId = Output (UInt(I.W))
@@ -1544,7 +1545,7 @@ class MaskSkipper(val M: Int, val VLEN: Int) extends Module {
     val strideDetector = Module (new StrideDetector())
     strideDetector.io.mem_size := io.memSize
     strideDetector.io.stride := io.stride
-    val isMask = RegInit(false.B)
+    
     val logStride = WireInit(3.U(2.W)) // this is the log2 of stride
     logStride := strideDetector.io.logStride 
     canPack := io.configValid && io.isMask && ((!io.isLoad && !io.isUnit) || (io.isLoad && !(io.isUnit || (io.isStride && (logStride =/= 3.U))))) && (io.vl =/= 0.U)
@@ -1565,6 +1566,79 @@ class MaskSkipper(val M: Int, val VLEN: Int) extends Module {
    val vlHold = RegInit(0.U(9.W))
    val memSize = RegInit(0.U(2.W))
 
+   when (canPack) {
+    isLoad := io.isLoad 
+    currentIndex := 0.U 
+    currentVIndex := 0.U 
+    currentMIndex := 0.U 
+    vlHold := io.vl 
+    memSize := io.memSize 
+    when (io.isLoad) {
+       currentVMax := VLENByte.U >> (io.memSize)
+    }.otherwise {
+       currentVMax := VDBLENByte.U >> (io.memSize)
+    }
+    when (io.isUnit) {
+      stride := 1.U << io.memSize
+    }.otherwise {
+      stride := io.stride 
+    }
+   }
+    io.validMask := io.currentMask(0)
+        
+    val theoreticalCount = WireInit(0.U(6.W)) //max count in this transaction if ignore vl and vReg boundary
+    when (io.currentMask === 0.U) {
+      theoreticalCount := VLENByte.U - currentVIndex
+    }.elsewhen (io.currentMask(0)) {
+      theoreticalCount := 1.U 
+    }.otherwise {
+      theoreticalCount := PriorityEncoder (io.currentMask)
+    }
+    val actualTheoreticalCount = WireInit(0.U(6.W)) //max count in this transaction if ignore vl and vReg boundary
+    actualTheoreticalCount := PriorityEncoderOH (theoreticalCount)
+    val vRegDistant = WireInit(0.U(7.W))
+    vRegDistant := currentVMax - currentVIndex
+    val actualVRegDistant = WireInit(0.U(7.W))
+    val vRegPower2 = Module (new SmallPowerOfTwo(7))
+    vRegPower2.io.inData := vRegDistant 
+    actualVRegDistant := vRegPower2.io.outData 
+
+    val vlDistant = WireInit(0.U(9.W))
+    vlDistant := vlHold - currentIndex 
+    val actualVlDistant = WireInit(0.U(9.W))
+    val vlPower2 = Module (new SmallPowerOfTwo(9))
+    vlPower2.io.inData := vlDistant 
+    actualVlDistant := vlPower2.io.outData 
+    
+    
+    val afterVRegCount = WireInit(0.U(6.W)) // we consider VReg first
+    afterVRegCount := Mux((actualTheoreticalCount > actualVRegDistant), actualVRegDistant, actualTheoreticalCount)
+    val afterVLCount = WireInit(0.U(6.W))
+    afterVLCount := Mux((afterVRegCount > actualVlDistant), actualVlDistant, afterVRegCount)
+
+
+    io.packVDBId := afterVLCount << memSize
+    io.elemCount := afterVLCount 
+    io.packSkipVDB := (afterVLCount === vRegDistant) && isPacking && !isLoad
+    io.packLast := (afterVLCount === vlDistant) && isPacking
+    io.packIncrement := stride << PriorityEncoder (afterVLCount)
+
+    io.packId := afterVLCount 
+    io.packSkipVreg := (afterVLCount === vRegDistant) && isPacking && isLoad 
+    io.packLast := (afterVLCount === vlDistant) && isPacking
+    io.packSkipVMask := ((currentMIndex + io.elemCount) === 64.U) && isPacking 
+
+    when(io.pop) {
+      when(io.packLast) {
+        isPacking := false.B 
+      }
+      currentIndex := currentIndex + afterVLCount
+      when ((!isLoad && io.packSkipVDB) || (isLoad && io.packSkipVreg)) {
+        currentVIndex := 0.U 
+      }.otherwise {
+        currentVIndex := currentVIndex + afterVLCount
+      }
+    }
 
 }
 
