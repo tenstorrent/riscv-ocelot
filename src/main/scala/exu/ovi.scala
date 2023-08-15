@@ -1591,6 +1591,10 @@ class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
    io.packOveride := isPacking && isLoad
    io.spackOveride := isPacking && !isLoad
 
+//   io.packOveride := false.B 
+//   io.spackOveride := false.B
+
+
    val stride = RegInit(0.U(64.W))
 
    val currentVMax = RegInit(0.U(7.W)) // max element count per vReg for load, max element count per VDB entry for store
@@ -1623,7 +1627,7 @@ class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
         
     val theoreticalCount = WireInit(0.U(6.W)) //max count in this transaction if ignore vl and vReg boundary
     when (io.currentMask === 0.U) {
-      theoreticalCount := VLENByte.U - currentVIndex
+      theoreticalCount := VLENByte.U
     }.elsewhen (io.currentMask(0)) {
       theoreticalCount := 1.U 
     }.otherwise {
