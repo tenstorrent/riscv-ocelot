@@ -459,7 +459,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.core.VGen.resp.bits.data := 0.U 
   // mask interface
   io.core.VGen.resp.bits.isMask := false.B 
-  io.core.VGen.resp.bits.mask := 0.U 
+  io.core.VGen.resp.bits.Mask := 0.U 
 
     
 
@@ -529,10 +529,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   var st_enq_idx = stq_tail
 
   val stq_nonempty = (0 until numStqEntries).map{ i => stq(i).valid }.reduce(_||_) =/= 0.U
-
+  // here, ldq / stq full is set to var since we have multiple dispatch
+  // for dlq / dsq, this is not necessary since OVI is single issue
   var ldq_full = Bool()
   var stq_full = Bool()
 
+  // this is for tracking the age, specifically for scalar load
+  // right now scalar load is blocked by older vector store and older vector load
   var cur_vst_count = vst_count 
   var cur_vld_count = vld_count
   var cur_vst_exist = vstExist 
