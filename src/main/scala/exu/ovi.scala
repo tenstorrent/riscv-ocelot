@@ -807,6 +807,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   maskSkip.io.memSize := io.memSize
   maskSkip.io.isUnit := io.isUnit
   maskSkip.io.isStride := io.isStride
+  maskSkip.io.isIndex := io.isIndex
   maskSkip.io.isMask := io.isMask
   maskSkip.io.isLoad := io.isLoad 
   maskSkip.io.startAddr := io.startAddr
@@ -858,12 +859,13 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   val isNegStride = isStride && stride(63)
   val internalElemOffset = WireInit(0.U(6.W))
   val internalElemCount = WireInit(0.U(7.W))
+  
   internalElemOffset := Mux(isNegStride, (negativeStrideElemOffset - positiveStrideElemOffset), positiveStrideElemOffset)
   io.elemOffset := Mux(vPacker.io.packOveride, vPacker.io.elemOffset, internalElemOffset)
-  internalElemCount := Mux (maskSkip.io.packOveride, maskSkip.io.elemCount, 1.U)
+  internalElemCount := Mux (maskSkipOveride, maskSkip.io.elemCount, 1.U)
   io.elemCount := Mux(vPacker.io.packOveride, vPacker.io.elemCount, internalElemCount) 
   
-  io.memSizeOut := Mux (io.spackOveride, sPacker.io.memSizeOut, memSizeHold)
+  io.memSizeOut := Mux (sPacker.io.packOveride, sPacker.io.memSizeOut, memSizeHold)
 
 
   when (io.configValid) {
@@ -1550,6 +1552,7 @@ class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
       // which types of load store
     val isUnit = Input (Bool())
     val isStride = Input(Bool())
+    val isIndex = Input(Bool())
     val isMask = Input(Bool())
     val isLoad = Input(Bool())
       // base address and stride    
@@ -1584,7 +1587,7 @@ class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
     
     val logStride = WireInit(3.U(2.W)) // this is the log2 of stride
     logStride := strideDetector.io.logStride 
-    canPack := io.configValid && io.isMask && ((!io.isLoad && !io.isUnit) || (io.isLoad && !(io.isUnit || (io.isStride && (logStride =/= 3.U))))) && (io.vl =/= 0.U)
+    canPack := io.configValid && io.isMask && ((!io.isLoad && !io.isIndex) || (io.isLoad && !(io.isUnit || (io.isStride && (logStride =/= 3.U))) && !io.isIndex)) && (io.vl =/= 0.U)
 
     val isPacking = RegInit(false.B)  // drive override
     val isLoad = RegInit(false.B)
@@ -1603,6 +1606,7 @@ class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
    val memSize = RegInit(0.U(2.W))
 
    when (canPack) {
+    isPacking := canPack
     isLoad := io.isLoad 
     currentIndex := 0.U 
     currentVIndex := 0.U 
@@ -1673,6 +1677,11 @@ class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
         currentVIndex := 0.U 
       }.otherwise {
         currentVIndex := currentVIndex + afterVLCount
+      }
+      when (io.packSkipVMask) {
+        currentMIndex := 0.U 
+      }.elsewhen(isPacking) {
+        currentMIndex := currentMIndex + io.elemCount 
       }
     }
 
