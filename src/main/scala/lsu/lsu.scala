@@ -437,25 +437,31 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // the sbId to be sent back when individual dsq / dlq is done (last)
   val sbIdDoneSt = WireInit(0.U(5.W))
   val sbIdDoneLd = WireInit(0.U(5.W))
-
+  // indicate if there is a load data return
   val vldata_back = WireInit(false.B)
 
-  io.core.VGen.resp := DontCare
-  io.core.VGen.resp.bits.vectorDone := dsq_finished || dlq_finished 
   io.core.VGen.resp.valid := dsq_finished || dlq_finished || vldata_back
+  io.core.VGen.resp.bits.vectorDone := dsq_finished || dlq_finished
+  // mem sync end
+  io.core.VGen.resp.bits.sbIdDoneSt := sbIdDoneSt 
+  io.core.VGen.resp.bits.sbIdDoneLd := sbIdDoneLd 
+  io.core.VGen.resp.bits.vectorDoneLd := dlq_finished
+  io.core.VGen.resp.bits.vectorDoneSt := dsq_finished 
+  // seq Id
   io.core.VGen.resp.bits.elemID := 0.U  
   io.core.VGen.resp.bits.vRegID := 0.U
   io.core.VGen.resp.bits.elemOffset := 0.U 
   io.core.VGen.resp.bits.elemCount := 0.U
   io.core.VGen.resp.bits.sbId := 0.U 
-//  io.core.VGen.resp.bits.sbIdDone := Mux (dlq_finished, sbIdDoneLd, sbIdDoneSt)
+  // load data packing
   io.core.VGen.resp.bits.strideDir := false.B 
   io.core.VGen.resp.bits.s0l1 := false.B
+  io.core.VGen.resp.bits.data := 0.U 
+  // mask interface
+  io.core.VGen.resp.bits.isMask := false.B 
+  io.core.VGen.resp.bits.mask := 0.U 
 
-  io.core.VGen.resp.bits.sbIdDoneSt := sbIdDoneSt 
-  io.core.VGen.resp.bits.sbIdDoneLd := sbIdDoneLd 
-  io.core.VGen.resp.bits.vectorDoneLd := dlq_finished
-  io.core.VGen.resp.bits.vectorDoneSt := dsq_finished  
+    
 
 
   // If we got a mispredict, the tail will be misaligned for 1 extra cycle
