@@ -715,7 +715,7 @@ class VecExeUnit(dataWidth: Int)(implicit p: Parameters)
     dataWidth = dataWidth,
     needsFcsr = true)
 {
-  val sv_pipeline = Module(new OviWrapper())
+  val sv_pipeline = Module(new OviWrapperWrapper())
 
   sv_pipeline.io.fcsr_rm  <> io.fcsr_rm
   sv_pipeline.io.req      <> io.req
