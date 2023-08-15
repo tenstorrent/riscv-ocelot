@@ -786,9 +786,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   vPacker.io.stride := io.stride 
   vPacker.io.pop := io.pop 
     
-  io.packOveride := vPacker.io.packOveride
-  io.packId := vPacker.io.packId 
-  io.packSkipVreg := vPacker.io.packSkipVreg   
+  
 
 
   val sPacker = Module (new Spacker (M, OVILEN))  
@@ -801,9 +799,32 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   sPacker.io.startAddr := io.startAddr
   
   sPacker.io.pop := io.pop 
-  io.spackOveride := sPacker.io.packOveride
-  io.packVDBId := sPacker.io.packVDBId 
-  io.packSkipVDB := sPacker.io.packSkipVDB
+  
+  
+  val maskSkip = Module (new MaskSkipper (VLEN, OVILEN))
+  maskSkip.io.configValid := io.configValid     
+  maskSkip.io.vl := io.vl
+  maskSkip.io.memSize := io.memSize
+  maskSkip.io.isUnit := io.isUnit
+  maskSkip.io.isStride := io.isStride
+  maskSkip.io.isMask := io.isMask
+  maskSkip.io.isLoad := io.isLoad 
+  maskSkip.io.startAddr := io.startAddr
+  maskSkip.io.stride := io.stride 
+  maskSkip.io.pop := io.pop
+  
+  val maskSkipOveride = WireInit(false.B)
+  maskSkipOveride := maskSkip.io.packOveride || maskSkip.io.spackOveride
+
+  io.packOveride := vPacker.io.packOveride || maskSkip.io.packOveride
+  io.packId := Mux(vPacker.io.packOveride, vPacker.io.packId, maskSkip.io.packId) 
+  io.packSkipVreg := Mux(vPacker.io.packOveride, vPacker.io.packSkipVreg, maskSkip.io.packSkipVreg)   
+  
+  io.spackOveride := sPacker.io.packOveride || maskSkip.io.spackOveride
+  io.packVDBId := Mux(sPacker.io.packOveride, sPacker.io.packVDBId, maskSkip.io.packVDBId) 
+  io.packSkipVDB := Mux(sPacker.io.packOveride, sPacker.io.packSkipVDB, maskSkip.io.packSkipVDB) 
+   
+  
   
     
   
@@ -836,9 +857,11 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
 
   val isNegStride = isStride && stride(63)
   val internalElemOffset = WireInit(0.U(6.W))
+  val internalElemCount = WireInit(0.U(7.W))
   internalElemOffset := Mux(isNegStride, (negativeStrideElemOffset - positiveStrideElemOffset), positiveStrideElemOffset)
   io.elemOffset := Mux(vPacker.io.packOveride, vPacker.io.elemOffset, internalElemOffset)
-  io.elemCount := Mux(vPacker.io.packOveride, vPacker.io.elemCount, 1.U) 
+  internalElemCount := Mux (maskSkip.io.packOveride, maskSkip.io.elemCount, 1.U)
+  io.elemCount := Mux(vPacker.io.packOveride, vPacker.io.elemCount, internalElemCount) 
   
   io.memSizeOut := Mux (io.spackOveride, sPacker.io.memSizeOut, memSizeHold)
 
@@ -909,6 +932,8 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   vPackMask.io.elemCount := io.elemCount
   vPackMask.io.currentMask := currentEntry((VLEN/8 - 1), 0)
 
+  maskSkip.io.currentMask := currentEntry((VLEN/8 - 1), 0) 
+
 
   /*
      Calculate Index Address
@@ -921,22 +946,25 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
 
     
   // popForce will happen when hasMask, masked-off, not last
-  io.popForce := working && !io.last && isMask && hasMask && ((!vPacker.io.packOveride && !currentMask) || (vPacker.io.packOveride && !vPackMask.io.validMask)) 
+  io.popForce := working && !io.last && isMask && hasMask && ((!vPacker.io.packOveride && !currentMask) || (vPacker.io.packOveride && !vPackMask.io.validMask)
+                                                                                                        || (maskSkipOveride && !maskSkip.io.validMask))  
   // this happens when the last element is masked-off, still need to send something
-  val lastFake = working && io.last && isMask  && hasMask && ((!vPacker.io.packOveride && !currentMask) || (vPacker.io.packOveride && !vPackMask.io.validMask)) 
+  val lastFake = working && io.last && isMask  && hasMask && ((!vPacker.io.packOveride && !currentMask) || (vPacker.io.packOveride && !vPackMask.io.validMask)
+                                                                                                        || (maskSkipOveride && !maskSkip.io.validMask)) 
   io.popForceLast := lastFake
   // can Pop happens when lastFake, !isMask && !isIndex, !isMask && isIndex && hasMask, isMask && hasMask && currentMask, fakeHold
   io.canPop := working && (((!vPacker.io.packOveride || sPacker.io.packOveride) && ((currentMask && isMask && hasMask) || (!isMask && !isIndex) || (!isMask && isIndex && hasMask))) || 
                             lastFake || fakeHold ||
-                            (vPacker.io.packOveride && (!isMask || (hasMask && isMask && vPackMask.io.validMask))))
+                            (vPacker.io.packOveride && (!isMask || (hasMask && isMask && vPackMask.io.validMask)))
+                            || (maskSkipOveride && isMask && hasMask && maskSkip.io.validMask))
   val isLastIndex = currentEntry(65)
   
   // fake happens when: no mask but vl = 0, with mask but last one masked off
   io.isFake := fakeHold || lastFake 
   // last one happens either currentIndex touch vl or isIndex && isLastIndex
   io.last := ((!vPacker.io.packOveride && ((currentIndex === vlHold) || (isIndex && isLastIndex))) || (vPacker.io.packOveride && vPacker.io.packLast) 
-                                                                                                   || (sPacker.io.packOveride && sPacker.io.packLast)) && working
-  
+                                                                                                   || (sPacker.io.packOveride && sPacker.io.packLast)
+                                                                                                   || (maskSkipOveride && maskSkip.io.packLast)) && working  
   io.release := false.B 
   when (isIndex) {
       // index increase readPtr anyway, last or not
@@ -973,6 +1001,13 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
             }.otherwise {
               buffer(readPtr) := buffer(readPtr) >> io.elemCount 
             }
+          }.elsewhen (maskSkipOveride && isMask) {
+            when (maskSkip.io.packSkipVMask) {
+              readPtr := WrapInc(readPtr, Depth)
+              io.release := true.B 
+            }.otherwise {
+              buffer(readPtr) := buffer(readPtr) >> io.elemCount 
+            }  
           }.otherwise {when (currentMaskIndex === 63.U && isMask) {
             readPtr := WrapInc(readPtr, Depth)
             currentMaskIndex := 0.U
@@ -992,6 +1027,8 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
             }
           }.elsewhen(sPacker.io.packOveride){
             currentAddr := currentAddr + sPacker.io.packIncrement
+          }.elsewhen(maskSkipOveride) {
+            currentAddr := currentAddr + maskSkip.io.packIncrement
           }.otherwise {
             when (isStride) {
               currentAddr := currentAddr + stride 
@@ -1531,7 +1568,6 @@ class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
     val packSkipVDB = Output (Bool()) 
     // general 
     val packLast = Output (Bool())
-    val packDir = Output (Bool())
     // mask itself
     val currentMask = Input (UInt(VLENByte.W))
     val validMask = Output (Bool())
