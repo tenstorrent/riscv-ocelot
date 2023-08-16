@@ -1157,47 +1157,6 @@ wire fwd_fp_p2_from_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_
 wire fwd_fp_p3_from_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_ex_dst_vld_1c &
                             i_lq_broadside_info[i_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p3_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
 
-wire fwd_fp_p0_from_fp_ex_1c =  0;
-wire fwd_fp_p1_from_fp_ex_1c =  0;
-wire fwd_fp_p2_from_fp_ex_1c =  0;
-wire fwd_fp_p3_from_fp_ex_1c =  0;
-
-wire fwd_fp_p0_from_fp_ex_2c =  0;
-wire fwd_fp_p1_from_fp_ex_2c =  0;
-wire fwd_fp_p2_from_fp_ex_2c =  0;
-wire fwd_fp_p3_from_fp_ex_2c =  0;
-
-wire fwd_fp_p0_from_lq  =  detect_int_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P0]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_data_hit_fp_p0 & lq_single_hit_fp_p0;
-wire fwd_fp_p1_from_lq  =  detect_int_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P1]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_data_hit_fp_p1 & lq_single_hit_fp_p1;
-wire fwd_fp_p2_from_lq  =  detect_int_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P2]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_data_hit_fp_p2 & lq_single_hit_fp_p2;
-wire fwd_fp_p3_from_lq  =  detect_int_hazard & fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_data_hit_fp_p3 & lq_single_hit_fp_p3;
-
-wire fwd_fp_p0_from_mem =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P0] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_mem_dst_vld &
-                           i_lq_broadside_info[i_mem_dst_lqid].fp_rf_wr_flag & lq_single_hit_fp_p0 & (o_rf_p0_rdaddr == i_lq_broadside_info[i_mem_dst_lqid].rf_wraddr);
-wire fwd_fp_p1_from_mem =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P1] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_mem_dst_vld &
-                           i_lq_broadside_info[i_mem_dst_lqid].fp_rf_wr_flag & lq_single_hit_fp_p1 & (o_rf_p1_rdaddr == i_lq_broadside_info[i_mem_dst_lqid].rf_wraddr);
-wire fwd_fp_p2_from_mem =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P2] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_mem_dst_vld &
-                           i_lq_broadside_info[i_mem_dst_lqid].fp_rf_wr_flag & lq_single_hit_fp_p2 & (o_rf_p2_rdaddr == i_lq_broadside_info[i_mem_dst_lqid].rf_wraddr);
-wire fwd_fp_p3_from_mem =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_mem_dst_vld &
-                           i_lq_broadside_info[i_mem_dst_lqid].fp_rf_wr_flag & lq_single_hit_fp_p3 & (o_rf_p3_rdaddr == i_lq_broadside_info[i_mem_dst_lqid].rf_wraddr);
-
-// Final hazard signals
-wire int_p0_hazard   = rs1_used & lq_hit_p0 & (o_rf_p0_rdaddr != 'd0) & detect_int_hazard;
-wire int_p1_hazard   = rs2_used & lq_hit_p1 & (o_rf_p1_rdaddr != 'd0) & detect_int_hazard;
-
-wire int_rs1_hazard_stall = int_p0_hazard & ~(fwd_p0_from_ex_1c | fwd_p0_from_ex_2c | fwd_p0_from_fp_ex_1c | fwd_p0_from_lq | fwd_p0_from_mem);
-wire int_rs2_hazard_stall = int_p1_hazard & ~(fwd_p1_from_ex_1c | fwd_p1_from_ex_2c | fwd_p1_from_fp_ex_1c | fwd_p1_from_lq | fwd_p1_from_mem);
-   
-wire fp_p0_hazard   = fp_autogen[`FP_AUTOGEN_RF_RD_EN_P0]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_hit_fp_p0 & detect_fp_hazard; 
-wire fp_p1_hazard   = fp_autogen[`FP_AUTOGEN_RF_RD_EN_P1]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_hit_fp_p1 & detect_fp_hazard; 
-wire fp_p2_hazard   = fp_autogen[`FP_AUTOGEN_RF_RD_EN_P2]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_hit_fp_p2 & detect_fp_hazard; 
-wire fp_p3_hazard   = fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_hit_fp_p3 & detect_fp_hazard; 
-
-wire fp_rs1_hazard_stall    = fp_p0_hazard & ~(fwd_fp_p0_from_ex_1c | fwd_fp_p0_from_fp_ex_1c | fwd_fp_p0_from_fp_ex_2c | fwd_fp_p0_from_lq | fwd_fp_p0_from_mem);
-wire fp_rs2_hazard_stall    = fp_p1_hazard & ~(fwd_fp_p1_from_ex_1c | fwd_fp_p1_from_fp_ex_1c | fwd_fp_p1_from_fp_ex_2c | fwd_fp_p1_from_lq | fwd_fp_p1_from_mem);
-wire fp_rs3_hazard_stall    = fp_p2_hazard & ~(fwd_fp_p2_from_ex_1c | fwd_fp_p2_from_fp_ex_1c | fwd_fp_p2_from_fp_ex_2c | fwd_fp_p2_from_lq | fwd_fp_p2_from_mem);
-wire fp_store_hazard_stall  = fp_p3_hazard & ~(fwd_fp_p3_from_ex_1c | fwd_fp_p3_from_fp_ex_1c | fwd_fp_p3_from_fp_ex_2c | fwd_fp_p3_from_lq | fwd_fp_p3_from_mem);
-
 //IMPROVE_msalvi: No forwarding from  vex output to input(either vex or int or fp), to avoid timing issue. 
 // If timing looks good we may later disable this check at the expense of a bypass from vex output..
 //IMPROVE: msalvi what about v_lmul[2]? How does that affect mask, right now this check is pessimistic
@@ -1225,43 +1184,6 @@ assign raw_hazard_stall_vex = vec_vs1_hazard_stall  | vec_rs1_hazard_stall | vec
                               vec_mask_hazard_stall;
 assign raw_hazard_stall     = (valid_vec_instrn && !vec_ldst_vld && !vsetOp_to_ex) ? raw_hazard_stall_vex : raw_hazard_stall_fwd;
 
-
-// Step 3: Determine proper forwarding source for both RS1 and RS2 and produce two outputs - SRC_OP1, SRC_OP1 which can take input from registers or functional units (ALU, LOAD)
-logic        int_p0_fwd_reg, int_p1_fwd_reg;
-logic [31:0] int_p0_fwd_data_reg, int_p1_fwd_data_reg;
-
-logic        fp_p0_fwd_reg, fp_p1_fwd_reg, fp_p2_fwd_reg, fp_p3_fwd_reg;
-logic [31:0] fp_p0_fwd_data_reg, fp_p1_fwd_data_reg, fp_p2_fwd_data_reg, fp_p3_fwd_data_reg;
-
-logic fp_rd_neg_p1_d;
-logic fp_rd_neg_p2_d;
-logic fp_rd_fp16_src, fp_rd_fp16_src_d;
-assign fp_rd_fp16_src = fp_autogen[`FP_AUTOGEN_TAKE_F16_SRC];
-
-always_ff @(posedge i_clk) begin
-   if(~i_reset_n) begin
-      int_p0_fwd_reg      <= '0;
-      int_p0_fwd_data_reg <= '0;
-      int_p1_fwd_reg      <= '0;
-      int_p1_fwd_data_reg <= '0;
-
-   end
-   else begin
-      if ((i_ex_rtr & o_id_ex_rts)) begin
-         int_p0_fwd_reg      <= (fwd_p0_from_ex_1c | fwd_p0_from_ex_2c | fwd_p0_from_fp_ex_1c | fwd_p0_from_lq | fwd_p0_from_mem);
-         if (fwd_p0_from_ex_1c | fwd_p0_from_ex_2c | fwd_p0_from_fp_ex_1c | fwd_p0_from_lq | fwd_p0_from_mem)
-            int_p0_fwd_data_reg <= (fwd_p0_from_ex_1c | fwd_p0_from_fp_ex_1c) ? (({32{fwd_p0_from_ex_1c}} & i_ex_fwd_data_1c)) :
-                                                                                fwd_p0_from_ex_2c ? i_ex_fwd_data_2c : 
-                                                                                                    (({32{fwd_p0_from_lq}} & lq_fwd_data_p0) | ({32{fwd_p0_from_mem}} & i_mem_fwd_data));
-         
-         int_p1_fwd_reg      <= (fwd_p1_from_ex_1c | fwd_p1_from_ex_2c | fwd_p1_from_fp_ex_1c | fwd_p1_from_lq | fwd_p1_from_mem);
-         if (fwd_p1_from_ex_1c | fwd_p1_from_ex_2c | fwd_p1_from_fp_ex_1c | fwd_p1_from_lq | fwd_p1_from_mem)
-            int_p1_fwd_data_reg <= (fwd_p1_from_ex_1c | fwd_p1_from_fp_ex_1c) ? (({32{fwd_p1_from_ex_1c}} & i_ex_fwd_data_1c)) :
-                                                                                fwd_p1_from_ex_2c ? i_ex_fwd_data_2c : 
-                                                                                                    (({32{fwd_p1_from_lq}} & lq_fwd_data_p1) | ({32{fwd_p1_from_mem}} & i_mem_fwd_data));
-      end
-   end
-end
   
 // Drive out new inst dispatch -- This should also track the number of inst retired
 wire id_ex_instdisp = id_rts & ~raw_hazard_stall & ~id_replay;
