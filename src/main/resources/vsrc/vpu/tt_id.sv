@@ -1033,46 +1033,6 @@ always_comb begin
   end
 end
 
-always_comb begin
-  lq_hit_cnt_p0 = 'd0;
-  lq_hit_cnt_p1 = 'd0;
-  lq_hit_cnt_fp_p0 = 'd0;
-  lq_hit_cnt_fp_p1 = 'd0;
-  lq_hit_cnt_fp_p2 = 'd0;
-  lq_hit_cnt_fp_p3 = 'd0;
-  lq_load_cnt = 'd0;
-  for(int y=0;y<LQ_DEPTH;++y) begin
-  /* verilator lint_off WIDTH */
-    lq_hit_cnt_p0    = lq_hit_cnt_p0    + lq_hit_entry_p0[y];
-    lq_hit_cnt_p1    = lq_hit_cnt_p1    + lq_hit_entry_p1[y];
-    lq_hit_cnt_fp_p0 = lq_hit_cnt_fp_p0 + lq_hit_entry_fp_p0[y];
-    lq_hit_cnt_fp_p1 = lq_hit_cnt_fp_p1 + lq_hit_entry_fp_p1[y];
-    lq_hit_cnt_fp_p2 = lq_hit_cnt_fp_p2 + lq_hit_entry_fp_p2[y];
-    lq_hit_cnt_fp_p3 = lq_hit_cnt_fp_p3 + lq_hit_entry_fp_p3[y];
-    lq_load_cnt      = lq_load_cnt      + lq_load_valid[y];
-  /* verilator lint_on WIDTH */
-  end
-end
-
-always_comb begin
-   lq_fwd_data_p0[31:0] = '0;
-   lq_fwd_data_p1[31:0] = '0;
-
-   lq_fwd_data_fp_p0[31:0] = '0;
-   lq_fwd_data_fp_p1[31:0] = '0;
-   lq_fwd_data_fp_p2[31:0] = '0;
-   lq_fwd_data_fp_p3[31:0] = '0;
-   for (int i=0; i<LQ_DEPTH; i++) begin
-      lq_fwd_data_p0[31:0] |= ({32{lq_data_hit_entry_p0[i]}} & i_lq_broadside_data[i]);
-      lq_fwd_data_p1[31:0] |= ({32{lq_data_hit_entry_p1[i]}} & i_lq_broadside_data[i]);
-      
-      lq_fwd_data_fp_p0[31:0] |= ({32{lq_data_hit_entry_fp_p0[i]}} & i_lq_broadside_data[i]);
-      lq_fwd_data_fp_p1[31:0] |= ({32{lq_data_hit_entry_fp_p1[i]}} & i_lq_broadside_data[i]);
-      lq_fwd_data_fp_p2[31:0] |= ({32{lq_data_hit_entry_fp_p2[i]}} & i_lq_broadside_data[i]);
-      lq_fwd_data_fp_p3[31:0] |= ({32{lq_data_hit_entry_fp_p3[i]}} & i_lq_broadside_data[i]);
-   end
-end
-
 always_comb begin 
    for(int x=0;x<LQ_DEPTH;++x) begin
       lq_hit_entry_vex_p0[x]   = (INCL_VEC == 1) & ((mask_rf_addrp0 & o_vec_autogen.rf_addrp0) == (i_lq_broadside_info[x].rf_wraddr & mask_rf_addrp0)) & i_lq_broadside_valid[x] &  i_lq_broadside_info[x].vrf_wr_flag   & o_vec_autogen.rf_rden0; 
@@ -1092,71 +1052,7 @@ tt_popcnt #(.WIDTH(LQ_DEPTH)) cnt_vrf_p2   (.req_in(lq_hit_entry_vex_p2[LQ_DEPTH
 tt_popcnt #(.WIDTH(LQ_DEPTH)) cnt_vrf_mask (.req_in(lq_hit_entry_vex_mask[LQ_DEPTH-1:0]),.req_sum(lq_hit_cnt_vex_mask[LQ_DEPTH_LOG2:0]));
 tt_popcnt #(.WIDTH(LQ_DEPTH)) cnt_vrf_r0   (.req_in(lq_hit_entry_vex_r0[LQ_DEPTH-1:0]),  .req_sum(lq_hit_cnt_vex_r0[LQ_DEPTH_LOG2:0]));   
 tt_popcnt #(.WIDTH(LQ_DEPTH)) cnt_vrf_f0   (.req_in(lq_hit_entry_vex_f0[LQ_DEPTH-1:0]),  .req_sum(lq_hit_cnt_vex_f0[LQ_DEPTH_LOG2:0]));   
-   
-assign lq_hit_p0 = |lq_hit_cnt_p0;
-assign lq_hit_p1 = |lq_hit_cnt_p1;
-assign lq_data_hit_p0 = |lq_data_hit_entry_p0;
-assign lq_data_hit_p1 = |lq_data_hit_entry_p1;
-   
-assign lq_single_hit_p0 = (lq_hit_cnt_p0 == 'd1);
-assign lq_single_hit_p1 = (lq_hit_cnt_p1 == 'd1);
-
-assign lq_hit_fp_p0 = |lq_hit_cnt_fp_p0;
-assign lq_hit_fp_p1 = |lq_hit_cnt_fp_p1;
-assign lq_hit_fp_p2 = |lq_hit_cnt_fp_p2;
-assign lq_hit_fp_p3 = |lq_hit_cnt_fp_p3;
-assign lq_data_hit_fp_p0 = |lq_data_hit_entry_fp_p0;
-assign lq_data_hit_fp_p1 = |lq_data_hit_entry_fp_p1;
-assign lq_data_hit_fp_p2 = |lq_data_hit_entry_fp_p2;
-assign lq_data_hit_fp_p3 = |lq_data_hit_entry_fp_p3;
-assign lq_single_hit_fp_p0 = (lq_hit_cnt_fp_p0 == 'd1);
-assign lq_single_hit_fp_p1 = (lq_hit_cnt_fp_p1 == 'd1);
-assign lq_single_hit_fp_p2 = (lq_hit_cnt_fp_p2 == 'd1);
-assign lq_single_hit_fp_p3 = (lq_hit_cnt_fp_p3 == 'd1);
-
-assign no_lq_load_pending = ~(|lq_load_cnt);
-   
-///////////////////
-// EX FWD / HAZARD
-// Step 2: detect all hazards and stall until resolved
-
-wire detect_int_hazard =   valid_int_instn | valid_mul_instn | valid_amo_instn | valid_bit_instn |
-                         |(valid_fp_instrn &  (fp_ldst_vld | fp_autogen[`FP_AUTOGEN_INT_TO_FP_MOV] | fp_autogen[`FP_AUTOGEN_INT_TO_FP_CVT]))
-                         |(valid_vec_instrn & (vec_autogen.sel_scalar | vecldst_autogen.load | vecldst_autogen.store | vsetOp_to_ex));
-wire detect_fp_hazard =  valid_fp_instrn & ~(fp_autogen[`FP_AUTOGEN_INT_TO_FP_MOV] | fp_autogen[`FP_AUTOGEN_INT_TO_FP_CVT]);
-
-// Int Reg Hazard and Forwarding logic
-wire fwd_p0_from_ex_1c =  detect_int_hazard & rs1_used & i_ex_dst_vld_1c & i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wr_flag & (o_rf_p0_rdaddr != 'd0) & 
-                         (o_rf_p0_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_p1_from_ex_1c =  detect_int_hazard & rs2_used & i_ex_dst_vld_1c & i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wr_flag & (o_rf_p1_rdaddr != 'd0) & 
-                         (o_rf_p1_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
-
-wire fwd_p0_from_fp_ex_1c =  0;
-wire fwd_p1_from_fp_ex_1c =  0;
-   
-wire fwd_p0_from_ex_2c =  detect_int_hazard & rs1_used & i_ex_dst_vld_2c & i_lq_broadside_info[i_ex_dst_lqid_2c].rf_wr_flag & (o_rf_p0_rdaddr != 'd0) & 
-                         lq_single_hit_p0 & (o_rf_p0_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_2c].rf_wraddr);
-wire fwd_p1_from_ex_2c =  detect_int_hazard & rs2_used & i_ex_dst_vld_2c & i_lq_broadside_info[i_ex_dst_lqid_2c].rf_wr_flag & (o_rf_p1_rdaddr != 'd0) & 
-                         lq_single_hit_p1 & (o_rf_p1_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_2c].rf_wraddr);
-
-wire fwd_p0_from_lq  =  detect_int_hazard & rs1_used & lq_data_hit_p0 & (o_rf_p0_rdaddr != 'd0) & lq_single_hit_p0;
-wire fwd_p1_from_lq  =  detect_int_hazard & rs2_used & lq_data_hit_p1 & (o_rf_p1_rdaddr != 'd0) & lq_single_hit_p1;
-   
-wire fwd_p0_from_mem =  detect_int_hazard & rs1_used & i_mem_dst_vld & i_lq_broadside_info[i_mem_dst_lqid].rf_wr_flag & (o_rf_p0_rdaddr != 'd0) & 
-                        lq_single_hit_p0 & (o_rf_p0_rdaddr == i_lq_broadside_info[i_mem_dst_lqid].rf_wraddr);
-wire fwd_p1_from_mem =  detect_int_hazard & rs2_used & i_mem_dst_vld & i_lq_broadside_info[i_mem_dst_lqid].rf_wr_flag & (o_rf_p1_rdaddr != 'd0) & 
-                        lq_single_hit_p1 & (o_rf_p1_rdaddr == i_lq_broadside_info[i_mem_dst_lqid].rf_wraddr);
-
-// FP Reg Hazard & Forwarding logic
-wire fwd_fp_p0_from_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P0] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_ex_dst_vld_1c &
-                            i_lq_broadside_info[i_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p0_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_fp_p1_from_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P1] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_ex_dst_vld_1c &
-                            i_lq_broadside_info[i_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p1_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_fp_p2_from_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P2] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_ex_dst_vld_1c &
-                            i_lq_broadside_info[i_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p2_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_fp_p3_from_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_ex_dst_vld_1c &
-                            i_lq_broadside_info[i_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p3_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
-
+      
 //IMPROVE_msalvi: No forwarding from  vex output to input(either vex or int or fp), to avoid timing issue. 
 // If timing looks good we may later disable this check at the expense of a bypass from vex output..
 //IMPROVE: msalvi what about v_lmul[2]? How does that affect mask, right now this check is pessimistic
