@@ -72,9 +72,6 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output logic 			     o_id_mem_lqalloc,
    output logic 			     o_id_mem_lq_done,
    output 				     tt_briscv_pkg::lq_info_s o_id_mem_lqinfo,
- 
-   output [31:0] 			     o_fwd_p0_reg ,
-   output [31:0] 			     o_fwd_p1_reg ,
 
    input 				     i_ex_bp_mispredict ,
    input logic 				     i_ex_dst_vld_1c, // forwarding control from EX
@@ -1217,9 +1214,9 @@ assign vec_rs1_hazard_stall =  valid_vec_instrn & (lq_hit_cnt_vex_r0 > '0);
 assign vec_fs1_hazard_stall =  valid_vec_instrn & (lq_hit_cnt_vex_f0 > '0); 
 assign vec_mask_hazard_stall  = valid_vec_instrn & (lq_hit_cnt_vex_mask > '0) & ~id_replay;
 
-wire rs1_hazard_stall = int_rs1_hazard_stall | fp_rs1_hazard_stall | vec_vs1_hazard_stall  | vec_rs1_hazard_stall | vec_fs1_hazard_stall;
-wire rs2_hazard_stall = int_rs2_hazard_stall | fp_rs2_hazard_stall | fp_store_hazard_stall | vec_vs2_hazard_stall;
-wire rs3_hazard_stall = fp_rs3_hazard_stall  | vec_vs3_hazard_stall;
+wire rs1_hazard_stall = vec_vs1_hazard_stall  | vec_rs1_hazard_stall | vec_fs1_hazard_stall;
+wire rs2_hazard_stall = vec_vs2_hazard_stall;
+wire rs3_hazard_stall = vec_vs3_hazard_stall;
 
 assign raw_hazard_stall_fwd = rs1_hazard_stall | rs2_hazard_stall | rs3_hazard_stall | vec_mask_hazard_stall;
 assign raw_hazard_stall_vex = vec_vs1_hazard_stall  | vec_rs1_hazard_stall | vec_fs1_hazard_stall |
@@ -1265,91 +1262,7 @@ always_ff @(posedge i_clk) begin
       end
    end
 end
-
-// FP Forwarding
-if (INCL_FP) begin
-always_ff @(posedge i_clk) begin
-   if(~i_reset_n) begin
-      fp_p0_fwd_reg       <= '0;
-      fp_p0_fwd_data_reg  <= '0;
-      fp_p1_fwd_reg       <= '0;
-      fp_p1_fwd_data_reg  <= '0;
-      fp_p2_fwd_reg       <= '0;
-      fp_p2_fwd_data_reg  <= '0;
-      fp_p3_fwd_reg       <= '0;
-      fp_p3_fwd_data_reg  <= '0;
-
-      fp_rd_fp16_src_d <= '0;
-      fp_rd_neg_p1_d <= 'h0;
-      fp_rd_neg_p2_d <= 'h0;
-
-   end
-   else begin
-      if ((i_ex_rtr & o_id_ex_rts)) begin
-         // FP Load/Stores go through EX
-         fp_p3_fwd_reg       <= (fwd_fp_p3_from_ex_1c | fwd_fp_p3_from_fp_ex_1c | fwd_fp_p3_from_fp_ex_2c | fwd_fp_p3_from_lq | fwd_fp_p3_from_mem);
-         if (fwd_fp_p3_from_ex_1c | fwd_fp_p3_from_fp_ex_1c | fwd_fp_p3_from_fp_ex_2c | fwd_fp_p3_from_lq | fwd_fp_p3_from_mem)
-            fp_p3_fwd_data_reg  <= (fwd_fp_p3_from_ex_1c | fwd_fp_p3_from_fp_ex_1c) ? (({32{fwd_fp_p3_from_ex_1c}} & i_ex_fwd_data_1c)) :
-				                                                      fwd_fp_p3_from_fp_ex_2c ? 0 :
-                                                                                                                (({32{fwd_fp_p3_from_lq}} & lq_fwd_data_fp_p3) | ({32{fwd_fp_p3_from_mem}} & i_mem_fwd_data));
-	 
-      end
-
-      if (0) begin
-         fp_p0_fwd_reg       <= (fwd_fp_p0_from_ex_1c | fwd_fp_p0_from_fp_ex_1c | fwd_fp_p0_from_fp_ex_2c | fwd_fp_p0_from_lq | fwd_fp_p0_from_mem);
-         if (fwd_fp_p0_from_ex_1c | fwd_fp_p0_from_fp_ex_1c | fwd_fp_p0_from_fp_ex_2c | fwd_fp_p0_from_lq | fwd_fp_p0_from_mem)
-            fp_p0_fwd_data_reg  <= (fwd_fp_p0_from_ex_1c | fwd_fp_p0_from_fp_ex_1c) ? (({32{fwd_fp_p0_from_ex_1c}} & i_ex_fwd_data_1c)) :
-				                                                      fwd_fp_p0_from_fp_ex_2c ? 0 :
-                                                                                                                (({32{fwd_fp_p0_from_lq}} & lq_fwd_data_fp_p0) | ({32{fwd_fp_p0_from_mem}} & i_mem_fwd_data));
-           	 
-         fp_p1_fwd_reg       <= (fwd_fp_p1_from_ex_1c | fwd_fp_p1_from_fp_ex_1c | fwd_fp_p1_from_fp_ex_2c | fwd_fp_p1_from_lq | fwd_fp_p1_from_mem);
-         if (fwd_fp_p1_from_ex_1c | fwd_fp_p1_from_fp_ex_1c | fwd_fp_p1_from_fp_ex_2c | fwd_fp_p1_from_lq | fwd_fp_p1_from_mem)
-            fp_p1_fwd_data_reg  <= (fwd_fp_p1_from_ex_1c | fwd_fp_p1_from_fp_ex_1c) ? (({32{fwd_fp_p1_from_ex_1c}} & i_ex_fwd_data_1c)) :
-				                                                      fwd_fp_p1_from_fp_ex_2c ? 0 :
-                                                                                                                (({32{fwd_fp_p1_from_lq}} & lq_fwd_data_fp_p1) | ({32{fwd_fp_p1_from_mem}} & i_mem_fwd_data));
-           	 
-         fp_p2_fwd_reg       <= (fwd_fp_p2_from_ex_1c | fwd_fp_p2_from_fp_ex_1c | fwd_fp_p2_from_fp_ex_2c | fwd_fp_p2_from_lq | fwd_fp_p2_from_mem);
-         if (fwd_fp_p2_from_ex_1c | fwd_fp_p2_from_fp_ex_1c | fwd_fp_p2_from_fp_ex_2c | fwd_fp_p2_from_lq | fwd_fp_p2_from_mem)
-            fp_p2_fwd_data_reg  <= (fwd_fp_p2_from_ex_1c | fwd_fp_p2_from_fp_ex_1c) ? (({32{fwd_fp_p2_from_ex_1c}} & i_ex_fwd_data_1c)) :
-				                                                      fwd_fp_p2_from_fp_ex_2c ? 0 :
-                                                                                                                (({32{fwd_fp_p2_from_lq}} & lq_fwd_data_fp_p2) | ({32{fwd_fp_p2_from_mem}} & i_mem_fwd_data));
-
-         // FP Pipe forwarding
-         fp_rd_neg_p1_d         <= fp_autogen[`FP_AUTOGEN_RD_NEG_P1];
-         fp_rd_neg_p2_d         <= fp_autogen[`FP_AUTOGEN_RD_NEG_P2];
-         fp_rd_fp16_src_d       <= fp_rd_fp16_src;
-      end
-   end
-end
-
-end else begin // NO FP Forwarding
-
-assign fp_p0_fwd_reg       = '0;
-assign fp_p0_fwd_data_reg  = '0;
-assign fp_p1_fwd_reg       = '0;
-assign fp_p1_fwd_data_reg  = '0;
-assign fp_p2_fwd_reg       = '0;
-assign fp_p2_fwd_data_reg  = '0;
-assign fp_p3_fwd_reg       = '0;
-assign fp_p3_fwd_data_reg  = '0;
-assign fp_rd_fp16_src_d    = '0;
-assign fp_rd_neg_p1_d      = '0;
-assign fp_rd_neg_p2_d      = '0;
-
-end // END FP Forwarding
-
-assign o_fwd_p0_reg = int_p0_fwd_reg ? int_p0_fwd_data_reg : i_rf_p0_reg;
-assign o_fwd_p1_reg = int_p1_fwd_reg ? int_p1_fwd_data_reg : i_rf_p1_reg;
   
-//FP forwarding 
-reg [FP_RF_RD_PORTS-1:0][31:0]     fp_fwd_mux_out;
-
-// Port 0-2
-assign fp_fwd_mux_out[0] = fp_p0_fwd_reg ? fp_p0_fwd_data_reg : i_fp_rf_rd_ret_reg[0][31:0];
-assign fp_fwd_mux_out[1] = fp_p1_fwd_reg ? fp_p1_fwd_data_reg : i_fp_rf_rd_ret_reg[1][31:0];
-assign fp_fwd_mux_out[2] = fp_p2_fwd_reg ? fp_p2_fwd_data_reg : i_fp_rf_rd_ret_reg[2][31:0];
-assign fp_fwd_mux_out[3] = fp_p3_fwd_reg ? fp_p3_fwd_data_reg : i_fp_rf_rd_ret_reg[3][31:0];
-
 // Drive out new inst dispatch -- This should also track the number of inst retired
 wire id_ex_instdisp = id_rts & ~raw_hazard_stall & ~id_replay;
 tt_pipe_stage #(.WIDTH(1)) I_instdisp ( i_clk, i_reset_n, 1'b1, id_ex_instdisp, o_id_ex_instdisp);

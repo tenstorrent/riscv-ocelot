@@ -380,8 +380,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_ex_dst_vld_2c                       (ex_dst_vld_2c),         
     .i_ex_dst_lqid_2c                      (ex_dst_lqid_2c), 
     .i_ex_fwd_data_2c                      (ex_fwd_data_2c),  
-    .o_fwd_p0_reg                          (),      
-    .o_fwd_p1_reg                          (),      
+    // .o_fwd_p0_reg                          (),      
+    // .o_fwd_p1_reg                          (),      
 
     // FP Interface
     // .o_id_fp_ex0_rts                       (),         
