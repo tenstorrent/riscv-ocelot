@@ -27,13 +27,8 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output logic     o_id_ex_last,
 
    //FP EX0 Interface
-   input 				     i_fp_ex0_id_rtr ,
-   output wire 				     o_id_fp_ex0_rts ,
-   output wire [LQ_DEPTH_LOG2-1:0] 	     o_id_fp_ex0_lqid ,
-   output [`EX_AUTOGEN_WIDTH-1:0] 	     o_ex_autogen,
    // FP deocde signals
    output [`FP_AUTOGEN_WIDTH-1:0] 	     o_fp_autogen,
-
 
    //VEC Interface
    input 				     i_vex_id_rtr ,
@@ -51,15 +46,6 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output 				     tt_briscv_pkg::vec_autogen_s o_vec_autogen,
    output 				     tt_briscv_pkg::vecldst_autogen_s o_vecldst_autogen,
    
-   output reg [FP_RF_RD_PORTS-1:0] 	     o_fp_fwd_sign_reg ,
-   output reg [FP_RF_RD_PORTS-1:0] 	     o_fp_fwd_zero_reg ,
-   output reg [FP_RF_RD_PORTS-1:0] 	     o_fp_fwd_nan_reg ,
-   output reg [FP_RF_RD_PORTS-1:0] 	     o_fp_fwd_inf_reg ,
-   output reg [FP_RF_RD_PORTS-1:0][EXP_WIDTH-1:0] o_fp_fwd_exp_reg ,
-   output reg [FP_RF_RD_PORTS-1:0][MAN_WIDTH-1:0] o_fp_fwd_man_reg ,
-
-   output reg [31:0] 			     o_fp_rf_p3_reg,
-
    // From RF
    input [31:0] 			     i_rf_p0_reg ,
    input [31:0] 			     i_rf_p1_reg ,
@@ -98,14 +84,6 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    input logic 				     i_ex_dst_vld_2c, // forwarding control from EX
    input logic [LQ_DEPTH_LOG2-1:0] 	     i_ex_dst_lqid_2c, // forwarding control from EX
    input logic [31:0] 			     i_ex_fwd_data_2c, // forwarding control from EX
-
-   input logic 				     i_fp_ex_dst_vld_1c, // forwarding control from FP EX
-   input logic [LQ_DEPTH_LOG2-1:0] 	     i_fp_ex_dst_lqid_1c, // forwarding control from FP EX
-   input logic [31:0] 			     i_fp_ex_fwd_data_1c, // forwarding control from FP EX
-
-   input logic 				     i_fp_ex_dst_vld_2c, // forwarding control from FP EX
-   input logic [LQ_DEPTH_LOG2-1:0] 	     i_fp_ex_dst_lqid_2c, // forwarding control from FP EX
-   input logic [31:0] 			     i_fp_ex_fwd_data_2c, // forwarding control from FP EX
 
    input logic 				     i_mem_dst_vld, // forwarding control from MEM
    input logic [LQ_DEPTH_LOG2-1:0] 	     i_mem_dst_lqid, // forwarding control from MEM
@@ -152,7 +130,6 @@ wire id_replay;
 
 wire  [`EX_AUTOGEN_WIDTH-1:0] ex_autogen;
 wire  valid_ex_autogen = (i_ext | m_ext | b_ext);
-assign o_ex_autogen = ex_autogen & {`EX_AUTOGEN_WIDTH{valid_ex_autogen}};
 wire  [`FP_AUTOGEN_WIDTH-1:0] fp_autogen;
 wire  valid_fp_autogen = f_ext;
 assign o_fp_autogen = fp_autogen & {`FP_AUTOGEN_WIDTH{valid_fp_autogen}};
@@ -191,7 +168,7 @@ wire raw_hazard_stall_fwd; // Other pipe needs to take forward into account
 logic sync_stall;
 logic [6:0] sync_stall_op;
 wire [31:0] instrn_id;
-wire units_rtr = (i_ex_rtr & i_fp_ex0_id_rtr & i_vex_id_rtr) & !i_ex_bp_mispredict;
+wire units_rtr = (i_ex_rtr & i_vex_id_rtr) & !i_ex_bp_mispredict;
 // IMPROVE(Ashok). Mem rtr gets factored in separately, so for that reason
 // FP/VEX rtr can always be held high
 // EX RTL will be low for div and vec ldst. See if this can be optimized
@@ -302,7 +279,6 @@ assign o_id_mem_lqinfo.load = (is_ex_instrn & (EncType[4:0] == `BRISCV_INSTR_TYP
 assign o_id_mem_lqinfo.vec_load = (is_vec_instrn & o_vecldst_autogen.load);
 
 assign o_id_ex_lqid = id_mem_lqalloc_raw ? i_mem_id_lqnxtid : id_lqid;
-assign o_id_fp_ex0_lqid = id_mem_lqalloc_raw ? i_mem_id_lqnxtid : id_lqid;
 // assign o_id_vex_lqid = i_mem_id_lqnxtid;
 
 wire vsetOp_to_ex;
@@ -565,7 +541,6 @@ assign o_id_ex_last = vec_autogen_incr.replay_cnt == 0;
 //FP Instructions
 assign is_fp_instrn = f_ext;
 assign valid_fp_instrn = id_rts & is_fp_instrn;
-assign o_id_fp_ex0_rts = (!raw_hazard_stall) & valid_fp_instrn & ~fp_ldst_vld;
 
 //VEC Instructions
 assign is_vec_instrn = v_ext;
@@ -972,13 +947,12 @@ end
 always @* begin
    o_rf_p0_rden   = id_rts & ~raw_hazard_stall & 
                     ((i_ex_rtr  & valid_ex_instrn) | // & rs1_used /*& (!raw_hazard_stall)*/;
-                     (o_fp_autogen[`FP_AUTOGEN_INT_TO_FP_MOV] | o_fp_autogen[`FP_AUTOGEN_INT_TO_FP_CVT]) |
                      (i_vex_id_rtr & v_ext & ~vec_ldst_vld & (INCL_VEC == 1))); 
    o_rf_p0_rdaddr = addrp0[4:0];
    o_rf_p1_rden   = id_rts & ~raw_hazard_stall & (i_ex_rtr & valid_ex_instrn);// & rs2_used /*& (!raw_hazard_stall)*/;
    o_rf_p1_rdaddr = addrp1[4:0];
    o_rf_p2_rden   = (i_ex_rtr & valid_ex_instrn) & rs3_used /*& (!raw_hazard_stall)*/;
-   o_rf_p2_rdaddr = (o_fp_autogen[`FP_AUTOGEN_RF_RD_P2_IS_RS2] ? addrp1[4:0] : o_fp_autogen[`FP_AUTOGEN_RF_RD_HAS_RS3] ? addrp3: addrp2[4:0]);//instrn_id[31:27]);
+   o_rf_p2_rdaddr = addrp1[4:0];
    o_rf_p3_rdaddr = addrp1[4:0];
 //   o_rf_wr_flag   = o_id_type_r | o_id_type_i | o_id_type_u | o_id_type_uj;
    o_rf_wraddr    = addrp2[4: 0];
@@ -1160,10 +1134,8 @@ wire fwd_p0_from_ex_1c =  detect_int_hazard & rs1_used & i_ex_dst_vld_1c & i_lq_
 wire fwd_p1_from_ex_1c =  detect_int_hazard & rs2_used & i_ex_dst_vld_1c & i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wr_flag & (o_rf_p1_rdaddr != 'd0) & 
                          (o_rf_p1_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
 
-wire fwd_p0_from_fp_ex_1c =  detect_int_hazard & rs1_used & i_fp_ex_dst_vld_1c & i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wr_flag & (o_rf_p0_rdaddr != 'd0) & 
-                            (o_rf_p0_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_p1_from_fp_ex_1c =  detect_int_hazard & rs2_used & i_fp_ex_dst_vld_1c & i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wr_flag & (o_rf_p1_rdaddr != 'd0) & 
-                            (o_rf_p1_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wraddr);
+wire fwd_p0_from_fp_ex_1c =  0;
+wire fwd_p1_from_fp_ex_1c =  0;
    
 wire fwd_p0_from_ex_2c =  detect_int_hazard & rs1_used & i_ex_dst_vld_2c & i_lq_broadside_info[i_ex_dst_lqid_2c].rf_wr_flag & (o_rf_p0_rdaddr != 'd0) & 
                          lq_single_hit_p0 & (o_rf_p0_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_2c].rf_wraddr);
@@ -1188,23 +1160,15 @@ wire fwd_fp_p2_from_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_
 wire fwd_fp_p3_from_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_ex_dst_vld_1c &
                             i_lq_broadside_info[i_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p3_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
 
-wire fwd_fp_p0_from_fp_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P0] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_1c &
-                               i_lq_broadside_info[i_fp_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p0_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_fp_p1_from_fp_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P1] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_1c &
-                               i_lq_broadside_info[i_fp_ex_dst_lqid_1c].fp_rf_wr_flag & & (o_rf_p1_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_fp_p2_from_fp_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P2] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_1c &
-                               i_lq_broadside_info[i_fp_ex_dst_lqid_1c].fp_rf_wr_flag & & (o_rf_p2_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_fp_p3_from_fp_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_1c &
-                               i_lq_broadside_info[i_fp_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p3_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wraddr);
+wire fwd_fp_p0_from_fp_ex_1c =  0;
+wire fwd_fp_p1_from_fp_ex_1c =  0;
+wire fwd_fp_p2_from_fp_ex_1c =  0;
+wire fwd_fp_p3_from_fp_ex_1c =  0;
 
-wire fwd_fp_p0_from_fp_ex_2c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P0] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_2c &
-                               lq_single_hit_fp_p0 & i_lq_broadside_info[i_fp_ex_dst_lqid_2c].fp_rf_wr_flag & (o_rf_p0_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_2c].rf_wraddr);
-wire fwd_fp_p1_from_fp_ex_2c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P1] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_2c &
-                               lq_single_hit_fp_p1 & i_lq_broadside_info[i_fp_ex_dst_lqid_2c].fp_rf_wr_flag &  (o_rf_p1_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_2c].rf_wraddr);
-wire fwd_fp_p2_from_fp_ex_2c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P2] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_2c &
-                               lq_single_hit_fp_p2 & i_lq_broadside_info[i_fp_ex_dst_lqid_2c].fp_rf_wr_flag & (o_rf_p2_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_2c].rf_wraddr);
-wire fwd_fp_p3_from_fp_ex_2c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_2c &
-                               lq_single_hit_fp_p3 & i_lq_broadside_info[i_fp_ex_dst_lqid_2c].fp_rf_wr_flag & (o_rf_p3_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_2c].rf_wraddr);
+wire fwd_fp_p0_from_fp_ex_2c =  0;
+wire fwd_fp_p1_from_fp_ex_2c =  0;
+wire fwd_fp_p2_from_fp_ex_2c =  0;
+wire fwd_fp_p3_from_fp_ex_2c =  0;
 
 wire fwd_fp_p0_from_lq  =  detect_int_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P0]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_data_hit_fp_p0 & lq_single_hit_fp_p0;
 wire fwd_fp_p1_from_lq  =  detect_int_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P1]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_data_hit_fp_p1 & lq_single_hit_fp_p1;
@@ -1286,16 +1250,16 @@ always_ff @(posedge i_clk) begin
 
    end
    else begin
-      if ((i_ex_rtr & o_id_ex_rts) | (i_fp_ex0_id_rtr & o_id_fp_ex0_rts)) begin
+      if ((i_ex_rtr & o_id_ex_rts)) begin
          int_p0_fwd_reg      <= (fwd_p0_from_ex_1c | fwd_p0_from_ex_2c | fwd_p0_from_fp_ex_1c | fwd_p0_from_lq | fwd_p0_from_mem);
          if (fwd_p0_from_ex_1c | fwd_p0_from_ex_2c | fwd_p0_from_fp_ex_1c | fwd_p0_from_lq | fwd_p0_from_mem)
-            int_p0_fwd_data_reg <= (fwd_p0_from_ex_1c | fwd_p0_from_fp_ex_1c) ? (({32{fwd_p0_from_ex_1c}} & i_ex_fwd_data_1c) | ({32{fwd_p0_from_fp_ex_1c}} & i_fp_ex_fwd_data_1c)) :
+            int_p0_fwd_data_reg <= (fwd_p0_from_ex_1c | fwd_p0_from_fp_ex_1c) ? (({32{fwd_p0_from_ex_1c}} & i_ex_fwd_data_1c)) :
                                                                                 fwd_p0_from_ex_2c ? i_ex_fwd_data_2c : 
                                                                                                     (({32{fwd_p0_from_lq}} & lq_fwd_data_p0) | ({32{fwd_p0_from_mem}} & i_mem_fwd_data));
          
          int_p1_fwd_reg      <= (fwd_p1_from_ex_1c | fwd_p1_from_ex_2c | fwd_p1_from_fp_ex_1c | fwd_p1_from_lq | fwd_p1_from_mem);
          if (fwd_p1_from_ex_1c | fwd_p1_from_ex_2c | fwd_p1_from_fp_ex_1c | fwd_p1_from_lq | fwd_p1_from_mem)
-            int_p1_fwd_data_reg <= (fwd_p1_from_ex_1c | fwd_p1_from_fp_ex_1c) ? (({32{fwd_p1_from_ex_1c}} & i_ex_fwd_data_1c) | ({32{fwd_p1_from_fp_ex_1c}} & i_fp_ex_fwd_data_1c)) :
+            int_p1_fwd_data_reg <= (fwd_p1_from_ex_1c | fwd_p1_from_fp_ex_1c) ? (({32{fwd_p1_from_ex_1c}} & i_ex_fwd_data_1c)) :
                                                                                 fwd_p1_from_ex_2c ? i_ex_fwd_data_2c : 
                                                                                                     (({32{fwd_p1_from_lq}} & lq_fwd_data_p1) | ({32{fwd_p1_from_mem}} & i_mem_fwd_data));
       end
@@ -1321,33 +1285,33 @@ always_ff @(posedge i_clk) begin
 
    end
    else begin
-      if ((i_ex_rtr & o_id_ex_rts) | (i_fp_ex0_id_rtr & o_id_fp_ex0_rts)) begin
+      if ((i_ex_rtr & o_id_ex_rts)) begin
          // FP Load/Stores go through EX
          fp_p3_fwd_reg       <= (fwd_fp_p3_from_ex_1c | fwd_fp_p3_from_fp_ex_1c | fwd_fp_p3_from_fp_ex_2c | fwd_fp_p3_from_lq | fwd_fp_p3_from_mem);
          if (fwd_fp_p3_from_ex_1c | fwd_fp_p3_from_fp_ex_1c | fwd_fp_p3_from_fp_ex_2c | fwd_fp_p3_from_lq | fwd_fp_p3_from_mem)
-            fp_p3_fwd_data_reg  <= (fwd_fp_p3_from_ex_1c | fwd_fp_p3_from_fp_ex_1c) ? (({32{fwd_fp_p3_from_ex_1c}} & i_ex_fwd_data_1c) | ({32{fwd_fp_p3_from_fp_ex_1c}} & i_fp_ex_fwd_data_1c)) :
-				                                                      fwd_fp_p3_from_fp_ex_2c ? i_fp_ex_fwd_data_2c:
+            fp_p3_fwd_data_reg  <= (fwd_fp_p3_from_ex_1c | fwd_fp_p3_from_fp_ex_1c) ? (({32{fwd_fp_p3_from_ex_1c}} & i_ex_fwd_data_1c)) :
+				                                                      fwd_fp_p3_from_fp_ex_2c ? 0 :
                                                                                                                 (({32{fwd_fp_p3_from_lq}} & lq_fwd_data_fp_p3) | ({32{fwd_fp_p3_from_mem}} & i_mem_fwd_data));
 	 
       end
 
-      if (i_fp_ex0_id_rtr & o_id_fp_ex0_rts) begin
+      if (0) begin
          fp_p0_fwd_reg       <= (fwd_fp_p0_from_ex_1c | fwd_fp_p0_from_fp_ex_1c | fwd_fp_p0_from_fp_ex_2c | fwd_fp_p0_from_lq | fwd_fp_p0_from_mem);
          if (fwd_fp_p0_from_ex_1c | fwd_fp_p0_from_fp_ex_1c | fwd_fp_p0_from_fp_ex_2c | fwd_fp_p0_from_lq | fwd_fp_p0_from_mem)
-            fp_p0_fwd_data_reg  <= (fwd_fp_p0_from_ex_1c | fwd_fp_p0_from_fp_ex_1c) ? (({32{fwd_fp_p0_from_ex_1c}} & i_ex_fwd_data_1c) | ({32{fwd_fp_p0_from_fp_ex_1c}} & i_fp_ex_fwd_data_1c)) :
-				                                                      fwd_fp_p0_from_fp_ex_2c ? i_fp_ex_fwd_data_2c:
+            fp_p0_fwd_data_reg  <= (fwd_fp_p0_from_ex_1c | fwd_fp_p0_from_fp_ex_1c) ? (({32{fwd_fp_p0_from_ex_1c}} & i_ex_fwd_data_1c)) :
+				                                                      fwd_fp_p0_from_fp_ex_2c ? 0 :
                                                                                                                 (({32{fwd_fp_p0_from_lq}} & lq_fwd_data_fp_p0) | ({32{fwd_fp_p0_from_mem}} & i_mem_fwd_data));
            	 
          fp_p1_fwd_reg       <= (fwd_fp_p1_from_ex_1c | fwd_fp_p1_from_fp_ex_1c | fwd_fp_p1_from_fp_ex_2c | fwd_fp_p1_from_lq | fwd_fp_p1_from_mem);
          if (fwd_fp_p1_from_ex_1c | fwd_fp_p1_from_fp_ex_1c | fwd_fp_p1_from_fp_ex_2c | fwd_fp_p1_from_lq | fwd_fp_p1_from_mem)
-            fp_p1_fwd_data_reg  <= (fwd_fp_p1_from_ex_1c | fwd_fp_p1_from_fp_ex_1c) ? (({32{fwd_fp_p1_from_ex_1c}} & i_ex_fwd_data_1c) | ({32{fwd_fp_p1_from_fp_ex_1c}} & i_fp_ex_fwd_data_1c)) :
-				                                                      fwd_fp_p1_from_fp_ex_2c ? i_fp_ex_fwd_data_2c:
+            fp_p1_fwd_data_reg  <= (fwd_fp_p1_from_ex_1c | fwd_fp_p1_from_fp_ex_1c) ? (({32{fwd_fp_p1_from_ex_1c}} & i_ex_fwd_data_1c)) :
+				                                                      fwd_fp_p1_from_fp_ex_2c ? 0 :
                                                                                                                 (({32{fwd_fp_p1_from_lq}} & lq_fwd_data_fp_p1) | ({32{fwd_fp_p1_from_mem}} & i_mem_fwd_data));
            	 
          fp_p2_fwd_reg       <= (fwd_fp_p2_from_ex_1c | fwd_fp_p2_from_fp_ex_1c | fwd_fp_p2_from_fp_ex_2c | fwd_fp_p2_from_lq | fwd_fp_p2_from_mem);
          if (fwd_fp_p2_from_ex_1c | fwd_fp_p2_from_fp_ex_1c | fwd_fp_p2_from_fp_ex_2c | fwd_fp_p2_from_lq | fwd_fp_p2_from_mem)
-            fp_p2_fwd_data_reg  <= (fwd_fp_p2_from_ex_1c | fwd_fp_p2_from_fp_ex_1c) ? (({32{fwd_fp_p2_from_ex_1c}} & i_ex_fwd_data_1c) | ({32{fwd_fp_p2_from_fp_ex_1c}} & i_fp_ex_fwd_data_1c)) :
-				                                                      fwd_fp_p2_from_fp_ex_2c ? i_fp_ex_fwd_data_2c:
+            fp_p2_fwd_data_reg  <= (fwd_fp_p2_from_ex_1c | fwd_fp_p2_from_fp_ex_1c) ? (({32{fwd_fp_p2_from_ex_1c}} & i_ex_fwd_data_1c)) :
+				                                                      fwd_fp_p2_from_fp_ex_2c ? 0 :
                                                                                                                 (({32{fwd_fp_p2_from_lq}} & lq_fwd_data_fp_p2) | ({32{fwd_fp_p2_from_mem}} & i_mem_fwd_data));
 
          // FP Pipe forwarding
@@ -1385,75 +1349,9 @@ assign fp_fwd_mux_out[0] = fp_p0_fwd_reg ? fp_p0_fwd_data_reg : i_fp_rf_rd_ret_r
 assign fp_fwd_mux_out[1] = fp_p1_fwd_reg ? fp_p1_fwd_data_reg : i_fp_rf_rd_ret_reg[1][31:0];
 assign fp_fwd_mux_out[2] = fp_p2_fwd_reg ? fp_p2_fwd_data_reg : i_fp_rf_rd_ret_reg[2][31:0];
 assign fp_fwd_mux_out[3] = fp_p3_fwd_reg ? fp_p3_fwd_data_reg : i_fp_rf_rd_ret_reg[3][31:0];
-   
-// Port 3 (Used for fp store only)
-assign o_fp_rf_p3_reg    =  fp_p3_fwd_reg ? fp_p3_fwd_data_reg : i_fp_rf_rd_ret_reg[3][31:0];
-
-// NaN unboxing for FP16
-assign {o_fp_fwd_sign_reg[0                     ],
-        o_fp_fwd_exp_reg [0][EXP_WIDTH-1:0],
-        o_fp_fwd_man_reg [0][MAN_WIDTH-1:0] } =  fp_rd_fp16_src_d ? tt_briscv_pkg::f16_to_f32_unboxing(fp_fwd_mux_out[0])
-                                                                        :                                    fp_fwd_mux_out[0];
-
-assign {o_fp_fwd_sign_reg[1                     ],
-        o_fp_fwd_exp_reg [1][EXP_WIDTH-1:0],
-        o_fp_fwd_man_reg [1][MAN_WIDTH-1:0] } = (fp_rd_fp16_src_d ? tt_briscv_pkg::f16_to_f32_unboxing(fp_fwd_mux_out[1])
-                                                                        :                                    fp_fwd_mux_out[1] ) ^ {fp_rd_neg_p1_d, 31'h0};
-assign {o_fp_fwd_sign_reg[2                     ],
-        o_fp_fwd_exp_reg [2][EXP_WIDTH-1:0],
-        o_fp_fwd_man_reg [2][MAN_WIDTH-1:0] } = (fp_rd_fp16_src_d ? tt_briscv_pkg::f16_to_f32_unboxing(fp_fwd_mux_out[2])
-                                                                        :                                    fp_fwd_mux_out[2] ) ^ {fp_rd_neg_p2_d, 31'h0};
-
-assign {o_fp_fwd_sign_reg[3                     ],
-        o_fp_fwd_exp_reg [3][EXP_WIDTH-1:0],
-        o_fp_fwd_man_reg [3][MAN_WIDTH-1:0] } =  fp_rd_fp16_src_d ? tt_briscv_pkg::f16_to_f32_unboxing(fp_fwd_mux_out[3])
-                                                                        :                                    fp_fwd_mux_out[3];
-
-always_comb begin
-   tt_briscv_pkg::float_exam_special_conditions(.data_in({o_fp_fwd_sign_reg[0                     ],
-                                                          o_fp_fwd_exp_reg [0][EXP_WIDTH-1:0],
-                                                          o_fp_fwd_man_reg [0][MAN_WIDTH-1:0] }),
-                                                .is_fp16( fp_rd_fp16_src_d                           ),
-                                                .is_nan ( o_fp_fwd_nan_reg [0                     ]  ),
-                                                .is_zero( o_fp_fwd_zero_reg[0                     ]  ),
-                                                .is_inf ( o_fp_fwd_inf_reg [0                     ]  ) );
-
-   tt_briscv_pkg::float_exam_special_conditions(.data_in({o_fp_fwd_sign_reg[1                     ],
-                                                          o_fp_fwd_exp_reg [1][EXP_WIDTH-1:0],
-                                                          o_fp_fwd_man_reg [1][MAN_WIDTH-1:0] }),
-                                                .is_fp16( fp_rd_fp16_src_d                           ),
-                                                .is_nan ( o_fp_fwd_nan_reg [1                     ]  ),
-                                                .is_zero( o_fp_fwd_zero_reg[1                     ]  ),
-                                                .is_inf ( o_fp_fwd_inf_reg [1                     ]  ) );
-
-   tt_briscv_pkg::float_exam_special_conditions(.data_in({o_fp_fwd_sign_reg[2                     ],
-                                                          o_fp_fwd_exp_reg [2][EXP_WIDTH-1:0],
-                                                          o_fp_fwd_man_reg [2][MAN_WIDTH-1:0] }),
-                                                .is_fp16( fp_rd_fp16_src_d                           ),
-                                                .is_nan ( o_fp_fwd_nan_reg [2                     ]  ),
-                                                .is_zero( o_fp_fwd_zero_reg[2                     ]  ),
-                                                .is_inf ( o_fp_fwd_inf_reg [2                     ]  ) );
-
-   tt_briscv_pkg::float_exam_special_conditions(.data_in({o_fp_fwd_sign_reg[3                     ],
-                                                          o_fp_fwd_exp_reg [3][EXP_WIDTH-1:0],
-                                                          o_fp_fwd_man_reg [3][MAN_WIDTH-1:0] }),
-                                                .is_fp16( fp_rd_fp16_src_d                           ),
-                                                .is_nan ( o_fp_fwd_nan_reg [3                     ]  ),
-                                                .is_zero( o_fp_fwd_zero_reg[3                     ]  ),
-                                                .is_inf ( o_fp_fwd_inf_reg [3                     ]  ) );
-end
 
 // Drive out new inst dispatch -- This should also track the number of inst retired
 wire id_ex_instdisp = id_rts & ~raw_hazard_stall & ~id_replay;
 tt_pipe_stage #(.WIDTH(1)) I_instdisp ( i_clk, i_reset_n, 1'b1, id_ex_instdisp, o_id_ex_instdisp);
-
-
-   ////////////////
-   // Assertions //
-   ////////////////
-`ifdef SIM
-   // RTS to EX, FP, and VEX is one-hot
-   `ASSERT_COND_CLK(id_rts, $onehot0({o_id_ex_rts, o_id_fp_ex0_rts, o_id_vex_rts}), "RTS to EX, FP, and VEX is one-hot");
-`endif 
 
 endmodule
