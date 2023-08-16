@@ -394,6 +394,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   
   // committed and succeeded
   val stq_head         = Reg(UInt(stqAddrSz.W)) // point to next store to clear from STQ (i.e., send to memory)
+  val stq_v_head       = Reg(UInt(stqAddrSz.W))
   // allocation
   val stq_tail         = Reg(UInt(stqAddrSz.W))
   // scalar store are committed first, then sent to DMEM
@@ -525,6 +526,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   }
 
   // Decode stage
+  // using var for these two pointers since there can be multiple issue and we want to keep "intermediate"
   var ld_enq_idx = ldq_tail
   var st_enq_idx = stq_tail
 
@@ -556,73 +558,63 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     stq_full = WrapInc(st_enq_idx, numStqEntries) === stq_head
     io.core.stq_full(w)    := stq_full
     io.core.dis_stq_idx(w) := st_enq_idx
-
+    // indicators to change the value of var
     val vld_exist = WireInit(false.B)
     val vst_exist = WireInit(false.B)
     val vld_count_incr = WireInit(false.B)
     val vst_count_incr = WireInit(false.B)
     val update_young_vst = WireInit(false.B)
     val update_young_vld = WireInit(false.B)
+    // if load / store is dispatched
     val dis_ld_val = io.core.dis_uops(w).valid && io.core.dis_uops(w).bits.uses_ldq && !io.core.dis_uops(w).bits.exception
     val dis_st_val = io.core.dis_uops(w).valid && io.core.dis_uops(w).bits.uses_stq && !io.core.dis_uops(w).bits.exception
     when (dis_ld_val)
     {
+      // shared by both vector and scalar
       ldq(ld_enq_idx).valid                := true.B
+      // scalar only
       ldq(ld_enq_idx).bits.uop             := io.core.dis_uops(w).bits
       ldq(ld_enq_idx).bits.youngest_stq_idx  := st_enq_idx
-      ldq(ld_enq_idx).bits.st_dep_mask     := next_live_store_mask
-
+      ldq(ld_enq_idx).bits.st_dep_mask     := next_live_store_mask    
       ldq(ld_enq_idx).bits.addr.valid      := false.B
+      // shared by both vector and scalar
       ldq(ld_enq_idx).bits.executed        := false.B
       ldq(ld_enq_idx).bits.succeeded       := false.B
+      // scalar only
       ldq(ld_enq_idx).bits.order_fail      := false.B
       ldq(ld_enq_idx).bits.observed        := false.B
       ldq(ld_enq_idx).bits.forward_std_val := false.B
-      ldq(ld_enq_idx).bits.isVector   := io.core.dis_uops(w).bits.is_vec   
+      // determinant of vector
+      ldq(ld_enq_idx).bits.isVector   := io.core.dis_uops(w).bits.is_vec
+      // scalar only, to determine if it is still blocked by vector ones   
       ldq(ld_enq_idx).bits.hasOlderVst := cur_vst_exist
-      ldq(ld_enq_idx).bits.hasOlderVld := cur_vld_exist
-      ldq(ld_enq_idx).bits.vectorNoYoung := false.B 
+      ldq(ld_enq_idx).bits.hasOlderVld := cur_vld_exist      
       ldq(ld_enq_idx).bits.youngest_vst_idx := cur_youngest_vst
       ldq(ld_enq_idx).bits.youngest_vst_count := cur_vst_count
       ldq(ld_enq_idx).bits.youngest_vld_count := cur_vld_count
       ldq(ld_enq_idx).bits.youngest_vld_idx := cur_youngest_vld
+      // vector only, making sure all older stores are gone
+      ldq(ld_enq_idx).bits.vectorNoYoung := false.B 
       ldq(ld_enq_idx).bits.vectorCanGo := false.B 
       when (io.core.dis_uops(w).bits.is_vec) {
-        ldq(ld_enq_idx).bits.addr_is_virtual := false.B
-        update_young_vld := true.B         
+        ldq(ld_enq_idx).bits.addr_is_virtual := false.B     // TODO: this can be removed if we separate qualification
+        // use the incremented version              
         ldq(ld_enq_idx).bits.vld_count := WrapInc(cur_vld_count, numLdqEntries)
+        // increment / update everything for later scalar loads
         vld_count_incr := true.B
         vld_exist := true.B
+        update_young_vld := true.B 
+        // no pending older stores  
         when (st_enq_idx === stq_head) {
           ldq(ld_enq_idx).bits.vectorNoYoung := true.B 
+        }
+/*        
         }.otherwise {
         ldq(ld_enq_idx).bits.vectorNoYoung := false.B 
         ldq(ld_enq_idx).bits.vectorCanGo := false.B 
         } 
-      } 
-/*             
-        when (cur_vst_exist) {  
-          ldq(ld_enq_idx).bits.hasOlderVst := true.B 
-          ldq(ld_enq_idx).bits.youngest_vst_count := cur_vst_count
-          ldq(ld_enq_idx).bits.youngest_vst_idx := cur_youngest_vst
-        }
-      }.elsewhen (cur_vld_exist) {
-         ldq(ld_enq_idx).bits.hasOlderVld := true.B 
-         ldq(ld_enq_idx).bits.youngest_vld_count := cur_vld_count
-         ldq(ld_enq_idx).bits.youngest_vld_idx := cur_youngest_vld
-         when (cur_vst_exist) {
-          ldq(ld_enq_idx).bits.hasOlderVst := true.B 
-          ldq(ld_enq_idx).bits.youngest_vst_count := cur_vst_count
-          ldq(ld_enq_idx).bits.youngest_vst_idx := cur_youngest_vst
-         }
-      }.elsewhen (cur_vst_exist) {
-        ldq(ld_enq_idx).bits.hasOlderVst := true.B 
-        ldq(ld_enq_idx).bits.youngest_vst_count := cur_vst_count
-        ldq(ld_enq_idx).bits.youngest_vst_idx := cur_youngest_vst
-        
-      }
 */
-
+      } 
 
       assert (ld_enq_idx === io.core.dis_uops(w).bits.ldq_idx, "[lsu] mismatch enq load tag.")
       assert (!ldq(ld_enq_idx).valid, "[lsu] Enqueuing uop is overwriting ldq entries")
@@ -633,22 +625,25 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       stq(st_enq_idx).bits.uop        := io.core.dis_uops(w).bits
       stq(st_enq_idx).bits.addr.valid := false.B
       stq(st_enq_idx).bits.data.valid := false.B
+      // only useful for scalar, since it first commit -> send to DMEM
       stq(st_enq_idx).bits.committed  := false.B
       stq(st_enq_idx).bits.succeeded  := false.B
-      stq(st_enq_idx).bits.isVector   := io.core.dis_uops(w).bits.is_vec   //KYnew: may remove afterwards given that we already have uop
+      stq(st_enq_idx).bits.isVector   := io.core.dis_uops(w).bits.is_vec
+      // only for vector ones to make sure all older loads are gone
+      stq(st_enq_idx).bits.youngest_ldq_idx  := ld_enq_idx
+      stq(st_enq_idx).bits.vectorNoYoung := false.B        
+      stq(st_enq_idx).bits.vectorCanGo := false.B    
       when (io.core.dis_uops(w).bits.is_vec) {
-        stq(st_enq_idx).bits.addr.valid := true.B
-        stq(st_enq_idx).bits.addr_is_virtual := false.B
-        update_young_vst := true.B 
+        stq(st_enq_idx).bits.addr.valid := true.B  // TODO: this can be removed if we separate qualification
+        stq(st_enq_idx).bits.addr_is_virtual := false.B        
         stq(st_enq_idx).bits.vst_count := WrapInc(cur_vst_count, numStqEntries)
         vst_count_incr := true.B 
         vst_exist := true.B
+        update_young_vst := true.B 
         when (ld_enq_idx === ldq_head) {
           stq(st_enq_idx).bits.vectorNoYoung := true.B 
-        }.otherwise {
-        stq(st_enq_idx).bits.vectorNoYoung := false.B 
-        stq(st_enq_idx).bits.youngest_ldq_idx  := ld_enq_idx
-        stq(st_enq_idx).bits.vectorCanGo := false.B 
+//        }.otherwise {
+        
         } 
       }
 
@@ -656,7 +651,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       assert (!stq(st_enq_idx).valid, "[lsu] Enqueuing uop is overwriting stq entries")
     }
 
-    
+    // update these vars before updating ld / st index
     cur_vld_exist = vld_exist || cur_vld_exist
     cur_vld_count = Mux(vld_count_incr, WrapInc(cur_vld_count, numLdqEntries), cur_vld_count)
     cur_vst_count = Mux(vst_count_incr, WrapInc(cur_vst_count, numStqEntries), cur_vst_count)
@@ -674,7 +669,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
     assert(!(dis_ld_val && dis_st_val), "A UOP is trying to go into both the LDQ and the STQ")
   }
-
+  // update val with var after for loop is done
   ldq_tail := ld_enq_idx
   stq_tail := st_enq_idx
 
@@ -689,65 +684,71 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.dmem.force_order   := io.core.fence_dmem
   io.core.fencei_rdy    := !stq_nonempty && io.dmem.ordered
 
-//  var dsq_full = Bool()
+
   val dsq_full = WireInit(false.B)
   dsq_full := WrapInc(dsq_tail, numDsqEntries) === dsq_head
-  
-
   val newDsqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_stq && !io.core.VGen.resp.bits.dsqFull
-
   dsq_tail := Mux(newDsqEntry, WrapInc(dsq_tail, numDsqEntries), dsq_tail)
 
   when (newDsqEntry) {
     
     dsq(dsq_tail).valid             := true.B
     dsq(dsq_tail).bits.uop        := io.core.VGen.req.bits.uop
+    // false since we need to pass the TLB
     dsq(dsq_tail).bits.addr.valid := false.B
     dsq(dsq_tail).bits.addr_is_virtual := false.B 
-    dsq(dsq_tail).bits.addr.bits    := io.core.VGen.req.bits.addr 
+    dsq(dsq_tail).bits.addr.bits    := io.core.VGen.req.bits.addr
+    // data will come with address 
     dsq(dsq_tail).bits.data.valid := true.B
     dsq(dsq_tail).bits.data.bits    := io.core.VGen.req.bits.data
+    // only used for internal commit, will replay even succeeded
     dsq(dsq_tail).bits.succeeded  := false.B
+    // additional information for mem_sync_end
     dsq(dsq_tail).bits.last := io.core.VGen.req.bits.last
-    dsq(dsq_tail).bits.sbId := io.core.VGen.reqHelp.bits.sbId 
+    dsq(dsq_tail).bits.sbId := io.core.VGen.reqHelp.bits.sbId
+    // corner case 
     dsq(dsq_tail).bits.isFake := io.core.VGen.reqHelp.bits.isFake
-
   }
   
   val dlq_full = WireInit(false.B)
   dlq_full := WrapInc(dlq_tail, numDlqEntries) === dlq_head
-  io.core.VGen.req.ready    :=  ((io.core.VGen.req.bits.uop.uses_stq && !dsq_full) || (io.core.VGen.req.bits.uop.uses_ldq && !dlq_full))
-  io.core.VGen.resp.bits.dsqFull := dsq_full
-  io.core.VGen.resp.bits.dlqFull := dlq_full
+  
   val newDlqEntry = io.core.VGen.req.ready && io.core.VGen.req.valid && io.core.VGen.req.bits.uop.uses_ldq && !io.core.VGen.resp.bits.dlqFull
-
-  when (newDlqEntry) {
-    
+  dlq_tail := Mux(newDlqEntry, WrapInc(dlq_tail, numDlqEntries), dlq_tail)
+  when (newDlqEntry) {    
     dlq(dlq_tail).valid             := true.B
     dlq(dlq_tail).bits.uop        := io.core.VGen.req.bits.uop
+    // addr needs to go to TLB
     dlq(dlq_tail).bits.addr.valid := false.B
     dlq(dlq_tail).bits.addr_is_virtual := false.B 
     dlq(dlq_tail).bits.addr.bits    := io.core.VGen.req.bits.addr 
+    // if succeeded / executed, will skip in replay, succeeded used for internal commit
     dlq(dlq_tail).bits.succeeded  := false.B
     dlq(dlq_tail).bits.executed  := false.B
+    // information for mem_sync_end and SeqId
     dlq(dlq_tail).bits.last := io.core.VGen.req.bits.last
     dlq(dlq_tail).bits.sbId := io.core.VGen.reqHelp.bits.sbId
     dlq(dlq_tail).bits.elemID := io.core.VGen.reqHelp.bits.elemID
     dlq(dlq_tail).bits.elemOffset := io.core.VGen.reqHelp.bits.elemOffset
     dlq(dlq_tail).bits.elemCount := io.core.VGen.reqHelp.bits.elemCount
     dlq(dlq_tail).bits.vRegID := io.core.VGen.reqHelp.bits.vRegID
+    // load data packing
     dlq(dlq_tail).bits.strideDir := io.core.VGen.reqHelp.bits.strideDir
+    // mask interface
     dlq(dlq_tail).bits.isMask := io.core.VGen.reqHelp.bits.isMask
     dlq(dlq_tail).bits.Mask := io.core.VGen.reqHelp.bits.Mask
     dlq(dlq_tail).bits.isFake := io.core.VGen.reqHelp.bits.isFake
-    when (io.core.VGen.reqHelp.bits.isFake) {
+    when (io.core.VGen.reqHelp.bits.isFake) {            // TODO: this might be redundant
       dlq(dlq_tail).bits.addr.valid := true.B
       dlq(dlq_tail).bits.addr_is_virtual := false.B
     }
 
-    dlq_tail := WrapInc(dlq_tail, numDlqEntries)
+//    dlq_tail := WrapInc(dlq_tail, numDlqEntries)
   }
-
+  
+  io.core.VGen.req.ready    :=  ((io.core.VGen.req.bits.uop.uses_stq && !dsq_full) || (io.core.VGen.req.bits.uop.uses_ldq && !dlq_full))
+  io.core.VGen.resp.bits.dsqFull := dsq_full  // TODO: This might be redundant
+  io.core.VGen.resp.bits.dlqFull := dlq_full
 
 
   //-------------------------------------------------------------
@@ -827,7 +828,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   }), stq_commit_head))
   val stq_retry_e   = stq(stq_retry_idx)
 
-  val stq_commit_e  = stq(stq_execute_head)
+  
 
   val ldq_wakeup_idx = RegNext(AgePriorityEncoder((0 until numLdqEntries).map(i=> {
     val e = ldq(i).bits
@@ -836,20 +837,27 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   }), ldq_head))
   val ldq_wakeup_e   = ldq(ldq_wakeup_idx)
 
+  // current stq entry to be sent to dmem, shared by scalar and vector   //TODO: do we want to separate this for a cleaner design?
+  val stq_commit_e  = stq(stq_execute_head)
+  val stq_vector_e  = stq(stq_v_head)
+  // current dsq entry to be sent to dmem
   val dsq_commit_e = dsq(dsq_execute_head)
-  val dsq_tlb_e = dsq(dsq_tlb_head)              //KYnew: continuous pinging TLB for now
+  // dsq / dlq entry for tlb translation, isolated
+  val dsq_tlb_e = dsq(dsq_tlb_head)              
   val dlq_tlb_e = dlq(dlq_tlb_head)
-
-  val dlq_commit_e = dlq(dlq_execute_head)
+  // this is the entry pointed by the ldq_v_head pointer, specifically for vector load
   val ldq_commit_e = ldq(ldq_v_head)
-  //val ldq_commit_e = ldq(ldq_head)
+  // dlq entry to be sent to dmem, not exactly aligned with ldq_commit_e when it's a fake entry
+  val dlq_commit_e = dlq(dlq_execute_head)
+  
 
 
   // -----------------------
   // Determine what can fire
 
   // Can we fire a incoming load
-  val can_fire_load_incoming = widthMap(w => exe_req(w).valid && exe_req(w).bits.uop.ctrl.is_load)  
+  val can_fire_load_incoming = widthMap(w => exe_req(w).valid && exe_req(w).bits.uop.ctrl.is_load) 
+  // additional qualification to make sure that the incoming load is not blocked by vector load or vector store 
   val load_incoming_no_vst   =  widthMap(w => !(ldq(exe_req(w).bits.uop.ldq_idx).bits.hasOlderVst 
                                                    && !ldq(exe_req(w).bits.uop.ldq_idx).bits.isVector  
                                                    && stq(ldq(exe_req(w).bits.uop.ldq_idx).bits.youngest_vst_idx).valid
@@ -893,7 +901,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                 RegNext(dtlb.io.miss_rdy)                     &&
                                 !store_needs_order                            &&
                                 (w == memWidth-1).B                           && // TODO: Is this best scheduling?
-                                !ldq_retry_e.bits.order_fail))                 
+                                !ldq_retry_e.bits.order_fail))
+  // make sure that the retry is blocked                 
   val load_retry_no_vst  = widthMap (w => !(ldq(ldq_retry_idx).bits.hasOlderVst && !ldq(ldq_retry_idx).bits.isVector
                                   && stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).valid
                                   && stq(ldq(ldq_retry_idx).bits.youngest_vst_idx).bits.isVector
@@ -921,6 +930,18 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // Can we commit a store
   val can_fire_store_commit  = widthMap(w =>
                                ( stq_commit_e.valid                           &&
+                                !stq_commit_e.bits.isVector                   &&
+                                !stq_commit_e.bits.uop.is_fence               &&
+                                !mem_xcpt_valid                               &&
+                                !stq_commit_e.bits.uop.exception              &&
+                                (w == 0).B                                    &&
+                                (stq_commit_e.bits.committed || ( stq_commit_e.bits.uop.is_amo      &&
+                                                                  stq_commit_e.bits.addr.valid      &&
+                                                                 !stq_commit_e.bits.addr_is_virtual &&
+                                                                  stq_commit_e.bits.data.valid))))
+  /*                                                                                            
+  val can_fire_store_commit  = widthMap(w =>
+                               ( stq_commit_e.valid                           &&
                                 !stq_commit_e.bits.uop.is_fence               &&
                                 !mem_xcpt_valid                               &&
                                 !stq_commit_e.bits.uop.exception              &&
@@ -931,7 +952,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                                   stq_commit_e.bits.data.valid) || 
                                                                   (stq_commit_e.bits.isVector && (stq_head === stq_execute_head) && dsq_commit_e.valid 
                                                                                               && !(!stq_commit_e.bits.vectorCanGo && !stq_commit_e.bits.vectorNoYoung) 
-                                                                                              && (stq_head === dsq_commit_e.bits.uop.stq_idx)))))
+                                                                                              && (stq_head === dsq_commit_e.bits.uop.stq_idx))))) 
+  */                                                                                                                                                                                       
+  val can_fire_stq_vector = widthMap (w => ((w == 0).B && stq_vector_e.valid && stq_vector_e.bits.isVector && !(!stq_vector_e.bits.vectorCanGo && !stq_vector_e.bits.vectorNoYoung))) 
+  
+  val can_fire_dsq_vector = dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready && !dsq_commit_e.bits.isFake 
+  val can_mark_dsq_fake   = dsq_commit_e.valid && dsq_commit_e.bits.isFake && !dsq_commit_e.bits.succeeded 
+  val can_skip_dsq_fake   = dsq_commit_e.valid && dsq_commit_e.bits.isFake && dsq_commit_e.bits.succeeded                                
 
   val can_fire_vector_load = widthMap(w => (w == memWidth-1).B && 
                                            ldq_commit_e.bits.isVector && !ldq_commit_e.bits.succeeded && (ldq_v_head === dlq_commit_e.bits.uop.ldq_idx) &&
@@ -1255,15 +1282,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   val s0_executing_loads = WireInit(VecInit((0 until numLdqEntries).map(x=>false.B)))
 
-/*
-when (dlq_finished) {
-    dlq_finished := false.B
-  }
 
-  when (dsq_finished) {
-        dsq_finished := false.B 
-  }
-*/
   for (w <- 0 until memWidth) {
     dmem_req(w).valid := false.B
     dmem_req(w).bits.uop   := NullMicroOp
@@ -1292,7 +1311,7 @@ when (dlq_finished) {
       s0_executing_loads(ldq_retry_idx) := dmem_req_fire(w)
       assert(!ldq_retry_e.bits.executed)
     } .elsewhen (will_fire_store_commit(w)) {
-      when (!stq_commit_e.bits.isVector){
+//      when (!stq_commit_e.bits.isVector){
       dmem_req(w).valid         := true.B
       dmem_req(w).bits.addr     := stq_commit_e.bits.addr.bits
       dmem_req(w).bits.data     := (new freechips.rocketchip.rocket.StoreGen(
@@ -1306,7 +1325,8 @@ when (dlq_finished) {
                                                 stq_execute_head)     
 
       stq(stq_execute_head).bits.succeeded := false.B
-      }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready && !dsq_commit_e.bits.isFake){ 
+      }.elsewhen (can_fire_stq_vector (w) && can_fire_dsq_vector) { 
+//      }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready && !dsq_commit_e.bits.isFake){ 
         dmem_req(w).valid := true.B
         dmem_req(w).bits.addr := dsq_commit_e.bits.addr.bits
         dmem_req(w).bits.data     := (new freechips.rocketchip.rocket.StoreGen(
@@ -1315,10 +1335,13 @@ when (dlq_finished) {
                                     coreDataBytes)).data        
         dmem_req(w).bits.uop := dsq_commit_e.bits.uop
         dmem_req(w).bits.uop.stq_idx := dsq_execute_head
+/*
           when (dsq_execute_head =/= dsq_tail) {          
            dsq_execute_head :=  WrapInc(dsq_execute_head, numDsqEntries)
           }
          dsq(dsq_execute_head).bits.succeeded := false.B
+*/
+/*         
       }.elsewhen(dsq_commit_e.valid && dsq_commit_e.bits.isFake){
         dsq_commit_e.bits.succeeded := true.B
         when (dsq_execute_head =/= dsq_tail) {         
@@ -1327,6 +1350,7 @@ when (dlq_finished) {
       }.otherwise{
         dmem_req(w).valid  := false.B                        
       }
+*/
     } .elsewhen (will_fire_load_wakeup(w) && load_wakeup_no_vst (w) && load_wakeup_no_vld(w)) {
       dmem_req(w).valid      := true.B
       dmem_req(w).bits.addr  := ldq_wakeup_e.bits.addr.bits
@@ -1856,6 +1880,22 @@ when (dlq_finished) {
          }
       } 
     }
+    
+    when (can_fire_stq_vector (w) && can_fire_dsq_vector) {
+       dsq(dsq_execute_head).bits.succeeded := false.B
+       when (dsq_execute_head =/= dsq_tail) {         
+           dsq_execute_head :=  WrapInc(dsq_execute_head, numDsqEntries)
+        }
+    }.elsewhen(can_mark_dsq_fake) {
+       dsq(dsq_execute_head).bits.succeeded := true.B
+       when (dsq_execute_head =/= dsq_tail) {         
+           dsq_execute_head :=  WrapInc(dsq_execute_head, numDsqEntries)
+        }
+    }.elsewhen(can_skip_dsq_fake) {
+      when (dsq_execute_head =/= dsq_tail) {         
+           dsq_execute_head :=  WrapInc(dsq_execute_head, numDsqEntries)
+        }
+    }
 
     // Handle nacks
     when (io.dmem.nack(w).valid)
@@ -2140,18 +2180,18 @@ when (dlq_finished) {
     dsq(dsq_head).bits.data.valid := false.B 
     dsq(dsq_head).bits.isFake := false.B
     when (dsq(dsq_head).bits.last) {
-//      when (!dsq_finished) {
       dsq_finished := true.B
       sbIdDoneSt := dsq(dsq_head).bits.sbId
-      stq(stq_execute_head).bits.succeeded := true.B 
-      stq_execute_head := WrapInc(stq_execute_head, numStqEntries)
-//      dsq_head := WrapInc(dsq_head, numDsqEntries)
-//      }
-//    }.otherwise {
-//      dsq_head := WrapInc(dsq_head, numDsqEntries)
+      stq(dsq(dsq_head).bits.uop.stq_idx).bits.succeeded := true.B 
+//      stq_execute_head := WrapInc(stq_execute_head, numStqEntries)
+      when ((stq_v_head =/= stq_tail) && (stq_v_head === dsq(dsq_head).bits.uop.stq_idx)) {
+        stq_v_head := WrapInc(stq_v_head, numStqEntries)
+      }
     }
   }
-
+  when (stq_commit_e.valid && stq_commit_e.bits.isVector && stq_commit_e.bits.succeeded) {
+    stq_execute_head := WrapInc(stq_execute_head, numStqEntries)
+  }
   when (dlq(dlq_head).valid && dlq(dlq_head).bits.succeeded) {
     dlq_head := WrapInc(dlq_head, numDlqEntries)
     dlq(dlq_head).valid  := false.B 
@@ -2170,6 +2210,9 @@ when (dlq_finished) {
 
   when ((!ldq(ldq_v_head).valid || ldq(ldq_v_head).bits.succeeded) && ldq_v_head =/= ldq_tail) {
     ldq_v_head := WrapInc(ldq_v_head, numLdqEntries)
+  }
+  when ((!stq(stq_v_head).valid || stq(stq_v_head).bits.succeeded) && stq_v_head =/= stq_tail) {
+    stq_v_head := WrapInc(stq_v_head, numStqEntries)
   }
 
   
@@ -2263,6 +2306,7 @@ when (dlq_finished) {
       stq_tail := 0.U
       stq_commit_head  := 0.U
       stq_execute_head := 0.U
+      stq_v_head := 0.U 
    //   stq_execute_save.bits := 0.U 
    //   stq_execute_save.valid := false.B 
       for (i <- 0 until numStqEntries)
@@ -2289,7 +2333,7 @@ when (dlq_finished) {
       ldExist := false.B 
    //   dsq_execute_save.bits := 0.U 
    //   dsq_execute_save.valid := false.B 
-      dsq_finished := false.B 
+   //   dsq_finished := false.B 
       for (i <- 0 until numDsqEntries)
       {
         dsq(i).valid           := false.B
@@ -2305,7 +2349,7 @@ when (dlq_finished) {
       dlq_tail := 0.U
       dlq_execute_head := 0.U 
       dlq_tlb_head := 0.U
-      dlq_finished := false.B 
+   //   dlq_finished := false.B 
       for (i <- 0 until numDlqEntries)
       {
         dlq(i).valid           := false.B
