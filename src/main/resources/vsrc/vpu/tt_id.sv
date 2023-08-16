@@ -57,7 +57,6 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output logic 			     o_id_mem_lq_done,
    output 				     tt_briscv_pkg::lq_info_s o_id_mem_lqinfo,
 
-   input 				     i_ex_bp_mispredict ,
    input logic 				     i_ex_dst_vld_1c, // forwarding control from EX
    input logic [LQ_DEPTH_LOG2-1:0] 	     i_ex_dst_lqid_1c, // forwarding control from EX
    input logic [31:0] 			     i_ex_fwd_data_1c, // forwarding control from EX
@@ -143,7 +142,7 @@ wire raw_hazard_stall_fwd; // Other pipe needs to take forward into account
 logic sync_stall;
 logic [6:0] sync_stall_op;
 wire [31:0] instrn_id;
-wire units_rtr = (i_ex_rtr & i_vex_id_rtr) & !i_ex_bp_mispredict;
+wire units_rtr = (i_ex_rtr & i_vex_id_rtr);
 // IMPROVE(Ashok). Mem rtr gets factored in separately, so for that reason
 // FP/VEX rtr can always be held high
 // EX RTL will be low for div and vec ldst. See if this can be optimized
@@ -187,7 +186,7 @@ logic no_lq_load_pending;
                             // Syncstall only applies per ldqid, and some vector replays need multiple dispatches to fill a single ldqid
                          & (id_replay | ~sync_stall )
                             // Need all units to be ready to dispatch anything
-                         & (is_ex_instrn | is_fp_instrn | is_vec_instrn) & units_rtr & !i_ex_bp_mispredict;
+                         & (is_ex_instrn | is_fp_instrn | is_vec_instrn) & units_rtr;
   assign o_id_instrn_rtr = units_rtr & ~id_replay & ~raw_hazard_stall & ~(i_mem_fe_lqfull | i_mem_fe_skidbuffull) & ~sync_stall;
 `else
 tt_rts_rtr_pipe_stage #(.WIDTH(32)) id_instrn_flops
@@ -710,7 +709,6 @@ always @(posedge i_clk) begin
     sync_stall_op <= 'd0;
   end
   else begin
-    // if (i_ex_bp_mispredict || (sync_stall && i_mem_lq_commit && (i_mem_lq_op == sync_stall_op))) -- No longer need this. simple empty check is enough
     if (sync_stall && i_mem_fe_lqempty)
         sync_stall <= 1'b0;
     else
@@ -784,7 +782,7 @@ always @(posedge i_clk) begin
   end
   else begin
     // Collect Branch metrics for trace by branch type
-    if(o_id_ex_rts & i_ex_rtr & ~i_ex_bp_mispredict & (~raw_hazard_stall) ) begin
+    if(o_id_ex_rts & i_ex_rtr & (~raw_hazard_stall) ) begin
        if (OLD_it_branch & (instrn_id[14:12] == 3'b000)) branch_count_beq <= branch_count_beq + 1'b1; // BEQ
        if (OLD_it_branch & (instrn_id[14:12] == 3'b101)) branch_count_bge <= branch_count_bge + 1'b1; // BGE
        if (OLD_it_branch & (instrn_id[14:12] == 3'b111)) branch_count_bgeu <= branch_count_bgeu + 1'b1; // BGEU
