@@ -822,67 +822,6 @@ always @(posedge i_clk) begin
   end
 end
 
-// Mispredict count for branch types BEQ   
-//   7: BEQ //   6: BGE //   5: BGEU //   4: BLT
-//   3: BLTU //   2: BNE //   1: JAL //   0: JALR
-reg [31:0] mispredict_count_beq;
-reg [31:0] mispredict_count_bge;
-reg [31:0] mispredict_count_bgeu;
-reg [31:0] mispredict_count_blt;
-reg [31:0] mispredict_count_bltu;
-reg [31:0] mispredict_count_bne;
-reg [31:0] mispredict_count_jal;
-reg [31:0] mispredict_count_jalr;
-reg [31:0] mispredict_count_none;
-reg [31:0] mispredict_count_uncond;
-reg [31:0] mispredict_count_call;
-reg [31:0] mispredict_count_ret;
-reg [127:0] id_ascii_instrn_1;
-reg jalRdIsLink_1, jalRs1IsLink_1, jalRdEqRs1_1;
-
-always @(posedge i_clk) begin
-  if(~i_reset_n) begin
-    mispredict_count_beq <= 'd0;
-    mispredict_count_bge <= 'd0;
-    mispredict_count_bgeu <= 'd0;
-    mispredict_count_blt <= 'd0;
-    mispredict_count_bltu <= 'd0;
-    mispredict_count_bne <= 'd0;
-    mispredict_count_jal <= 'd0;
-    mispredict_count_jalr <= 'd0;
-    mispredict_count_none <= 'd0;
-    id_ascii_instrn_1 <= 'd0;
-    jalRdIsLink_1 <= 'b0;
-    jalRs1IsLink_1 <= 'b0;
-    jalRdEqRs1_1 <= 'b0;
-    mispredict_count_uncond <= 'd0;
-    mispredict_count_call <= 'd0;
-    mispredict_count_ret <= 'd0;
-  end
-  else begin
-    // Collect Branch metrics for mispredicts by branch type
-    id_ascii_instrn_1 <= id_ascii_instrn;
-    jalRdIsLink_1 <= jalRdIsLink;
-    jalRs1IsLink_1 <= jalRs1IsLink;
-    jalRdEqRs1_1 <= jalRdEqRs1;
-    if(i_ex_bp_mispredict) begin //mispredict_fifo_wren 
-       if (id_ascii_instrn_1 == "BEQ") mispredict_count_beq <= mispredict_count_beq + 1'b1;
-       else if (id_ascii_instrn_1 == "BGE") mispredict_count_bge <= mispredict_count_bge + 1'b1;
-       else if (id_ascii_instrn_1 == "BGEU") mispredict_count_bgeu <= mispredict_count_bgeu + 1'b1;
-       else if (id_ascii_instrn_1 == "BLT") mispredict_count_blt <= mispredict_count_blt + 1'b1;
-       else if (id_ascii_instrn_1 == "BLTU") mispredict_count_bltu <= mispredict_count_bltu + 1'b1;
-       else if (id_ascii_instrn_1 == "BNE") mispredict_count_bne <= mispredict_count_bne + 1'b1;
-       else if (id_ascii_instrn_1 == "JAL") mispredict_count_jal <= mispredict_count_jal + 1'b1;
-       else if (id_ascii_instrn_1 == "JALR") mispredict_count_jalr <= mispredict_count_jalr + 1'b1;
-       else  mispredict_count_none <= mispredict_count_none + 1'b1;
-       if (((id_ascii_instrn_1 == "JAL") | (id_ascii_instrn_1 == "JALR")) & (~jalRdIsLink_1 & ~jalRs1IsLink_1)) mispredict_count_uncond <= mispredict_count_uncond + 1'b1; // JAL is an uncond Jump
-       if (((id_ascii_instrn_1 == "JAL") | (id_ascii_instrn_1 == "JALR")) & (~jalRdIsLink_1 & jalRs1IsLink_1) | (jalRdIsLink_1 & jalRs1IsLink_1 & ~jalRdEqRs1_1)) mispredict_count_ret <= mispredict_count_ret + 1'b1; // JAL is a return
-       if (((id_ascii_instrn_1 == "JAL") | (id_ascii_instrn_1 == "JALR")) & jalRdIsLink_1) mispredict_count_call <= mispredict_count_call + 1'b1; // JAL is a call
-    end
-  end
-end
-
-
 reg  OLD_id_type_r;
 reg  OLD_id_type_i;
 reg  OLD_id_type_s;
@@ -984,54 +923,11 @@ assign o_id_immed_op = immed_op;
 //////
 // RAW hazard handling
 //////
-
-// Step 1
-logic [LQ_DEPTH-1:0]    lq_load_valid;
-logic [LQ_DEPTH-1:0]    lq_hit_entry_p0, lq_hit_entry_p1;
-logic [LQ_DEPTH-1:0]    lq_data_hit_entry_p0, lq_data_hit_entry_p1;
-logic [LQ_DEPTH_LOG2:0] lq_hit_cnt_p0, lq_hit_cnt_p1;
-logic [LQ_DEPTH-1:0]    lq_hit_entry_fp_p0, lq_hit_entry_fp_p1, lq_hit_entry_fp_p2, lq_hit_entry_fp_p3;
-logic [LQ_DEPTH-1:0]    lq_data_hit_entry_fp_p0, lq_data_hit_entry_fp_p1, lq_data_hit_entry_fp_p2, lq_data_hit_entry_fp_p3;
-logic [LQ_DEPTH_LOG2:0] lq_hit_cnt_fp_p0, lq_hit_cnt_fp_p1, lq_hit_cnt_fp_p2, lq_hit_cnt_fp_p3;
 logic [LQ_DEPTH-1:0]    lq_hit_entry_vex_p0, lq_hit_entry_vex_p1, lq_hit_entry_vex_p2, lq_hit_entry_vex_mask, lq_hit_entry_vex_r0, lq_hit_entry_vex_f0;
 logic [LQ_DEPTH_LOG2:0] lq_hit_cnt_vex_p0, lq_hit_cnt_vex_p1, lq_hit_cnt_vex_p2, lq_hit_cnt_vex_mask, lq_hit_cnt_vex_r0, lq_hit_cnt_vex_f0;
-logic [LQ_DEPTH_LOG2:0] lq_load_cnt;
 logic vec_vs3_hazard_stall, vec_vs2_hazard_stall, vec_vs1_hazard_stall,vec_mask_hazard_stall;
 logic vec_rs1_hazard_stall;   
 logic vec_fs1_hazard_stall;   
-logic lq_single_hit_p0, lq_single_hit_p1;
-logic lq_single_hit_fp_p0, lq_single_hit_fp_p1, lq_single_hit_fp_p2, lq_single_hit_fp_p3;
-
-logic lq_hit_p0, lq_hit_p1;
-logic lq_data_hit_p0, lq_data_hit_p1;
-logic [31:0] lq_fwd_data_p0, lq_fwd_data_p1;
-logic lq_hit_fp_p0, lq_hit_fp_p1, lq_hit_fp_p2, lq_hit_fp_p3;
-logic lq_data_hit_fp_p0, lq_data_hit_fp_p1, lq_data_hit_fp_p2, lq_data_hit_fp_p3;
-logic [31:0] lq_fwd_data_fp_p0, lq_fwd_data_fp_p1, lq_fwd_data_fp_p2, lq_fwd_data_fp_p3;
-
-always_comb begin
-  for(int x=0;x<LQ_DEPTH;++x) begin
-     // RF LQ Hit Logic
-     lq_hit_entry_p0[x] = (o_rf_p0_rdaddr == i_lq_broadside_info[x].rf_wraddr) & i_lq_broadside_valid[x] & i_lq_broadside_info[x].rf_wr_flag; 
-     lq_hit_entry_p1[x] = (o_rf_p1_rdaddr == i_lq_broadside_info[x].rf_wraddr) & i_lq_broadside_valid[x] & i_lq_broadside_info[x].rf_wr_flag;
-
-     lq_data_hit_entry_p0[x] = lq_hit_entry_p0[x] & i_lq_broadside_data_valid[x];
-     lq_data_hit_entry_p1[x] = lq_hit_entry_p1[x] & i_lq_broadside_data_valid[x];
-     
-     // FP RF LQ Hit Logic
-     lq_hit_entry_fp_p0[x] = (o_rf_p0_rdaddr == i_lq_broadside_info[x].rf_wraddr) & i_lq_broadside_valid[x] & i_lq_broadside_info[x].fp_rf_wr_flag;
-     lq_hit_entry_fp_p1[x] = (o_rf_p1_rdaddr == i_lq_broadside_info[x].rf_wraddr) & i_lq_broadside_valid[x] & i_lq_broadside_info[x].fp_rf_wr_flag;
-     lq_hit_entry_fp_p2[x] = (o_rf_p2_rdaddr == i_lq_broadside_info[x].rf_wraddr) & i_lq_broadside_valid[x] & i_lq_broadside_info[x].fp_rf_wr_flag;
-     lq_hit_entry_fp_p3[x] = (o_rf_p3_rdaddr == i_lq_broadside_info[x].rf_wraddr) & i_lq_broadside_valid[x] & i_lq_broadside_info[x].fp_rf_wr_flag;
-
-     lq_data_hit_entry_fp_p0[x] = lq_hit_entry_fp_p0[x] & i_lq_broadside_data_valid[x];
-     lq_data_hit_entry_fp_p1[x] = lq_hit_entry_fp_p1[x] & i_lq_broadside_data_valid[x];
-     lq_data_hit_entry_fp_p2[x] = lq_hit_entry_fp_p2[x] & i_lq_broadside_data_valid[x];
-     lq_data_hit_entry_fp_p3[x] = lq_hit_entry_fp_p3[x] & i_lq_broadside_data_valid[x];
-
-     lq_load_valid[x] = i_lq_broadside_valid[x] & i_lq_broadside_info[x].load;
-  end
-end
 
 always_comb begin 
    for(int x=0;x<LQ_DEPTH;++x) begin
