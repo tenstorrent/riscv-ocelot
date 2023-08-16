@@ -1325,7 +1325,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                 stq_execute_head)     
 
       stq(stq_execute_head).bits.succeeded := false.B
-      }.elsewhen (can_fire_stq_vector (w) && can_fire_dsq_vector) { 
+      }.elsewhen (can_fire_stq_vector (w) && can_fire_dsq_vector && io.dmem.req.ready) { 
 //      }.elsewhen (dsq_commit_e.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready && !dsq_commit_e.bits.isFake){ 
         dmem_req(w).valid := true.B
         dmem_req(w).bits.addr := dsq_commit_e.bits.addr.bits
@@ -1854,6 +1854,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   }
 
   val dmem_resp_fired = WireInit(widthMap(w => false.B))
+  
+  
 
   for (w <- 0 until memWidth) {
     // Advance dlq_execute_head
@@ -1881,7 +1883,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       } 
     }
     
-    when (can_fire_stq_vector (w) && can_fire_dsq_vector) {
+    when (can_fire_stq_vector (w) && can_fire_dsq_vector && io.dmem.req.ready) {
        dsq(dsq_execute_head).bits.succeeded := false.B
        when (dsq_execute_head =/= dsq_tail) {         
            dsq_execute_head :=  WrapInc(dsq_execute_head, numDsqEntries)
@@ -1896,7 +1898,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
            dsq_execute_head :=  WrapInc(dsq_execute_head, numDsqEntries)
         }
     }
-
+  }
+  for (w <- 0 until memWidth) {
     // Handle nacks
     when (io.dmem.nack(w).valid)
     {
@@ -1932,7 +1935,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         }
       }
     }
-
+    
     
 
     // Handle the response
