@@ -380,49 +380,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_ex_dst_vld_2c                       (ex_dst_vld_2c),         
     .i_ex_dst_lqid_2c                      (ex_dst_lqid_2c), 
     .i_ex_fwd_data_2c                      (ex_fwd_data_2c),  
-    // .o_fwd_p0_reg                          (),      
-    // .o_fwd_p1_reg                          (),      
 
-    // FP Interface
-    // .o_id_fp_ex0_rts                       (),         
-    // .i_fp_ex0_id_rtr                       (1'b1),         
-    // .o_id_fp_ex0_lqid                      (), 
-    // .o_ex_autogen                          (),    
-    // .o_fp_autogen                          (),   
-    // .o_fp_fwd_sign_reg                     (),     
-    // .o_fp_fwd_zero_reg                     (),     
-    // .o_fp_fwd_nan_reg                      (),      
-    // .o_fp_fwd_inf_reg                      (),      
-    // .o_fp_fwd_exp_reg                      (),      
-    // .o_fp_fwd_man_reg                      (),      
-    // .o_fp_rf_p3_reg                        (),          
-    // .i_fp_ex_dst_vld_1c                    ('0),      
-    // .i_fp_ex_dst_lqid_1c                   ('0), 
-    // .i_fp_ex_fwd_data_1c                   ('0), 
-    // .i_fp_ex_dst_vld_2c                    ('0),      
-    // .i_fp_ex_dst_lqid_2c                   ('0), 
-    // .i_fp_ex_fwd_data_2c                   ('0), 
-
-    // Integer RegFile Interface
-    .o_rf_p0_rden                          (),    
-    .o_rf_p0_rdaddr                        (),    
-    .o_rf_p1_rden                          (),    
-    .o_rf_p1_rdaddr                        (),    
-    .o_rf_p2_rden                          (),    
-    .o_rf_p2_rdaddr                        (),    
+    // Integer RegFile Interface  
     .o_rf_wr_flag                          (id_rf_wr_flag     ),    
     .o_rf_wraddr                           (id_rf_wraddr      ),    
 
-    // FP RegFile Interface
-    .i_fp_rf_rd_ret_reg                    ('0),      
-    .i_fp_rf_sign                          ('0),     
-    .i_fp_rf_zero                          ('0),     
-    .i_fp_rf_nan                           ('0),      
-    .i_fp_rf_inf                           ('0),      
-    .i_fp_rf_exp                           ('0),      
-    .i_fp_rf_man                           ('0),      
-    .i_rf_p0_reg                           ('0),       
-    .i_rf_p1_reg                           ('0),       
+    // FP RegFile Interface    
     .o_fp_rf_wr_flag                       (id_fp_rf_wr_flag  ),    
     .o_fp_rf_wraddr                        (id_fp_rf_wraddr   ),    
 

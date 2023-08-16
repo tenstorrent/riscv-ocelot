@@ -26,10 +26,6 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    input 				     tt_briscv_pkg::csr_to_id i_ex_id_csr,
    output logic     o_id_ex_last,
 
-   //FP EX0 Interface
-   // FP deocde signals
-   output [`FP_AUTOGEN_WIDTH-1:0] 	     o_fp_autogen,
-
    //VEC Interface
    input 				     i_vex_id_rtr ,
    output wire 				     o_id_vex_rts ,
@@ -46,18 +42,6 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output 				     tt_briscv_pkg::vec_autogen_s o_vec_autogen,
    output 				     tt_briscv_pkg::vecldst_autogen_s o_vecldst_autogen,
    
-   // From RF
-   input [31:0] 			     i_rf_p0_reg ,
-   input [31:0] 			     i_rf_p1_reg ,
-
-   input [FP_RF_RD_PORTS-1:0][FLEN-1:0]	     i_fp_rf_rd_ret_reg,
-   input [FP_RF_RD_PORTS-1:0] 		     i_fp_rf_sign ,
-   input [FP_RF_RD_PORTS-1:0] 		     i_fp_rf_zero ,
-   input [FP_RF_RD_PORTS-1:0] 		     i_fp_rf_nan ,
-   input [FP_RF_RD_PORTS-1:0] 		     i_fp_rf_inf ,
-   input [FP_RF_RD_PORTS-1:0][EXP_WIDTH-1:0] i_fp_rf_exp ,
-   input [FP_RF_RD_PORTS-1:0][MAN_WIDTH-1:0] i_fp_rf_man ,
-
    // Destination target registers for forwarding and RAW checking
    input 				     tt_briscv_pkg::arr_lq_info_s i_lq_broadside_info,
    input [LQ_DEPTH-1:0][31:0] 		     i_lq_broadside_data,
@@ -96,12 +80,6 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output wire [31:0] 			     o_id_immed_op ,
 
    // Register file read/write enables and addresses
-   output reg 				     o_rf_p0_rden ,
-   output reg [ 4:0] 			     o_rf_p0_rdaddr ,
-   output reg 				     o_rf_p1_rden ,
-   output reg [ 4:0] 			     o_rf_p1_rdaddr ,
-   output reg 				     o_rf_p2_rden ,
-   output reg [ 4:0] 			     o_rf_p2_rdaddr ,
    output logic 			     o_rf_wr_flag ,
    output reg [ 4:0] 			     o_rf_wraddr,
    output logic 			     o_fp_rf_wr_flag, 
@@ -881,16 +859,6 @@ end
 // Register file read/write enables and addresses
 
 always @* begin
-   o_rf_p0_rden   = id_rts & ~raw_hazard_stall & 
-                    ((i_ex_rtr  & valid_ex_instrn) | // & rs1_used /*& (!raw_hazard_stall)*/;
-                     (i_vex_id_rtr & v_ext & ~vec_ldst_vld & (INCL_VEC == 1))); 
-   o_rf_p0_rdaddr = addrp0[4:0];
-   o_rf_p1_rden   = id_rts & ~raw_hazard_stall & (i_ex_rtr & valid_ex_instrn);// & rs2_used /*& (!raw_hazard_stall)*/;
-   o_rf_p1_rdaddr = addrp1[4:0];
-   o_rf_p2_rden   = (i_ex_rtr & valid_ex_instrn) & rs3_used /*& (!raw_hazard_stall)*/;
-   o_rf_p2_rdaddr = addrp1[4:0];
-   o_rf_p3_rdaddr = addrp1[4:0];
-//   o_rf_wr_flag   = o_id_type_r | o_id_type_i | o_id_type_u | o_id_type_uj;
    o_rf_wraddr    = addrp2[4: 0];
 end
 
