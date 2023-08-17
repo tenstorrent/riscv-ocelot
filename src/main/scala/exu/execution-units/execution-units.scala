@@ -94,12 +94,6 @@ class ExecutionUnits(val fpu: Boolean, val vec: Boolean)(implicit val p: Paramet
     exe_units.indexWhere(_.hasJmpUnit)
   }
 
-  lazy val vecconfig_unit = {
-    require (usingVector)
-    require (exe_units.count(_.hasVecConfig) == 1)
-    exe_units.find(_.hasVecConfig).get
-  }
-
   lazy val vec_exe_unit = {
     require (usingVector)
     require (exe_units.count(_.hasVecExe) == 1)
@@ -131,7 +125,6 @@ class ExecutionUnits(val fpu: Boolean, val vec: Boolean)(implicit val p: Paramet
         hasJmpUnit     = is_nth(0),
         hasCSR         = is_nth(1),
         hasRocc        = is_nth(1) && usingRoCC,
-        hasVecConfig   = is_nth(1) && usingVector,
         hasMul         = is_nth(2),
         hasDiv         = is_nth(3),
         hasIfpu        = is_nth(4) && usingFPU))

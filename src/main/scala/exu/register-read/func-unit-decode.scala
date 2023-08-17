@@ -313,9 +313,9 @@ object VecRRdDecode extends RRdDecodeConstants
                                  // |     |  |  |  alu fcn        wd/word?|         |         |         |      |
                                  // |     |  |  |  |              |       |         |         |         |      |
          BitPat(uopVEC     ) ->List(BR_N, N, N, N, aluFn.FN_X   , DW_X  , OP1_X   , OP2_X   , IS_X,     REN_0, CSR.N),
-         BitPat(uopVSETVL  ) ->List(BR_N, Y, N, N, aluFn.FN_X   , DW_X  , OP1_RS1 , OP2_RS2 , IS_VL,    REN_1, CSR.N),
-         BitPat(uopVSETVLI ) ->List(BR_N, Y, N, N, aluFn.FN_X   , DW_X  , OP1_RS1 , OP2_X   , IS_VLI,   REN_1, CSR.N),
-         BitPat(uopVSETIVLI) ->List(BR_N, Y, N, N, aluFn.FN_X   , DW_X  , OP1_X   , OP2_X   , IS_IVLI,  REN_1, CSR.N))
+         BitPat(uopVSETVL  ) ->List(BR_N, N, N, N, aluFn.FN_X   , DW_X  , OP1_RS1 , OP2_RS2 , IS_VL,    REN_1, CSR.N),
+         BitPat(uopVSETVLI ) ->List(BR_N, N, N, N, aluFn.FN_X   , DW_X  , OP1_RS1 , OP2_X   , IS_VLI,   REN_1, CSR.N),
+         BitPat(uopVSETIVLI) ->List(BR_N, N, N, N, aluFn.FN_X   , DW_X  , OP1_X   , OP2_X   , IS_IVLI,  REN_1, CSR.N))
 }
 
 /**
@@ -346,7 +346,7 @@ class RegisterReadDecode(supportedUnits: SupportedFuncUnits)(implicit p: Paramet
   if (supportedUnits.fpu) dec_table ++= FpuRRdDecode.table
   if (supportedUnits.fdiv) dec_table ++= FDivRRdDecode.table
   if (supportedUnits.ifpu) dec_table ++= IfmvRRdDecode.table
-  if (supportedUnits.vecconfig) dec_table ++= VecRRdDecode.table
+  if (supportedUnits.vecexe) dec_table ++= VecRRdDecode.table
   val rrd_cs = Wire(new RRdCtrlSigs()).decode(io.rrd_uop.uopc, dec_table)
 
   // rrd_use_alupipe is unused

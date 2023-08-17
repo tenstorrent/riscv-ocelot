@@ -1115,8 +1115,8 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
 
   if (usingVector) {
     csr.io.vector.get.set_vs_dirty := DontCare
-    csr.io.vector.get.set_vtype := exe_units.vecconfig_unit.io.set_vtype
-    csr.io.vector.get.set_vl := exe_units.vecconfig_unit.io.set_vl
+    csr.io.vector.get.set_vtype := exe_units.vec_exe_unit.io.ovi.set_vtype
+    csr.io.vector.get.set_vl := exe_units.vec_exe_unit.io.ovi.set_vl
     csr.io.vector.get.set_vstart := DontCare
     csr.io.vector.get.set_vxsat := exe_units.vec_exe_unit.io.ovi.set_vxsat
   }

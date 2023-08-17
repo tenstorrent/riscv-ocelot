@@ -5,7 +5,7 @@ import chisel3._
 import chisel3.util._
 
 import org.chipsalliance.cde.config.Parameters
-import freechips.rocketchip.rocket.{VConfig}
+import freechips.rocketchip.rocket.{VConfig, VType}
 
 import boom.common._
 import boom.util._
@@ -90,10 +90,64 @@ class OviReqQueue(val num_entries: Int)(implicit p: Parameters)
   io.deq.bits := entries(deq_ptr)
 }
 
+class VecConfigUnit(implicit p: Parameters) extends BoomModule
+{
+  val io = IO(new Bundle {
+    val req  = Flipped(new DecoupledIO(new FuncUnitReq(xLen)))
+    val resp = new DecoupledIO(new FuncUnitResp(xLen))
+
+    val set_vtype = Output(Valid(new VType))
+    val set_vl    = Output(Valid(UInt(log2Up(maxVLMax + 1).W)))
+  })
+
+  val avl_imm = ImmGen(io.req.bits.uop.imm_packed, io.req.bits.uop.ctrl.imm_sel).asUInt
+  val vtype_imm = io.req.bits.uop.imm_packed(19) ## 0.U(xLen.W) ## io.req.bits.uop.imm_packed(15,8)
+
+  val vtype_raw = Wire(UInt())
+  val avl = Wire(UInt(xLen.W))
+  when (io.req.bits.uop.ctrl.imm_sel === IS_IVLI) {
+      vtype_raw := vtype_imm
+      avl       := avl_imm
+  } .elsewhen (io.req.bits.uop.ctrl.imm_sel === IS_VLI) {
+      vtype_raw := vtype_imm
+      avl       := io.req.bits.rs1_data
+  } .otherwise {
+      vtype_raw := io.req.bits.rs2_data
+      avl       := io.req.bits.rs1_data
+  }
+
+  val vl    = Wire(UInt())
+  val vtype = VType.fromUInt(vtype_raw, false)
+  val set_vl =
+    io.req.bits.uop.ctrl.imm_sel =/= IS_IVLI &&
+    io.req.bits.uop.ldst =/= 0.U &&
+    io.req.bits.uop.lrs1 === 0.U
+  when (set_vl) {
+    vl := VType.computeVL(avl, vtype_raw, 0.U, 0.B, 1.B, 0.B)
+  } .otherwise {
+    vl := VType.computeVL(avl, vtype_raw, 0.U, 0.B, 0.B, 0.B)
+  }
+
+  io.req.ready  := true.B
+  io.resp.valid := io.req.fire
+
+  io.resp.bits.data         := vl
+  io.resp.bits.fflags.valid := false.B
+
+  io.set_vtype.valid        := io.resp.valid
+  io.set_vtype.bits         := vtype
+
+  io.set_vl.valid           := set_vl && io.resp.valid
+  io.set_vl.bits            := vl
+}
+
 class OviWrapperCoreIO(implicit p: Parameters) extends BoomBundle
 {
   val rob_pnr_idx, rob_head_idx = Input(UInt(robAddrSz.W))
   val exception = Input(Bool())
+
+  val set_vtype = Output(Valid(new VType))
+  val set_vl    = Output(Valid(UInt(log2Up(maxVLMax + 1).W)))
 
   val vconfig = Input(new VConfig())
   val vxrm    = Input(UInt(2.W))
@@ -132,10 +186,14 @@ class OviWrapperWrapper(implicit p: Parameters) extends BoomModule // Yeah...
 
   ////////////////////////////////////////////////////////////////
 
-  val ovi_wrapper = Module(new OviWrapper())
+  val vec_config_unit = Module(new VecConfigUnit())
 
-  ovi_wrapper.io.req  <> req_queue.io.deq
-  ovi_wrapper.io.resp <> io.resp
+  io.core.set_vtype := vec_config_unit.io.set_vtype
+  io.core.set_vl    := vec_config_unit.io.set_vl
+
+  ////////////////////////////////////////////////////////////////
+
+  val ovi_wrapper = Module(new OviWrapper())
 
   ovi_wrapper.io.vconfig <> io.core.vconfig
   ovi_wrapper.io.vxrm    <> io.core.vxrm
@@ -146,6 +204,27 @@ class OviWrapperWrapper(implicit p: Parameters) extends BoomModule // Yeah...
   ovi_wrapper.io.debug_wb_vec_valid <> io.core.debug_wb_vec_valid
   ovi_wrapper.io.debug_wb_vec_wdata <> io.core.debug_wb_vec_wdata
   ovi_wrapper.io.debug_wb_vec_wmask <> io.core.debug_wb_vec_wmask
+
+  ////////////////////////////////////////////////////////////////
+
+  req_queue.io.deq.nodeq()
+  vec_config_unit.io.req.noenq()
+  ovi_wrapper.io.req.noenq()
+
+  val uopc = req_queue.io.deq.bits.uop.uopc
+  when(uopc === uopVEC) {
+    ovi_wrapper.io.req     <> req_queue.io.deq
+  }.elsewhen((uopc === uopVSETVL || uopc === uopVSETVLI || uopc === uopVSETIVLI) && !ovi_wrapper.io.resp.valid) {
+    vec_config_unit.io.req <> req_queue.io.deq
+  }
+
+  when(ovi_wrapper.io.resp.valid) {
+    io.resp <> ovi_wrapper.io.resp
+    vec_config_unit.io.resp.nodeq()
+  }.otherwise {
+    io.resp <> vec_config_unit.io.resp
+    ovi_wrapper.io.resp.nodeq()
+  }
 
   ////////////////////////////////////////////////////////////////
 

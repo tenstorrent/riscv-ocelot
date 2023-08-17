@@ -76,7 +76,6 @@ class FFlagsResp(implicit p: Parameters) extends BoomBundle
  * @param hasFdiv does the exe unit have a FP divider
  * @param hasIfpu does the exe unit have a int to FP unit
  * @param hasFpiu does the exe unit have a FP to int unit
- * @param hasVecConfig does the exe unit have a Vector Configuration unit
  * @param hasVecExe does the exe unit have a Vector Execution unit
  */
 abstract class ExecutionUnit(
@@ -100,7 +99,6 @@ abstract class ExecutionUnit(
   val hasFdiv          : Boolean       = false,
   val hasIfpu          : Boolean       = false,
   val hasFpiu          : Boolean       = false,
-  val hasVecConfig     : Boolean       = false,
   val hasVecExe        : Boolean       = false,
   val hasRocc          : Boolean       = false
   )(implicit p: Parameters) extends BoomModule
@@ -139,9 +137,7 @@ abstract class ExecutionUnit(
     val scontext = if (hasMem) Input(UInt(coreParams.scontextWidth.W)) else null
 
     // only used by the vec unit
-    val set_vtype = if (hasVecConfig) Valid(new VType) else null
-    val set_vl    = if (hasVecConfig) Valid(UInt(log2Up(maxVLMax + 1).W)) else null
-    val ovi       = if (hasVecExe) new OviWrapperCoreIO else null
+    val ovi = if (hasVecExe) new OviWrapperCoreIO else null
 
     // TODO move this out of ExecutionUnit
     val com_exception = if (hasMem || hasRocc) Input(Bool()) else null
@@ -186,7 +182,6 @@ abstract class ExecutionUnit(
       csr = hasCSR,
       fdiv = hasFdiv,
       ifpu = hasIfpu,
-      vecconfig = hasVecConfig,
       vecexe = hasVecExe)
   }
 }
@@ -202,7 +197,6 @@ abstract class ExecutionUnit(
  * @param hasDiv does the exe unit have a divider
  * @param hasIfpu does the exe unit have a int to FP unit
  * @param hasMem does the exe unit have a MemAddrCalcUnit
- * @param hasVecConfig does the exe unit have a VecConfigUnit
  * @param hasVecExe does the exe unit have a VecExeUnit
  */
 class ALUExeUnit(
@@ -214,7 +208,6 @@ class ALUExeUnit(
   hasIfpu        : Boolean = false,
   hasMem         : Boolean = false,
   hasRocc        : Boolean = false,
-  hasVecConfig   : Boolean = false,
   hasVecExe      : Boolean = false)
   (implicit p: Parameters)
   extends ExecutionUnit(
@@ -235,7 +228,6 @@ class ALUExeUnit(
     hasDiv           = hasDiv,
     hasIfpu          = hasIfpu,
     hasMem           = hasMem,
-    hasVecConfig     = hasVecConfig,
     hasVecExe        = hasVecExe,
     hasRocc          = hasRocc)
   with freechips.rocketchip.rocket.constants.MemoryOpConstants
@@ -255,7 +247,6 @@ class ALUExeUnit(
     (if (hasDiv)      BoomCoreStringPrefix(" - Div") else "") +
     (if (hasIfpu)     BoomCoreStringPrefix(" - IFPU") else "") +
     (if (hasMem)      BoomCoreStringPrefix(" - Mem") else "") +
-    (if (hasVecConfig)BoomCoreStringPrefix(" - VecConfig") else "") +
     (if (hasVecExe)   BoomCoreStringPrefix(" - VecExe") else "") +
     (if (hasRocc)     BoomCoreStringPrefix(" - RoCC") else "")
 
@@ -273,7 +264,6 @@ class ALUExeUnit(
                  Mux(hasMul.B, FU_MUL, 0.U) |
                  Mux(!div_busy && hasDiv.B, FU_DIV, 0.U) |
                  Mux(hasCSR.B, FU_CSR, 0.U) |
-                 Mux(hasVecConfig.B, FU_VCS, 0.U) |
                  Mux(hasJmpUnit.B, FU_JMP, 0.U) |
                  Mux(!ifpu_busy && hasIfpu.B, FU_I2F, 0.U) |
                  Mux(hasMem.B, FU_MEM, 0.U) |
@@ -416,32 +406,6 @@ class ALUExeUnit(
     if (usingFPU) {
       io.ll_fresp <> io.lsu_io.fresp
     }
-  }
-
-  // Vector Configuration Unit --------------------------
-  var vecconfig: VecConfigUnit = null
-  if (hasVecConfig) {
-    require(hasCSR)
-    val vecconfig = Module(new VecConfigUnit(dataWidth))
-    vecconfig.io.req               <> io.req
-    vecconfig.io.req.valid         := io.req.valid && io.req.bits.uop.fu_code_is(FU_VCS)
-    vecconfig.io.req.bits.uop      := io.req.bits.uop
-    vecconfig.io.req.bits.kill     := io.req.bits.kill
-    vecconfig.io.req.bits.rs1_data := io.req.bits.rs1_data
-    vecconfig.io.req.bits.rs2_data := io.req.bits.rs2_data
-    vecconfig.io.req.bits.rs3_data := DontCare
-    vecconfig.io.resp.ready        := DontCare
-    vecconfig.io.brupdate          <> io.brupdate
-
-    iresp_fu_units += vecconfig
-
-    io.set_vtype.valid   := vecconfig.io.resp.valid &&
-                            vecconfig.io.set_vtype.valid
-    io.set_vtype.bits    := vecconfig.io.set_vtype.bits
-    io.set_vl.valid      := vecconfig.io.resp.valid &&
-                            vecconfig.io.set_vl.valid
-    io.set_vl.bits       := vecconfig.io.set_vl.bits
-
   }
 
   // Vector Execution Unit --------------------------
