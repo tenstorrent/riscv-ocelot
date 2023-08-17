@@ -442,13 +442,11 @@ when (vectorDone === 1.U) {
    MemSbResidue := true.B 
    MemSbId := PriorityEncoder (MemSb)
    MemSb := MemSb.bitSet (MemSbId, false.B)
-//   MemSb(MemSbId) := 0.U 
 }
 MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbResidue
 
   
-//  MemSyncEnd := io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid && inMiddle
-  
+
   MemLoadValid := LSUReturnLoadValid || fakeLoadReturnQueue.io.deq.valid
   MemSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg) 
 
@@ -704,7 +702,6 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   maskSkip.io.isIndex := io.isIndex
   maskSkip.io.isMask := io.isMask
   maskSkip.io.isLoad := io.isLoad 
-  maskSkip.io.startAddr := io.startAddr
   maskSkip.io.stride := io.stride 
   maskSkip.io.pop := io.pop
   
@@ -1343,7 +1340,7 @@ class Spacker(val M: Int, val VDBLEN: Int) extends Module {
     }
 
     // calculation of offset and count
-  //  io.elemOffset := currentOffset
+  
     val theoreticalCount = WireInit(0.U(6.W)) //max count in this transaction if ignore vl and vReg boundary
     theoreticalCount := currentMax - currentOffset
     val actualTheoreticalCount = WireInit(0.U(6.W)) //max count in this transaction if ignore vl and vReg boundary
@@ -1446,7 +1443,6 @@ class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
     val isMask = Input(Bool())
     val isLoad = Input(Bool())
       // base address and stride    
-    val startAddr = Input(UInt(64.W))
     val stride = Input(UInt(64.W))
       // interface with VIdGen / VAGen / VDB
     val packIncrement = Output (UInt(64.W))

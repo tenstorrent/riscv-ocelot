@@ -885,16 +885,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                                   stq_commit_e.bits.data.valid))))
                                                                                                               
   val can_fire_stq_vector = widthMap (w => ((w == 0).B && IsOlder(dsq_commit_e.bits.uop.stq_idx, stq_v_head, stq_head)))
-//  val can_fire_dsq_vector = dsq_commit_e.valid && dsq_commit_e.bits.addr.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready && !dsq_commit_e.bits.isFake 
+
   val can_fire_dsq_vector = dsq_commit_e.valid && dsq_commit_e.bits.addr.valid && !dsq_commit_e.bits.addr_is_virtual && io.dmem.req.ready && !dsq_commit_e.bits.isFake
   val can_mark_dsq_fake   = dsq_commit_e.valid && dsq_commit_e.bits.isFake && !dsq_commit_e.bits.succeeded 
   val can_skip_dsq_fake   = dsq_commit_e.valid && dsq_commit_e.bits.isFake && dsq_commit_e.bits.succeeded                                
  
   val can_fire_ldq_vector = widthMap (w => ((w == memWidth-1).B && IsOlder(dlq_commit_e.bits.uop.ldq_idx, ldq_v_head, ldq_head)))
- // dontTouch (can_fire_ldq_vector)
+ 
   val can_fire_dlq_vector = dlq_commit_e.valid && dlq_commit_e.bits.addr.valid && !dlq_commit_e.bits.addr_is_virtual && !dlq_commit_e.bits.succeeded && 
-                                                 !dlq_commit_e.bits.executed && io.dmem.req.ready && !dlq_commit_e.bits.isFake 
-//  dontTouch (can_fire_dlq_vector)
+                                                 !dlq_commit_e.bits.executed && io.dmem.req.ready && !dlq_commit_e.bits.isFake
+
+
   val can_mark_dlq_fake   = dlq_commit_e.valid && dlq_commit_e.bits.isFake && !dlq_commit_e.bits.succeeded 
   val can_skip_dlq   = dlq_commit_e.valid && (dlq_commit_e.bits.succeeded || dlq_commit_e.bits.executed)
 
