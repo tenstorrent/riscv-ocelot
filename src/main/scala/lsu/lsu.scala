@@ -1805,6 +1805,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         }
     }
   }
+
+  when (stq_commit_e.valid && stq_commit_e.bits.isVector && stq_commit_e.bits.succeeded) {
+    stq_execute_head := WrapInc(stq_execute_head, numStqEntries)
+  }
+
+
   for (w <- 0 until memWidth) {
     // Handle nacks
     when (io.dmem.nack(w).valid)
@@ -2099,9 +2105,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     }
   }
   // make sure stq_execute_head will skip vector store that is successful
-  when (stq_commit_e.valid && stq_commit_e.bits.isVector && stq_commit_e.bits.succeeded) {
-    stq_execute_head := WrapInc(stq_execute_head, numStqEntries)
-  }
+  
   when (dlq(dlq_head).valid && dlq(dlq_head).bits.succeeded) {
     dlq_head := WrapInc(dlq_head, numDlqEntries)
     dlq(dlq_head).valid  := false.B 
