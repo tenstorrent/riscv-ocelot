@@ -534,9 +534,9 @@ object VDecode extends DecodeConstants with VectorInstructions
   V_OPIVX               ->List(Y, N, X, uopVEC,      IQT_VEC, FU_VEC, RT_VEC, RT_FIX, RT_X,   N, IS_X,     N, N, N, N, N, M_X,   0.U, N, N, N, N, N, CSR.N, Y),
   V_OPFVF               ->List(Y, Y, X, uopVEC,      IQT_VEC, FU_VEC, RT_VEC, RT_FLT, RT_X,   N, IS_X,     N, N, N, N, N, M_X,   0.U, N, N, N, N, N, CSR.N, Y),
   V_OPMVX               ->List(Y, N, X, uopVEC,      IQT_VEC, FU_VEC, RT_VEC, RT_FIX, RT_X,   N, IS_X,     N, N, N, N, N, M_X,   0.U, N, N, N, N, N, CSR.N, Y),
-  V_VSETVLI             ->List(Y, N, X, uopVSETVLI,  IQT_VEC, FU_VEC, RT_FIX, RT_FIX, RT_X,   N, IS_VLI,   N, N, N, N, N, M_X,   0.U, N, N, N, Y, N, CSR.N, Y),
-  V_VSETIVLI            ->List(Y, N, X, uopVSETIVLI, IQT_VEC, FU_VEC, RT_FIX, RT_X,   RT_X,   N, IS_IVLI,  N, N, N, N, N, M_X,   0.U, N, N, N, Y, N, CSR.N, Y),
-  V_VSETVL              ->List(Y, N, X, uopVSETVL,   IQT_VEC, FU_VEC, RT_FIX, RT_FIX, RT_FIX, N, IS_VL,    N, N, N, N, N, M_X,   0.U, N, N, N, Y, N, CSR.N, Y)
+  V_VSETVLI             ->List(Y, N, X, uopVSETVLI,  IQT_VEC, FU_VEC, RT_FIX, RT_FIX, RT_X,   N, IS_VLI,   N, N, N, N, N, M_X,   0.U, N, N, N, N, N, CSR.N, Y),
+  V_VSETIVLI            ->List(Y, N, X, uopVSETIVLI, IQT_VEC, FU_VEC, RT_FIX, RT_X,   RT_X,   N, IS_IVLI,  N, N, N, N, N, M_X,   0.U, N, N, N, N, N, CSR.N, Y),
+  V_VSETVL              ->List(Y, N, X, uopVSETVL,   IQT_VEC, FU_VEC, RT_FIX, RT_FIX, RT_FIX, N, IS_VL,    N, N, N, N, N, M_X,   0.U, N, N, N, N, N, CSR.N, Y)
   )
 }
 //scalastyle:on
