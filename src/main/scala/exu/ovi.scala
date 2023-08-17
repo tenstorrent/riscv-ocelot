@@ -669,7 +669,6 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   addResource("/vsrc/vpu/tt_id.sv")
   addResource("/vsrc/vpu/tt_ex.sv")
   addResource("/vsrc/vpu/tt_lq.sv")
-  addResource("/vsrc/vpu/tt_mem.sv")
   addResource("/vsrc/vpu/tt_vec.sv")
   addResource("/vsrc/vpu/tt_vec_iadd.sv")
   addResource("/vsrc/vpu/tt_vec_idp.sv")

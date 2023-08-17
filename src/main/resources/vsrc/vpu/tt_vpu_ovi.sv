@@ -71,20 +71,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   localparam                                          RS2_IDX = 1;
   localparam                                          RS3_IDX = 2;
 
-  /////////
-  // MEM signals
-  wire                     mem_dst_vld;  // forwarding control to ID
-  wire [LQ_DEPTH_LOG2-1:0] mem_dst_lqid; // forwarding control to ID
-  wire [31:0]              mem_fwd_data; // forwarding control to ID
-  wire                     mem_ex_rtr           ;
-  wire [ 6:0]              mem_lq_op            ; // mem status to ID
-  wire                     mem_lq_commit        ;
-    
   tt_briscv_pkg::arr_lq_info_s  lq_broadside_info;
   logic [LQ_DEPTH-1:0][31:0]    lq_broadside_data;
   logic [LQ_DEPTH-1:0]          lq_broadside_valid;
   logic [LQ_DEPTH-1:0]          lq_broadside_data_valid;
-  logic                         lq_empty;
+  logic [VLEN-1:0]              lq_rddata;
+  logic [4:0]                   lq_rdexc;
 
   /////////
   // ID signals
@@ -120,8 +112,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [LQ_DEPTH_LOG2-1:0] id_vex_lqid;          // From id of tt_id.v
   logic                     vex_id_incr_addrp2;     // From vecu of tt_vec.v
 
-  logic                           i_rd_data_vld_2      ;
-  logic [DATA_REQ_ID_WIDTH-1:0]   i_rd_data_resp_id_2  ; 
 
   // Vector signals
   logic              vrf_p0_rden, vrf_p1_rden, vrf_p2_rden;
@@ -152,8 +142,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   // LQ signals
   // ID <--> MEM signals
   logic                     mem_fe_lqfull;
-  logic                     mem_fe_lqempty;
-  logic                     mem_fe_skidbuffull;
   logic [LQ_DEPTH_LOG2-1:0] mem_id_lqnxtid;
   logic [LQ_DEPTH_LOG2-1:0] mem_id_lqnxtid_r;
   logic                     id_mem_lqalloc;
@@ -220,16 +208,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [39:0] read_issue_vcsr;
   logic        read_issue_vcsr_lmulb2;
 
-  // I'm using dummy wires to connect the memory interface for now
-  logic o_data_req;
-  logic [ADDRWIDTH-1:0] o_data_addr;
-  logic [ST_DATA_WIDTH_BITS/8-1:0] o_data_byten;
-  logic [ST_DATA_WIDTH_BITS-1:0] o_wr_data;
-  logic [DATA_REQ_ID_WIDTH-1:0] o_data_req_id;
-  logic o_mem_load;
-  logic [2:0] o_mem_size;
-  logic o_mem_last;
-
   logic [VLEN*8-1:0] ocelot_instrn_commit_data;
   logic [7:0] ocelot_instrn_commit_mask;
   logic [VLEN*8-1:0] sb_debug_commit_data;
@@ -244,11 +222,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [39:0] vcsr;
   logic        vcsr_lmulb2;
   logic       vecldst_autogen_store;
-  // Load logic - finite state machine
-  logic [1:0] load_fsm_state, load_fsm_next_state;
   logic       vecldst_autogen_load;
-  logic       load_commit;
-  logic       load_memsync_start;
 
   logic [4:0] id_sb_id; // sb_id of the instruction at id stage
   logic [2:0] load_stride_eew;
@@ -394,11 +368,11 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_id_replay                           (id_replay),             
     .o_id_mem_lqalloc                      (id_mem_lqalloc),        
     .o_id_mem_lq_done                      (id_mem_lq_done),        
-    .i_mem_dst_vld                         (mem_dst_vld          ), 
-    .i_mem_dst_lqid                        (mem_dst_lqid         ), 
-    .i_mem_fwd_data                        (mem_fwd_data         ), 
-    .i_mem_lq_op                           (mem_lq_op[6:0]),        
-    .i_mem_lq_commit                       (mem_lq_commit),         
+    .i_mem_dst_vld                         ('0          ), 
+    .i_mem_dst_lqid                        ('0         ), 
+    .i_mem_fwd_data                        ('0         ), 
+    .i_mem_lq_op                           ('0),        
+    .i_mem_lq_commit                       ('0),         
     .i_lq_broadside_data                   (lq_broadside_data),     
     .i_lq_broadside_valid                  (lq_broadside_valid), 
     .i_lq_broadside_data_valid             (lq_broadside_data_valid), 
@@ -411,8 +385,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_ignore_dstincr                      (ignore_dstincr),        
     .i_ignore_srcincr                      (ignore_srcincr),        
     .i_mem_fe_lqfull                       (mem_fe_lqfull),         
-    .i_mem_fe_lqempty                      (mem_fe_lqempty),
-    .i_mem_fe_skidbuffull                  (mem_fe_skidbuffull),    
+    .i_mem_fe_lqempty                      ('0),
+    .i_mem_fe_skidbuffull                  ('0),    
     .i_mem_id_lqnxtid                      (mem_id_lqnxtid[LQ_DEPTH_LOG2-1:0]),
 
     .o_is_whole_memop                      (id_is_whole_memop),
@@ -501,7 +475,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_vs3_rddata        (vs3_rddata        ),
     
     // From MEM
-    .i_mem_ex_rtr        (mem_ex_rtr        ),
+    .i_mem_ex_rtr        (1'b1        ),
     
     // To ID and IF
     .o_ex_bp_fifo_pop    (),
@@ -626,143 +600,163 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_mem_vrf_wr          (mem_vrf_wr),            
     .i_mem_vrf_wraddr      (mem_vrf_wraddr),   
     .i_mem_vrf_wrdata      (mem_vrf_wrdata), 
-    .i_mem_ex_rtr          (mem_ex_rtr)            
+    .i_mem_ex_rtr          (1'b1)            
   );    
 
-  logic                        o_data_128b          ;  // 128b read (This signal is valid only for reads)
-  logic                        o_data_ordered       ;
-  logic [ 3:0]                 o_data_reqtype       ;
-  logic                           o_data_req_prequal;
-  logic                           i_dmem_brisc_memory_idle; 
-  logic                           o_mem_store;
-  logic                        o_mem_last_raw;
+// *********************** //
+// Load Queue              //
+// *********************** //
 
-  tt_mem 
-  #(
-    .LQ_DEPTH(LQ_DEPTH), 
-    .LQ_DEPTH_LOG2(LQ_DEPTH_LOG2),
-    .VLEN(VLEN),
-    .ADDRWIDTH(ADDRWIDTH),
-    .LD_DATA_WIDTH_BITS(LD_DATA_WIDTH_BITS),
-    .ST_DATA_WIDTH_BITS(ST_DATA_WIDTH_BITS),  
-    .LOCAL_MEM_BYTE_ADDR_WIDTH(LOCAL_MEM_BYTE_ADDR_WIDTH),
-    .DATA_REQ_ID_WIDTH(DATA_REQ_ID_WIDTH),
-    .INCL_VEC(INCL_VEC)
-  ) mem
-  (
-    .i_clk                (clk  ),
-    .i_reset_n            (reset_n),
+wire           lq_mem_rf_wr_flag;
+logic          lq_mem_fp_rf_wr_flag;
+wire           lq_mem_vrf_wr_flag;
+wire [4:0]     lq_mem_rf_wraddr;
+logic [31:0]   lq_mem_pc;
+logic [31:0]   lq_sim_ex_mem_instrn;
+logic          lq_rden;
+logic [2:0]    lq_rdid;
 
-    // From EX
-    .i_ex_mem_payload     (ex_mem_payload      ),
-    .i_ex_mem_vld         (ex_mem_vld          ),
+tt_briscv_pkg::lq_info_s        lq_rdinfo;
 
-    .i_ex_mem_lqvld_1c    (ex_mem_lqvld_1c     ),
-    .i_ex_mem_lqid_1c     (ex_mem_lqid_1c      ),
-    .i_ex_mem_lqdata_1c   (ex_mem_lqdata_1c    ),
+tt_lq #(.LQ_DEPTH(LQ_DEPTH), 
+        .LQ_DEPTH_LOG2(LQ_DEPTH_LOG2), 
+        .DATA_REQ_ID_WIDTH(DATA_REQ_ID_WIDTH),
+        .LD_DATA_WIDTH_BITS(LD_DATA_WIDTH_BITS),
+        .VLEN(VLEN),
+        .INCL_VEC(INCL_VEC)) lq_fifo
+(
+   .i_clk            (clk                    ),
+   .i_reset_n        (reset_n                ),
 
-    .i_ex_mem_lqvld_2c    (ex_mem_lqvld_2c     ),
-    .i_ex_mem_lqid_2c     (ex_mem_lqid_2c      ),
-    .i_ex_mem_lqdata_2c   (ex_mem_lqdata_2c    ),
+   .i_bypass_disable (1'b0),
 
-    .i_fp_ex_mem_lqvld_1c ('0),
-    .i_fp_ex_mem_lqid_1c  ('0),
-    .i_fp_ex_mem_lqdata_1c('0),
+   .i_vecld_elem_sent(ex_mem_payload.vecldst_vld & 
+                      ex_mem_payload.mem_load    &
+                      ex_mem_vld                     ),
+   .i_vecld_idx_last (ex_mem_payload.vecldst_idx_last),
+   .i_vecld_id       (ex_mem_lqid_1c                 ),
+ 
+   // ID <--> MEM signals
+   .o_mem_id_lqnxtid(mem_id_lqnxtid),
+   .i_id_mem_lqalloc(id_mem_lqalloc),
+   .i_id_mem_lqinfo(id_mem_lqinfo),
+ 
+   // Skid buffer signals
+   .i_skidbuf_lqvld_1c(ex_mem_lqvld_1c),
+   .i_skidbuf_lqsz_1c(ex_mem_payload.mem_sz[2:0]),
+   .i_skidbuf_lqaddr_1c(ex_mem_payload.mem_addr[$clog2(VLEN/8)-1:0]),
+   .i_skidbuf_lqmask_1c(ex_mem_payload.vecldst_byte_mask),
+   .i_skidbuf_lqvecld128_1c(ex_mem_payload.vecldst_128),
+   .i_skidbuf_lqdata_1c(ex_mem_payload.mem_store_data),
+   .i_skidbuf_lqid_1c(ex_mem_lqid_1c),
 
-    .i_fp_ex_mem_lqvld_2c ('0),
-    .i_fp_ex_mem_lqid_2c  ('0),
-    .i_fp_ex_mem_lqdata_2c('0),
+   // EX 2 cycle signals
+   .i_ex_mem_lqvld_2c(ex_mem_lqvld_2c),
+   .i_ex_mem_lqdata_2c(ex_mem_lqdata_2c),
+   .i_ex_mem_lqid_2c(ex_mem_lqid_2c),
+ 
+   // FP EX 2 cycle signals
+   .i_fp_ex_mem_lqvld_1c('0),
+   .i_fp_ex_mem_lqdata_1c('0),
+   .i_fp_ex_mem_lqid_1c('0),
+ 
+   .i_fp_ex_mem_lqvld_2c('0),
+   .i_fp_ex_mem_lqdata_2c('0),
+   .i_fp_ex_mem_lqid_2c('0),
+ 
+   // VEX 1/2/3 cycle signals
+   .i_vex_mem_lqvld_1c(vex_mem_lqvld_1c),
+   .i_vex_mem_lqdata_1c(vex_mem_lqdata_1c),
+   .i_vex_mem_lqexc_1c(vex_mem_lqexc_1c),
+   .i_vex_mem_lqid_1c(vex_mem_lqid_1c),
 
-    .i_vex_mem_lqvld_1c   (vex_mem_lqvld_1c),
-    .i_vex_mem_lqdata_1c  (vex_mem_lqdata_1c),
-    .i_vex_mem_lqexc_1c   (vex_mem_lqexc_1c),
-    .i_vex_mem_lqid_1c    (vex_mem_lqid_1c),             
-    
-    .i_vex_mem_lqvld_2c   (vex_mem_lqvld_2c),
-    .i_vex_mem_lqdata_2c  (vex_mem_lqdata_2c),
-    .i_vex_mem_lqexc_2c   (vex_mem_lqexc_2c),
-    .i_vex_mem_lqid_2c    (vex_mem_lqid_2c),             
-    
-    .i_vex_mem_lqvld_3c   (vex_mem_lqvld_3c),
-    .i_vex_mem_lqdata_3c  (vex_mem_lqdata_3c),
-    .i_vex_mem_lqexc_3c   (vex_mem_lqexc_3c),
-    .i_vex_mem_lqid_3c    (vex_mem_lqid_3c),             
+   .i_vex_mem_lqvld_2c(vex_mem_lqvld_2c),
+   .i_vex_mem_lqdata_2c(vex_mem_lqdata_2c),
+   .i_vex_mem_lqexc_2c(vex_mem_lqexc_2c),
+   .i_vex_mem_lqid_2c(vex_mem_lqid_2c),
 
-    // To EX
-    .o_mem_ex_rtr         (mem_ex_rtr),
+   .i_vex_mem_lqvld_3c(vex_mem_lqvld_3c),
+   .i_vex_mem_lqdata_3c(vex_mem_lqdata_3c),
+   .i_vex_mem_lqexc_3c(vex_mem_lqexc_3c),
+   .i_vex_mem_lqid_3c(vex_mem_lqid_3c),
 
-    // To Regfile
-    .o_mem_rf_wr          (mem_rf_wr),
-    .o_mem_rf_wraddr      (mem_rf_wraddr),
-    .o_mem_rf_wrdata      (mem_rf_wrdata),
+   // Load return data
+   .i_data_vld_0(drain_load_buffer),
+   .i_data_vld_cancel_0('0),
+   .i_data_resp_id_0(DATA_REQ_ID_WIDTH'({7'b0,load_buffer_rptr[2:0]})),
+   .i_data_rddata_0(load_buffer[load_buffer_rptr[2:0]]),
+ 
+   .i_data_vld_1('0),
+   .i_data_vld_cancel_1('0),
+   .i_data_resp_id_1('0),
+   .i_data_rddata_1('0),
+ 
+   .i_data_vld_2('0),
+   .i_data_vld_cancel_2('0),
+   .i_data_resp_id_2('0),
+   .i_data_rddata_2('0),
+ 
+   .lq_full(mem_fe_lqfull),
+   .lq_empty(),
+   .o_lq_data_ready(lq_rden),
+   .o_lq_mem_vec_load(),
+   .o_lq_mem_load(),
 
-    //To FP RF
-    .o_mem_fp_rf_wr       (mem_fp_rf_wr),
-    .o_mem_fp_rf_wraddr   (mem_fp_rf_wraddr),
-    .o_mem_fp_rf_wrdata   (mem_fp_rf_wrdata),
+   // LQ Read signals
+   .i_lq_rden(lq_rden),
+   .o_lq_rdid(lq_rdid),
+   .o_lq_rdinfo(lq_rdinfo),
+   .o_lq_rdmemaddr(),
+   .o_lq_rdldstsz(),
+   .o_lq_rddata(lq_rddata),
+   .o_lq_rdexc(lq_rdexc),
 
-    .o_mem_vrf_wr         (mem_vrf_wr),
-    .o_mem_vrf_wr_qual    (mem_vrf_wr_qual),
-    .o_mem_vrf_wraddr     (mem_vrf_wraddr),
-    .o_mem_vrf_wrdata     (mem_vrf_wrdata),
-    .o_mem_vrf_wrexc      (mem_vrf_wrexc),
+   .o_lq_fwdvld(),
+   .o_lq_fwdid(),
+   .o_lq_fwddata(),
 
-    .o_vec_store_commit   (vec_store_commit),
-    .o_vec_nonstore_commit(vec_nonstore_commit),
+   // Broadside data
+   .o_lq_broadside_info(lq_broadside_info),
+   .o_lq_broadside_data(lq_broadside_data),
+   .o_lq_broadside_valid(lq_broadside_valid),
+   .o_lq_broadside_data_valid(lq_broadside_data_valid)
+);
 
-    // To ID
-    .i_id_mem_lqalloc     (id_mem_lqalloc    ),
-    .i_id_mem_lqinfo      (id_mem_lqinfo     ),
-    .o_mem_id_lqfull      (mem_fe_lqfull     ),
-    .o_mem_id_lqempty     (mem_fe_lqempty     ),
-    .o_mem_id_skidbuffull (mem_fe_skidbuffull),
-    .o_mem_id_lqnxtid     (mem_id_lqnxtid    ),
+assign lq_mem_vrf_wr_flag     =   lq_rdinfo.vrf_wr_flag;        
+assign lq_mem_fp_rf_wr_flag   =   lq_rdinfo.fp_rf_wr_flag;       
+assign lq_mem_rf_wr_flag      =   lq_rdinfo.rf_wr_flag;          
+assign lq_mem_pc              =   lq_rdinfo.pc           [31:0]; 
+assign lq_sim_ex_mem_instrn   =   lq_rdinfo.sim_instrn   [31:0]; 
+assign lq_mem_rf_wraddr       =   lq_rdinfo.rf_wraddr    [4:0];  
 
-    .o_mem_dst_vld        (mem_dst_vld       ),
-    .o_mem_dst_lqid       (mem_dst_lqid      ),
-    .o_mem_fwd_data       (mem_fwd_data      ),
-    .o_mem_lq_op          (mem_lq_op         ),
-    .o_mem_lq_commit      (mem_lq_commit     ),
+assign vec_store_commit =  lq_rden                 &&
+                            !lq_rdinfo.rf_wr_flag    &&
+                            !lq_rdinfo.vrf_wr_flag   &&
+                            !lq_rdinfo.fp_rf_wr_flag;
+   
+assign vec_nonstore_commit =  lq_rden                 &&
+                             !vec_store_commit       &&
+                              lq_rdinfo.vrf_wr_flag;
+   
 
-    .o_lq_broadside_info      (lq_broadside_info ),
-    .o_lq_broadside_data      (lq_broadside_data ),
-    .o_lq_broadside_valid     (lq_broadside_valid),
-    .o_lq_broadside_data_valid(lq_broadside_data_valid),
+// ************************ //
+// Write back to registers  //
+// ************************ //
+assign mem_rf_wr             = lq_rden & lq_mem_rf_wr_flag;
+assign mem_rf_wraddr[4:0]    = lq_mem_rf_wraddr[4:0];
+assign mem_rf_wrdata[63:0]   = lq_rddata[63:0]; 
 
-    // To/from memory system
-    .i_dmem_brisc_memory_idle('0), 
-    .o_data_addr              (o_data_addr       ),
-    .o_data_wrdata            (o_wr_data         ),
-    .o_data_reqtype           (o_data_reqtype    ),
-    .o_data_ordered           (o_data_ordered    ),
-    .o_data_byten             (o_data_byten      ), // IMPROVE: rename this signal to reflect its use for loads and stores
-    .o_data_req               (o_data_req_prequal),
-    .o_data_req_id            (o_data_req_id     ),
-    .o_data_128b              (o_data_128b       ),
-    .i_data_req_rtr           ('1    ),
-    .i_data_vld_0             (drain_load_buffer),
-    .i_data_vld_cancel_0      ('0),
-    .i_data_resp_id_0         (DATA_REQ_ID_WIDTH'({7'b0,load_buffer_rptr[2:0]})),
-    .i_data_rddata_0          (load_buffer[load_buffer_rptr[2:0]]),
-    .i_data_vld_1             ('0   ),
-    .i_data_vld_cancel_1      ('0),
-    .i_data_resp_id_1         ('0),
-    .i_data_rddata_1          ('0       ),
-    .i_data_vld_2             ('0   ),
-    .i_data_vld_cancel_2      ('0),
-    .i_data_resp_id_2         ('0),
-    .i_data_rddata_2          ('0),
+assign mem_vrf_wr            = lq_rden & lq_mem_vrf_wr_flag;   
+assign mem_vrf_wr_qual       = lq_rden & lq_mem_vrf_wr_flag & !lq_rdinfo.squash_vec_wr_flag;   
+assign mem_vrf_wraddr[4:0]   = lq_mem_rf_wraddr[4:0];    
+assign mem_vrf_wrdata[VLEN-1:0] = lq_rddata[VLEN-1:0];
+assign mem_vrf_wrexc         = lq_rdinfo.vec_load ? '0 : lq_rdexc;
 
-    .o_mem_store              (o_mem_store ),
-    .o_mem_load               (o_mem_load),
-    .o_mem_size               (o_mem_size),
-    .o_mem_last               (o_mem_last_raw),
-    // Trap
-    .i_reset_pc               ('0),
-    .o_trap                   (  ),
-    .o_lq_empty               (lq_empty),
-    .o_is_load                (commit_is_load)
-  );
+//fixme_msalvi asserrt one hot between vrf and rf wr and fp
+//Use FP Port0 for now for ex results. Will use port 1 when dual issue is enabled
+assign mem_fp_rf_wr           = lq_rden & lq_mem_fp_rf_wr_flag;
+assign mem_fp_rf_wraddr[4:0]  = lq_mem_rf_wraddr;
+assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
 
   logic [LQ_DEPTH     -1:0] lq_last;
   logic [LQ_DEPTH_LOG2-1:0] lq_rd_ptr;
@@ -775,12 +769,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                                                     ({64{mem_fp_rf_wr       }} & mem_fp_rf_wrdata  [      63: 0]);
   assign ocelot_instrn_commit_fflags            =        ({ 5{vec_nonstore_commit}} & mem_vrf_wrexc_nxt [       4: 0]);
   assign ocelot_instrn_commit_mask              =                                     mem_vrf_wrmask_nxt;
-  assign o_data_req =  o_data_req_prequal && 
-                      !(  o_mem_load   &&
-                        ~|o_data_byten   );
-
-  assign o_mem_last = o_mem_last_raw     &&
-                      lq_last[o_data_req_id[LQ_DEPTH_LOG2-1:0]];
 
   always_ff @(posedge clk) begin
     if (!reset_n) begin
@@ -788,7 +776,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         lq_rd_ptr        <= '0;
         mem_id_lqnxtid_r <= '0;
     end else begin
-        if (mem_lq_commit) begin
+        if (lq_rden) begin
           lq_rd_ptr <= lq_rd_ptr + 1;
         end
 
@@ -844,19 +832,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         if (mem_vrf_wr) begin
           lmul_cnt <= lmul_cnt + 1;
         end
-    end
-  end
-
-  always_ff @(posedge clk) begin
-    if (!reset_n) begin
-        i_rd_data_vld_2 <= '0;
-        i_rd_data_resp_id_2 <= '0;
-    end else begin
-        i_rd_data_vld_2 <=   o_data_req_prequal &&
-                            '1     &&
-                          (  o_mem_load   &&
-                            ~|o_data_byten   );
-        i_rd_data_resp_id_2 <= o_data_req_id;
     end
   end
 
@@ -930,9 +905,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                     .reset_n(reset_n),
                     .i_vd(id_ex_instrn[11:7]),
                     .i_rd(ocelot_instrn_commit_data[63:0]),
-                    .i_rd_valid(ocelot_instrn_commit_valid),
+                    .i_rd_valid(lq_rden),
+                    .i_rd_lqid(lq_rdid),
                     .i_fflags(ocelot_instrn_commit_fflags),
-                    .i_rd_lqid(mem_dst_lqid),
                     .i_lqnxtid(mem_id_lqnxtid),
                     .i_data_size(data_size),
                     .i_index_size(index_size),
@@ -947,8 +922,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                     .i_id_vex_rts(id_vex_rts),
                     .i_id_sb_id(id_sb_id),
                     .i_id_mem_lqalloc(id_mem_lqalloc),
-                    .i_lq_commit(mem_lq_commit),
-                    .i_dest_lqid(mem_dst_lqid),
                     .i_first_alloc(id_vec_autogen.replay_cnt == 0),
                     .i_last_alloc(id_mem_lq_done),
                     .i_load_sb_id(load_seq_id[33:29]),
