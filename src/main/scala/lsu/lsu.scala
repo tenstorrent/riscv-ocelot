@@ -42,56 +42,6 @@
 //    - reconsider port count of the wakeup, retry stuff
 
 
-/*
-   Original BOOM handle SL, SS
-   SS: Follow Commit order
-
-   SL: 
-       older SS: can go, older SS kill when match and forward
-       older SL: can go, older SL kill when match and retry
-*/
-
-/*
-   Current Bobcat handle SL, SS, VL, VS
-   SS: Follow Commit order
-   VS: only go when next to commit 
-       older SS: block
-       older VS: block
-       older VL: block
-       older SL: block
-   VL: only go when next to commit
-       older SL: block
-       older VL: block
-       older SS: block
-       older VS: block
-   SL: 
-       older SS: can go, older SS kill when match and forward
-       older SL: can go, older SL kill when match and retry
-       older VS: block
-       older VL: block 
-*/
-
-/*
-   Bobcat Goal handle SL, SS, VL, VS
-   SS: Follow Commit order
-   VS: only go when next to commit 
-       older SS: block
-       older VS: block
-       older VL: block
-       older SL: block
-   VL: nano-op basis
-       older unresolved SL: block
-       older resolved SL: if match then block, otherwise go  
-       older VL: block
-       older unresolved SS: block
-       older resolved SS: if match then forward
-       older VS: block
-   SL: 
-       older SS: can go, older SS kill when match and forward
-       older SL: can go, older SL kill when match and retry
-       older VS: block
-       older VL: block 
-*/
 
 package boom.lsu
 
@@ -934,25 +884,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                                  !stq_commit_e.bits.addr_is_virtual &&
                                                                   stq_commit_e.bits.data.valid))))
                                                                                                               
-//  val can_fire_stq_vector = widthMap (w => ((w == 0).B && stq_vector_e.valid && stq_vector_e.bits.isVector && !(!stq_vector_e.bits.vectorCanGo && !stq_vector_e.bits.vectorNoYoung))) 
   val can_fire_stq_vector = widthMap (w => ((w == 0).B && IsOlder(dsq_commit_e.bits.uop.stq_idx, stq_v_head, stq_head)))
-  val can_fire_dsq_vector = dsq_commit_e.valid && dsq_commit_e.bits.addr.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready && !dsq_commit_e.bits.isFake 
+//  val can_fire_dsq_vector = dsq_commit_e.valid && dsq_commit_e.bits.addr.valid && !dsq_commit_e.bits.addr_is_virtual && !dsq_commit_e.bits.succeeded && io.dmem.req.ready && !dsq_commit_e.bits.isFake 
+  val can_fire_dsq_vector = dsq_commit_e.valid && dsq_commit_e.bits.addr.valid && !dsq_commit_e.bits.addr_is_virtual && io.dmem.req.ready && !dsq_commit_e.bits.isFake
   val can_mark_dsq_fake   = dsq_commit_e.valid && dsq_commit_e.bits.isFake && !dsq_commit_e.bits.succeeded 
   val can_skip_dsq_fake   = dsq_commit_e.valid && dsq_commit_e.bits.isFake && dsq_commit_e.bits.succeeded                                
-/*
-  val can_fire_vector_load = widthMap(w => (w == memWidth-1).B && 
-                                           ldq_commit_e.bits.isVector && !ldq_commit_e.bits.succeeded && (ldq_v_head === dlq_commit_e.bits.uop.ldq_idx) &&
-                                           (dlq_commit_e.valid && 
-                                           dlq_commit_e.bits.addr.valid && !dlq_commit_e.bits.addr_is_virtual &&
-                                          !dlq_commit_e.bits.succeeded && !dlq_commit_e.bits.isFake && !dlq_commit_e.bits.executed &&
-                                           !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung) ))
-*/
-// val can_fire_ldq_vector = widthMap (w => ((w == memWidth-1).B && ldq_commit_e.valid && ldq_commit_e.bits.isVector && !(!ldq_commit_e.bits.vectorCanGo && !ldq_commit_e.bits.vectorNoYoung))) 
+ 
   val can_fire_ldq_vector = widthMap (w => ((w == memWidth-1).B && IsOlder(dlq_commit_e.bits.uop.ldq_idx, ldq_v_head, ldq_head)))
-  dontTouch (can_fire_ldq_vector)
+ // dontTouch (can_fire_ldq_vector)
   val can_fire_dlq_vector = dlq_commit_e.valid && dlq_commit_e.bits.addr.valid && !dlq_commit_e.bits.addr_is_virtual && !dlq_commit_e.bits.succeeded && 
                                                  !dlq_commit_e.bits.executed && io.dmem.req.ready && !dlq_commit_e.bits.isFake 
-  dontTouch (can_fire_dlq_vector)
+//  dontTouch (can_fire_dlq_vector)
   val can_mark_dlq_fake   = dlq_commit_e.valid && dlq_commit_e.bits.isFake && !dlq_commit_e.bits.succeeded 
   val can_skip_dlq   = dlq_commit_e.valid && (dlq_commit_e.bits.succeeded || dlq_commit_e.bits.executed)
 
@@ -1280,8 +1222,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     dmem_req(w).bits.is_hella := false.B
 
     io.dmem.s1_kill(w) := false.B
-//    when (can_fire_vector_load(w) && io.dmem.req.ready){
-    when (can_fire_ldq_vector(w) && can_fire_dlq_vector && io.dmem.req.ready){
+    when (can_fire_ldq_vector(w) && can_fire_dlq_vector){
       dmem_req(w).valid := true.B
       dmem_req(w).bits.addr := dlq_commit_e.bits.addr.bits
       dmem_req(w).bits.uop := dlq_commit_e.bits.uop
@@ -1314,7 +1255,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                                 stq_execute_head)     
 
       stq(stq_execute_head).bits.succeeded := false.B
-      }.elsewhen (can_fire_stq_vector (w) && can_fire_dsq_vector && io.dmem.req.ready) { 
+      }.elsewhen (can_fire_stq_vector (w) && can_fire_dsq_vector) { 
         dmem_req(w).valid := true.B
         dmem_req(w).bits.addr := dsq_commit_e.bits.addr.bits
         dmem_req(w).bits.data     := (new freechips.rocketchip.rocket.StoreGen(
@@ -1398,7 +1339,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dsq(dsq_tlb_head).bits.addr_is_virtual := dsq_tlb_miss     
     }
   
-    dsq_tlb_head := Mux(((dtlb.io.req(memWidth).valid && !dsq_tlb_miss) || dsq(dsq_tlb_head).bits.isFake), WrapInc(dsq_tlb_head, numDsqEntries), dsq_tlb_head)
+    dsq_tlb_head := Mux(((dtlb.io.req(memWidth).valid && !dsq_tlb_miss) || (dsq(dsq_tlb_head).valid && dsq(dsq_tlb_head).bits.isFake)), WrapInc(dsq_tlb_head, numDsqEntries), dsq_tlb_head)
     
     
     when (dtlb.io.req(memWidth+1).valid) {
@@ -1830,33 +1771,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   
 
   for (w <- 0 until memWidth) {
-/*
-    // Advance dlq_execute_head
-    when(dlq_commit_e.valid) {
-    //  when(dlq_commit_e.bits.isFake && (dlq_commit_e.bits.uop.ldq_idx === ldq_v_head)){
-      when(dlq_commit_e.bits.isFake && (ldq_v_head === dlq_commit_e.bits.uop.ldq_idx)){
-         dlq_commit_e.bits.succeeded := true.B
-         when (dlq_execute_head =/= dlq_tail) {
-           dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
-         }
-      }.elsewhen(dlq_commit_e.bits.succeeded){
-         when (dlq_execute_head =/= dlq_tail) {
-           dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
-         }
-      }.elsewhen(dlq_commit_e.bits.executed) {
-         when (dlq_execute_head =/= dlq_tail) {
-           dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
-         }  
-      }.elsewhen(can_fire_vector_load(w) && io.dmem.req.ready){
-         dlq(dlq_execute_head).bits.succeeded := false.B
-         dlq(dlq_execute_head).bits.executed := true.B
-         when (dlq_execute_head =/= dlq_tail) {
-           dlq_execute_head :=  WrapInc(dlq_execute_head, numDlqEntries)
-         }
-      } 
-    }
-*/    
-    when (can_fire_ldq_vector(w) && can_fire_dlq_vector && io.dmem.req.ready) {
+    when (can_fire_ldq_vector(w) && can_fire_dlq_vector) {
       dlq(dlq_execute_head).bits.succeeded := false.B
       dlq(dlq_execute_head).bits.executed := true.B
       when (dlq_execute_head =/= dlq_tail) {
@@ -1874,7 +1789,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     }
 
 
-    when (can_fire_stq_vector (w) && can_fire_dsq_vector && io.dmem.req.ready) {
+    when (can_fire_stq_vector (w) && can_fire_dsq_vector) {
        dsq(dsq_execute_head).bits.succeeded := false.B
        when (dsq_execute_head =/= dsq_tail) {         
            dsq_execute_head :=  WrapInc(dsq_execute_head, numDsqEntries)
@@ -1903,23 +1818,22 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       {
         when (io.dmem.nack(w).bits.uop.is_vec) {
           when(dlq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed){
-         when (IsOlder(io.dmem.nack(w).bits.uop.ldq_idx, dlq_execute_head, dlq_head) || io.dmem.nack(w).bits.uop.ldq_idx === dlq_execute_head) {
-          dlq_execute_head := io.dmem.nack(w).bits.uop.ldq_idx  // TODO: do I reload everything? Maybe for now?
-          }
-          dlq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed := false.B 
+             when (IsOlder(io.dmem.nack(w).bits.uop.ldq_idx, dlq_execute_head, dlq_head) || io.dmem.nack(w).bits.uop.ldq_idx === dlq_execute_head) {
+                  // only move pointer when it is older or the same
+                  dlq_execute_head := io.dmem.nack(w).bits.uop.ldq_idx  
+             }
+             dlq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed := false.B 
           }
         }.otherwise {
-        assert(ldq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed)
-        ldq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed  := false.B
-        nacking_loads(io.dmem.nack(w).bits.uop.ldq_idx) := true.B
+           assert(ldq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed)
+           ldq(io.dmem.nack(w).bits.uop.ldq_idx).bits.executed  := false.B
+          nacking_loads(io.dmem.nack(w).bits.uop.ldq_idx) := true.B
         }
-      }
-        .otherwise
-      {
+      }.otherwise {
         assert(io.dmem.nack(w).bits.uop.uses_stq)
         when (io.dmem.nack(w).bits.uop.is_vec) {
           when (IsOlder(io.dmem.nack(w).bits.uop.stq_idx, dsq_execute_head, dsq_head)) {
-          dsq_execute_head := io.dmem.nack(w).bits.uop.stq_idx          
+             dsq_execute_head := io.dmem.nack(w).bits.uop.stq_idx          
           }
         }.elsewhen (IsOlder(io.dmem.nack(w).bits.uop.stq_idx, stq_execute_head, stq_head)) {
           stq_execute_head := io.dmem.nack(w).bits.uop.stq_idx
@@ -1934,20 +1848,22 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     {
       when (io.dmem.resp(w).bits.uop.uses_ldq && io.dmem.resp(w).bits.uop.is_vec){
           when(dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.executed){
-          dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded := true.B
-        //  io.core.VGen.resp.valid := true.B
-          vldata_back := true.B  
-          io.core.VGen.resp.bits.elemID := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemID
-          io.core.VGen.resp.bits.elemOffset := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemOffset 
-          io.core.VGen.resp.bits.elemCount := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemCount  
-          io.core.VGen.resp.bits.vRegID := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.vRegID 
-          io.core.VGen.resp.bits.sbId := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.sbId  
-          io.core.VGen.resp.bits.strideDir := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.strideDir
-          io.core.VGen.resp.bits.isMask := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.isMask
-          io.core.VGen.resp.bits.Mask := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.Mask
-          io.core.VGen.resp.bits.s0l1 := true.B 
-           io.core.VGen.resp.bits.data := io.dmem.resp(w).bits.data
-      }
+             dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.succeeded := true.B
+             vldata_back := true.B 
+             // seq Id 
+             io.core.VGen.resp.bits.elemID := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemID
+             io.core.VGen.resp.bits.elemOffset := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemOffset 
+             io.core.VGen.resp.bits.elemCount := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.elemCount  
+             io.core.VGen.resp.bits.vRegID := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.vRegID 
+             io.core.VGen.resp.bits.sbId := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.sbId
+             // load data packing  
+             io.core.VGen.resp.bits.strideDir := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.strideDir
+             io.core.VGen.resp.bits.s0l1 := true.B 
+             io.core.VGen.resp.bits.data := io.dmem.resp(w).bits.data
+             // mask interface
+             io.core.VGen.resp.bits.isMask := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.isMask
+             io.core.VGen.resp.bits.Mask := dlq(io.dmem.resp(w).bits.uop.ldq_idx).bits.Mask             
+         }
       }.elsewhen (io.dmem.resp(w).bits.uop.uses_ldq){
         assert(!io.dmem.resp(w).bits.is_hella)
         val ldq_idx = io.dmem.resp(w).bits.uop.ldq_idx
@@ -2177,12 +2093,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dsq_finished := true.B
       sbIdDoneSt := dsq(dsq_head).bits.sbId
       stq(dsq(dsq_head).bits.uop.stq_idx).bits.succeeded := true.B 
-//      stq_execute_head := WrapInc(stq_execute_head, numStqEntries)
       when ((stq_v_head =/= stq_tail) && (stq_v_head === dsq(dsq_head).bits.uop.stq_idx)) {
         stq_v_head := WrapInc(stq_v_head, numStqEntries)
       }
     }
   }
+  // make sure stq_execute_head will skip vector store that is successful
   when (stq_commit_e.valid && stq_commit_e.bits.isVector && stq_commit_e.bits.succeeded) {
     stq_execute_head := WrapInc(stq_execute_head, numStqEntries)
   }
@@ -2201,17 +2117,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
     }    
   }
-  /*
-  when ((!ldq(ldq_v_head).valid || ldq(ldq_v_head).bits.succeeded) && ldq_v_head =/= ldq_tail) {
-    ldq_v_head := WrapInc(ldq_v_head, numLdqEntries)
-  }
-  */
-  //stq_vector_e.valid && stq_vector_e.bits.isVector && !(!stq_vector_e.bits.vectorCanGo && !stq_vector_e.bits.vectorNoYoung))) 
-  /*
-  when ((!stq(stq_v_head).valid || stq(stq_v_head).bits.succeeded) && stq_v_head =/= stq_tail) {
-    stq_v_head := WrapInc(stq_v_head, numStqEntries)
-  }
-  */
+  // v_head will skip through 1. invalid entry 2. scalar ones that are successful 3. vector ones that are ready to go
    when ((!stq_vector_e.valid || 
           (!stq_vector_e.bits.isVector && stq_vector_e.bits.succeeded) || 
           (stq_vector_e.bits.isVector && !(!stq_vector_e.bits.vectorCanGo && !stq_vector_e.bits.vectorNoYoung))) && (stq_v_head =/= stq_tail)) {
@@ -2339,10 +2245,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       vldExist := false.B 
       stExist := false.B 
       ldExist := false.B 
-   //   dsq_execute_save.bits := 0.U 
-   //   dsq_execute_save.valid := false.B 
-   //   dsq_finished := false.B 
-      for (i <- 0 until numDsqEntries)
+     for (i <- 0 until numDsqEntries)
       {
         dsq(i).valid           := false.B
         dsq(i).bits.addr.valid := false.B
@@ -2357,8 +2260,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dlq_tail := 0.U
       dlq_execute_head := 0.U 
       dlq_tlb_head := 0.U
-   //   dlq_finished := false.B 
-      for (i <- 0 until numDlqEntries)
+     for (i <- 0 until numDlqEntries)
       {
         dlq(i).valid           := false.B
         dlq(i).bits.addr.valid := false.B
