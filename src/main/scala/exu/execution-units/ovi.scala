@@ -121,7 +121,7 @@ class VecConfigUnit(implicit p: Parameters) extends BoomModule
   val set_vl =
     io.req.bits.uop.ctrl.imm_sel =/= IS_IVLI &&
     io.req.bits.uop.ldst =/= 0.U &&
-    io.req.bits.uop.lrs1 === 0.U
+    io.req.bits.uop.lrs1 =/= 0.U
   when (set_vl) {
     vl := VType.computeVL(avl, vtype_raw, 0.U, 0.B, 1.B, 0.B)
   } .otherwise {
@@ -131,6 +131,7 @@ class VecConfigUnit(implicit p: Parameters) extends BoomModule
   io.req.ready  := true.B
   io.resp.valid := io.req.fire
 
+  io.resp.bits.uop          := io.req.bits.uop
   io.resp.bits.data         := vl
   io.resp.bits.fflags.valid := false.B
 
