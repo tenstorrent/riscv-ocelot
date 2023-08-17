@@ -118,11 +118,17 @@ class VecConfigUnit(implicit p: Parameters) extends BoomModule
 
   val vl    = Wire(UInt())
   val vtype = VType.fromUInt(vtype_raw, false)
+  // vsetvl(i) with rd=x0 and rs1=x0 doesn't update vl CSR
   val set_vl =
     io.req.bits.uop.ctrl.imm_sel =/= IS_IVLI &&
     io.req.bits.uop.ldst =/= 0.U &&
     io.req.bits.uop.lrs1 =/= 0.U
-  when (set_vl) {
+  // vsetvl(i) with rd!=x0 and rs1=x0 sets vl to VLMAX
+  val set_vlmax =
+    io.req.bits.uop.ctrl.imm_sel =/= IS_IVLI &&
+    io.req.bits.uop.ldst =/= 0.U &&
+    io.req.bits.uop.lrs1 === 0.U
+  when (set_vlmax) {
     vl := VType.computeVL(avl, vtype_raw, 0.U, 0.B, 1.B, 0.B)
   } .otherwise {
     vl := VType.computeVL(avl, vtype_raw, 0.U, 0.B, 0.B, 0.B)
