@@ -1214,6 +1214,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   val s0_executing_loads = WireInit(VecInit((0 until numLdqEntries).map(x=>false.B)))
 
+  val did_fire_vector_store = WireInit(false.B)
+  val did_fire_vector_load = WireInit(false.B)
 
   for (w <- 0 until memWidth) {
     dmem_req(w).valid := false.B
@@ -1224,6 +1226,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
     io.dmem.s1_kill(w) := false.B
     when (can_fire_ldq_vector(w) && can_fire_dlq_vector){
+      did_fire_vector_load := true.B
       dmem_req(w).valid := true.B
       dmem_req(w).bits.addr := dlq_commit_e.bits.addr.bits
       dmem_req(w).bits.uop := dlq_commit_e.bits.uop
@@ -1257,6 +1260,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
       stq(stq_execute_head).bits.succeeded := false.B
       }.elsewhen (can_fire_stq_vector (w) && can_fire_dsq_vector) { 
+      did_fire_vector_store := true.B
         dmem_req(w).valid := true.B
         dmem_req(w).bits.addr := dsq_commit_e.bits.addr.bits
         dmem_req(w).bits.data     := (new freechips.rocketchip.rocket.StoreGen(
@@ -1772,7 +1776,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   
 
   for (w <- 0 until memWidth) {
-    when (can_fire_ldq_vector(w) && can_fire_dlq_vector) {
+    when (can_fire_ldq_vector(w) && can_fire_dlq_vector && did_fire_vector_load) {
       dlq(dlq_execute_head).bits.succeeded := false.B
       dlq(dlq_execute_head).bits.executed := true.B
       when (dlq_execute_head =/= dlq_tail) {
@@ -1790,7 +1794,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     }
 
 
-    when (can_fire_stq_vector (w) && can_fire_dsq_vector) {
+    when (can_fire_stq_vector (w) && can_fire_dsq_vector && did_fire_vector_store) {
        dsq(dsq_execute_head).bits.succeeded := false.B
        when (dsq_execute_head =/= dsq_tail) {         
            dsq_execute_head :=  WrapInc(dsq_execute_head, numDsqEntries)
