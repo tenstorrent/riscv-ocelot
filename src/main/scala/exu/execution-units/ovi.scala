@@ -79,6 +79,7 @@ class OviReqQueue(val num_entries: Int)(implicit p: Parameters)
   )
   when(do_enq) {
     entries(new_enq_ptr) := io.enq.bits
+    entries(new_enq_ptr).uop.br_mask := GetNewBrMask(io.brupdate, io.enq.bits.uop)
     entries_valid(new_enq_ptr) := true.B
   }
   enq_ptr := Mux(do_enq, WrapInc(new_enq_ptr, num_entries), new_enq_ptr)
