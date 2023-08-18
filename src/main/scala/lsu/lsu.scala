@@ -1231,6 +1231,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).bits.addr := dlq_commit_e.bits.addr.bits
       dmem_req(w).bits.uop := dlq_commit_e.bits.uop
       dmem_req(w).bits.uop.ldq_idx := dlq_execute_head
+      dmem_req(w).bits.uop.br_mask := 0.U // Vector Store won't be issued until it passes PNR
     }.elsewhen (will_fire_load_incoming(w) && load_incoming_no_vst(w) && load_incoming_no_vld(w)) {
       dmem_req(w).valid      := !exe_tlb_miss(w) && !exe_tlb_uncacheable(w)
       dmem_req(w).bits.addr  := exe_tlb_paddr(w)
@@ -1269,6 +1270,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                                     coreDataBytes)).data        
         dmem_req(w).bits.uop := dsq_commit_e.bits.uop
         dmem_req(w).bits.uop.stq_idx := dsq_execute_head
+        dmem_req(w).bits.uop.br_mask := 0.U // Vector Store won't be issued until it passes PNR
     } .elsewhen (will_fire_load_wakeup(w) && load_wakeup_no_vst (w) && load_wakeup_no_vld(w)) {
       dmem_req(w).valid      := true.B
       dmem_req(w).bits.addr  := ldq_wakeup_e.bits.addr.bits
