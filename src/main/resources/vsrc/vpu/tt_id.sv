@@ -1104,7 +1104,7 @@ end
 
 always_comb begin 
    for(int x=0;x<LQ_DEPTH;++x) begin
-      lq_hit_entry_vex_p0[x]   = (INCL_VEC == 1) & ((mask_rf_addrp0 & o_vec_autogen.rf_addrp0) == (i_lq_broadside_info[x].rf_wraddr & mask_rf_addrp0)) & i_lq_broadside_valid[x] &  i_lq_broadside_info[x].vrf_wr_flag   & o_vec_autogen.rf_rden0; 
+      lq_hit_entry_vex_p0[x]   = (INCL_VEC == 1) & ((mask_rf_addrp0 & o_vec_autogen.rf_addrp0) == (i_lq_broadside_info[x].rf_wraddr & mask_rf_addrp0)) & i_lq_broadside_valid[x] &  i_lq_broadside_info[x].vrf_wr_flag   & o_vec_autogen.rf_rden0 & !(o_vec_autogen.sel_scalar || o_vec_autogen.fp_sel_scalar); 
       lq_hit_entry_vex_p1[x]   = (INCL_VEC == 1) & ((mask_rf_addrp1 & o_vec_autogen.rf_addrp1) == (i_lq_broadside_info[x].rf_wraddr & mask_rf_addrp1)) & i_lq_broadside_valid[x] &  i_lq_broadside_info[x].vrf_wr_flag   & o_vec_autogen.rf_rden1;
       lq_hit_entry_vex_p2[x]   = (INCL_VEC == 1) & ((mask_rf_addrp2 & o_vec_autogen.rf_addrp2) == (i_lq_broadside_info[x].rf_wraddr & mask_rf_addrp2)) & i_lq_broadside_valid[x] &  i_lq_broadside_info[x].vrf_wr_flag   & o_vec_autogen.rf_rden2;
       lq_hit_entry_vex_r0[x]   = (INCL_VEC == 1) & (o_vec_autogen.rf_addrp0 == i_lq_broadside_info[x].rf_wraddr) & i_lq_broadside_valid[x] & i_lq_broadside_info[x].rf_wr_flag    & o_vec_autogen.sel_scalar;
