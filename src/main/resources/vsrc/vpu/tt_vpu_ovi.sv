@@ -136,6 +136,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [      63:0] mem_fp_rf_wrdata;
   logic              mem_vrf_wr;
   logic              mem_vrf_wr_qual; // Can be squashed when vl=0
+  logic              mem_vrf_wrmask;
   logic [       4:0] mem_vrf_wraddr;
   logic [VLEN  -1:0] mem_vrf_wrdata;
   logic [VLEN*8-1:0] mem_vrf_wrdata_reg;
@@ -320,12 +321,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   assign rf_vex_p1_sel   = (read_valid && ocelot_read_req) ? read_issue_scalar_opnd   : rf_vex_p1_reg;
   assign fprf_vex_p0_sel = (read_valid && ocelot_read_req) ? read_issue_scalar_opnd : fprf_vex_p0_reg;
 
-  tt_briscv_pkg::csr_to_id ex_id_csr;
-  assign ex_id_csr.vgsrc   = 0;
-  assign ex_id_csr.v_vsew  = vcsr[38:36];
-  assign ex_id_csr.v_lmul  = {vcsr_lmulb2,vcsr[35:34]};
-  assign ex_id_csr.v_vlmax = '0;
-  assign ex_id_csr.v_vl    = vcsr[$clog2(VLEN+1)-1+14:14];
+  tt_briscv_pkg::csr_t csr_de0, csr_ex0;
+  assign csr_de0.v_vl    = vcsr[$clog2(VLEN+1)-1+14:14];
+  assign csr_de0.v_vsew  = vcsr[38:36];
+  assign csr_de0.v_lmul  = {vcsr_lmulb2, vcsr[35:34]};
+  assign csr_de0.v_vxrm  = vcsr[30:29];
+  assign csr_de0.frm     = vcsr[33:31];
 
   tt_id
   #(
@@ -343,7 +344,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_clk                                 (clk             ),    
     .i_reset_n                             (reset_n), 
 
-    .i_ex_id_csr                           (ex_id_csr),             
+    .i_csr                                 (csr_de0),             
+    .o_csr                                 (csr_ex0),             
 
     .i_if_instrn                           (read_issue_inst),       
     .i_if_pc                               ('0),           
@@ -463,11 +465,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   //////////
   // EX
-  tt_briscv_pkg::csr_to_vec ex_vec_csr;
-  assign ex_vec_csr.v_vsew =  vcsr[38:36];
-  assign ex_vec_csr.v_lmul =  {vcsr_lmulb2,vcsr[35:34]};
-  assign ex_vec_csr.v_vxrm =  vcsr[30:29];
-  assign ex_vec_csr.v_vl   =  vcsr[$clog2(VLEN+1)-1+14:14];
   assign vecldst_autogen_store = id_ex_vecldst_autogen.store;
   assign vecldst_autogen_load = id_ex_vecldst_autogen.load;
 
@@ -476,7 +473,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
      squash_id_ex_rts = 1'b0;
 
      if (id_is_indexldst) begin
-        case ({id_ex_instrn[14:12], vcsr[37:36]})
+        case ({id_ex_instrn[14:12], csr_ex0.v_vsew[1:0]})
            // index : data = 2
            5'b101_00,
            5'b110_01,
@@ -500,7 +497,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_clk               (clk             ),
     .i_reset_n           (reset_n),
     .i_sat_csr           ('0),
-    .i_ex_vec_csr        (ex_vec_csr),             
+    .i_csr               (csr_ex0),             
     // From ID
     .i_if_ex_deco        ('0    ),
     .i_if_ex_predicted   ('0    ),
@@ -549,8 +546,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_ex_bp_mispredict         (),
     .o_ex_bp_mispredict_not_br  (),
     .o_ex_bp_pc                 (),
-    .o_ex_id_csr                (),
-    .o_ex_vec_csr               (),
     
     .o_ex_dst_vld_1c        (ex_dst_vld_1c        ),
     .o_ex_dst_lqid_1c       (ex_dst_lqid_1c       ),
@@ -584,7 +579,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   // Adding stalls from Store/Mask FSM
   assign ex_id_rtr = ex_id_rtr_raw && !store_fsm_stall && !mask_fsm_stall;
 
-  assign vrf_p2_rden    = id_vec_autogen.rf_rden2; // FIXME | ex_vec_csr.v_lmul[2];
+  assign vrf_p2_rden    = id_vec_autogen.rf_rden2; // FIXME | csr_ex0.v_lmul[2];
   assign vrf_p1_rden    = id_vec_autogen.rf_rden1;
   assign vrf_p0_rden    = id_vec_autogen.rf_rden0;
 
@@ -622,8 +617,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   (
     .i_clk                 (clk),                 
     .i_reset_n             (reset_n), 
-    .i_ex_vec_csr          (ex_vec_csr),             
-    .i_csr_frm             (vcsr[33:31]),
+    .i_csr                 (csr_ex0),             
     .i_v_vm                (v_vm),                  
     .i_id_vec_autogen      (id_vec_autogen),        
     .o_sat_csr             (ocelot_sat_csr),
@@ -744,6 +738,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_mem_vrf_wraddr     (mem_vrf_wraddr),
     .o_mem_vrf_wrdata     (mem_vrf_wrdata),
     .o_mem_vrf_wrexc      (mem_vrf_wrexc),
+    .o_mem_vrf_wrmask     (mem_vrf_wrmask),
 
     .o_vec_store_commit   (vec_store_commit),
     .o_vec_nonstore_commit(vec_nonstore_commit),
@@ -868,7 +863,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     mem_vrf_wrexc_nxt  = mem_vrf_wrexc_reg;
 
     mem_vrf_wrdata_nxt[VLEN*lmul_cnt +: VLEN] = mem_vrf_wrdata;
-    mem_vrf_wrmask_nxt[     lmul_cnt        ] = |vcsr[$clog2(VLEN+1)-1+14:14];
+    mem_vrf_wrmask_nxt[     lmul_cnt        ] = mem_vrf_wrmask;
     mem_vrf_wrexc_nxt                        |= mem_vrf_wrexc;
   end
 
@@ -1031,7 +1026,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   always_comb begin
     is_unit_stride = id_ex_instrn[27:26] == 2'b00;
-    data_size = id_is_indexldst ? vcsr[37:36] :
+    data_size = id_is_indexldst ? csr_ex0.v_vsew[1:0] :
                 id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
                 id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
                 id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
@@ -1039,9 +1034,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                   id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
                   id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW      
     load_stride = !id_is_indexldst ? scalar_opnd : 
-                vcsr[38:36] == 3'b000 ? 1 : // 8-bit EEW
-                vcsr[38:36] == 3'b101 ? 2 : // 16-bit EEW
-                vcsr[38:36] == 3'b110 ? 4 : 8; // 32-bit, 64-bit EEW;                            
+                csr_ex0.v_vsew == 3'b000 ? 1 : // 8-bit EEW
+                csr_ex0.v_vsew == 3'b101 ? 2 : // 16-bit EEW
+                csr_ex0.v_vsew == 3'b110 ? 4 : 8; // 32-bit, 64-bit EEW;                            
     if(is_unit_stride)
         load_stride_eew = 0;
     else if((data_size == 0 && load_stride == 64'd1) ||
@@ -1177,7 +1172,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                 .i_uop_is_vsr(id_is_whole_memop),
                 .i_uop_index_size(index_size),
                 .i_uop_data_size(data_size),
-                .i_uop_vl(vcsr[$clog2(VLEN+1)-1+14:14]),
+                .i_uop_vl(csr_ex0.v_vl),
                 .i_uop_nfield(id_ex_instrn[31:29]),
                 .i_store_data(vs3_rddata),
                 .i_store_credit(store_credit),
@@ -1200,7 +1195,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                 .i_index_data_valid(id_ex_units_rts && ex_id_rtr),
                 .i_last_index(id_ex_last),
                 .o_draining_mask_idx(mask_fsm_stall),
-                .i_vl(vcsr[$clog2(VLEN+1)-1+14:14]),
+                .i_vl(csr_ex0.v_vl),
                 .i_eew(index_size),
                 .i_mask_idx_credit(mask_idx_credit),
                 .o_mask_idx_item(mask_idx_item),

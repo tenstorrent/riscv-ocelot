@@ -12,7 +12,7 @@ module tt_ex #(parameter INCL_VEC=0, VLEN=128, ADDRWIDTH=40, ST_DATA_WIDTH_BITS=
    input 			    i_if_ex_predicted ,
    input 			    i_if_ex_nextinstr ,
 
-   input tt_briscv_pkg::csr_to_vec i_ex_vec_csr,
+   input tt_briscv_pkg::csr_t       i_csr,
    // From ID
    input [LQ_DEPTH_LOG2-1:0] 	    i_id_ex_lqid,
    input [4:0] 			    i_id_type ,
@@ -71,8 +71,6 @@ module tt_ex #(parameter INCL_VEC=0, VLEN=128, ADDRWIDTH=40, ST_DATA_WIDTH_BITS=
    input                            tt_briscv_pkg::csr_fp_exc i_exc_vfp_update,
 
    input 			    i_sat_csr,
-   output 			    tt_briscv_pkg::csr_to_id o_ex_id_csr,
-   output 			    tt_briscv_pkg::csr_to_vec o_ex_vec_csr,
 
    // EX --> MEM LQ signals
    output logic 		    o_ex_mem_lqvld_1c,
@@ -333,10 +331,10 @@ logic [2:0] id_vecldst_lmul, id_vecldst_data_emul, id_vecldst_idx_emul;
 assign id_vecldst_rf_wraddr = i_id_ex_vecldst_autogen.dest_reg;
    
 // Flop signals (These are constant through ex iterations)
-assign id_vecldst_sew       = i_ex_vec_csr.v_vsew[1:0];  
-assign id_vecldst_lmul      = i_ex_vec_csr.v_lmul;
+assign id_vecldst_sew       = i_csr.v_vsew[1:0];  
+assign id_vecldst_lmul      = i_csr.v_lmul;
 
-assign id_vecldst_data_eew  = i_id_ex_vecldst_autogen.ldst_index ? i_ex_vec_csr.v_vsew[1:0] : i_id_ex_instrn[13:12];
+assign id_vecldst_data_eew  = i_id_ex_vecldst_autogen.ldst_index ? i_csr.v_vsew[1:0] : i_id_ex_instrn[13:12];
 assign id_vecldst_data_emul = {3{~i_id_ex_vecldst_autogen.ldst_whole_register}} & get_vecldst_emul(id_vecldst_sew, id_vecldst_lmul, id_vecldst_data_eew);
 
 assign id_vecldst_idx_eew   = i_id_ex_instrn[13:12];
@@ -432,7 +430,7 @@ always_comb begin
    ex_mem_payload_fn.mem_store_data =  ex_mem_payload.mem_store ? ex_vecldst_store_val_fn : ex_vs3_reg;
 end   
    
-assign ex_vecldst_vl        = i_ex_vec_csr.v_vl;
+assign ex_vecldst_vl        = i_csr.v_vl;
 assign ex_vecldst_vl_div8   = ex_vecldst_vl >> 3;
 assign ex_vecldst_mask_num_elem = (ex_vecldst_vl == '0) ? 'h1 : ((ex_vecldst_vl[2:0] == 3'b0) ? ex_vecldst_vl_div8 : (ex_vecldst_vl_div8 + 1'b1));
 assign ex_vecldst_nf        = 4'(ex_instrn[31:29] + 1'b1);
@@ -774,8 +772,6 @@ assign csr_vl_wrdata = (csr_avl <= csr_vlmax) ? csr_avl : csr_vlmax;
 //            // ID
 //            .i_id_ex_instdisp           (i_id_ex_instdisp),
 //
-//	    .o_csr_to_id		(o_ex_id_csr),
-//	    .o_csr_to_vec		(o_ex_vec_csr),
 //
 //            /*AUTOINST*/
 //	    // Inputs
@@ -786,8 +782,6 @@ assign csr_vlmax = '0;
 assign csr_vl = '0;
 assign csr_pmacfg0 = '0;
 assign csr_pmacfg1 = '0;
-assign o_ex_id_csr = '0;
-assign o_ex_vec_csr = '0;
 
 reg [31:0] mul_res_d2;
 wire sub_flavor = decoded_op[3];

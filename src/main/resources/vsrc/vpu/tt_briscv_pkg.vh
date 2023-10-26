@@ -14,6 +14,7 @@ package tt_briscv_pkg;
       logic 	   load;
       logic 	   vec_load;
       logic [4:0]  rf_wraddr;
+      logic        vl_is_zero;
    } lq_info_s;
 
 localparam ACTUAL_LQ_DEPTH = 8;
@@ -59,19 +60,12 @@ localparam ADDRWIDTH=40;
    } mem_skidbuf_s;
 
    typedef struct packed {
-      logic [31:0] vgsrc;
-      logic [2:0] v_vsew;
-      logic [2:0] v_lmul;
-      logic [7:0] v_vlmax;
-      logic [$clog2(VLEN+1)-1:0] v_vl;
-   } csr_to_id;
-
-   typedef struct packed {
       logic [2:0] v_vsew;
       logic [2:0] v_lmul;
       logic [1:0] v_vxrm;
       logic [$clog2(VLEN+1)-1:0] v_vl;
-   } csr_to_vec;
+      logic [2:0] frm;
+   } csr_t;
 
    typedef struct packed {
       logic [LQ_DEPTH_LOG2-1:0] ldqid;

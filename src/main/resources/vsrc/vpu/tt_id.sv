@@ -23,7 +23,8 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output wire 				     o_id_ex_vecldst,
    output wire [4:0] 			     o_id_ex_Zb_instr,
    output wire 				     o_id_ex_units_rts ,
-   input 				     tt_briscv_pkg::csr_to_id i_ex_id_csr,
+   input 				     tt_briscv_pkg::csr_t i_csr,
+   output                                    tt_briscv_pkg::csr_t o_csr,
    output logic     o_id_ex_last,
 
    //FP EX0 Interface
@@ -176,7 +177,6 @@ assign o_vecldst_autogen = (id_replay ? vecldst_autogen_replay : vecldst_autogen
 assign o_id_replay = id_replay;
 wire [2:0] v_vsew;
 wire [2:0] v_lmul;
-wire [7:0] v_vlmax; // vlmax = vlen/vsew * lmul
 wire lmul_gt1 = (~v_lmul[2] & |v_lmul[1:0]);
 wire lmul_gteq1 = ~v_lmul[2];   
 wire ldst_gt1 = |vecldst_autogen.ldst_iterations;
@@ -198,6 +198,7 @@ wire units_rtr = (i_ex_rtr & i_fp_ex0_id_rtr & i_vex_id_rtr) & !i_ex_bp_mispredi
 logic [31:0] instrn_id_replay;
 logic [4:0]  id_sb_id_replay;
 logic [31:0] id_ex_pc_replay;
+tt_briscv_pkg::csr_t id_csr_replay;
 logic [$clog2(VLEN):0] id_replay_cnt_start;
 logic  [5:0] lmul_replay_cnt;
 logic  [2:0] id_replay_type_start;
@@ -228,6 +229,7 @@ logic no_lq_load_pending;
   assign instrn_id       = id_replay ? instrn_id_replay : i_if_instrn;
   assign o_id_sb_id      = id_replay ? id_sb_id_replay : i_if_sb_id;
   assign o_id_ex_pc      = id_replay ? id_ex_pc_replay : i_if_pc;
+  assign o_csr           = id_replay ? id_csr_replay : i_csr;
  
   assign id_rts          = (i_if_instrn_rts | id_replay)
                             //reduction ops don't consume another lq entry so under replay its fine to ignore full conditions.
@@ -261,6 +263,19 @@ tt_rts_rtr_pipe_stage #(.WIDTH(32)) id_pc_flops
    .i_rtr     ((units_rtr)  & (~raw_hazard_stall) ), // if EX is ready to accept next instruction and no raw hazard requiring a stall was detected
    .i_data    (i_if_pc         ),
    .o_data    (o_id_ex_pc      )
+);
+tt_rts_rtr_pipe_stage #(.WIDTH($bits(tt_briscv_pkg::csr_t))) id_csr_flops
+(
+   .i_clk     (i_clk           ),
+   .i_reset_n (i_reset_n       ),
+   .i_rts     (i_if_instrn_rts ), // input side handshake
+/* verilator lint_off PINCONNECTEMPTY */
+   .o_rtr     ( ),
+   .o_rts     ( ),
+/* verilator lint_on PINCONNECTEMPTY */
+   .i_rtr     ((units_rtr)  & (~raw_hazard_stall) ), // if EX is ready to accept next instruction and no raw hazard requiring a stall was detected
+   .i_data    (i_csr),
+   .o_data    (o_csr)
 );
 `endif
 
@@ -300,6 +315,7 @@ assign o_id_mem_lqinfo.load = (is_ex_instrn & (EncType[4:0] == `BRISCV_INSTR_TYP
                               (is_fp_instrn & (EncType[4:0] == `BRISCV_INSTR_TYPE_IF)) |
                               (is_vec_instrn & o_vecldst_autogen.load);
 assign o_id_mem_lqinfo.vec_load = (is_vec_instrn & o_vecldst_autogen.load);
+assign o_id_mem_lqinfo.vl_is_zero = ~|o_csr.v_vl;
 
 assign o_id_ex_lqid = id_mem_lqalloc_raw ? i_mem_id_lqnxtid : id_lqid;
 assign o_id_fp_ex0_lqid = id_mem_lqalloc_raw ? i_mem_id_lqnxtid : id_lqid;
@@ -344,6 +360,7 @@ if (INCL_VEC == 1) begin
       instrn_id_replay <= '0;
       id_sb_id_replay <= '0;
       id_ex_pc_replay <= '0;
+      id_csr_replay <= '0;
       id_replay_type <= `BRISCV_REPLAY_TYPE_NONE;
       vec_autogen_replay <= '0;
       vecldst_autogen_replay <= '0;
@@ -362,6 +379,7 @@ if (INCL_VEC == 1) begin
       instrn_id_replay <= instrn_id;
       id_sb_id_replay <= o_id_sb_id;
       id_ex_pc_replay <= o_id_ex_pc;
+      id_csr_replay <= o_csr;
       vec_autogen_replay <= vec_autogen_incr;
       vecldst_autogen_replay <= vecldst_autogen_incr;
       id_replay_type <= id_replay_type_start;
@@ -526,7 +544,7 @@ if (INCL_VEC == 1) begin
  assign vec_ldst_idx_vld = vec_ldst_vld & vecldst_autogen.ldst_index;
 			
  assign squash_vec_wr_flag =  is_vec_instrn                         && // A vector instruction
-                             (i_ex_id_csr.v_vl == 0)                && // With VL set to 0
+                             (o_csr.v_vl == 0)                && // With VL set to 0
                             !(EncType == `BRISCV_INSTR_TYPE_Vvi &&     // Except: vmv<nf>r
                               funct7[6:1] == 6'b100111            ) &&
                             !vecldst_autogen.ldst_whole_register;      //         vl<nf>r
@@ -540,6 +558,7 @@ else begin	// No VEC INCL
   assign id_replay = 1'b0;
   assign instrn_id_replay = '0;
   assign id_ex_pc_replay = '0;
+  assign id_csr_replay = '0;
   assign instr_dispatch_complete = '1;
   assign vec_ldst_vld = '0;
   assign squash_vec_wr_flag = '0;
@@ -642,9 +661,8 @@ assign fp_autogen = '0;
 end // END FP Decode
 
 // Vec
-assign v_vsew = i_ex_id_csr.v_vsew; 
-assign v_lmul = i_ex_id_csr.v_lmul; 
-assign v_vlmax = i_ex_id_csr.v_vlmax;
+assign v_vsew = o_csr.v_vsew; 
+assign v_lmul = o_csr.v_lmul; 
 assign o_v_vm = instrn_id[25];
 wire v_fp_rf_rd_op_valid_no_hazard_check;
 wire v_fp_mad_type_inst_no_hazard_check;
