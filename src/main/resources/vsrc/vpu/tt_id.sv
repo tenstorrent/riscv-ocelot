@@ -27,15 +27,6 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output                                    tt_briscv_pkg::csr_t o_csr,
    output logic     o_id_ex_last,
 
-   //FP EX0 Interface
-   input 				     i_fp_ex0_id_rtr ,
-   output wire 				     o_id_fp_ex0_rts ,
-   output wire [LQ_DEPTH_LOG2-1:0] 	     o_id_fp_ex0_lqid ,
-   output [`EX_AUTOGEN_WIDTH-1:0] 	     o_ex_autogen,
-   // FP deocde signals
-   output [`FP_AUTOGEN_WIDTH-1:0] 	     o_fp_autogen,
-
-
    //VEC Interface
    input 				     i_vex_id_rtr ,
    output wire 				     o_id_vex_rts ,
@@ -52,27 +43,6 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output 				     tt_briscv_pkg::vec_autogen_s o_vec_autogen,
    output 				     tt_briscv_pkg::vecldst_autogen_s o_vecldst_autogen,
    
-   output reg [FP_RF_RD_PORTS-1:0] 	     o_fp_fwd_sign_reg ,
-   output reg [FP_RF_RD_PORTS-1:0] 	     o_fp_fwd_zero_reg ,
-   output reg [FP_RF_RD_PORTS-1:0] 	     o_fp_fwd_nan_reg ,
-   output reg [FP_RF_RD_PORTS-1:0] 	     o_fp_fwd_inf_reg ,
-   output reg [FP_RF_RD_PORTS-1:0][EXP_WIDTH-1:0] o_fp_fwd_exp_reg ,
-   output reg [FP_RF_RD_PORTS-1:0][MAN_WIDTH-1:0] o_fp_fwd_man_reg ,
-
-   output reg [31:0] 			     o_fp_rf_p3_reg,
-
-   // From RF
-   input [31:0] 			     i_rf_p0_reg ,
-   input [31:0] 			     i_rf_p1_reg ,
-
-   input [FP_RF_RD_PORTS-1:0][FLEN-1:0]	     i_fp_rf_rd_ret_reg,
-   input [FP_RF_RD_PORTS-1:0] 		     i_fp_rf_sign ,
-   input [FP_RF_RD_PORTS-1:0] 		     i_fp_rf_zero ,
-   input [FP_RF_RD_PORTS-1:0] 		     i_fp_rf_nan ,
-   input [FP_RF_RD_PORTS-1:0] 		     i_fp_rf_inf ,
-   input [FP_RF_RD_PORTS-1:0][EXP_WIDTH-1:0] i_fp_rf_exp ,
-   input [FP_RF_RD_PORTS-1:0][MAN_WIDTH-1:0] i_fp_rf_man ,
-
    // Destination target registers for forwarding and RAW checking
    input 				     tt_briscv_pkg::arr_lq_info_s i_lq_broadside_info,
    input [LQ_DEPTH-1:0][31:0] 		     i_lq_broadside_data,
@@ -87,11 +57,7 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output logic 			     o_id_mem_lqalloc,
    output logic 			     o_id_mem_lq_done,
    output 				     tt_briscv_pkg::lq_info_s o_id_mem_lqinfo,
- 
-   output [31:0] 			     o_fwd_p0_reg ,
-   output [31:0] 			     o_fwd_p1_reg ,
 
-   input 				     i_ex_bp_mispredict ,
    input logic 				     i_ex_dst_vld_1c, // forwarding control from EX
    input logic [LQ_DEPTH_LOG2-1:0] 	     i_ex_dst_lqid_1c, // forwarding control from EX
    input logic [31:0] 			     i_ex_fwd_data_1c, // forwarding control from EX
@@ -99,14 +65,6 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    input logic 				     i_ex_dst_vld_2c, // forwarding control from EX
    input logic [LQ_DEPTH_LOG2-1:0] 	     i_ex_dst_lqid_2c, // forwarding control from EX
    input logic [31:0] 			     i_ex_fwd_data_2c, // forwarding control from EX
-
-   input logic 				     i_fp_ex_dst_vld_1c, // forwarding control from FP EX
-   input logic [LQ_DEPTH_LOG2-1:0] 	     i_fp_ex_dst_lqid_1c, // forwarding control from FP EX
-   input logic [31:0] 			     i_fp_ex_fwd_data_1c, // forwarding control from FP EX
-
-   input logic 				     i_fp_ex_dst_vld_2c, // forwarding control from FP EX
-   input logic [LQ_DEPTH_LOG2-1:0] 	     i_fp_ex_dst_lqid_2c, // forwarding control from FP EX
-   input logic [31:0] 			     i_fp_ex_fwd_data_2c, // forwarding control from FP EX
 
    input logic 				     i_mem_dst_vld, // forwarding control from MEM
    input logic [LQ_DEPTH_LOG2-1:0] 	     i_mem_dst_lqid, // forwarding control from MEM
@@ -122,12 +80,6 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output wire [31:0] 			     o_id_immed_op ,
 
    // Register file read/write enables and addresses
-   output reg 				     o_rf_p0_rden ,
-   output reg [ 4:0] 			     o_rf_p0_rdaddr ,
-   output reg 				     o_rf_p1_rden ,
-   output reg [ 4:0] 			     o_rf_p1_rdaddr ,
-   output reg 				     o_rf_p2_rden ,
-   output reg [ 4:0] 			     o_rf_p2_rdaddr ,
    output logic 			     o_rf_wr_flag ,
    output reg [ 4:0] 			     o_rf_wraddr,
    output logic 			     o_fp_rf_wr_flag, 
@@ -153,7 +105,6 @@ wire id_replay;
 
 wire  [`EX_AUTOGEN_WIDTH-1:0] ex_autogen;
 wire  valid_ex_autogen = (i_ext | m_ext | b_ext);
-assign o_ex_autogen = ex_autogen & {`EX_AUTOGEN_WIDTH{valid_ex_autogen}};
 wire  [`FP_AUTOGEN_WIDTH-1:0] fp_autogen;
 wire  valid_fp_autogen = f_ext;
 assign o_fp_autogen = fp_autogen & {`FP_AUTOGEN_WIDTH{valid_fp_autogen}};
@@ -191,7 +142,7 @@ wire raw_hazard_stall_fwd; // Other pipe needs to take forward into account
 logic sync_stall;
 logic [6:0] sync_stall_op;
 wire [31:0] instrn_id;
-wire units_rtr = (i_ex_rtr & i_fp_ex0_id_rtr & i_vex_id_rtr) & !i_ex_bp_mispredict;
+wire units_rtr = (i_ex_rtr & i_vex_id_rtr);
 // IMPROVE(Ashok). Mem rtr gets factored in separately, so for that reason
 // FP/VEX rtr can always be held high
 // EX RTL will be low for div and vec ldst. See if this can be optimized
@@ -237,7 +188,7 @@ logic no_lq_load_pending;
                             // Syncstall only applies per ldqid, and some vector replays need multiple dispatches to fill a single ldqid
                          & (id_replay | ~sync_stall )
                             // Need all units to be ready to dispatch anything
-                         & (is_ex_instrn | is_fp_instrn | is_vec_instrn) & units_rtr & !i_ex_bp_mispredict;
+                         & (is_ex_instrn | is_fp_instrn | is_vec_instrn) & units_rtr;
   assign o_id_instrn_rtr = units_rtr & ~id_replay & ~raw_hazard_stall & ~(i_mem_fe_lqfull | i_mem_fe_skidbuffull) & ~sync_stall;
 `else
 tt_rts_rtr_pipe_stage #(.WIDTH(32)) id_instrn_flops
@@ -318,7 +269,6 @@ assign o_id_mem_lqinfo.vec_load = (is_vec_instrn & o_vecldst_autogen.load);
 assign o_id_mem_lqinfo.vl_is_zero = ~|o_csr.v_vl;
 
 assign o_id_ex_lqid = id_mem_lqalloc_raw ? i_mem_id_lqnxtid : id_lqid;
-assign o_id_fp_ex0_lqid = id_mem_lqalloc_raw ? i_mem_id_lqnxtid : id_lqid;
 // assign o_id_vex_lqid = i_mem_id_lqnxtid;
 
 wire vsetOp_to_ex;
@@ -584,7 +534,6 @@ assign o_id_ex_last = vec_autogen_incr.replay_cnt == 0;
 //FP Instructions
 assign is_fp_instrn = f_ext;
 assign valid_fp_instrn = id_rts & is_fp_instrn;
-assign o_id_fp_ex0_rts = (!raw_hazard_stall) & valid_fp_instrn & ~fp_ldst_vld;
 
 //VEC Instructions
 assign is_vec_instrn = v_ext;
@@ -778,7 +727,6 @@ always @(posedge i_clk) begin
     sync_stall_op <= 'd0;
   end
   else begin
-    // if (i_ex_bp_mispredict || (sync_stall && i_mem_lq_commit && (i_mem_lq_op == sync_stall_op))) -- No longer need this. simple empty check is enough
     if (sync_stall && i_mem_fe_lqempty)
         sync_stall <= 1'b0;
     else
@@ -852,7 +800,7 @@ always @(posedge i_clk) begin
   end
   else begin
     // Collect Branch metrics for trace by branch type
-    if(o_id_ex_rts & i_ex_rtr & ~i_ex_bp_mispredict & (~raw_hazard_stall) ) begin
+    if(o_id_ex_rts & i_ex_rtr & (~raw_hazard_stall) ) begin
        if (OLD_it_branch & (instrn_id[14:12] == 3'b000)) branch_count_beq <= branch_count_beq + 1'b1; // BEQ
        if (OLD_it_branch & (instrn_id[14:12] == 3'b101)) branch_count_bge <= branch_count_bge + 1'b1; // BGE
        if (OLD_it_branch & (instrn_id[14:12] == 3'b111)) branch_count_bgeu <= branch_count_bgeu + 1'b1; // BGEU
@@ -867,67 +815,6 @@ always @(posedge i_clk) begin
     end
   end
 end
-
-// Mispredict count for branch types BEQ   
-//   7: BEQ //   6: BGE //   5: BGEU //   4: BLT
-//   3: BLTU //   2: BNE //   1: JAL //   0: JALR
-reg [31:0] mispredict_count_beq;
-reg [31:0] mispredict_count_bge;
-reg [31:0] mispredict_count_bgeu;
-reg [31:0] mispredict_count_blt;
-reg [31:0] mispredict_count_bltu;
-reg [31:0] mispredict_count_bne;
-reg [31:0] mispredict_count_jal;
-reg [31:0] mispredict_count_jalr;
-reg [31:0] mispredict_count_none;
-reg [31:0] mispredict_count_uncond;
-reg [31:0] mispredict_count_call;
-reg [31:0] mispredict_count_ret;
-reg [127:0] id_ascii_instrn_1;
-reg jalRdIsLink_1, jalRs1IsLink_1, jalRdEqRs1_1;
-
-always @(posedge i_clk) begin
-  if(~i_reset_n) begin
-    mispredict_count_beq <= 'd0;
-    mispredict_count_bge <= 'd0;
-    mispredict_count_bgeu <= 'd0;
-    mispredict_count_blt <= 'd0;
-    mispredict_count_bltu <= 'd0;
-    mispredict_count_bne <= 'd0;
-    mispredict_count_jal <= 'd0;
-    mispredict_count_jalr <= 'd0;
-    mispredict_count_none <= 'd0;
-    id_ascii_instrn_1 <= 'd0;
-    jalRdIsLink_1 <= 'b0;
-    jalRs1IsLink_1 <= 'b0;
-    jalRdEqRs1_1 <= 'b0;
-    mispredict_count_uncond <= 'd0;
-    mispredict_count_call <= 'd0;
-    mispredict_count_ret <= 'd0;
-  end
-  else begin
-    // Collect Branch metrics for mispredicts by branch type
-    id_ascii_instrn_1 <= id_ascii_instrn;
-    jalRdIsLink_1 <= jalRdIsLink;
-    jalRs1IsLink_1 <= jalRs1IsLink;
-    jalRdEqRs1_1 <= jalRdEqRs1;
-    if(i_ex_bp_mispredict) begin //mispredict_fifo_wren 
-       if (id_ascii_instrn_1 == "BEQ") mispredict_count_beq <= mispredict_count_beq + 1'b1;
-       else if (id_ascii_instrn_1 == "BGE") mispredict_count_bge <= mispredict_count_bge + 1'b1;
-       else if (id_ascii_instrn_1 == "BGEU") mispredict_count_bgeu <= mispredict_count_bgeu + 1'b1;
-       else if (id_ascii_instrn_1 == "BLT") mispredict_count_blt <= mispredict_count_blt + 1'b1;
-       else if (id_ascii_instrn_1 == "BLTU") mispredict_count_bltu <= mispredict_count_bltu + 1'b1;
-       else if (id_ascii_instrn_1 == "BNE") mispredict_count_bne <= mispredict_count_bne + 1'b1;
-       else if (id_ascii_instrn_1 == "JAL") mispredict_count_jal <= mispredict_count_jal + 1'b1;
-       else if (id_ascii_instrn_1 == "JALR") mispredict_count_jalr <= mispredict_count_jalr + 1'b1;
-       else  mispredict_count_none <= mispredict_count_none + 1'b1;
-       if (((id_ascii_instrn_1 == "JAL") | (id_ascii_instrn_1 == "JALR")) & (~jalRdIsLink_1 & ~jalRs1IsLink_1)) mispredict_count_uncond <= mispredict_count_uncond + 1'b1; // JAL is an uncond Jump
-       if (((id_ascii_instrn_1 == "JAL") | (id_ascii_instrn_1 == "JALR")) & (~jalRdIsLink_1 & jalRs1IsLink_1) | (jalRdIsLink_1 & jalRs1IsLink_1 & ~jalRdEqRs1_1)) mispredict_count_ret <= mispredict_count_ret + 1'b1; // JAL is a return
-       if (((id_ascii_instrn_1 == "JAL") | (id_ascii_instrn_1 == "JALR")) & jalRdIsLink_1) mispredict_count_call <= mispredict_count_call + 1'b1; // JAL is a call
-    end
-  end
-end
-
 
 reg  OLD_id_type_r;
 reg  OLD_id_type_i;
@@ -988,17 +875,6 @@ end
 // Register file read/write enables and addresses
 
 always @* begin
-   o_rf_p0_rden   = id_rts & ~raw_hazard_stall & 
-                    ((i_ex_rtr  & valid_ex_instrn) | // & rs1_used /*& (!raw_hazard_stall)*/;
-                     (o_fp_autogen[`FP_AUTOGEN_INT_TO_FP_MOV] | o_fp_autogen[`FP_AUTOGEN_INT_TO_FP_CVT]) |
-                     (i_vex_id_rtr & v_ext & ~vec_ldst_vld & (INCL_VEC == 1))); 
-   o_rf_p0_rdaddr = addrp0[4:0];
-   o_rf_p1_rden   = id_rts & ~raw_hazard_stall & (i_ex_rtr & valid_ex_instrn);// & rs2_used /*& (!raw_hazard_stall)*/;
-   o_rf_p1_rdaddr = addrp1[4:0];
-   o_rf_p2_rden   = (i_ex_rtr & valid_ex_instrn) & rs3_used /*& (!raw_hazard_stall)*/;
-   o_rf_p2_rdaddr = (o_fp_autogen[`FP_AUTOGEN_RF_RD_P2_IS_RS2] ? addrp1[4:0] : o_fp_autogen[`FP_AUTOGEN_RF_RD_HAS_RS3] ? addrp3: addrp2[4:0]);//instrn_id[31:27]);
-   o_rf_p3_rdaddr = addrp1[4:0];
-//   o_rf_wr_flag   = o_id_type_r | o_id_type_i | o_id_type_u | o_id_type_uj;
    o_rf_wraddr    = addrp2[4: 0];
 end
 
@@ -1031,94 +907,11 @@ assign o_id_immed_op = immed_op;
 //////
 // RAW hazard handling
 //////
-
-// Step 1
-logic [LQ_DEPTH-1:0]    lq_load_valid;
-logic [LQ_DEPTH-1:0]    lq_hit_entry_p0, lq_hit_entry_p1;
-logic [LQ_DEPTH-1:0]    lq_data_hit_entry_p0, lq_data_hit_entry_p1;
-logic [LQ_DEPTH_LOG2:0] lq_hit_cnt_p0, lq_hit_cnt_p1;
-logic [LQ_DEPTH-1:0]    lq_hit_entry_fp_p0, lq_hit_entry_fp_p1, lq_hit_entry_fp_p2, lq_hit_entry_fp_p3;
-logic [LQ_DEPTH-1:0]    lq_data_hit_entry_fp_p0, lq_data_hit_entry_fp_p1, lq_data_hit_entry_fp_p2, lq_data_hit_entry_fp_p3;
-logic [LQ_DEPTH_LOG2:0] lq_hit_cnt_fp_p0, lq_hit_cnt_fp_p1, lq_hit_cnt_fp_p2, lq_hit_cnt_fp_p3;
 logic [LQ_DEPTH-1:0]    lq_hit_entry_vex_p0, lq_hit_entry_vex_p1, lq_hit_entry_vex_p2, lq_hit_entry_vex_mask, lq_hit_entry_vex_r0, lq_hit_entry_vex_f0;
 logic [LQ_DEPTH_LOG2:0] lq_hit_cnt_vex_p0, lq_hit_cnt_vex_p1, lq_hit_cnt_vex_p2, lq_hit_cnt_vex_mask, lq_hit_cnt_vex_r0, lq_hit_cnt_vex_f0;
-logic [LQ_DEPTH_LOG2:0] lq_load_cnt;
 logic vec_vs3_hazard_stall, vec_vs2_hazard_stall, vec_vs1_hazard_stall,vec_mask_hazard_stall;
 logic vec_rs1_hazard_stall;   
 logic vec_fs1_hazard_stall;   
-logic lq_single_hit_p0, lq_single_hit_p1;
-logic lq_single_hit_fp_p0, lq_single_hit_fp_p1, lq_single_hit_fp_p2, lq_single_hit_fp_p3;
-
-logic lq_hit_p0, lq_hit_p1;
-logic lq_data_hit_p0, lq_data_hit_p1;
-logic [31:0] lq_fwd_data_p0, lq_fwd_data_p1;
-logic lq_hit_fp_p0, lq_hit_fp_p1, lq_hit_fp_p2, lq_hit_fp_p3;
-logic lq_data_hit_fp_p0, lq_data_hit_fp_p1, lq_data_hit_fp_p2, lq_data_hit_fp_p3;
-logic [31:0] lq_fwd_data_fp_p0, lq_fwd_data_fp_p1, lq_fwd_data_fp_p2, lq_fwd_data_fp_p3;
-
-always_comb begin
-  for(int x=0;x<LQ_DEPTH;++x) begin
-     // RF LQ Hit Logic
-     lq_hit_entry_p0[x] = (o_rf_p0_rdaddr == i_lq_broadside_info[x].rf_wraddr) & i_lq_broadside_valid[x] & i_lq_broadside_info[x].rf_wr_flag; 
-     lq_hit_entry_p1[x] = (o_rf_p1_rdaddr == i_lq_broadside_info[x].rf_wraddr) & i_lq_broadside_valid[x] & i_lq_broadside_info[x].rf_wr_flag;
-
-     lq_data_hit_entry_p0[x] = lq_hit_entry_p0[x] & i_lq_broadside_data_valid[x];
-     lq_data_hit_entry_p1[x] = lq_hit_entry_p1[x] & i_lq_broadside_data_valid[x];
-     
-     // FP RF LQ Hit Logic
-     lq_hit_entry_fp_p0[x] = (o_rf_p0_rdaddr == i_lq_broadside_info[x].rf_wraddr) & i_lq_broadside_valid[x] & i_lq_broadside_info[x].fp_rf_wr_flag;
-     lq_hit_entry_fp_p1[x] = (o_rf_p1_rdaddr == i_lq_broadside_info[x].rf_wraddr) & i_lq_broadside_valid[x] & i_lq_broadside_info[x].fp_rf_wr_flag;
-     lq_hit_entry_fp_p2[x] = (o_rf_p2_rdaddr == i_lq_broadside_info[x].rf_wraddr) & i_lq_broadside_valid[x] & i_lq_broadside_info[x].fp_rf_wr_flag;
-     lq_hit_entry_fp_p3[x] = (o_rf_p3_rdaddr == i_lq_broadside_info[x].rf_wraddr) & i_lq_broadside_valid[x] & i_lq_broadside_info[x].fp_rf_wr_flag;
-
-     lq_data_hit_entry_fp_p0[x] = lq_hit_entry_fp_p0[x] & i_lq_broadside_data_valid[x];
-     lq_data_hit_entry_fp_p1[x] = lq_hit_entry_fp_p1[x] & i_lq_broadside_data_valid[x];
-     lq_data_hit_entry_fp_p2[x] = lq_hit_entry_fp_p2[x] & i_lq_broadside_data_valid[x];
-     lq_data_hit_entry_fp_p3[x] = lq_hit_entry_fp_p3[x] & i_lq_broadside_data_valid[x];
-
-     lq_load_valid[x] = i_lq_broadside_valid[x] & i_lq_broadside_info[x].load;
-  end
-end
-
-always_comb begin
-  lq_hit_cnt_p0 = 'd0;
-  lq_hit_cnt_p1 = 'd0;
-  lq_hit_cnt_fp_p0 = 'd0;
-  lq_hit_cnt_fp_p1 = 'd0;
-  lq_hit_cnt_fp_p2 = 'd0;
-  lq_hit_cnt_fp_p3 = 'd0;
-  lq_load_cnt = 'd0;
-  for(int y=0;y<LQ_DEPTH;++y) begin
-  /* verilator lint_off WIDTH */
-    lq_hit_cnt_p0    = lq_hit_cnt_p0    + lq_hit_entry_p0[y];
-    lq_hit_cnt_p1    = lq_hit_cnt_p1    + lq_hit_entry_p1[y];
-    lq_hit_cnt_fp_p0 = lq_hit_cnt_fp_p0 + lq_hit_entry_fp_p0[y];
-    lq_hit_cnt_fp_p1 = lq_hit_cnt_fp_p1 + lq_hit_entry_fp_p1[y];
-    lq_hit_cnt_fp_p2 = lq_hit_cnt_fp_p2 + lq_hit_entry_fp_p2[y];
-    lq_hit_cnt_fp_p3 = lq_hit_cnt_fp_p3 + lq_hit_entry_fp_p3[y];
-    lq_load_cnt      = lq_load_cnt      + lq_load_valid[y];
-  /* verilator lint_on WIDTH */
-  end
-end
-
-always_comb begin
-   lq_fwd_data_p0[31:0] = '0;
-   lq_fwd_data_p1[31:0] = '0;
-
-   lq_fwd_data_fp_p0[31:0] = '0;
-   lq_fwd_data_fp_p1[31:0] = '0;
-   lq_fwd_data_fp_p2[31:0] = '0;
-   lq_fwd_data_fp_p3[31:0] = '0;
-   for (int i=0; i<LQ_DEPTH; i++) begin
-      lq_fwd_data_p0[31:0] |= ({32{lq_data_hit_entry_p0[i]}} & i_lq_broadside_data[i]);
-      lq_fwd_data_p1[31:0] |= ({32{lq_data_hit_entry_p1[i]}} & i_lq_broadside_data[i]);
-      
-      lq_fwd_data_fp_p0[31:0] |= ({32{lq_data_hit_entry_fp_p0[i]}} & i_lq_broadside_data[i]);
-      lq_fwd_data_fp_p1[31:0] |= ({32{lq_data_hit_entry_fp_p1[i]}} & i_lq_broadside_data[i]);
-      lq_fwd_data_fp_p2[31:0] |= ({32{lq_data_hit_entry_fp_p2[i]}} & i_lq_broadside_data[i]);
-      lq_fwd_data_fp_p3[31:0] |= ({32{lq_data_hit_entry_fp_p3[i]}} & i_lq_broadside_data[i]);
-   end
-end
 
 always_comb begin 
    for(int x=0;x<LQ_DEPTH;++x) begin
@@ -1139,122 +932,7 @@ tt_popcnt #(.WIDTH(LQ_DEPTH)) cnt_vrf_p2   (.req_in(lq_hit_entry_vex_p2[LQ_DEPTH
 tt_popcnt #(.WIDTH(LQ_DEPTH)) cnt_vrf_mask (.req_in(lq_hit_entry_vex_mask[LQ_DEPTH-1:0]),.req_sum(lq_hit_cnt_vex_mask[LQ_DEPTH_LOG2:0]));
 tt_popcnt #(.WIDTH(LQ_DEPTH)) cnt_vrf_r0   (.req_in(lq_hit_entry_vex_r0[LQ_DEPTH-1:0]),  .req_sum(lq_hit_cnt_vex_r0[LQ_DEPTH_LOG2:0]));   
 tt_popcnt #(.WIDTH(LQ_DEPTH)) cnt_vrf_f0   (.req_in(lq_hit_entry_vex_f0[LQ_DEPTH-1:0]),  .req_sum(lq_hit_cnt_vex_f0[LQ_DEPTH_LOG2:0]));   
-   
-assign lq_hit_p0 = |lq_hit_cnt_p0;
-assign lq_hit_p1 = |lq_hit_cnt_p1;
-assign lq_data_hit_p0 = |lq_data_hit_entry_p0;
-assign lq_data_hit_p1 = |lq_data_hit_entry_p1;
-   
-assign lq_single_hit_p0 = (lq_hit_cnt_p0 == 'd1);
-assign lq_single_hit_p1 = (lq_hit_cnt_p1 == 'd1);
-
-assign lq_hit_fp_p0 = |lq_hit_cnt_fp_p0;
-assign lq_hit_fp_p1 = |lq_hit_cnt_fp_p1;
-assign lq_hit_fp_p2 = |lq_hit_cnt_fp_p2;
-assign lq_hit_fp_p3 = |lq_hit_cnt_fp_p3;
-assign lq_data_hit_fp_p0 = |lq_data_hit_entry_fp_p0;
-assign lq_data_hit_fp_p1 = |lq_data_hit_entry_fp_p1;
-assign lq_data_hit_fp_p2 = |lq_data_hit_entry_fp_p2;
-assign lq_data_hit_fp_p3 = |lq_data_hit_entry_fp_p3;
-assign lq_single_hit_fp_p0 = (lq_hit_cnt_fp_p0 == 'd1);
-assign lq_single_hit_fp_p1 = (lq_hit_cnt_fp_p1 == 'd1);
-assign lq_single_hit_fp_p2 = (lq_hit_cnt_fp_p2 == 'd1);
-assign lq_single_hit_fp_p3 = (lq_hit_cnt_fp_p3 == 'd1);
-
-assign no_lq_load_pending = ~(|lq_load_cnt);
-   
-///////////////////
-// EX FWD / HAZARD
-// Step 2: detect all hazards and stall until resolved
-
-wire detect_int_hazard =   valid_int_instn | valid_mul_instn | valid_amo_instn | valid_bit_instn |
-                         |(valid_fp_instrn &  (fp_ldst_vld | fp_autogen[`FP_AUTOGEN_INT_TO_FP_MOV] | fp_autogen[`FP_AUTOGEN_INT_TO_FP_CVT]))
-                         |(valid_vec_instrn & (vec_autogen.sel_scalar | vecldst_autogen.load | vecldst_autogen.store | vsetOp_to_ex));
-wire detect_fp_hazard =  valid_fp_instrn & ~(fp_autogen[`FP_AUTOGEN_INT_TO_FP_MOV] | fp_autogen[`FP_AUTOGEN_INT_TO_FP_CVT]);
-
-// Int Reg Hazard and Forwarding logic
-wire fwd_p0_from_ex_1c =  detect_int_hazard & rs1_used & i_ex_dst_vld_1c & i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wr_flag & (o_rf_p0_rdaddr != 'd0) & 
-                         (o_rf_p0_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_p1_from_ex_1c =  detect_int_hazard & rs2_used & i_ex_dst_vld_1c & i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wr_flag & (o_rf_p1_rdaddr != 'd0) & 
-                         (o_rf_p1_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
-
-wire fwd_p0_from_fp_ex_1c =  detect_int_hazard & rs1_used & i_fp_ex_dst_vld_1c & i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wr_flag & (o_rf_p0_rdaddr != 'd0) & 
-                            (o_rf_p0_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_p1_from_fp_ex_1c =  detect_int_hazard & rs2_used & i_fp_ex_dst_vld_1c & i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wr_flag & (o_rf_p1_rdaddr != 'd0) & 
-                            (o_rf_p1_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wraddr);
-   
-wire fwd_p0_from_ex_2c =  detect_int_hazard & rs1_used & i_ex_dst_vld_2c & i_lq_broadside_info[i_ex_dst_lqid_2c].rf_wr_flag & (o_rf_p0_rdaddr != 'd0) & 
-                         lq_single_hit_p0 & (o_rf_p0_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_2c].rf_wraddr);
-wire fwd_p1_from_ex_2c =  detect_int_hazard & rs2_used & i_ex_dst_vld_2c & i_lq_broadside_info[i_ex_dst_lqid_2c].rf_wr_flag & (o_rf_p1_rdaddr != 'd0) & 
-                         lq_single_hit_p1 & (o_rf_p1_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_2c].rf_wraddr);
-
-wire fwd_p0_from_lq  =  detect_int_hazard & rs1_used & lq_data_hit_p0 & (o_rf_p0_rdaddr != 'd0) & lq_single_hit_p0;
-wire fwd_p1_from_lq  =  detect_int_hazard & rs2_used & lq_data_hit_p1 & (o_rf_p1_rdaddr != 'd0) & lq_single_hit_p1;
-   
-wire fwd_p0_from_mem =  detect_int_hazard & rs1_used & i_mem_dst_vld & i_lq_broadside_info[i_mem_dst_lqid].rf_wr_flag & (o_rf_p0_rdaddr != 'd0) & 
-                        lq_single_hit_p0 & (o_rf_p0_rdaddr == i_lq_broadside_info[i_mem_dst_lqid].rf_wraddr);
-wire fwd_p1_from_mem =  detect_int_hazard & rs2_used & i_mem_dst_vld & i_lq_broadside_info[i_mem_dst_lqid].rf_wr_flag & (o_rf_p1_rdaddr != 'd0) & 
-                        lq_single_hit_p1 & (o_rf_p1_rdaddr == i_lq_broadside_info[i_mem_dst_lqid].rf_wraddr);
-
-// FP Reg Hazard & Forwarding logic
-wire fwd_fp_p0_from_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P0] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_ex_dst_vld_1c &
-                            i_lq_broadside_info[i_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p0_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_fp_p1_from_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P1] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_ex_dst_vld_1c &
-                            i_lq_broadside_info[i_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p1_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_fp_p2_from_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P2] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_ex_dst_vld_1c &
-                            i_lq_broadside_info[i_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p2_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_fp_p3_from_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_ex_dst_vld_1c &
-                            i_lq_broadside_info[i_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p3_rdaddr == i_lq_broadside_info[i_ex_dst_lqid_1c].rf_wraddr);
-
-wire fwd_fp_p0_from_fp_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P0] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_1c &
-                               i_lq_broadside_info[i_fp_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p0_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_fp_p1_from_fp_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P1] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_1c &
-                               i_lq_broadside_info[i_fp_ex_dst_lqid_1c].fp_rf_wr_flag & & (o_rf_p1_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_fp_p2_from_fp_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P2] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_1c &
-                               i_lq_broadside_info[i_fp_ex_dst_lqid_1c].fp_rf_wr_flag & & (o_rf_p2_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wraddr);
-wire fwd_fp_p3_from_fp_ex_1c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_1c &
-                               i_lq_broadside_info[i_fp_ex_dst_lqid_1c].fp_rf_wr_flag & (o_rf_p3_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_1c].rf_wraddr);
-
-wire fwd_fp_p0_from_fp_ex_2c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P0] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_2c &
-                               lq_single_hit_fp_p0 & i_lq_broadside_info[i_fp_ex_dst_lqid_2c].fp_rf_wr_flag & (o_rf_p0_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_2c].rf_wraddr);
-wire fwd_fp_p1_from_fp_ex_2c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P1] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_2c &
-                               lq_single_hit_fp_p1 & i_lq_broadside_info[i_fp_ex_dst_lqid_2c].fp_rf_wr_flag &  (o_rf_p1_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_2c].rf_wraddr);
-wire fwd_fp_p2_from_fp_ex_2c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P2] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_2c &
-                               lq_single_hit_fp_p2 & i_lq_broadside_info[i_fp_ex_dst_lqid_2c].fp_rf_wr_flag & (o_rf_p2_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_2c].rf_wraddr);
-wire fwd_fp_p3_from_fp_ex_2c =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_fp_ex_dst_vld_2c &
-                               lq_single_hit_fp_p3 & i_lq_broadside_info[i_fp_ex_dst_lqid_2c].fp_rf_wr_flag & (o_rf_p3_rdaddr == i_lq_broadside_info[i_fp_ex_dst_lqid_2c].rf_wraddr);
-
-wire fwd_fp_p0_from_lq  =  detect_int_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P0]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_data_hit_fp_p0 & lq_single_hit_fp_p0;
-wire fwd_fp_p1_from_lq  =  detect_int_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P1]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_data_hit_fp_p1 & lq_single_hit_fp_p1;
-wire fwd_fp_p2_from_lq  =  detect_int_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P2]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_data_hit_fp_p2 & lq_single_hit_fp_p2;
-wire fwd_fp_p3_from_lq  =  detect_int_hazard & fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_data_hit_fp_p3 & lq_single_hit_fp_p3;
-
-wire fwd_fp_p0_from_mem =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P0] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_mem_dst_vld &
-                           i_lq_broadside_info[i_mem_dst_lqid].fp_rf_wr_flag & lq_single_hit_fp_p0 & (o_rf_p0_rdaddr == i_lq_broadside_info[i_mem_dst_lqid].rf_wraddr);
-wire fwd_fp_p1_from_mem =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P1] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_mem_dst_vld &
-                           i_lq_broadside_info[i_mem_dst_lqid].fp_rf_wr_flag & lq_single_hit_fp_p1 & (o_rf_p1_rdaddr == i_lq_broadside_info[i_mem_dst_lqid].rf_wraddr);
-wire fwd_fp_p2_from_mem =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_RD_EN_P2] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_mem_dst_vld &
-                           i_lq_broadside_info[i_mem_dst_lqid].fp_rf_wr_flag & lq_single_hit_fp_p2 & (o_rf_p2_rdaddr == i_lq_broadside_info[i_mem_dst_lqid].rf_wraddr);
-wire fwd_fp_p3_from_mem =  detect_fp_hazard & fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & i_mem_dst_vld &
-                           i_lq_broadside_info[i_mem_dst_lqid].fp_rf_wr_flag & lq_single_hit_fp_p3 & (o_rf_p3_rdaddr == i_lq_broadside_info[i_mem_dst_lqid].rf_wraddr);
-
-// Final hazard signals
-wire int_p0_hazard   = rs1_used & lq_hit_p0 & (o_rf_p0_rdaddr != 'd0) & detect_int_hazard;
-wire int_p1_hazard   = rs2_used & lq_hit_p1 & (o_rf_p1_rdaddr != 'd0) & detect_int_hazard;
-
-wire int_rs1_hazard_stall = int_p0_hazard & ~(fwd_p0_from_ex_1c | fwd_p0_from_ex_2c | fwd_p0_from_fp_ex_1c | fwd_p0_from_lq | fwd_p0_from_mem);
-wire int_rs2_hazard_stall = int_p1_hazard & ~(fwd_p1_from_ex_1c | fwd_p1_from_ex_2c | fwd_p1_from_fp_ex_1c | fwd_p1_from_lq | fwd_p1_from_mem);
-   
-wire fp_p0_hazard   = fp_autogen[`FP_AUTOGEN_RF_RD_EN_P0]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_hit_fp_p0 & detect_fp_hazard; 
-wire fp_p1_hazard   = fp_autogen[`FP_AUTOGEN_RF_RD_EN_P1]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_hit_fp_p1 & detect_fp_hazard; 
-wire fp_p2_hazard   = fp_autogen[`FP_AUTOGEN_RF_RD_EN_P2]    & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_hit_fp_p2 & detect_fp_hazard; 
-wire fp_p3_hazard   = fp_autogen[`FP_AUTOGEN_RF_STORE_RD_EN] & fp_autogen[`FP_AUTOGEN_RF_RD_OP_VALID] & lq_hit_fp_p3 & detect_fp_hazard; 
-
-wire fp_rs1_hazard_stall    = fp_p0_hazard & ~(fwd_fp_p0_from_ex_1c | fwd_fp_p0_from_fp_ex_1c | fwd_fp_p0_from_fp_ex_2c | fwd_fp_p0_from_lq | fwd_fp_p0_from_mem);
-wire fp_rs2_hazard_stall    = fp_p1_hazard & ~(fwd_fp_p1_from_ex_1c | fwd_fp_p1_from_fp_ex_1c | fwd_fp_p1_from_fp_ex_2c | fwd_fp_p1_from_lq | fwd_fp_p1_from_mem);
-wire fp_rs3_hazard_stall    = fp_p2_hazard & ~(fwd_fp_p2_from_ex_1c | fwd_fp_p2_from_fp_ex_1c | fwd_fp_p2_from_fp_ex_2c | fwd_fp_p2_from_lq | fwd_fp_p2_from_mem);
-wire fp_store_hazard_stall  = fp_p3_hazard & ~(fwd_fp_p3_from_ex_1c | fwd_fp_p3_from_fp_ex_1c | fwd_fp_p3_from_fp_ex_2c | fwd_fp_p3_from_lq | fwd_fp_p3_from_mem);
-
+      
 //IMPROVE_msalvi: No forwarding from  vex output to input(either vex or int or fp), to avoid timing issue. 
 // If timing looks good we may later disable this check at the expense of a bypass from vex output..
 //IMPROVE: msalvi what about v_lmul[2]? How does that affect mask, right now this check is pessimistic
@@ -1271,9 +949,9 @@ assign vec_rs1_hazard_stall =  valid_vec_instrn & (lq_hit_cnt_vex_r0 > '0);
 assign vec_fs1_hazard_stall =  valid_vec_instrn & (lq_hit_cnt_vex_f0 > '0); 
 assign vec_mask_hazard_stall  = valid_vec_instrn & (lq_hit_cnt_vex_mask > '0) & ~id_replay;
 
-wire rs1_hazard_stall = int_rs1_hazard_stall | fp_rs1_hazard_stall | vec_vs1_hazard_stall  | vec_rs1_hazard_stall | vec_fs1_hazard_stall;
-wire rs2_hazard_stall = int_rs2_hazard_stall | fp_rs2_hazard_stall | fp_store_hazard_stall | vec_vs2_hazard_stall;
-wire rs3_hazard_stall = fp_rs3_hazard_stall  | vec_vs3_hazard_stall;
+wire rs1_hazard_stall = vec_vs1_hazard_stall  | vec_rs1_hazard_stall | vec_fs1_hazard_stall;
+wire rs2_hazard_stall = vec_vs2_hazard_stall;
+wire rs3_hazard_stall = vec_vs3_hazard_stall;
 
 assign raw_hazard_stall_fwd = rs1_hazard_stall | rs2_hazard_stall | rs3_hazard_stall | vec_mask_hazard_stall;
 assign raw_hazard_stall_vex = vec_vs1_hazard_stall  | vec_rs1_hazard_stall | vec_fs1_hazard_stall |
@@ -1282,196 +960,9 @@ assign raw_hazard_stall_vex = vec_vs1_hazard_stall  | vec_rs1_hazard_stall | vec
                               vec_mask_hazard_stall;
 assign raw_hazard_stall     = (valid_vec_instrn && !vec_ldst_vld && !vsetOp_to_ex) ? raw_hazard_stall_vex : raw_hazard_stall_fwd;
 
-
-// Step 3: Determine proper forwarding source for both RS1 and RS2 and produce two outputs - SRC_OP1, SRC_OP1 which can take input from registers or functional units (ALU, LOAD)
-logic        int_p0_fwd_reg, int_p1_fwd_reg;
-logic [31:0] int_p0_fwd_data_reg, int_p1_fwd_data_reg;
-
-logic        fp_p0_fwd_reg, fp_p1_fwd_reg, fp_p2_fwd_reg, fp_p3_fwd_reg;
-logic [31:0] fp_p0_fwd_data_reg, fp_p1_fwd_data_reg, fp_p2_fwd_data_reg, fp_p3_fwd_data_reg;
-
-logic fp_rd_neg_p1_d;
-logic fp_rd_neg_p2_d;
-logic fp_rd_fp16_src, fp_rd_fp16_src_d;
-assign fp_rd_fp16_src = fp_autogen[`FP_AUTOGEN_TAKE_F16_SRC];
-
-always_ff @(posedge i_clk) begin
-   if(~i_reset_n) begin
-      int_p0_fwd_reg      <= '0;
-      int_p0_fwd_data_reg <= '0;
-      int_p1_fwd_reg      <= '0;
-      int_p1_fwd_data_reg <= '0;
-
-   end
-   else begin
-      if ((i_ex_rtr & o_id_ex_rts) | (i_fp_ex0_id_rtr & o_id_fp_ex0_rts)) begin
-         int_p0_fwd_reg      <= (fwd_p0_from_ex_1c | fwd_p0_from_ex_2c | fwd_p0_from_fp_ex_1c | fwd_p0_from_lq | fwd_p0_from_mem);
-         if (fwd_p0_from_ex_1c | fwd_p0_from_ex_2c | fwd_p0_from_fp_ex_1c | fwd_p0_from_lq | fwd_p0_from_mem)
-            int_p0_fwd_data_reg <= (fwd_p0_from_ex_1c | fwd_p0_from_fp_ex_1c) ? (({32{fwd_p0_from_ex_1c}} & i_ex_fwd_data_1c) | ({32{fwd_p0_from_fp_ex_1c}} & i_fp_ex_fwd_data_1c)) :
-                                                                                fwd_p0_from_ex_2c ? i_ex_fwd_data_2c : 
-                                                                                                    (({32{fwd_p0_from_lq}} & lq_fwd_data_p0) | ({32{fwd_p0_from_mem}} & i_mem_fwd_data));
-         
-         int_p1_fwd_reg      <= (fwd_p1_from_ex_1c | fwd_p1_from_ex_2c | fwd_p1_from_fp_ex_1c | fwd_p1_from_lq | fwd_p1_from_mem);
-         if (fwd_p1_from_ex_1c | fwd_p1_from_ex_2c | fwd_p1_from_fp_ex_1c | fwd_p1_from_lq | fwd_p1_from_mem)
-            int_p1_fwd_data_reg <= (fwd_p1_from_ex_1c | fwd_p1_from_fp_ex_1c) ? (({32{fwd_p1_from_ex_1c}} & i_ex_fwd_data_1c) | ({32{fwd_p1_from_fp_ex_1c}} & i_fp_ex_fwd_data_1c)) :
-                                                                                fwd_p1_from_ex_2c ? i_ex_fwd_data_2c : 
-                                                                                                    (({32{fwd_p1_from_lq}} & lq_fwd_data_p1) | ({32{fwd_p1_from_mem}} & i_mem_fwd_data));
-      end
-   end
-end
-
-// FP Forwarding
-if (INCL_FP) begin
-always_ff @(posedge i_clk) begin
-   if(~i_reset_n) begin
-      fp_p0_fwd_reg       <= '0;
-      fp_p0_fwd_data_reg  <= '0;
-      fp_p1_fwd_reg       <= '0;
-      fp_p1_fwd_data_reg  <= '0;
-      fp_p2_fwd_reg       <= '0;
-      fp_p2_fwd_data_reg  <= '0;
-      fp_p3_fwd_reg       <= '0;
-      fp_p3_fwd_data_reg  <= '0;
-
-      fp_rd_fp16_src_d <= '0;
-      fp_rd_neg_p1_d <= 'h0;
-      fp_rd_neg_p2_d <= 'h0;
-
-   end
-   else begin
-      if ((i_ex_rtr & o_id_ex_rts) | (i_fp_ex0_id_rtr & o_id_fp_ex0_rts)) begin
-         // FP Load/Stores go through EX
-         fp_p3_fwd_reg       <= (fwd_fp_p3_from_ex_1c | fwd_fp_p3_from_fp_ex_1c | fwd_fp_p3_from_fp_ex_2c | fwd_fp_p3_from_lq | fwd_fp_p3_from_mem);
-         if (fwd_fp_p3_from_ex_1c | fwd_fp_p3_from_fp_ex_1c | fwd_fp_p3_from_fp_ex_2c | fwd_fp_p3_from_lq | fwd_fp_p3_from_mem)
-            fp_p3_fwd_data_reg  <= (fwd_fp_p3_from_ex_1c | fwd_fp_p3_from_fp_ex_1c) ? (({32{fwd_fp_p3_from_ex_1c}} & i_ex_fwd_data_1c) | ({32{fwd_fp_p3_from_fp_ex_1c}} & i_fp_ex_fwd_data_1c)) :
-				                                                      fwd_fp_p3_from_fp_ex_2c ? i_fp_ex_fwd_data_2c:
-                                                                                                                (({32{fwd_fp_p3_from_lq}} & lq_fwd_data_fp_p3) | ({32{fwd_fp_p3_from_mem}} & i_mem_fwd_data));
-	 
-      end
-
-      if (i_fp_ex0_id_rtr & o_id_fp_ex0_rts) begin
-         fp_p0_fwd_reg       <= (fwd_fp_p0_from_ex_1c | fwd_fp_p0_from_fp_ex_1c | fwd_fp_p0_from_fp_ex_2c | fwd_fp_p0_from_lq | fwd_fp_p0_from_mem);
-         if (fwd_fp_p0_from_ex_1c | fwd_fp_p0_from_fp_ex_1c | fwd_fp_p0_from_fp_ex_2c | fwd_fp_p0_from_lq | fwd_fp_p0_from_mem)
-            fp_p0_fwd_data_reg  <= (fwd_fp_p0_from_ex_1c | fwd_fp_p0_from_fp_ex_1c) ? (({32{fwd_fp_p0_from_ex_1c}} & i_ex_fwd_data_1c) | ({32{fwd_fp_p0_from_fp_ex_1c}} & i_fp_ex_fwd_data_1c)) :
-				                                                      fwd_fp_p0_from_fp_ex_2c ? i_fp_ex_fwd_data_2c:
-                                                                                                                (({32{fwd_fp_p0_from_lq}} & lq_fwd_data_fp_p0) | ({32{fwd_fp_p0_from_mem}} & i_mem_fwd_data));
-           	 
-         fp_p1_fwd_reg       <= (fwd_fp_p1_from_ex_1c | fwd_fp_p1_from_fp_ex_1c | fwd_fp_p1_from_fp_ex_2c | fwd_fp_p1_from_lq | fwd_fp_p1_from_mem);
-         if (fwd_fp_p1_from_ex_1c | fwd_fp_p1_from_fp_ex_1c | fwd_fp_p1_from_fp_ex_2c | fwd_fp_p1_from_lq | fwd_fp_p1_from_mem)
-            fp_p1_fwd_data_reg  <= (fwd_fp_p1_from_ex_1c | fwd_fp_p1_from_fp_ex_1c) ? (({32{fwd_fp_p1_from_ex_1c}} & i_ex_fwd_data_1c) | ({32{fwd_fp_p1_from_fp_ex_1c}} & i_fp_ex_fwd_data_1c)) :
-				                                                      fwd_fp_p1_from_fp_ex_2c ? i_fp_ex_fwd_data_2c:
-                                                                                                                (({32{fwd_fp_p1_from_lq}} & lq_fwd_data_fp_p1) | ({32{fwd_fp_p1_from_mem}} & i_mem_fwd_data));
-           	 
-         fp_p2_fwd_reg       <= (fwd_fp_p2_from_ex_1c | fwd_fp_p2_from_fp_ex_1c | fwd_fp_p2_from_fp_ex_2c | fwd_fp_p2_from_lq | fwd_fp_p2_from_mem);
-         if (fwd_fp_p2_from_ex_1c | fwd_fp_p2_from_fp_ex_1c | fwd_fp_p2_from_fp_ex_2c | fwd_fp_p2_from_lq | fwd_fp_p2_from_mem)
-            fp_p2_fwd_data_reg  <= (fwd_fp_p2_from_ex_1c | fwd_fp_p2_from_fp_ex_1c) ? (({32{fwd_fp_p2_from_ex_1c}} & i_ex_fwd_data_1c) | ({32{fwd_fp_p2_from_fp_ex_1c}} & i_fp_ex_fwd_data_1c)) :
-				                                                      fwd_fp_p2_from_fp_ex_2c ? i_fp_ex_fwd_data_2c:
-                                                                                                                (({32{fwd_fp_p2_from_lq}} & lq_fwd_data_fp_p2) | ({32{fwd_fp_p2_from_mem}} & i_mem_fwd_data));
-
-         // FP Pipe forwarding
-         fp_rd_neg_p1_d         <= fp_autogen[`FP_AUTOGEN_RD_NEG_P1];
-         fp_rd_neg_p2_d         <= fp_autogen[`FP_AUTOGEN_RD_NEG_P2];
-         fp_rd_fp16_src_d       <= fp_rd_fp16_src;
-      end
-   end
-end
-
-end else begin // NO FP Forwarding
-
-assign fp_p0_fwd_reg       = '0;
-assign fp_p0_fwd_data_reg  = '0;
-assign fp_p1_fwd_reg       = '0;
-assign fp_p1_fwd_data_reg  = '0;
-assign fp_p2_fwd_reg       = '0;
-assign fp_p2_fwd_data_reg  = '0;
-assign fp_p3_fwd_reg       = '0;
-assign fp_p3_fwd_data_reg  = '0;
-assign fp_rd_fp16_src_d    = '0;
-assign fp_rd_neg_p1_d      = '0;
-assign fp_rd_neg_p2_d      = '0;
-
-end // END FP Forwarding
-
-assign o_fwd_p0_reg = int_p0_fwd_reg ? int_p0_fwd_data_reg : i_rf_p0_reg;
-assign o_fwd_p1_reg = int_p1_fwd_reg ? int_p1_fwd_data_reg : i_rf_p1_reg;
   
-//FP forwarding 
-reg [FP_RF_RD_PORTS-1:0][31:0]     fp_fwd_mux_out;
-
-// Port 0-2
-assign fp_fwd_mux_out[0] = fp_p0_fwd_reg ? fp_p0_fwd_data_reg : i_fp_rf_rd_ret_reg[0][31:0];
-assign fp_fwd_mux_out[1] = fp_p1_fwd_reg ? fp_p1_fwd_data_reg : i_fp_rf_rd_ret_reg[1][31:0];
-assign fp_fwd_mux_out[2] = fp_p2_fwd_reg ? fp_p2_fwd_data_reg : i_fp_rf_rd_ret_reg[2][31:0];
-assign fp_fwd_mux_out[3] = fp_p3_fwd_reg ? fp_p3_fwd_data_reg : i_fp_rf_rd_ret_reg[3][31:0];
-   
-// Port 3 (Used for fp store only)
-assign o_fp_rf_p3_reg    =  fp_p3_fwd_reg ? fp_p3_fwd_data_reg : i_fp_rf_rd_ret_reg[3][31:0];
-
-// NaN unboxing for FP16
-assign {o_fp_fwd_sign_reg[0                     ],
-        o_fp_fwd_exp_reg [0][EXP_WIDTH-1:0],
-        o_fp_fwd_man_reg [0][MAN_WIDTH-1:0] } =  fp_rd_fp16_src_d ? tt_briscv_pkg::f16_to_f32_unboxing(fp_fwd_mux_out[0])
-                                                                        :                                    fp_fwd_mux_out[0];
-
-assign {o_fp_fwd_sign_reg[1                     ],
-        o_fp_fwd_exp_reg [1][EXP_WIDTH-1:0],
-        o_fp_fwd_man_reg [1][MAN_WIDTH-1:0] } = (fp_rd_fp16_src_d ? tt_briscv_pkg::f16_to_f32_unboxing(fp_fwd_mux_out[1])
-                                                                        :                                    fp_fwd_mux_out[1] ) ^ {fp_rd_neg_p1_d, 31'h0};
-assign {o_fp_fwd_sign_reg[2                     ],
-        o_fp_fwd_exp_reg [2][EXP_WIDTH-1:0],
-        o_fp_fwd_man_reg [2][MAN_WIDTH-1:0] } = (fp_rd_fp16_src_d ? tt_briscv_pkg::f16_to_f32_unboxing(fp_fwd_mux_out[2])
-                                                                        :                                    fp_fwd_mux_out[2] ) ^ {fp_rd_neg_p2_d, 31'h0};
-
-assign {o_fp_fwd_sign_reg[3                     ],
-        o_fp_fwd_exp_reg [3][EXP_WIDTH-1:0],
-        o_fp_fwd_man_reg [3][MAN_WIDTH-1:0] } =  fp_rd_fp16_src_d ? tt_briscv_pkg::f16_to_f32_unboxing(fp_fwd_mux_out[3])
-                                                                        :                                    fp_fwd_mux_out[3];
-
-always_comb begin
-   tt_briscv_pkg::float_exam_special_conditions(.data_in({o_fp_fwd_sign_reg[0                     ],
-                                                          o_fp_fwd_exp_reg [0][EXP_WIDTH-1:0],
-                                                          o_fp_fwd_man_reg [0][MAN_WIDTH-1:0] }),
-                                                .is_fp16( fp_rd_fp16_src_d                           ),
-                                                .is_nan ( o_fp_fwd_nan_reg [0                     ]  ),
-                                                .is_zero( o_fp_fwd_zero_reg[0                     ]  ),
-                                                .is_inf ( o_fp_fwd_inf_reg [0                     ]  ) );
-
-   tt_briscv_pkg::float_exam_special_conditions(.data_in({o_fp_fwd_sign_reg[1                     ],
-                                                          o_fp_fwd_exp_reg [1][EXP_WIDTH-1:0],
-                                                          o_fp_fwd_man_reg [1][MAN_WIDTH-1:0] }),
-                                                .is_fp16( fp_rd_fp16_src_d                           ),
-                                                .is_nan ( o_fp_fwd_nan_reg [1                     ]  ),
-                                                .is_zero( o_fp_fwd_zero_reg[1                     ]  ),
-                                                .is_inf ( o_fp_fwd_inf_reg [1                     ]  ) );
-
-   tt_briscv_pkg::float_exam_special_conditions(.data_in({o_fp_fwd_sign_reg[2                     ],
-                                                          o_fp_fwd_exp_reg [2][EXP_WIDTH-1:0],
-                                                          o_fp_fwd_man_reg [2][MAN_WIDTH-1:0] }),
-                                                .is_fp16( fp_rd_fp16_src_d                           ),
-                                                .is_nan ( o_fp_fwd_nan_reg [2                     ]  ),
-                                                .is_zero( o_fp_fwd_zero_reg[2                     ]  ),
-                                                .is_inf ( o_fp_fwd_inf_reg [2                     ]  ) );
-
-   tt_briscv_pkg::float_exam_special_conditions(.data_in({o_fp_fwd_sign_reg[3                     ],
-                                                          o_fp_fwd_exp_reg [3][EXP_WIDTH-1:0],
-                                                          o_fp_fwd_man_reg [3][MAN_WIDTH-1:0] }),
-                                                .is_fp16( fp_rd_fp16_src_d                           ),
-                                                .is_nan ( o_fp_fwd_nan_reg [3                     ]  ),
-                                                .is_zero( o_fp_fwd_zero_reg[3                     ]  ),
-                                                .is_inf ( o_fp_fwd_inf_reg [3                     ]  ) );
-end
-
 // Drive out new inst dispatch -- This should also track the number of inst retired
 wire id_ex_instdisp = id_rts & ~raw_hazard_stall & ~id_replay;
 tt_pipe_stage #(.WIDTH(1)) I_instdisp ( i_clk, i_reset_n, 1'b1, id_ex_instdisp, o_id_ex_instdisp);
-
-
-   ////////////////
-   // Assertions //
-   ////////////////
-`ifdef SIM
-   // RTS to EX, FP, and VEX is one-hot
-   `ASSERT_COND_CLK(id_rts, $onehot0({o_id_ex_rts, o_id_fp_ex0_rts, o_id_vex_rts}), "RTS to EX, FP, and VEX is one-hot");
-`endif 
 
 endmodule

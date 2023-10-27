@@ -19,8 +19,6 @@ module tt_scoreboard_ovi(input logic       clk,
                          input logic	     i_id_vex_rts,
                          input logic [4:0] i_id_sb_id,
                          input logic       i_id_mem_lqalloc,
-                         input logic       i_lq_commit,
-                         input logic [2:0] i_dest_lqid,
                          input logic       i_first_alloc,
                          input logic       i_last_alloc,
                          input logic [4:0] i_load_sb_id,
@@ -96,8 +94,8 @@ module tt_scoreboard_ovi(input logic       clk,
         end
      end
 
-     if (i_lq_commit) begin
-        ref_count_nxt[sb_id_buffer[i_dest_lqid]] -= 4'h1;
+     if (i_rd_valid) begin
+        ref_count_nxt[sb_id_buffer[i_rd_lqid]] -= 4'h1;
      end
   end
 
@@ -143,7 +141,7 @@ module tt_scoreboard_ovi(input logic       clk,
           scoreboard[c].drained <= 1;
 
         // Update ref_cnt
-        if(i_id_mem_lqalloc || i_lq_commit) begin
+        if(i_id_mem_lqalloc || i_rd_valid) begin
           scoreboard[c].ref_count <= ref_count_nxt[c];
         end
       end
