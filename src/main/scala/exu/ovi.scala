@@ -68,10 +68,10 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   io.debug_wb_vec_wdata := vpu.io.debug_wb_vec_wdata
   io.debug_wb_vec_wmask := vpu.io.debug_wb_vec_wmask
 
-  val MAX_ISSUE_CREDIT = 16
+  val MAX_ISSUE_CREDIT = 32
   val issue_credit_cnt = RegInit(MAX_ISSUE_CREDIT.U)
   issue_credit_cnt := issue_credit_cnt + vpu.io.issue_credit - vpu.io.issue_valid 
-  val vpu_ready = issue_credit_cnt =/= 0.U
+  val vpu_ready = issue_credit_cnt =/= 0.U && !sb_valid.reduce(_ & _)
 
 /*
    OVI LS helper start

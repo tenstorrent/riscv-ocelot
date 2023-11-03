@@ -233,6 +233,10 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [3:0] req_buffer_wptr;
   logic drain_load_buffer;
   logic [2:0] load_buffer_rptr;
+  logic [LQ_DEPTH_LOG2-1:0] load_buffer_lqid;
+
+  logic       drain_complete_valid;
+  logic [2:0] drain_complete_ldb_idx;
 
   logic [63:0] scalar_opnd;
   logic [63:0] scalar_opnd_reg;
@@ -240,12 +244,13 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [511:0] shifted_load_data;
   logic [63:0]  byte_en;
   logic [4:0]   sb_vd;
-  logic [2:0]   sb_lqid;
+  logic [2:0]   sb_ldb_start;
   logic [1:0]   sb_data_size;
   logic [1:0]   sb_index_size;
   logic [2:0]   sb_load_stride_eew;
   logic         sb_drain_load_buffer;
   logic [2:0]   sb_drain_lqid_start;
+  logic [2:0]   sb_drain_ldb_start;
   logic [2:0]   sb_ref_count;
   logic         sb_completed_valid;
   logic [4:0]   sb_completed_sb_id;
@@ -276,6 +281,53 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic       is_masked_memop;
   logic       id_is_indexldst;
   logic       id_is_maskldst;
+
+
+  //////////
+  // IF
+
+  logic       ldb_alloc_valid;
+  logic       ldb_alloc_ack;
+  logic [4:0] ldb_alloc_sb_id;
+  logic [3:0] ldb_alloc_size;
+  logic [4:0] memop_sync_start_sb_id_nxt;
+  logic       memop_sync_start_nxt;
+
+  tt_fifo #(
+    .DEPTH(32)
+  ) fifo0
+  (
+    .clk(clk),
+    .reset_n(reset_n),
+
+    .issue_inst(issue_inst),
+    .issue_sb_id(issue_sb_id),
+    .issue_scalar_opnd(issue_scalar_opnd),
+    .issue_vcsr(issue_vcsr),
+    .issue_vcsr_lmulb2(issue_vcsr_lmulb2),
+    .issue_valid(issue_valid),
+
+    .dispatch_sb_id(dispatch_sb_id),
+    .dispatch_next_senior(dispatch_next_senior),
+    .dispatch_kill(dispatch_kill),
+
+    .memop_sync_start(memop_sync_start_nxt),
+    .memop_sync_start_sb_id(memop_sync_start_sb_id_nxt),
+    .ldb_alloc_valid(ldb_alloc_valid),
+    .ldb_alloc_ack(ldb_alloc_ack),
+    .ldb_alloc_sb_id(ldb_alloc_sb_id),
+    .ldb_alloc_size(ldb_alloc_size),
+
+    .read_req(ocelot_read_req),
+    .read_valid(read_valid),
+    .read_issue_inst(read_issue_inst),
+    .read_issue_sb_id(read_issue_sb_id),
+    .read_issue_scalar_opnd(read_issue_scalar_opnd),
+    .read_issue_vcsr(read_issue_vcsr),
+    .read_issue_vcsr_lmulb2(read_issue_vcsr_lmulb2)
+  );
+
+  assign issue_credit = read_valid && ocelot_read_req;
 
   always_ff @(posedge clk) begin
     if(!reset_n) begin
@@ -677,7 +729,7 @@ tt_lq #(.LQ_DEPTH(LQ_DEPTH),
    // Load return data
    .i_data_vld_0(drain_load_buffer),
    .i_data_vld_cancel_0('0),
-   .i_data_resp_id_0(DATA_REQ_ID_WIDTH'({7'b0,load_buffer_rptr[2:0]})),
+   .i_data_resp_id_0(DATA_REQ_ID_WIDTH'(load_buffer_lqid)),
    .i_data_rddata_0(load_buffer[load_buffer_rptr[2:0]]),
  
    .i_data_vld_1('0),
@@ -745,6 +797,7 @@ assign mem_vrf_wr_qual       = lq_rden & lq_mem_vrf_wr_flag & !lq_rdinfo.squash_
 assign mem_vrf_wraddr[4:0]   = lq_mem_rf_wraddr[4:0];    
 assign mem_vrf_wrdata[VLEN-1:0] = lq_rddata[VLEN-1:0];
 assign mem_vrf_wrexc         = lq_rdinfo.vec_load ? '0 : lq_rdexc;
+assign mem_vrf_wrmask        = !lq_rdinfo.vl_is_zero;
 
 //fixme_msalvi asserrt one hot between vrf and rf wr and fp
 //Use FP Port0 for now for ex results. Will use port 1 when dual issue is enabled
@@ -829,15 +882,6 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     end
   end
 
-  logic memop_sync_start_nxt;
-  assign memop_sync_start_nxt = (vecldst_autogen_store || vecldst_autogen_load) && id_ex_rts && ex_id_rtr && id_ex_vecldst_autogen.ldst_iter_cnt == 0;
-  always_ff@(posedge clk) begin
-    if(!reset_n)
-      memop_sync_start <= 0;
-    else
-      memop_sync_start <= memop_sync_start_nxt;
-  end
-
   // This queue should never overflow, so I'm not going to add phase bits
   // to check if it's full or not.
   localparam sbid_queue_depth = 8;
@@ -865,38 +909,14 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     end
   end
 
-  assign issue_credit = read_valid && ocelot_read_req;
-
-  tt_fifo #(
-    .DEPTH(16)
-  ) fifo0
-  (
-    .clk(clk),
-    .reset_n(reset_n),
-
-    .issue_inst(issue_inst),
-    .issue_sb_id(issue_sb_id),
-    .issue_scalar_opnd(issue_scalar_opnd),
-    .issue_vcsr(issue_vcsr),
-    .issue_vcsr_lmulb2(issue_vcsr_lmulb2),
-    .issue_valid(issue_valid),
-
-    .dispatch_sb_id(dispatch_sb_id),
-    .dispatch_next_senior(dispatch_next_senior),
-    .dispatch_kill(dispatch_kill),
-
-    .read_req(ocelot_read_req),
-    .read_valid(read_valid),
-    .read_issue_inst(read_issue_inst),
-    .read_issue_sb_id(read_issue_sb_id),
-    .read_issue_scalar_opnd(read_issue_scalar_opnd),
-    .read_issue_vcsr(read_issue_vcsr),
-    .read_issue_vcsr_lmulb2(read_issue_vcsr_lmulb2)
-  );
-
   tt_scoreboard_ovi scoreboard
                    (.clk(clk),
                     .reset_n(reset_n),
+                    .i_issue_valid(issue_valid),
+                    .i_issue_sb_id(issue_sb_id),
+                    .i_issue_inst(issue_inst),
+                    .i_issue_vsew(issue_vcsr[38:36]),
+                    .i_issue_scalar_opnd(issue_scalar_opnd),
                     .i_vd(id_ex_instrn[11:7]),
                     .i_rd(ocelot_instrn_commit_data[63:0]),
                     .i_rd_valid(lq_rden),
@@ -920,8 +940,16 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
                     .i_last_alloc(id_mem_lq_done),
                     .i_load_sb_id(load_seq_id[33:29]),
 
+                    .i_memop_sync_start(memop_sync_start_nxt),
+                    .i_memop_sync_start_sb_id(memop_sync_start_sb_id_nxt),
+
+                    .ldb_alloc_valid(ldb_alloc_valid),
+                    .ldb_alloc_ack(ldb_alloc_ack),
+                    .ldb_alloc_sb_id(ldb_alloc_sb_id),
+                    .ldb_alloc_size(ldb_alloc_size),
+
                     .o_vd(sb_vd),
-                    .o_lqid(sb_lqid),
+                    .o_ldb_start(sb_ldb_start),
                     .o_data_size(sb_data_size),
                     .o_index_size(sb_index_size),
                     .o_load_stride_eew(sb_load_stride_eew),
@@ -930,6 +958,10 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
                     .i_draining_load_buffer(drain_load_buffer),
                     .o_drain_ref_count(sb_ref_count),
                     .o_drain_lqid_start(sb_drain_lqid_start),
+                    .o_drain_ldb_start(sb_drain_ldb_start),
+
+                    .i_drain_complete_valid(drain_complete_valid),
+                    .i_drain_complete_ldb_idx(drain_complete_ldb_idx),
 
                     .o_completed_valid(sb_completed_valid),
                     .o_completed_sb_id(sb_completed_sb_id),
@@ -1047,15 +1079,22 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
   end
 
   always @(posedge clk) begin
-    if(!reset_n)
-      {load_buffer_rptr} <= '0;
-    else begin
-      if(!drain_load_buffer && sb_drain_load_buffer)
-        load_buffer_rptr <= sb_drain_lqid_start;
-      else if(drain_load_buffer)
+    if(!reset_n) begin
+      load_buffer_rptr <= '0;
+      load_buffer_lqid <= '0;
+    end else begin
+      if(!drain_load_buffer && sb_drain_load_buffer) begin
+        load_buffer_rptr <= sb_drain_ldb_start;
+        load_buffer_lqid <= sb_drain_lqid_start;
+      end else if(drain_load_buffer) begin
         load_buffer_rptr <= load_buffer_rptr + 1;
+        load_buffer_lqid <= load_buffer_lqid + 1;
+      end
     end
   end
+
+  assign drain_complete_valid = drain_load_buffer;
+  assign drain_complete_ldb_idx = load_buffer_rptr;
 
   integer k;
   always @(posedge clk) begin
@@ -1064,7 +1103,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
         load_buffer[k] <= 0;
     else if(load_valid) begin
       for(k=0; k<VLEN; k=k+8)
-        load_buffer[(v_reg-sb_vd+sb_lqid)%8][k+:8] <= byte_en[k/8] ? shifted_load_data[k+:8] : load_buffer[(v_reg-sb_vd+sb_lqid)%8][k+:8];
+        load_buffer[(v_reg-sb_vd+sb_ldb_start)%8][k+:8] <= byte_en[k/8] ? shifted_load_data[k+:8] : load_buffer[(v_reg-sb_vd+sb_ldb_start)%8][k+:8];
     end
   end
 
@@ -1122,7 +1161,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
                (.i_clk(clk),
                 .i_reset_n(reset_n),
                 .i_is_masked_memop(id_is_masked_memop),
-                .i_memop_sync_start_next(memop_sync_start_nxt),
+                .i_memop_sync_start_next(id_ex_units_rts && ex_id_rtr),
                 .i_is_indexed(id_is_indexldst),
                 .i_mask_data(vmask_rddata),
                 .i_index_data(vs2_rddata),
@@ -1140,6 +1179,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
   // OVI Outputs
   always @(posedge clk) begin
     if(!reset_n) begin
+      memop_sync_start <= 0;
       store_valid <= 0;
       store_data <= 0;
       completed_valid <= 0;
@@ -1151,6 +1191,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
       completed_illegal <= 0;
     end
     else begin
+      memop_sync_start <= memop_sync_start_nxt;
       store_valid <= store_valid_nxt;
       store_data <= store_data_nxt;
       completed_valid <= sb_completed_valid;

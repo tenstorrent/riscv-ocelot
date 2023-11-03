@@ -208,12 +208,12 @@ for (genvar i=0; i<LQ_DEPTH; i++) begin
 
    //lq_set_data_valid[i]   = 1'b0;
    assign lq_clear_data_valid[i] = lq_clear_tag_valid[i];
-   assign lq_set_data_valid[i] = ((lq_fifo_write_data_en[0] & (lq_fifo_write_data_addr[0] == i)) & ~o_lq_broadside_info[i].vec_load & ~o_lq_broadside_info[i].load)    | // Don't set the valid for loads
-                                 ((lq_fifo_write_data_en[1] & (lq_fifo_write_data_addr[1] == i)) & ~o_lq_broadside_info[i].vec_load & ~o_lq_broadside_info[i].load)    | // Don't set the valid for loads
-                                 ((lq_fifo_write_data_en[2] & (lq_fifo_write_data_addr[2] == i)) & ~o_lq_broadside_info[i].vec_load & ~o_lq_broadside_info[i].load)    | // Don't set the valid for loads
-                                 ((lq_fifo_write_data_en[3] & (lq_fifo_write_data_addr[3] == i)) & (~o_lq_broadside_info[i].vec_load | (lq_vecld_last_idx_sent[i] & (lq_refcount_in[i] == 4'h0)))) |
-                                 ((lq_fifo_write_data_en[4] & (lq_fifo_write_data_addr[4] == i)) & (~o_lq_broadside_info[i].vec_load | (lq_vecld_last_idx_sent[i] & (lq_refcount_in[i] == 4'h0)))) |
-                                 ((lq_fifo_write_data_en[5] & (lq_fifo_write_data_addr[5] == i)) & (~o_lq_broadside_info[i].vec_load | (lq_vecld_last_idx_sent[i] & (lq_refcount_in[i] == 4'h0)))); 
+   assign lq_set_data_valid[i] = ((lq_fifo_write_data_en[0] & (lq_fifo_write_data_addr[0] == i))) |
+                                 ((lq_fifo_write_data_en[1] & (lq_fifo_write_data_addr[1] == i))) |
+                                 ((lq_fifo_write_data_en[2] & (lq_fifo_write_data_addr[2] == i))) | 
+                                 ((lq_fifo_write_data_en[3] & (lq_fifo_write_data_addr[3] == i))) |
+// Don't set the valid for loads ((lq_fifo_write_data_en[4] & (lq_fifo_write_data_addr[4] == i))) |
+                                 ((lq_fifo_write_data_en[5] & (lq_fifo_write_data_addr[5] == i))); 
 end
    
 // Bypass the read return if it's to the top entry
@@ -255,21 +255,13 @@ assign o_lq_fwddata  = ({32{lq_rf_fwd_en[2]}} & lq_fifo_load_write_data_2[31:0])
                        ({32{lq_rf_fwd_en[0]}} & lq_fifo_load_write_data_0[31:0]);
    
 // Generate the per port write data enable and write data
-assign lq_fifo_write_data_en[0]    = i_skidbuf_lqvld_1c | i_fp_ex_mem_lqvld_1c | i_vex_mem_lqvld_1c;
-assign lq_fifo_write_data_addr[0]  = ({LQ_DEPTH_LOG2{i_skidbuf_lqvld_1c}}   & i_skidbuf_lqid_1c) |    
-                                     ({LQ_DEPTH_LOG2{i_fp_ex_mem_lqvld_1c}} & i_fp_ex_mem_lqid_1c)  |
-                                     ({LQ_DEPTH_LOG2{i_vex_mem_lqvld_1c}}   & i_vex_mem_lqid_1c);
-assign lq_fifo_write_data_value[0] = ({LQ_DATA_WIDTH{i_skidbuf_lqvld_1c}}   & LQ_DATA_WIDTH'({i_skidbuf_lqvecld128_1c,i_skidbuf_lqmask_1c,i_skidbuf_lqsz_1c,i_skidbuf_lqaddr_1c,i_skidbuf_lqdata_1c})) |    
-                                     ({LQ_DATA_WIDTH{i_fp_ex_mem_lqvld_1c}} & LQ_DATA_WIDTH'(i_fp_ex_mem_lqdata_1c))  |
-                                     ({LQ_DATA_WIDTH{i_vex_mem_lqvld_1c}}   & LQ_DATA_WIDTH'({i_vex_mem_lqexc_1c, i_vex_mem_lqdata_1c}));   
+assign lq_fifo_write_data_en[0]    = i_vex_mem_lqvld_1c;
+assign lq_fifo_write_data_addr[0]  = i_vex_mem_lqid_1c;
+assign lq_fifo_write_data_value[0] = LQ_DATA_WIDTH'({i_vex_mem_lqexc_1c, i_vex_mem_lqdata_1c});   
    
-assign lq_fifo_write_data_en[1]    = i_ex_mem_lqvld_2c | i_fp_ex_mem_lqvld_2c | i_vex_mem_lqvld_2c;
-assign lq_fifo_write_data_addr[1]  = ({LQ_DEPTH_LOG2{i_ex_mem_lqvld_2c}}    & i_ex_mem_lqid_2c)     |
-                                     ({LQ_DEPTH_LOG2{i_fp_ex_mem_lqvld_2c}} & i_fp_ex_mem_lqid_2c)  |
-                                     ({LQ_DEPTH_LOG2{i_vex_mem_lqvld_2c}}   & i_vex_mem_lqid_2c);
-assign lq_fifo_write_data_value[1] = ({LQ_DATA_WIDTH{i_ex_mem_lqvld_2c}}    & LQ_DATA_WIDTH'(i_ex_mem_lqdata_2c))    |
-                                     ({LQ_DATA_WIDTH{i_fp_ex_mem_lqvld_2c}} & LQ_DATA_WIDTH'(i_fp_ex_mem_lqdata_2c)) |
-                                     ({LQ_DATA_WIDTH{i_vex_mem_lqvld_2c}}   & LQ_DATA_WIDTH'({i_vex_mem_lqexc_2c, i_vex_mem_lqdata_2c}));
+assign lq_fifo_write_data_en[1]    = i_vex_mem_lqvld_2c;
+assign lq_fifo_write_data_addr[1]  = i_vex_mem_lqid_2c;
+assign lq_fifo_write_data_value[1] = LQ_DATA_WIDTH'({i_vex_mem_lqexc_2c, i_vex_mem_lqdata_2c});
 
 assign lq_fifo_write_data_en[2]    = i_vex_mem_lqvld_3c;
 assign lq_fifo_write_data_addr[2]  = i_vex_mem_lqid_3c;
@@ -280,15 +272,14 @@ assign lq_fifo_write_data_addr[3]  = i_data_resp_id_0[LQ_DEPTH_LOG2-1:0];
 assign lq_fifo_write_data_value[3] = LQ_DATA_WIDTH'({lq_broadside_data_value[lq_fifo_write_data_addr[3]][LQ_DATA_WIDTH-1:LD_DATA_WIDTH_BITS], 
                                                      (ret_vecld_vld_0 ? lq_fifo_vecld_write_datafn_0 : LD_DATA_WIDTH_BITS'(lq_fifo_load_write_data_0))});
    
-assign lq_fifo_write_data_en[4]    = i_data_vld_1 & ~i_data_vld_cancel_1 & ~lq_bypass_en[1];
-assign lq_fifo_write_data_addr[4]  = i_data_resp_id_1[LQ_DEPTH_LOG2-1:0];
-assign lq_fifo_write_data_value[4] = LQ_DATA_WIDTH'({lq_broadside_data_value[lq_fifo_write_data_addr[4]][LQ_DATA_WIDTH-1:LD_DATA_WIDTH_BITS], 
-                                                     (ret_vecld_vld_1 ? lq_fifo_vecld_write_datafn_1 : LD_DATA_WIDTH_BITS'(lq_fifo_load_write_data_1))});
+assign lq_fifo_write_data_en[4]    = i_skidbuf_lqvld_1c;
+assign lq_fifo_write_data_addr[4]  = i_skidbuf_lqid_1c;
+assign lq_fifo_write_data_value[4] = LQ_DATA_WIDTH'({i_skidbuf_lqvecld128_1c,i_skidbuf_lqmask_1c,i_skidbuf_lqsz_1c,i_skidbuf_lqaddr_1c,i_skidbuf_lqdata_1c});
+
    
-assign lq_fifo_write_data_en[5]    = i_data_vld_2 & ~i_data_vld_cancel_2 & ~lq_bypass_en[2];
-assign lq_fifo_write_data_addr[5]  = i_data_resp_id_2[LQ_DEPTH_LOG2-1:0];
-assign lq_fifo_write_data_value[5] = LQ_DATA_WIDTH'({lq_broadside_data_value[lq_fifo_write_data_addr[5]][LQ_DATA_WIDTH-1:LD_DATA_WIDTH_BITS], 
-                                                     (ret_vecld_vld_2 ? lq_fifo_vecld_write_datafn_2 : LD_DATA_WIDTH_BITS'(lq_fifo_load_write_data_2))});
+assign lq_fifo_write_data_en[5]    = i_ex_mem_lqvld_2c;
+assign lq_fifo_write_data_addr[5]  = i_ex_mem_lqid_2c;
+assign lq_fifo_write_data_value[5] = LQ_DATA_WIDTH'(i_ex_mem_lqdata_2c);
 
 // Align the load return data before storing in load queue
 assign lq_fifo_load_write_data_0 = align_load_data(i_data_rddata_0[31:0], 

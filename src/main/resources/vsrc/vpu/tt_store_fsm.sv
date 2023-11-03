@@ -71,7 +71,7 @@ module tt_store_fsm #(parameter VLEN = 256,
 
   always @(posedge i_clk) begin
     if(!i_reset_n)
-      store_fsm_state <= 0;
+      store_fsm_state <= IDLE;
     else begin
       store_fsm_state <= store_fsm_next_state;
     end
