@@ -71,20 +71,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   localparam                                          RS2_IDX = 1;
   localparam                                          RS3_IDX = 2;
 
-  /////////
-  // MEM signals
-  wire                     mem_dst_vld;  // forwarding control to ID
-  wire [LQ_DEPTH_LOG2-1:0] mem_dst_lqid; // forwarding control to ID
-  wire [31:0]              mem_fwd_data; // forwarding control to ID
-  wire                     mem_ex_rtr           ;
-  wire [ 6:0]              mem_lq_op            ; // mem status to ID
-  wire                     mem_lq_commit        ;
-    
   tt_briscv_pkg::arr_lq_info_s  lq_broadside_info;
   logic [LQ_DEPTH-1:0][31:0]    lq_broadside_data;
   logic [LQ_DEPTH-1:0]          lq_broadside_valid;
   logic [LQ_DEPTH-1:0]          lq_broadside_data_valid;
-  logic                         lq_empty;
+  logic [VLEN-1:0]              lq_rddata;
+  logic [4:0]                   lq_rdexc;
 
   /////////
   // ID signals
@@ -120,8 +112,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [LQ_DEPTH_LOG2-1:0] id_vex_lqid;          // From id of tt_id.v
   logic                     vex_id_incr_addrp2;     // From vecu of tt_vec.v
 
-  logic                           i_rd_data_vld_2      ;
-  logic [DATA_REQ_ID_WIDTH-1:0]   i_rd_data_resp_id_2  ; 
 
   // Vector signals
   logic              vrf_p0_rden, vrf_p1_rden, vrf_p2_rden;
@@ -136,6 +126,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [      63:0] mem_fp_rf_wrdata;
   logic              mem_vrf_wr;
   logic              mem_vrf_wr_qual; // Can be squashed when vl=0
+  logic              mem_vrf_wrmask;
   logic [       4:0] mem_vrf_wraddr;
   logic [VLEN  -1:0] mem_vrf_wrdata;
   logic [VLEN*8-1:0] mem_vrf_wrdata_reg;
@@ -152,8 +143,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   // LQ signals
   // ID <--> MEM signals
   logic                     mem_fe_lqfull;
-  logic                     mem_fe_lqempty;
-  logic                     mem_fe_skidbuffull;
   logic [LQ_DEPTH_LOG2-1:0] mem_id_lqnxtid;
   logic [LQ_DEPTH_LOG2-1:0] mem_id_lqnxtid_r;
   logic                     id_mem_lqalloc;
@@ -220,16 +209,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [39:0] read_issue_vcsr;
   logic        read_issue_vcsr_lmulb2;
 
-  // I'm using dummy wires to connect the memory interface for now
-  logic o_data_req;
-  logic [ADDRWIDTH-1:0] o_data_addr;
-  logic [ST_DATA_WIDTH_BITS/8-1:0] o_data_byten;
-  logic [ST_DATA_WIDTH_BITS-1:0] o_wr_data;
-  logic [DATA_REQ_ID_WIDTH-1:0] o_data_req_id;
-  logic o_mem_load;
-  logic [2:0] o_mem_size;
-  logic o_mem_last;
-
   logic [VLEN*8-1:0] ocelot_instrn_commit_data;
   logic [7:0] ocelot_instrn_commit_mask;
   logic [VLEN*8-1:0] sb_debug_commit_data;
@@ -244,11 +223,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [39:0] vcsr;
   logic        vcsr_lmulb2;
   logic       vecldst_autogen_store;
-  // Load logic - finite state machine
-  logic [1:0] load_fsm_state, load_fsm_next_state;
   logic       vecldst_autogen_load;
-  logic       load_commit;
-  logic       load_memsync_start;
 
   logic [4:0] id_sb_id; // sb_id of the instruction at id stage
   logic [2:0] load_stride_eew;
@@ -258,6 +233,10 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [3:0] req_buffer_wptr;
   logic drain_load_buffer;
   logic [2:0] load_buffer_rptr;
+  logic [LQ_DEPTH_LOG2-1:0] load_buffer_lqid;
+
+  logic       drain_complete_valid;
+  logic [2:0] drain_complete_ldb_idx;
 
   logic [63:0] scalar_opnd;
   logic [63:0] scalar_opnd_reg;
@@ -265,12 +244,13 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [511:0] shifted_load_data;
   logic [63:0]  byte_en;
   logic [4:0]   sb_vd;
-  logic [2:0]   sb_lqid;
+  logic [2:0]   sb_ldb_start;
   logic [1:0]   sb_data_size;
   logic [1:0]   sb_index_size;
   logic [2:0]   sb_load_stride_eew;
   logic         sb_drain_load_buffer;
   logic [2:0]   sb_drain_lqid_start;
+  logic [2:0]   sb_drain_ldb_start;
   logic [2:0]   sb_ref_count;
   logic         sb_completed_valid;
   logic [4:0]   sb_completed_sb_id;
@@ -302,6 +282,53 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic       id_is_indexldst;
   logic       id_is_maskldst;
 
+
+  //////////
+  // IF
+
+  logic       ldb_alloc_valid;
+  logic       ldb_alloc_ack;
+  logic [4:0] ldb_alloc_sb_id;
+  logic [3:0] ldb_alloc_size;
+  logic [4:0] memop_sync_start_sb_id_nxt;
+  logic       memop_sync_start_nxt;
+
+  tt_fifo #(
+    .DEPTH(32)
+  ) fifo0
+  (
+    .clk(clk),
+    .reset_n(reset_n),
+
+    .issue_inst(issue_inst),
+    .issue_sb_id(issue_sb_id),
+    .issue_scalar_opnd(issue_scalar_opnd),
+    .issue_vcsr(issue_vcsr),
+    .issue_vcsr_lmulb2(issue_vcsr_lmulb2),
+    .issue_valid(issue_valid),
+
+    .dispatch_sb_id(dispatch_sb_id),
+    .dispatch_next_senior(dispatch_next_senior),
+    .dispatch_kill(dispatch_kill),
+
+    .memop_sync_start(memop_sync_start_nxt),
+    .memop_sync_start_sb_id(memop_sync_start_sb_id_nxt),
+    .ldb_alloc_valid(ldb_alloc_valid),
+    .ldb_alloc_ack(ldb_alloc_ack),
+    .ldb_alloc_sb_id(ldb_alloc_sb_id),
+    .ldb_alloc_size(ldb_alloc_size),
+
+    .read_req(ocelot_read_req),
+    .read_valid(read_valid),
+    .read_issue_inst(read_issue_inst),
+    .read_issue_sb_id(read_issue_sb_id),
+    .read_issue_scalar_opnd(read_issue_scalar_opnd),
+    .read_issue_vcsr(read_issue_vcsr),
+    .read_issue_vcsr_lmulb2(read_issue_vcsr_lmulb2)
+  );
+
+  assign issue_credit = read_valid && ocelot_read_req;
+
   always_ff @(posedge clk) begin
     if(!reset_n) begin
       rf_vex_p0_reg   <= '0;
@@ -320,12 +347,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   assign rf_vex_p1_sel   = (read_valid && ocelot_read_req) ? read_issue_scalar_opnd   : rf_vex_p1_reg;
   assign fprf_vex_p0_sel = (read_valid && ocelot_read_req) ? read_issue_scalar_opnd : fprf_vex_p0_reg;
 
-  tt_briscv_pkg::csr_to_id ex_id_csr;
-  assign ex_id_csr.vgsrc   = 0;
-  assign ex_id_csr.v_vsew  = vcsr[38:36];
-  assign ex_id_csr.v_lmul  = {vcsr_lmulb2,vcsr[35:34]};
-  assign ex_id_csr.v_vlmax = '0;
-  assign ex_id_csr.v_vl    = vcsr[$clog2(VLEN+1)-1+14:14];
+  tt_briscv_pkg::csr_t csr_de0, csr_ex0;
+  assign csr_de0.v_vl    = vcsr[$clog2(VLEN+1)-1+14:14];
+  assign csr_de0.v_vsew  = vcsr[38:36];
+  assign csr_de0.v_lmul  = {vcsr_lmulb2, vcsr[35:34]};
+  assign csr_de0.v_vxrm  = vcsr[30:29];
+  assign csr_de0.frm     = vcsr[33:31];
 
   tt_id
   #(
@@ -343,7 +370,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_clk                                 (clk             ),    
     .i_reset_n                             (reset_n), 
 
-    .i_ex_id_csr                           (ex_id_csr),             
+    .i_csr                                 (csr_de0),             
+    .o_csr                                 (csr_ex0),             
 
     .i_if_instrn                           (read_issue_inst),       
     .i_if_pc                               ('0),           
@@ -372,57 +400,19 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_id_ex_units_rts                     (id_ex_units_rts),       
     .o_id_ex_instdisp                      (id_ex_instdisp),
     .o_vecldst_autogen                     (id_ex_vecldst_autogen), 
-    .o_id_ex_last                          (id_ex_last),
-    .i_ex_bp_mispredict                    ('0),      
+    .o_id_ex_last                          (id_ex_last),  
     .i_ex_dst_vld_1c                       (ex_dst_vld_1c),         
     .i_ex_dst_lqid_1c                      (ex_dst_lqid_1c), 
     .i_ex_fwd_data_1c                      (ex_fwd_data_1c),  
     .i_ex_dst_vld_2c                       (ex_dst_vld_2c),         
     .i_ex_dst_lqid_2c                      (ex_dst_lqid_2c), 
     .i_ex_fwd_data_2c                      (ex_fwd_data_2c),  
-    .o_fwd_p0_reg                          (),      
-    .o_fwd_p1_reg                          (),      
 
-    // FP Interface
-    .o_id_fp_ex0_rts                       (),         
-    .i_fp_ex0_id_rtr                       (1'b1),         
-    .o_id_fp_ex0_lqid                      (), 
-    .o_ex_autogen                          (),    
-    .o_fp_autogen                          (),   
-    .o_fp_fwd_sign_reg                     (),     
-    .o_fp_fwd_zero_reg                     (),     
-    .o_fp_fwd_nan_reg                      (),      
-    .o_fp_fwd_inf_reg                      (),      
-    .o_fp_fwd_exp_reg                      (),      
-    .o_fp_fwd_man_reg                      (),      
-    .o_fp_rf_p3_reg                        (),          
-    .i_fp_ex_dst_vld_1c                    ('0),      
-    .i_fp_ex_dst_lqid_1c                   ('0), 
-    .i_fp_ex_fwd_data_1c                   ('0), 
-    .i_fp_ex_dst_vld_2c                    ('0),      
-    .i_fp_ex_dst_lqid_2c                   ('0), 
-    .i_fp_ex_fwd_data_2c                   ('0), 
-
-    // Integer RegFile Interface
-    .o_rf_p0_rden                          (),    
-    .o_rf_p0_rdaddr                        (),    
-    .o_rf_p1_rden                          (),    
-    .o_rf_p1_rdaddr                        (),    
-    .o_rf_p2_rden                          (),    
-    .o_rf_p2_rdaddr                        (),    
+    // Integer RegFile Interface  
     .o_rf_wr_flag                          (id_rf_wr_flag     ),    
     .o_rf_wraddr                           (id_rf_wraddr      ),    
 
-    // FP RegFile Interface
-    .i_fp_rf_rd_ret_reg                    ('0),      
-    .i_fp_rf_sign                          ('0),     
-    .i_fp_rf_zero                          ('0),     
-    .i_fp_rf_nan                           ('0),      
-    .i_fp_rf_inf                           ('0),      
-    .i_fp_rf_exp                           ('0),      
-    .i_fp_rf_man                           ('0),      
-    .i_rf_p0_reg                           ('0),       
-    .i_rf_p1_reg                           ('0),       
+    // FP RegFile Interface    
     .o_fp_rf_wr_flag                       (id_fp_rf_wr_flag  ),    
     .o_fp_rf_wraddr                        (id_fp_rf_wraddr   ),    
 
@@ -432,11 +422,11 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_id_replay                           (id_replay),             
     .o_id_mem_lqalloc                      (id_mem_lqalloc),        
     .o_id_mem_lq_done                      (id_mem_lq_done),        
-    .i_mem_dst_vld                         (mem_dst_vld          ), 
-    .i_mem_dst_lqid                        (mem_dst_lqid         ), 
-    .i_mem_fwd_data                        (mem_fwd_data         ), 
-    .i_mem_lq_op                           (mem_lq_op[6:0]),        
-    .i_mem_lq_commit                       (mem_lq_commit),         
+    .i_mem_dst_vld                         ('0          ), 
+    .i_mem_dst_lqid                        ('0         ), 
+    .i_mem_fwd_data                        ('0         ), 
+    .i_mem_lq_op                           ('0),        
+    .i_mem_lq_commit                       ('0),         
     .i_lq_broadside_data                   (lq_broadside_data),     
     .i_lq_broadside_valid                  (lq_broadside_valid), 
     .i_lq_broadside_data_valid             (lq_broadside_data_valid), 
@@ -449,8 +439,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_ignore_dstincr                      (ignore_dstincr),        
     .i_ignore_srcincr                      (ignore_srcincr),        
     .i_mem_fe_lqfull                       (mem_fe_lqfull),         
-    .i_mem_fe_lqempty                      (mem_fe_lqempty),
-    .i_mem_fe_skidbuffull                  (mem_fe_skidbuffull),    
+    .i_mem_fe_lqempty                      ('0),
+    .i_mem_fe_skidbuffull                  ('0),    
     .i_mem_id_lqnxtid                      (mem_id_lqnxtid[LQ_DEPTH_LOG2-1:0]),
 
     .o_is_whole_memop                      (id_is_whole_memop),
@@ -463,11 +453,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   //////////
   // EX
-  tt_briscv_pkg::csr_to_vec ex_vec_csr;
-  assign ex_vec_csr.v_vsew =  vcsr[38:36];
-  assign ex_vec_csr.v_lmul =  {vcsr_lmulb2,vcsr[35:34]};
-  assign ex_vec_csr.v_vxrm =  vcsr[30:29];
-  assign ex_vec_csr.v_vl   =  vcsr[$clog2(VLEN+1)-1+14:14];
   assign vecldst_autogen_store = id_ex_vecldst_autogen.store;
   assign vecldst_autogen_load = id_ex_vecldst_autogen.load;
 
@@ -476,7 +461,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
      squash_id_ex_rts = 1'b0;
 
      if (id_is_indexldst) begin
-        case ({id_ex_instrn[14:12], vcsr[37:36]})
+        case ({id_ex_instrn[14:12], csr_ex0.v_vsew[1:0]})
            // index : data = 2
            5'b101_00,
            5'b110_01,
@@ -500,7 +485,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_clk               (clk             ),
     .i_reset_n           (reset_n),
     .i_sat_csr           ('0),
-    .i_ex_vec_csr        (ex_vec_csr),             
+    .i_csr               (csr_ex0),             
     // From ID
     .i_if_ex_deco        ('0    ),
     .i_if_ex_predicted   ('0    ),
@@ -539,7 +524,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_vs3_rddata        (vs3_rddata        ),
     
     // From MEM
-    .i_mem_ex_rtr        (mem_ex_rtr        ),
+    .i_mem_ex_rtr        (1'b1        ),
     
     // To ID and IF
     .o_ex_bp_fifo_pop    (),
@@ -549,8 +534,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_ex_bp_mispredict         (),
     .o_ex_bp_mispredict_not_br  (),
     .o_ex_bp_pc                 (),
-    .o_ex_id_csr                (),
-    .o_ex_vec_csr               (),
     
     .o_ex_dst_vld_1c        (ex_dst_vld_1c        ),
     .o_ex_dst_lqid_1c       (ex_dst_lqid_1c       ),
@@ -584,7 +567,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   // Adding stalls from Store/Mask FSM
   assign ex_id_rtr = ex_id_rtr_raw && !store_fsm_stall && !mask_fsm_stall;
 
-  assign vrf_p2_rden    = id_vec_autogen.rf_rden2; // FIXME | ex_vec_csr.v_lmul[2];
+  assign vrf_p2_rden    = id_vec_autogen.rf_rden2; // FIXME | csr_ex0.v_lmul[2];
   assign vrf_p1_rden    = id_vec_autogen.rf_rden1;
   assign vrf_p0_rden    = id_vec_autogen.rf_rden0;
 
@@ -622,8 +605,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   (
     .i_clk                 (clk),                 
     .i_reset_n             (reset_n), 
-    .i_ex_vec_csr          (ex_vec_csr),             
-    .i_csr_frm             (vcsr[33:31]),
+    .i_csr                 (csr_ex0),             
     .i_v_vm                (v_vm),                  
     .i_id_vec_autogen      (id_vec_autogen),        
     .o_sat_csr             (ocelot_sat_csr),
@@ -664,143 +646,164 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_mem_vrf_wr          (mem_vrf_wr),            
     .i_mem_vrf_wraddr      (mem_vrf_wraddr),   
     .i_mem_vrf_wrdata      (mem_vrf_wrdata), 
-    .i_mem_ex_rtr          (mem_ex_rtr)            
+    .i_mem_ex_rtr          (1'b1)            
   );    
 
-  logic                        o_data_128b          ;  // 128b read (This signal is valid only for reads)
-  logic                        o_data_ordered       ;
-  logic [ 3:0]                 o_data_reqtype       ;
-  logic                           o_data_req_prequal;
-  logic                           i_dmem_brisc_memory_idle; 
-  logic                           o_mem_store;
-  logic                        o_mem_last_raw;
+// *********************** //
+// Load Queue              //
+// *********************** //
 
-  tt_mem 
-  #(
-    .LQ_DEPTH(LQ_DEPTH), 
-    .LQ_DEPTH_LOG2(LQ_DEPTH_LOG2),
-    .VLEN(VLEN),
-    .ADDRWIDTH(ADDRWIDTH),
-    .LD_DATA_WIDTH_BITS(LD_DATA_WIDTH_BITS),
-    .ST_DATA_WIDTH_BITS(ST_DATA_WIDTH_BITS),  
-    .LOCAL_MEM_BYTE_ADDR_WIDTH(LOCAL_MEM_BYTE_ADDR_WIDTH),
-    .DATA_REQ_ID_WIDTH(DATA_REQ_ID_WIDTH),
-    .INCL_VEC(INCL_VEC)
-  ) mem
-  (
-    .i_clk                (clk  ),
-    .i_reset_n            (reset_n),
+wire           lq_mem_rf_wr_flag;
+logic          lq_mem_fp_rf_wr_flag;
+wire           lq_mem_vrf_wr_flag;
+wire [4:0]     lq_mem_rf_wraddr;
+logic [31:0]   lq_mem_pc;
+logic [31:0]   lq_sim_ex_mem_instrn;
+logic          lq_rden;
+logic [2:0]    lq_rdid;
 
-    // From EX
-    .i_ex_mem_payload     (ex_mem_payload      ),
-    .i_ex_mem_vld         (ex_mem_vld          ),
+tt_briscv_pkg::lq_info_s        lq_rdinfo;
 
-    .i_ex_mem_lqvld_1c    (ex_mem_lqvld_1c     ),
-    .i_ex_mem_lqid_1c     (ex_mem_lqid_1c      ),
-    .i_ex_mem_lqdata_1c   (ex_mem_lqdata_1c    ),
+tt_lq #(.LQ_DEPTH(LQ_DEPTH), 
+        .LQ_DEPTH_LOG2(LQ_DEPTH_LOG2), 
+        .DATA_REQ_ID_WIDTH(DATA_REQ_ID_WIDTH),
+        .LD_DATA_WIDTH_BITS(LD_DATA_WIDTH_BITS),
+        .VLEN(VLEN),
+        .INCL_VEC(INCL_VEC)) lq_fifo
+(
+   .i_clk            (clk                    ),
+   .i_reset_n        (reset_n                ),
 
-    .i_ex_mem_lqvld_2c    (ex_mem_lqvld_2c     ),
-    .i_ex_mem_lqid_2c     (ex_mem_lqid_2c      ),
-    .i_ex_mem_lqdata_2c   (ex_mem_lqdata_2c    ),
+   .i_bypass_disable (1'b0),
 
-    .i_fp_ex_mem_lqvld_1c ('0),
-    .i_fp_ex_mem_lqid_1c  ('0),
-    .i_fp_ex_mem_lqdata_1c('0),
+   .i_vecld_elem_sent(ex_mem_payload.vecldst_vld & 
+                      ex_mem_payload.mem_load    &
+                      ex_mem_vld                     ),
+   .i_vecld_idx_last (ex_mem_payload.vecldst_idx_last),
+   .i_vecld_id       (ex_mem_lqid_1c                 ),
+ 
+   // ID <--> MEM signals
+   .o_mem_id_lqnxtid(mem_id_lqnxtid),
+   .i_id_mem_lqalloc(id_mem_lqalloc),
+   .i_id_mem_lqinfo(id_mem_lqinfo),
+ 
+   // Skid buffer signals
+   .i_skidbuf_lqvld_1c(ex_mem_lqvld_1c),
+   .i_skidbuf_lqsz_1c(ex_mem_payload.mem_sz[2:0]),
+   .i_skidbuf_lqaddr_1c(ex_mem_payload.mem_addr[$clog2(VLEN/8)-1:0]),
+   .i_skidbuf_lqmask_1c(ex_mem_payload.vecldst_byte_mask),
+   .i_skidbuf_lqvecld128_1c(ex_mem_payload.vecldst_128),
+   .i_skidbuf_lqdata_1c(ex_mem_payload.mem_store_data),
+   .i_skidbuf_lqid_1c(ex_mem_lqid_1c),
 
-    .i_fp_ex_mem_lqvld_2c ('0),
-    .i_fp_ex_mem_lqid_2c  ('0),
-    .i_fp_ex_mem_lqdata_2c('0),
+   // EX 2 cycle signals
+   .i_ex_mem_lqvld_2c(ex_mem_lqvld_2c),
+   .i_ex_mem_lqdata_2c(ex_mem_lqdata_2c),
+   .i_ex_mem_lqid_2c(ex_mem_lqid_2c),
+ 
+   // FP EX 2 cycle signals
+   .i_fp_ex_mem_lqvld_1c('0),
+   .i_fp_ex_mem_lqdata_1c('0),
+   .i_fp_ex_mem_lqid_1c('0),
+ 
+   .i_fp_ex_mem_lqvld_2c('0),
+   .i_fp_ex_mem_lqdata_2c('0),
+   .i_fp_ex_mem_lqid_2c('0),
+ 
+   // VEX 1/2/3 cycle signals
+   .i_vex_mem_lqvld_1c(vex_mem_lqvld_1c),
+   .i_vex_mem_lqdata_1c(vex_mem_lqdata_1c),
+   .i_vex_mem_lqexc_1c(vex_mem_lqexc_1c),
+   .i_vex_mem_lqid_1c(vex_mem_lqid_1c),
 
-    .i_vex_mem_lqvld_1c   (vex_mem_lqvld_1c),
-    .i_vex_mem_lqdata_1c  (vex_mem_lqdata_1c),
-    .i_vex_mem_lqexc_1c   (vex_mem_lqexc_1c),
-    .i_vex_mem_lqid_1c    (vex_mem_lqid_1c),             
-    
-    .i_vex_mem_lqvld_2c   (vex_mem_lqvld_2c),
-    .i_vex_mem_lqdata_2c  (vex_mem_lqdata_2c),
-    .i_vex_mem_lqexc_2c   (vex_mem_lqexc_2c),
-    .i_vex_mem_lqid_2c    (vex_mem_lqid_2c),             
-    
-    .i_vex_mem_lqvld_3c   (vex_mem_lqvld_3c),
-    .i_vex_mem_lqdata_3c  (vex_mem_lqdata_3c),
-    .i_vex_mem_lqexc_3c   (vex_mem_lqexc_3c),
-    .i_vex_mem_lqid_3c    (vex_mem_lqid_3c),             
+   .i_vex_mem_lqvld_2c(vex_mem_lqvld_2c),
+   .i_vex_mem_lqdata_2c(vex_mem_lqdata_2c),
+   .i_vex_mem_lqexc_2c(vex_mem_lqexc_2c),
+   .i_vex_mem_lqid_2c(vex_mem_lqid_2c),
 
-    // To EX
-    .o_mem_ex_rtr         (mem_ex_rtr),
+   .i_vex_mem_lqvld_3c(vex_mem_lqvld_3c),
+   .i_vex_mem_lqdata_3c(vex_mem_lqdata_3c),
+   .i_vex_mem_lqexc_3c(vex_mem_lqexc_3c),
+   .i_vex_mem_lqid_3c(vex_mem_lqid_3c),
 
-    // To Regfile
-    .o_mem_rf_wr          (mem_rf_wr),
-    .o_mem_rf_wraddr      (mem_rf_wraddr),
-    .o_mem_rf_wrdata      (mem_rf_wrdata),
+   // Load return data
+   .i_data_vld_0(drain_load_buffer),
+   .i_data_vld_cancel_0('0),
+   .i_data_resp_id_0(DATA_REQ_ID_WIDTH'(load_buffer_lqid)),
+   .i_data_rddata_0(load_buffer[load_buffer_rptr[2:0]]),
+ 
+   .i_data_vld_1('0),
+   .i_data_vld_cancel_1('0),
+   .i_data_resp_id_1('0),
+   .i_data_rddata_1('0),
+ 
+   .i_data_vld_2('0),
+   .i_data_vld_cancel_2('0),
+   .i_data_resp_id_2('0),
+   .i_data_rddata_2('0),
+ 
+   .lq_full(mem_fe_lqfull),
+   .lq_empty(),
+   .o_lq_data_ready(lq_rden),
+   .o_lq_mem_vec_load(),
+   .o_lq_mem_load(),
 
-    //To FP RF
-    .o_mem_fp_rf_wr       (mem_fp_rf_wr),
-    .o_mem_fp_rf_wraddr   (mem_fp_rf_wraddr),
-    .o_mem_fp_rf_wrdata   (mem_fp_rf_wrdata),
+   // LQ Read signals
+   .i_lq_rden(lq_rden),
+   .o_lq_rdid(lq_rdid),
+   .o_lq_rdinfo(lq_rdinfo),
+   .o_lq_rdmemaddr(),
+   .o_lq_rdldstsz(),
+   .o_lq_rddata(lq_rddata),
+   .o_lq_rdexc(lq_rdexc),
 
-    .o_mem_vrf_wr         (mem_vrf_wr),
-    .o_mem_vrf_wr_qual    (mem_vrf_wr_qual),
-    .o_mem_vrf_wraddr     (mem_vrf_wraddr),
-    .o_mem_vrf_wrdata     (mem_vrf_wrdata),
-    .o_mem_vrf_wrexc      (mem_vrf_wrexc),
+   .o_lq_fwdvld(),
+   .o_lq_fwdid(),
+   .o_lq_fwddata(),
 
-    .o_vec_store_commit   (vec_store_commit),
-    .o_vec_nonstore_commit(vec_nonstore_commit),
+   // Broadside data
+   .o_lq_broadside_info(lq_broadside_info),
+   .o_lq_broadside_data(lq_broadside_data),
+   .o_lq_broadside_valid(lq_broadside_valid),
+   .o_lq_broadside_data_valid(lq_broadside_data_valid)
+);
 
-    // To ID
-    .i_id_mem_lqalloc     (id_mem_lqalloc    ),
-    .i_id_mem_lqinfo      (id_mem_lqinfo     ),
-    .o_mem_id_lqfull      (mem_fe_lqfull     ),
-    .o_mem_id_lqempty     (mem_fe_lqempty     ),
-    .o_mem_id_skidbuffull (mem_fe_skidbuffull),
-    .o_mem_id_lqnxtid     (mem_id_lqnxtid    ),
+assign lq_mem_vrf_wr_flag     =   lq_rdinfo.vrf_wr_flag;        
+assign lq_mem_fp_rf_wr_flag   =   lq_rdinfo.fp_rf_wr_flag;       
+assign lq_mem_rf_wr_flag      =   lq_rdinfo.rf_wr_flag;          
+assign lq_mem_pc              =   lq_rdinfo.pc           [31:0]; 
+assign lq_sim_ex_mem_instrn   =   lq_rdinfo.sim_instrn   [31:0]; 
+assign lq_mem_rf_wraddr       =   lq_rdinfo.rf_wraddr    [4:0];  
 
-    .o_mem_dst_vld        (mem_dst_vld       ),
-    .o_mem_dst_lqid       (mem_dst_lqid      ),
-    .o_mem_fwd_data       (mem_fwd_data      ),
-    .o_mem_lq_op          (mem_lq_op         ),
-    .o_mem_lq_commit      (mem_lq_commit     ),
+assign vec_store_commit =  lq_rden                 &&
+                            !lq_rdinfo.rf_wr_flag    &&
+                            !lq_rdinfo.vrf_wr_flag   &&
+                            !lq_rdinfo.fp_rf_wr_flag;
+   
+assign vec_nonstore_commit =  lq_rden                 &&
+                             !vec_store_commit       &&
+                              lq_rdinfo.vrf_wr_flag;
+   
 
-    .o_lq_broadside_info      (lq_broadside_info ),
-    .o_lq_broadside_data      (lq_broadside_data ),
-    .o_lq_broadside_valid     (lq_broadside_valid),
-    .o_lq_broadside_data_valid(lq_broadside_data_valid),
+// ************************ //
+// Write back to registers  //
+// ************************ //
+assign mem_rf_wr             = lq_rden & lq_mem_rf_wr_flag;
+assign mem_rf_wraddr[4:0]    = lq_mem_rf_wraddr[4:0];
+assign mem_rf_wrdata[63:0]   = lq_rddata[63:0]; 
 
-    // To/from memory system
-    .i_dmem_brisc_memory_idle('0), 
-    .o_data_addr              (o_data_addr       ),
-    .o_data_wrdata            (o_wr_data         ),
-    .o_data_reqtype           (o_data_reqtype    ),
-    .o_data_ordered           (o_data_ordered    ),
-    .o_data_byten             (o_data_byten      ), // IMPROVE: rename this signal to reflect its use for loads and stores
-    .o_data_req               (o_data_req_prequal),
-    .o_data_req_id            (o_data_req_id     ),
-    .o_data_128b              (o_data_128b       ),
-    .i_data_req_rtr           ('1    ),
-    .i_data_vld_0             (drain_load_buffer),
-    .i_data_vld_cancel_0      ('0),
-    .i_data_resp_id_0         (DATA_REQ_ID_WIDTH'({7'b0,load_buffer_rptr[2:0]})),
-    .i_data_rddata_0          (load_buffer[load_buffer_rptr[2:0]]),
-    .i_data_vld_1             ('0   ),
-    .i_data_vld_cancel_1      ('0),
-    .i_data_resp_id_1         ('0),
-    .i_data_rddata_1          ('0       ),
-    .i_data_vld_2             ('0   ),
-    .i_data_vld_cancel_2      ('0),
-    .i_data_resp_id_2         ('0),
-    .i_data_rddata_2          ('0),
+assign mem_vrf_wr            = lq_rden & lq_mem_vrf_wr_flag;   
+assign mem_vrf_wr_qual       = lq_rden & lq_mem_vrf_wr_flag & !lq_rdinfo.squash_vec_wr_flag;   
+assign mem_vrf_wraddr[4:0]   = lq_mem_rf_wraddr[4:0];    
+assign mem_vrf_wrdata[VLEN-1:0] = lq_rddata[VLEN-1:0];
+assign mem_vrf_wrexc         = lq_rdinfo.vec_load ? '0 : lq_rdexc;
+assign mem_vrf_wrmask        = !lq_rdinfo.vl_is_zero;
 
-    .o_mem_store              (o_mem_store ),
-    .o_mem_load               (o_mem_load),
-    .o_mem_size               (o_mem_size),
-    .o_mem_last               (o_mem_last_raw),
-    // Trap
-    .i_reset_pc               ('0),
-    .o_trap                   (  ),
-    .o_lq_empty               (lq_empty),
-    .o_is_load                (commit_is_load)
-  );
+//fixme_msalvi asserrt one hot between vrf and rf wr and fp
+//Use FP Port0 for now for ex results. Will use port 1 when dual issue is enabled
+assign mem_fp_rf_wr           = lq_rden & lq_mem_fp_rf_wr_flag;
+assign mem_fp_rf_wraddr[4:0]  = lq_mem_rf_wraddr;
+assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
 
   logic [LQ_DEPTH     -1:0] lq_last;
   logic [LQ_DEPTH_LOG2-1:0] lq_rd_ptr;
@@ -813,12 +816,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                                                     ({64{mem_fp_rf_wr       }} & mem_fp_rf_wrdata  [      63: 0]);
   assign ocelot_instrn_commit_fflags            =        ({ 5{vec_nonstore_commit}} & mem_vrf_wrexc_nxt [       4: 0]);
   assign ocelot_instrn_commit_mask              =                                     mem_vrf_wrmask_nxt;
-  assign o_data_req =  o_data_req_prequal && 
-                      !(  o_mem_load   &&
-                        ~|o_data_byten   );
-
-  assign o_mem_last = o_mem_last_raw     &&
-                      lq_last[o_data_req_id[LQ_DEPTH_LOG2-1:0]];
 
   always_ff @(posedge clk) begin
     if (!reset_n) begin
@@ -826,7 +823,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         lq_rd_ptr        <= '0;
         mem_id_lqnxtid_r <= '0;
     end else begin
-        if (mem_lq_commit) begin
+        if (lq_rden) begin
           lq_rd_ptr <= lq_rd_ptr + 1;
         end
 
@@ -868,7 +865,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     mem_vrf_wrexc_nxt  = mem_vrf_wrexc_reg;
 
     mem_vrf_wrdata_nxt[VLEN*lmul_cnt +: VLEN] = mem_vrf_wrdata;
-    mem_vrf_wrmask_nxt[     lmul_cnt        ] = |vcsr[$clog2(VLEN+1)-1+14:14];
+    mem_vrf_wrmask_nxt[     lmul_cnt        ] = mem_vrf_wrmask;
     mem_vrf_wrexc_nxt                        |= mem_vrf_wrexc;
   end
 
@@ -883,28 +880,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
           lmul_cnt <= lmul_cnt + 1;
         end
     end
-  end
-
-  always_ff @(posedge clk) begin
-    if (!reset_n) begin
-        i_rd_data_vld_2 <= '0;
-        i_rd_data_resp_id_2 <= '0;
-    end else begin
-        i_rd_data_vld_2 <=   o_data_req_prequal &&
-                            '1     &&
-                          (  o_mem_load   &&
-                            ~|o_data_byten   );
-        i_rd_data_resp_id_2 <= o_data_req_id;
-    end
-  end
-
-  logic memop_sync_start_nxt;
-  assign memop_sync_start_nxt = (vecldst_autogen_store || vecldst_autogen_load) && id_ex_rts && ex_id_rtr && id_ex_vecldst_autogen.ldst_iter_cnt == 0;
-  always_ff@(posedge clk) begin
-    if(!reset_n)
-      memop_sync_start <= 0;
-    else
-      memop_sync_start <= memop_sync_start_nxt;
   end
 
   // This queue should never overflow, so I'm not going to add phase bits
@@ -934,43 +909,19 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     end
   end
 
-  assign issue_credit = read_valid && ocelot_read_req;
-
-  tt_fifo #(
-    .DEPTH(16)
-  ) fifo0
-  (
-    .clk(clk),
-    .reset_n(reset_n),
-
-    .issue_inst(issue_inst),
-    .issue_sb_id(issue_sb_id),
-    .issue_scalar_opnd(issue_scalar_opnd),
-    .issue_vcsr(issue_vcsr),
-    .issue_vcsr_lmulb2(issue_vcsr_lmulb2),
-    .issue_valid(issue_valid),
-
-    .dispatch_sb_id(dispatch_sb_id),
-    .dispatch_next_senior(dispatch_next_senior),
-    .dispatch_kill(dispatch_kill),
-
-    .read_req(ocelot_read_req),
-    .read_valid(read_valid),
-    .read_issue_inst(read_issue_inst),
-    .read_issue_sb_id(read_issue_sb_id),
-    .read_issue_scalar_opnd(read_issue_scalar_opnd),
-    .read_issue_vcsr(read_issue_vcsr),
-    .read_issue_vcsr_lmulb2(read_issue_vcsr_lmulb2)
-  );
-
   tt_scoreboard_ovi scoreboard
                    (.clk(clk),
                     .reset_n(reset_n),
+                    .i_issue_valid(issue_valid),
+                    .i_issue_sb_id(issue_sb_id),
+                    .i_issue_inst(issue_inst),
+                    .i_issue_vsew(issue_vcsr[38:36]),
+                    .i_issue_scalar_opnd(issue_scalar_opnd),
                     .i_vd(id_ex_instrn[11:7]),
                     .i_rd(ocelot_instrn_commit_data[63:0]),
-                    .i_rd_valid(ocelot_instrn_commit_valid),
+                    .i_rd_valid(lq_rden),
+                    .i_rd_lqid(lq_rdid),
                     .i_fflags(ocelot_instrn_commit_fflags),
-                    .i_rd_lqid(mem_dst_lqid),
                     .i_lqnxtid(mem_id_lqnxtid),
                     .i_data_size(data_size),
                     .i_index_size(index_size),
@@ -985,14 +936,20 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                     .i_id_vex_rts(id_vex_rts),
                     .i_id_sb_id(id_sb_id),
                     .i_id_mem_lqalloc(id_mem_lqalloc),
-                    .i_lq_commit(mem_lq_commit),
-                    .i_dest_lqid(mem_dst_lqid),
                     .i_first_alloc(id_vec_autogen.replay_cnt == 0),
                     .i_last_alloc(id_mem_lq_done),
                     .i_load_sb_id(load_seq_id[33:29]),
 
+                    .i_memop_sync_start(memop_sync_start_nxt),
+                    .i_memop_sync_start_sb_id(memop_sync_start_sb_id_nxt),
+
+                    .ldb_alloc_valid(ldb_alloc_valid),
+                    .ldb_alloc_ack(ldb_alloc_ack),
+                    .ldb_alloc_sb_id(ldb_alloc_sb_id),
+                    .ldb_alloc_size(ldb_alloc_size),
+
                     .o_vd(sb_vd),
-                    .o_lqid(sb_lqid),
+                    .o_ldb_start(sb_ldb_start),
                     .o_data_size(sb_data_size),
                     .o_index_size(sb_index_size),
                     .o_load_stride_eew(sb_load_stride_eew),
@@ -1001,6 +958,10 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                     .i_draining_load_buffer(drain_load_buffer),
                     .o_drain_ref_count(sb_ref_count),
                     .o_drain_lqid_start(sb_drain_lqid_start),
+                    .o_drain_ldb_start(sb_drain_ldb_start),
+
+                    .i_drain_complete_valid(drain_complete_valid),
+                    .i_drain_complete_ldb_idx(drain_complete_ldb_idx),
 
                     .o_completed_valid(sb_completed_valid),
                     .o_completed_sb_id(sb_completed_sb_id),
@@ -1031,7 +992,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   always_comb begin
     is_unit_stride = id_ex_instrn[27:26] == 2'b00;
-    data_size = id_is_indexldst ? vcsr[37:36] :
+    data_size = id_is_indexldst ? csr_ex0.v_vsew[1:0] :
                 id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
                 id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
                 id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
@@ -1039,9 +1000,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                   id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
                   id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW      
     load_stride = !id_is_indexldst ? scalar_opnd : 
-                vcsr[38:36] == 3'b000 ? 1 : // 8-bit EEW
-                vcsr[38:36] == 3'b101 ? 2 : // 16-bit EEW
-                vcsr[38:36] == 3'b110 ? 4 : 8; // 32-bit, 64-bit EEW;                            
+                csr_ex0.v_vsew == 3'b000 ? 1 : // 8-bit EEW
+                csr_ex0.v_vsew == 3'b101 ? 2 : // 16-bit EEW
+                csr_ex0.v_vsew == 3'b110 ? 4 : 8; // 32-bit, 64-bit EEW;                            
     if(is_unit_stride)
         load_stride_eew = 0;
     else if((data_size == 0 && load_stride == 64'd1) ||
@@ -1118,15 +1079,22 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   end
 
   always @(posedge clk) begin
-    if(!reset_n)
-      {load_buffer_rptr} <= '0;
-    else begin
-      if(!drain_load_buffer && sb_drain_load_buffer)
-        load_buffer_rptr <= sb_drain_lqid_start;
-      else if(drain_load_buffer)
+    if(!reset_n) begin
+      load_buffer_rptr <= '0;
+      load_buffer_lqid <= '0;
+    end else begin
+      if(!drain_load_buffer && sb_drain_load_buffer) begin
+        load_buffer_rptr <= sb_drain_ldb_start;
+        load_buffer_lqid <= sb_drain_lqid_start;
+      end else if(drain_load_buffer) begin
         load_buffer_rptr <= load_buffer_rptr + 1;
+        load_buffer_lqid <= load_buffer_lqid + 1;
+      end
     end
   end
+
+  assign drain_complete_valid = drain_load_buffer;
+  assign drain_complete_ldb_idx = load_buffer_rptr;
 
   integer k;
   always @(posedge clk) begin
@@ -1135,7 +1103,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
         load_buffer[k] <= 0;
     else if(load_valid) begin
       for(k=0; k<VLEN; k=k+8)
-        load_buffer[(v_reg-sb_vd+sb_lqid)%8][k+:8] <= byte_en[k/8] ? shifted_load_data[k+:8] : load_buffer[(v_reg-sb_vd+sb_lqid)%8][k+:8];
+        load_buffer[(v_reg-sb_vd+sb_ldb_start)%8][k+:8] <= byte_en[k/8] ? shifted_load_data[k+:8] : load_buffer[(v_reg-sb_vd+sb_ldb_start)%8][k+:8];
     end
   end
 
@@ -1177,7 +1145,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                 .i_uop_is_vsr(id_is_whole_memop),
                 .i_uop_index_size(index_size),
                 .i_uop_data_size(data_size),
-                .i_uop_vl(vcsr[$clog2(VLEN+1)-1+14:14]),
+                .i_uop_vl(csr_ex0.v_vl),
                 .i_uop_nfield(id_ex_instrn[31:29]),
                 .i_store_data(vs3_rddata),
                 .i_store_credit(store_credit),
@@ -1193,14 +1161,14 @@ module tt_vpu_ovi #(parameter VLEN = 256)
                (.i_clk(clk),
                 .i_reset_n(reset_n),
                 .i_is_masked_memop(id_is_masked_memop),
-                .i_memop_sync_start_next(memop_sync_start_nxt),
+                .i_memop_sync_start_next(id_ex_units_rts && ex_id_rtr),
                 .i_is_indexed(id_is_indexldst),
                 .i_mask_data(vmask_rddata),
                 .i_index_data(vs2_rddata),
                 .i_index_data_valid(id_ex_units_rts && ex_id_rtr),
                 .i_last_index(id_ex_last),
                 .o_draining_mask_idx(mask_fsm_stall),
-                .i_vl(vcsr[$clog2(VLEN+1)-1+14:14]),
+                .i_vl(csr_ex0.v_vl),
                 .i_eew(index_size),
                 .i_mask_idx_credit(mask_idx_credit),
                 .o_mask_idx_item(mask_idx_item),
@@ -1211,6 +1179,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   // OVI Outputs
   always @(posedge clk) begin
     if(!reset_n) begin
+      memop_sync_start <= 0;
       store_valid <= 0;
       store_data <= 0;
       completed_valid <= 0;
@@ -1222,6 +1191,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
       completed_illegal <= 0;
     end
     else begin
+      memop_sync_start <= memop_sync_start_nxt;
       store_valid <= store_valid_nxt;
       store_data <= store_data_nxt;
       completed_valid <= sb_completed_valid;

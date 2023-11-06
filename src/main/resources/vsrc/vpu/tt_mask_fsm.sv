@@ -193,7 +193,7 @@ module tt_mask_fsm #(parameter VLEN = 256,
 
   always @(posedge i_clk) begin
     if(!i_reset_n)
-      mask_fsm_state <= 0;
+      mask_fsm_state <= IDLE;
     else begin
       mask_fsm_state <= mask_fsm_next_state;
     end

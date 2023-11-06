@@ -14,6 +14,7 @@ package tt_briscv_pkg;
       logic 	   load;
       logic 	   vec_load;
       logic [4:0]  rf_wraddr;
+      logic        vl_is_zero;
    } lq_info_s;
 
 localparam ACTUAL_LQ_DEPTH = 8;
@@ -59,19 +60,12 @@ localparam ADDRWIDTH=40;
    } mem_skidbuf_s;
 
    typedef struct packed {
-      logic [31:0] vgsrc;
-      logic [2:0] v_vsew;
-      logic [2:0] v_lmul;
-      logic [7:0] v_vlmax;
-      logic [$clog2(VLEN+1)-1:0] v_vl;
-   } csr_to_id;
-
-   typedef struct packed {
       logic [2:0] v_vsew;
       logic [2:0] v_lmul;
       logic [1:0] v_vxrm;
       logic [$clog2(VLEN+1)-1:0] v_vl;
-   } csr_to_vec;
+      logic [2:0] frm;
+   } csr_t;
 
    typedef struct packed {
       logic [LQ_DEPTH_LOG2-1:0] ldqid;
@@ -317,6 +311,83 @@ function automatic logic [31:0] rv_fmax;
     end
 
 endfunction     
+
+/* verilator lint_off VARHIDDEN */
+function automatic [2:0] get_vecldst_emul;
+   input [1:0] sew;
+   input [2:0] lmul;
+   input [1:0] eew;
+
+   logic [2:0] emul;
+   
+   logic [2:0] eew_divide_sew;  
+
+   eew_divide_sew[2:0] = ({3{(eew == 2'b00) & (sew == 2'b00)}} & 3'b000) |    // EEW/SEW=1 
+                         ({3{(eew == 2'b00) & (sew == 2'b01)}} & 3'b111) |    // EEW/SEW=1/2 
+                         ({3{(eew == 2'b00) & (sew == 2'b10)}} & 3'b110) |    // EEW/SEW=1/4 
+                         ({3{(eew == 2'b00) & (sew == 2'b11)}} & 3'b101) |    // EEW/SEW=1/8 
+                         ({3{(eew == 2'b01) & (sew == 2'b00)}} & 3'b001) |    // EEW/SEW=2 
+                         ({3{(eew == 2'b01) & (sew == 2'b01)}} & 3'b000) |    // EEW/SEW=1 
+                         ({3{(eew == 2'b01) & (sew == 2'b10)}} & 3'b111) |    // EEW/SEW=1/2 
+                         ({3{(eew == 2'b01) & (sew == 2'b11)}} & 3'b110) |    // EEW/SEW=1/4 
+                         ({3{(eew == 2'b10) & (sew == 2'b00)}} & 3'b010) |    // EEW/SEW=4 
+                         ({3{(eew == 2'b10) & (sew == 2'b01)}} & 3'b001) |    // EEW/SEW=2 
+                         ({3{(eew == 2'b10) & (sew == 2'b10)}} & 3'b000) |    // EEW/SEW=1 
+                         ({3{(eew == 2'b10) & (sew == 2'b11)}} & 3'b111) |    // EEW/SEW=1/2
+                         ({3{(eew == 2'b11) & (sew == 2'b00)}} & 3'b011) |    // EEW/SEW=8 
+                         ({3{(eew == 2'b11) & (sew == 2'b01)}} & 3'b010) |    // EEW/SEW=4 
+                         ({3{(eew == 2'b11) & (sew == 2'b10)}} & 3'b001) |    // EEW/SEW=2 
+                         ({3{(eew == 2'b11) & (sew == 2'b11)}} & 3'b000);     // EEW/SEW=1
+                               
+   // EMUL = (EEW/SEW)*LMUL
+   case(lmul)
+      3'b101: begin  // LMUL=1/8
+         emul = ({3{eew_divide_sew == 3'b000}} & 3'b101) |  // EMUL = (1)*(1/8)   = 1/8 
+                ({3{eew_divide_sew == 3'b001}} & 3'b110) |  // EMUL = (2)*(1/8)   = 1/4 
+                ({3{eew_divide_sew == 3'b010}} & 3'b111) |  // EMUL = (4)*(1/8)   = 1/2 
+                ({3{eew_divide_sew == 3'b011}} & 3'b000);   // EMUL = (8)*(1/8)   = 1
+      end
+      3'b110: begin  // LMUL=1/4
+         emul = ({3{eew_divide_sew == 3'b111}} & 3'b101) |  // EMUL = (1/2)*(1/4) = 1/8 
+                ({3{eew_divide_sew == 3'b000}} & 3'b110) |  // EMUL = (1)*(1/4)   = 1/4 
+                ({3{eew_divide_sew == 3'b001}} & 3'b111) |  // EMUL = (2)*(1/4)   = 1/2 
+                ({3{eew_divide_sew == 3'b010}} & 3'b000) |  // EMUL = (4)*(1/4)   = 1 
+                ({3{eew_divide_sew == 3'b011}} & 3'b001);   // EMUL = (8)*(1/4)   = 2 
+      end
+      3'b111: begin  // LMUL=1/2
+         emul = ({3{eew_divide_sew == 3'b110}} & 3'b101) |  // EMUL = (1/4)*(1/2) = 1/8
+                ({3{eew_divide_sew == 3'b111}} & 3'b110) |  // EMUL = (1/2)*(1/2) = 1/4 
+                ({3{eew_divide_sew == 3'b000}} & 3'b111) |  // EMUL = (1)*(1/2)   = 1/2 
+                ({3{eew_divide_sew == 3'b001}} & 3'b000) |  // EMUL = (2)*(1/2)   = 1 
+                ({3{eew_divide_sew == 3'b010}} & 3'b001) |  // EMUL = (4)*(1/2)   = 2 
+                ({3{eew_divide_sew == 3'b011}} & 3'b010);   // EMUL = (8)*(1/2)   = 4 
+      end
+      3'b000: begin  // LMUL=1
+         emul = eew_divide_sew[2:0];
+      end
+      3'b001: begin  // LMUL=2
+         emul = ({3{eew_divide_sew == 3'b110}} & 3'b111) |  // EMUL = (1/4)*2 = 1/2
+                ({3{eew_divide_sew == 3'b111}} & 3'b000) |  // EMUL = (1/2)*2 = 1 
+                ({3{eew_divide_sew == 3'b000}} & 3'b001) |  // EMUL = (1)*2 = 2 
+                ({3{eew_divide_sew == 3'b001}} & 3'b010) |  // EMUL = (2)*2 = 4 
+                ({3{eew_divide_sew == 3'b010}} & 3'b011);   // EMUL = (4)*2 = 8 
+      end
+      3'b010: begin  // LMUL=4
+         emul = ({3{eew_divide_sew == 3'b110}} & 3'b000) |  // EMUL = (1/4)*4 = 1
+                ({3{eew_divide_sew == 3'b111}} & 3'b001) |  // EMUL = (1/2)*4 = 2 
+                ({3{eew_divide_sew == 3'b000}} & 3'b010) |  // EMUL = (1)*4 = 4 
+                ({3{eew_divide_sew == 3'b001}} & 3'b011);   // EMUL = (2)*4 = 8 
+      end
+      3'b011: begin  // LMUL=8
+         emul = ({3{eew_divide_sew == 3'b110}} & 3'b001) |  // EMUL = (1/4)*8 = 2
+                ({3{eew_divide_sew == 3'b111}} & 3'b010) |  // EMUL = (1/2)*8 = 4 
+                ({3{eew_divide_sew == 3'b000}} & 3'b011);   // EMUL = (1)*8 = 8 
+      end
+      default: emul = 3'b0;
+   endcase
+   return emul;
+endfunction      
+
 endpackage
    
 `endif

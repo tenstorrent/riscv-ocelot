@@ -82,6 +82,7 @@ module tt_mem #( parameter
    output wire [ 4:0] 			o_mem_vrf_wraddr ,
    output wire [VLEN-1:0] 			o_mem_vrf_wrdata ,
    output wire [4:0] 			o_mem_vrf_wrexc ,
+   output wire       			o_mem_vrf_wrmask ,
 
    output wire                o_vec_store_commit ,
    output wire                o_vec_nonstore_commit ,
@@ -538,6 +539,7 @@ assign o_mem_vrf_wr_qual       = lq_rden & lq_mem_vrf_wr_flag & !lq_rdinfo.squas
 assign o_mem_vrf_wraddr[4:0]   = lq_mem_rf_wraddr[4:0];    
 assign o_mem_vrf_wrdata[VLEN-1:0] = lq_rddata[VLEN-1:0];
 assign o_mem_vrf_wrexc         = lq_rdinfo.vec_load ? '0 : lq_rdexc;
+assign o_mem_vrf_wrmask        = !lq_rdinfo.vl_is_zero;
 
 //fixme_msalvi asserrt one hot between vrf and rf wr and fp
 //Use FP Port0 for now for ex results. Will use port 1 when dual issue is enabled
