@@ -41,7 +41,7 @@ A few vector test binaries are included in the [Chipyard](https://github.com/ten
 Here's example commands to compile and run a vector test with FSDB generated:
 ```
 export CHIPYARD=<path_to_chipyard>
-make -C sims/vcs run-binary-debug-hex CONFIG=SmallBobcatConfig BINARY=$CHIPYARD/tests/rvv/isg/riscv_vector_smoke_test.elf SIM_FLAGS="+cosim"
+make -C sims/vcs run-binary-debug-hex CONFIG=SmallBobcatConfig BINARY=$CHIPYARD/tests/rvv/isg/riscv_vector_ms5_smoke_test.elf SIM_FLAGS="+cosim"
 ```
 ## Slides
 [Bobcat Final Presentation](docs/Bobcat_Final_Presentation.pdf)
