@@ -28,10 +28,10 @@ Vector Unit can be enabled by adding the following line in config-mixins.
 For example,
 ```
 class MediumBobcatConfig extends Config(
-  new boom.common.WithVector(2) ++
+  new boom.common.WithVector(2) ++                               // MediumBoom with 2 issues
   new boom.common.WithBoomDebugHarness ++                        // Enable debug harness
   new WithCustomBootROM ++                                       // Use custom BootROM to enable COSIM
-  new boom.common.WithNMediumBooms(1) ++                          // small boom config
+  new boom.common.WithNMediumBooms(1) ++                         // 1 MediumBoom core
   new chipyard.config.AbstractConfig)
 ```
 
