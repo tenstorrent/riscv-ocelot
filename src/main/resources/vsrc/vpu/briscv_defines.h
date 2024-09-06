@@ -8,6 +8,12 @@
 `define BRISCV_F_Ext 2'b10
 `define BRISCV_V_Ext 2'b11
 
+// M_Ext
+`define MATRIX_OPC 7'h0B
+`define MATRIX_FUNC_MV_M_V 3'h0
+`define MATRIX_FUNC_MV_V_M 3'h1
+`define MATRIX_FUNC_OPACC 3'h2
+
 // I_Ext Enc Type
 `define BRISCV_INSTR_TYPE_E 5'b00000 // System
 `define BRISCV_INSTR_TYPE_R 5'b00001 // register to register alu op

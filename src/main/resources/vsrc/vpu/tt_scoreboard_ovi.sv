@@ -23,6 +23,7 @@ module tt_scoreboard_ovi(input logic       clk,
                          input logic       i_ex_id_rtr,
                          input logic	     i_vex_id_rtr,
                          input logic	     i_id_vex_rts,
+                         input logic	     i_id_matrix_rts,
                          input logic [4:0] i_id_sb_id,
                          input logic       i_id_mem_lqalloc,
                          input logic       i_first_alloc,
@@ -219,6 +220,9 @@ module tt_scoreboard_ovi(input logic       clk,
         if(i_vex_id_rtr && i_id_vex_rts && i_id_mem_lqalloc && i_first_alloc && i_id_sb_id == c) begin
           scoreboard[c].got_sync_end <= 1;
         end else
+        if(i_id_matrix_rts && i_id_mem_lqalloc && i_first_alloc && i_id_sb_id == c) begin
+          scoreboard[c].got_sync_end <= 1;
+        end else
         if(i_memop_sync_end && i_memop_sync_end_sb_id == c) begin
           scoreboard[c].got_sync_end <= 1;
         end
@@ -228,6 +232,9 @@ module tt_scoreboard_ovi(input logic       clk,
           scoreboard[c].drained <= 0;
         end
         else if(i_vex_id_rtr && i_id_vex_rts && i_id_mem_lqalloc && i_first_alloc && i_id_sb_id == c) begin
+          scoreboard_valid[c] <= 1;
+        end
+        else if(i_id_matrix_rts && i_id_mem_lqalloc && i_first_alloc && i_id_sb_id == c) begin
           scoreboard_valid[c] <= 1;
         end
         else if(o_completed_valid && o_completed_sb_id == c)

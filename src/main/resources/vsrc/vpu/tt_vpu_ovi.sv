@@ -97,6 +97,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   wire [VLEN-1:0]                  vs3_rddata          ; 
   wire [31:0]                      id_ex_pc             ;
   wire                             id_vex_rts           ;
+  wire                             id_matrix_rts           ;
+
   wire                             vex_id_rtr           ;
   wire [31:0]                      id_ex_instrn         ;
   wire                             v_vm                 ;
@@ -111,7 +113,6 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic                     id_replay;              // From id of tt_id.v
   logic [LQ_DEPTH_LOG2-1:0] id_vex_lqid;          // From id of tt_id.v
   logic                     vex_id_incr_addrp2;     // From vecu of tt_vec.v
-
 
   // Vector signals
   logic              vrf_p0_rden, vrf_p1_rden, vrf_p2_rden;
@@ -184,10 +185,19 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [LQ_DEPTH_LOG2-1:0] vex_mem_lqid_2c;
   tt_briscv_pkg::csr_fp_exc vex_mem_lqexc_2c;
                         
+  logic                     mvex_lq_vld_1c;
+  logic [VLEN-1:0]          mvex_lq_data_1c;
+  logic [LQ_DEPTH_LOG2-1:0] mvex_lq_id_1c;
+  tt_briscv_pkg::csr_fp_exc mvex_lq_exc_1c;
+                        
   logic                     vex_mem_lqvld_3c;
   logic [VLEN-1:0]          vex_mem_lqdata_3c;
   logic [LQ_DEPTH_LOG2-1:0] vex_mem_lqid_3c;
   tt_briscv_pkg::csr_fp_exc vex_mem_lqexc_3c;
+
+  logic                     matrix_lq_vld_1c;
+  logic [VLEN-1:0]          matrix_lq_data_1c;
+  logic [LQ_DEPTH_LOG2-1:0] matrix_lq_id_1c;
 
   logic [63:0]  rf_vex_p0_reg;
   logic [63:0]  rf_vex_p1_reg;
@@ -389,6 +399,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_vex_id_incr_addrp2                  (vex_id_incr_addrp2),    
     .o_v_vm                                (v_vm              ),    
 
+    //Matrix Interface
+    .o_id_matrix_rts                       (id_matrix_rts),                     
+
     // EX Interface
     .o_id_ex_rts                           (id_ex_rts),             
     .i_ex_rtr                              (ex_id_rtr         ),    
@@ -582,11 +595,74 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   assign vrf_p2_rdaddr = id_vec_autogen.rf_rd_p2_is_rs2 ? id_vec_autogen.rf_addrp1
                                                         : id_vec_autogen.rf_addrp2;
 
+  assign mvex_lq_vld_1c = matrix_lq_vld_1c | vex_mem_lqvld_1c;
+  assign mvex_lq_data_1c = vex_mem_lqvld_1c ? vex_mem_lqdata_1c
+                          : matrix_lq_vld_1c ? matrix_lq_data_1c 
+                          : 'x;
+  assign mvex_lq_id_1c = vex_mem_lqvld_1c ? vex_mem_lqid_1c
+                          : matrix_lq_vld_1c ? matrix_lq_id_1c 
+                          : 'x;
+
+  // for now assert ml <= lmul_max = 8
+  // for VLEN = MLEN = 256:
+  // for XLEN=64: ml=4, 
+  // for XLEN=32: ml=8 
+  localparam XLEN=64;
+  localparam MLEN=VLEN;
+  localparam ml = MLEN/XLEN; 
+  localparam vl = VLEN/XLEN;
+  localparam NUM_MREGS=2;
+  localparam MREG_ADDR_WIDTH = $clog2(NUM_MREGS);
+  localparam ROW_ADDR_WIDTH = $clog2(ml);
+
+  wire [MREG_ADDR_WIDTH+ROW_ADDR_WIDTH-1:0] mrf_c_rdaddr;
+  wire [MREG_ADDR_WIDTH+ROW_ADDR_WIDTH-1:0] mrf_c_wraddr;
+  wire [MREG_ADDR_WIDTH+ROW_ADDR_WIDTH-1:0] mrf_opacc_wraddr;
+  assign mrf_c_rdaddr = vrf_p0_rdaddr[MREG_ADDR_WIDTH+ROW_ADDR_WIDTH-1:0];
+  assign mrf_c_wraddr = mem_vrf_wraddr[MREG_ADDR_WIDTH+ROW_ADDR_WIDTH-1:0];
+  assign mrf_opacc_wraddr = id_vec_autogen.rf_addrp2[MREG_ADDR_WIDTH+ROW_ADDR_WIDTH-1:0];
+
+  tt_matrix_unit #(
+    .LQ_DEPTH_LOG2(LQ_DEPTH_LOG2),
+    .VLEN(VLEN),
+    .MLEN(MLEN),
+    .XLEN(XLEN),
+    .vl(vl),
+    .ml(ml),
+    .NUM_MREGS(NUM_MREGS),
+    .MREG_ADDR_WIDTH(MREG_ADDR_WIDTH),
+    .ROW_ADDR_WIDTH(ROW_ADDR_WIDTH))
+    matrix_unit_i
+    (
+    // Inputs
+    .i_clk              (clk),
+    .i_reset_n          (reset_n),
+    //i decode control signals
+    .i_mvex_lq_id_0c    (id_vec_autogen.ldqid),   
+    .i_id_matrix_rts    (id_matrix_rts),
+    //write enables
+    .i_wr_c_0a          (mrf_wr_c),
+    .i_opacc_0a         (id_vec_autogen.mrf_opacc),
+    //rd and wr addrs
+    .i_rdaddr_0a        (mrf_c_rdaddr),
+    .i_wraddr_c_0a      (mrf_c_wraddr),
+    .i_wraddr_opacc_0a  (mrf_opacc_wraddr),
+    //rd and wr data
+    .i_vrf_p0_rddata    (vrf_p0_rddata),  
+    .i_vrf_p1_rddata    (vrf_p1_rddata),  
+    .i_wrdata_0a         (mem_vrf_wrdata),
+    //outputs to rob (called lq)
+    .o_mvex_lq_vld_1c    (matrix_lq_vld_1c),
+    .o_mvex_lq_data_1c    (matrix_lq_data_1c),
+    .o_mvex_lq_id_1c   (matrix_lq_id_1c)
+  );
+
   tt_vec_regfile #(.VLEN(VLEN))
   regfile
   (
     .i_clk               (clk),
     .i_reset_n           (reset_n),
+
     // Outputs
     .o_rddata_0a         ({vrf_p2_rddata,vrf_p1_rddata,vrf_p0_rddata}),
     .o_dstmask_0a        (),
@@ -600,7 +676,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   );
 
   tt_vec #(.VLEN(VLEN),
-          .XLEN(64  ) )
+          .XLEN(XLEN) )
   vecu
   (
     .i_clk                 (clk),                 
@@ -656,6 +732,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 wire           lq_mem_rf_wr_flag;
 logic          lq_mem_fp_rf_wr_flag;
 wire           lq_mem_vrf_wr_flag;
+wire           lq_mrf_opacc;
+wire           lq_mrf_wr_c;
 wire [4:0]     lq_mem_rf_wraddr;
 logic [31:0]   lq_mem_pc;
 logic [31:0]   lq_sim_ex_mem_instrn;
@@ -711,10 +789,10 @@ tt_lq #(.LQ_DEPTH(LQ_DEPTH),
    .i_fp_ex_mem_lqid_2c('0),
  
    // VEX 1/2/3 cycle signals
-   .i_vex_mem_lqvld_1c(vex_mem_lqvld_1c),
-   .i_vex_mem_lqdata_1c(vex_mem_lqdata_1c),
+   .i_vex_mem_lqvld_1c(mvex_lq_vld_1c),
+   .i_vex_mem_lqdata_1c(mvex_lq_data_1c),
    .i_vex_mem_lqexc_1c(vex_mem_lqexc_1c),
-   .i_vex_mem_lqid_1c(vex_mem_lqid_1c),
+   .i_vex_mem_lqid_1c(mvex_lq_id_1c),
 
    .i_vex_mem_lqvld_2c(vex_mem_lqvld_2c),
    .i_vex_mem_lqdata_2c(vex_mem_lqdata_2c),
@@ -768,6 +846,8 @@ tt_lq #(.LQ_DEPTH(LQ_DEPTH),
    .o_lq_broadside_data_valid(lq_broadside_data_valid)
 );
 
+assign lq_mrf_opacc           =   lq_rdinfo.mrf_opacc;        
+assign lq_mrf_wr_c         =   lq_rdinfo.mrf_wr_c;        
 assign lq_mem_vrf_wr_flag     =   lq_rdinfo.vrf_wr_flag;        
 assign lq_mem_fp_rf_wr_flag   =   lq_rdinfo.fp_rf_wr_flag;       
 assign lq_mem_rf_wr_flag      =   lq_rdinfo.rf_wr_flag;          
@@ -792,6 +872,7 @@ assign mem_rf_wr             = lq_rden & lq_mem_rf_wr_flag;
 assign mem_rf_wraddr[4:0]    = lq_mem_rf_wraddr[4:0];
 assign mem_rf_wrdata[63:0]   = lq_rddata[63:0]; 
 
+assign mrf_wr_c            = lq_rden & lq_mrf_wr_c & ~lq_mrf_opacc;   
 assign mem_vrf_wr            = lq_rden & lq_mem_vrf_wr_flag;   
 assign mem_vrf_wr_qual       = lq_rden & lq_mem_vrf_wr_flag & !lq_rdinfo.squash_vec_wr_flag;   
 assign mem_vrf_wraddr[4:0]   = lq_mem_rf_wraddr[4:0];    
@@ -934,6 +1015,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
                     .i_ex_id_rtr(ex_id_rtr),
                     .i_vex_id_rtr(vex_id_rtr),
                     .i_id_vex_rts(id_vex_rts),
+                    .i_id_matrix_rts(id_matrix_rts),
                     .i_id_sb_id(id_sb_id),
                     .i_id_mem_lqalloc(id_mem_lqalloc),
                     .i_first_alloc(id_vec_autogen.replay_cnt == 0),

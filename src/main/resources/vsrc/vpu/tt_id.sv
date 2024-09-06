@@ -42,7 +42,9 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output 				     o_v_vm,
    output 				     tt_briscv_pkg::vec_autogen_s o_vec_autogen,
    output 				     tt_briscv_pkg::vecldst_autogen_s o_vecldst_autogen,
-   
+   // MATRIX decode
+   output wire 				     o_id_matrix_rts ,
+
    // Destination target registers for forwarding and RAW checking
    input 				     tt_briscv_pkg::arr_lq_info_s i_lq_broadside_info,
    input [LQ_DEPTH-1:0][31:0] 		     i_lq_broadside_data,
@@ -95,9 +97,13 @@ module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_
    output logic [4:0] o_id_sb_id
 );
 
+wire v_ext;
+wire matrix_ext;
+wire matrix_mrf_wr_c;
+wire matrix_opacc;
+
 wire i_ext, m_ext, a_ext, b_ext;
 wire f_ext;
-wire v_ext;
 wire illegal_op;
 wire [4:0] EncType;
 wire id_rts;
@@ -117,7 +123,7 @@ tt_briscv_pkg::vecldst_autogen_s vecldst_autogen_incr;
 wire  valid_vec_autogen = v_ext;
 tt_briscv_pkg::vec_autogen_s vec_autogen_nodbg;
 assign vec_autogen_nodbg = (id_replay ? vec_autogen_replay : vec_autogen)
-                         & {$bits(tt_briscv_pkg::vec_autogen_s){valid_vec_autogen}};
+                         & {$bits(tt_briscv_pkg::vec_autogen_s){valid_vec_autogen | matrix_ext}};
 always @* begin
   o_vec_autogen = vec_autogen_nodbg;
   o_vec_autogen.rf_addrp0 = vec_autogen_nodbg.rf_addrp0;
@@ -163,6 +169,8 @@ wire is_fp_instrn;
 wire valid_fp_instrn;
 wire is_vec_instrn;
 wire valid_vec_instrn;
+wire valid_matrix_instrn;
+wire valid_opacc_instrn;
 
 reg o_id_type_r; // register to register alu op
 reg o_id_type_i; // loads, JALR and alu ops with immediate operands
@@ -184,11 +192,12 @@ logic no_lq_load_pending;
  
   assign id_rts          = (i_if_instrn_rts | id_replay)
                             //reduction ops don't consume another lq entry so under replay its fine to ignore full conditions.
+                            //todo: do i need to add is_matrix_instrn below?
                          & (~(i_mem_fe_lqfull | i_mem_fe_skidbuffull) | (is_vec_instrn & id_replay & ~vec_autogen_replay.addrp2_incr[0]))
                             // Syncstall only applies per ldqid, and some vector replays need multiple dispatches to fill a single ldqid
                          & (id_replay | ~sync_stall )
                             // Need all units to be ready to dispatch anything
-                         & (is_ex_instrn | is_fp_instrn | is_vec_instrn) & units_rtr;
+                         & (is_ex_instrn | is_fp_instrn | is_vec_instrn | matrix_ext) & units_rtr;
   assign o_id_instrn_rtr = units_rtr & ~id_replay & ~raw_hazard_stall & ~(i_mem_fe_lqfull | i_mem_fe_skidbuffull) & ~sync_stall;
 `else
 tt_rts_rtr_pipe_stage #(.WIDTH(32)) id_instrn_flops
@@ -250,15 +259,19 @@ assign id_mem_lqalloc_raw = id_rts & (~id_replay | vec_autogen_replay.addrp2_inc
 // LDQ Information for dispatch ops
 assign o_id_mem_lqalloc = id_mem_lqalloc_raw & ~raw_hazard_stall;
 assign o_id_mem_lq_done = ((o_id_vex_rts && i_vex_id_rtr) ||
+                                          o_id_matrix_rts ||
                            (o_id_ex_rts  && i_ex_rtr    )   ) && (vec_autogen_incr.replay_cnt == 0);
 assign o_id_mem_lqinfo.pc[31:0] = o_id_ex_pc;
 assign o_id_mem_lqinfo.sim_instrn[31:0] = instrn_id;
+assign o_id_mem_lqinfo.mrf_opacc = o_vec_autogen.mrf_opacc;
+assign o_id_mem_lqinfo.mrf_wr_c = o_vec_autogen.mrf_wr_c;
 assign o_id_mem_lqinfo.vrf_wr_flag = o_vec_autogen.rf_wren;
 assign o_id_mem_lqinfo.squash_vec_wr_flag = squash_vec_wr_flag;
 assign o_id_mem_lqinfo.fp_rf_wr_flag = (is_fp_instrn | is_vec_instrn) & o_fp_rf_wr_flag;
 assign o_id_mem_lqinfo.rf_wr_flag = (is_ex_instrn | is_fp_instrn | is_vec_instrn) & o_rf_wr_flag;
 assign o_id_mem_lqinfo.rf_wraddr[4:0] = ({5{o_rf_wr_flag}} &  o_rf_wraddr[4:0]) |
                                         ({5{o_fp_rf_wr_flag}} &  o_fp_rf_wraddr[4:0]) |
+                                        ({5{o_vec_autogen.mrf_wr_c | o_vec_autogen.mrf_wr_c}} & o_vec_autogen.rf_addrp2[4:0]) |
                                         ({5{o_vec_autogen.rf_wren}} & o_vec_autogen.rf_addrp2[4:0]);
 assign o_id_mem_lqinfo.is_branch = o_id_type_sb;
 assign o_id_mem_lqinfo.load = (is_ex_instrn & (EncType[4:0] == `BRISCV_INSTR_TYPE_I) & ~instrn_id[4] & ~instrn_id[5]) |
@@ -325,7 +338,7 @@ if (INCL_VEC == 1) begin
         vecldst_autogen_replay <= vecldst_autogen_incr;
      end
    end
-   else if (valid_vec_instrn) begin				// Start replay mode
+   else if (valid_vec_instrn | valid_matrix_instrn) begin				// Start replay mode
       instrn_id_replay <= instrn_id;
       id_sb_id_replay <= o_id_sb_id;
       id_ex_pc_replay <= o_id_ex_pc;
@@ -336,7 +349,7 @@ if (INCL_VEC == 1) begin
    end
  end
    
- always @* begin
+always @* begin
    if(~i_reset_n) begin
         id_replay_type_start = '0;
         id_replay_cnt_start = '0;
@@ -344,138 +357,137 @@ if (INCL_VEC == 1) begin
         vecldst_autogen_incr = '0;
    end
    else begin
-    vec_autogen_incr = vec_autogen;
-    vecldst_autogen_incr = vecldst_autogen;
-    if (id_replay) begin					// Increment dest/index in Replay mode
-      vecldst_autogen_incr.ldst_iter_cnt = vecldst_autogen_replay.ldst_iter_cnt + 1'b1;
-      vec_autogen_incr.addrp0_incr  = {vec_autogen_replay.addrp0_incr[0],vec_autogen_replay.addrp0_incr[7:1]}; // Rotate by 1
-      vec_autogen_incr.addrp1_incr  = {vec_autogen_replay.addrp1_incr[0],vec_autogen_replay.addrp1_incr[7:1]}; // Rotate by 1
-      vec_autogen_incr.addrp1_reset = {vec_autogen_replay.addrp1_reset[0],vec_autogen_replay.addrp1_reset[7:1]}; // Rotate by 1
-      vec_autogen_incr.addrp2_incr = {vec_autogen_replay.addrp2_incr[0],vec_autogen_replay.addrp2_incr[7:1]}; // Rotate by 1
-      vec_autogen_incr.replay_cnt = vec_autogen_replay.replay_cnt - 1'b1;
+      vec_autogen_incr = vec_autogen;
+      vecldst_autogen_incr = vecldst_autogen;
+      if (id_replay) begin					// Increment dest/index in Replay mode
+         vecldst_autogen_incr.ldst_iter_cnt = vecldst_autogen_replay.ldst_iter_cnt + 1'b1;
+         vec_autogen_incr.addrp0_incr  = {vec_autogen_replay.addrp0_incr[0],vec_autogen_replay.addrp0_incr[7:1]}; // Rotate by 1
+         vec_autogen_incr.addrp1_incr  = {vec_autogen_replay.addrp1_incr[0],vec_autogen_replay.addrp1_incr[7:1]}; // Rotate by 1
+         vec_autogen_incr.addrp1_reset = {vec_autogen_replay.addrp1_reset[0],vec_autogen_replay.addrp1_reset[7:1]}; // Rotate by 1
+         vec_autogen_incr.addrp2_incr = {vec_autogen_replay.addrp2_incr[0],vec_autogen_replay.addrp2_incr[7:1]}; // Rotate by 1
+         vec_autogen_incr.replay_cnt = vec_autogen_replay.replay_cnt - 1'b1;
 
-      if(vec_autogen.iterate) begin
-	 vec_autogen_incr.addrp2_incr = {7'd0,i_vex_id_incr_addrp2};   
-	 vec_autogen_incr.ldqid = vec_autogen_replay.ldqid + {{LQ_DEPTH_LOG2-1{1'b0}},i_vex_id_incr_addrp2};
-	 vec_autogen_incr.rf_addrp2 = i_iterate_addrp2[4:0];
-	 vec_autogen_incr.rf_addrp1 = i_iterate_addrp1[4:0];
-	 vec_autogen_incr.rf_addrp0 = i_iterate_addrp0[4:0];
-      end else begin
-	 vec_autogen_incr.ldqid = vec_autogen_replay.ldqid + {{LQ_DEPTH_LOG2-1{1'b0}},vec_autogen_incr.addrp2_incr[0]};
-	 vec_autogen_incr.rf_addrp2 = vec_autogen_replay.rf_addrp2 + {4'b0,vec_autogen_incr.addrp2_incr[0]};
-         vec_autogen_incr.rf_addrp1 = (vec_autogen_incr.addrp1_reset[0] ? vec_autogen.rf_addrp1
-                                                                    : vec_autogen_replay.rf_addrp1 + {4'b0,vec_autogen_incr.addrp1_incr[0]});
-	 vec_autogen_incr.rf_addrp0 = vec_autogen_replay.rf_addrp0 + {4'b0,vec_autogen_incr.addrp0_incr[0]};
+         if(vec_autogen.iterate) begin
+            // TODO: use ignore incr for opacc
+            vec_autogen_incr.addrp2_incr = {7'd0,i_vex_id_incr_addrp2};   
+            vec_autogen_incr.ldqid = vec_autogen_replay.ldqid + {{LQ_DEPTH_LOG2-1{1'b0}},i_vex_id_incr_addrp2};
+            vec_autogen_incr.rf_addrp2 = i_iterate_addrp2[4:0];
+            vec_autogen_incr.rf_addrp1 = i_iterate_addrp1[4:0];
+            vec_autogen_incr.rf_addrp0 = i_iterate_addrp0[4:0];
+         end else begin
+            vec_autogen_incr.ldqid = vec_autogen_replay.ldqid + {{LQ_DEPTH_LOG2-1{1'b0}},(vec_autogen_incr.addrp2_incr[0])};
+            vec_autogen_incr.rf_addrp2 = vec_autogen_replay.rf_addrp2 + {4'b0,vec_autogen_incr.addrp2_incr[0]};
+            vec_autogen_incr.rf_addrp1 = (vec_autogen_incr.addrp1_reset[0] ? vec_autogen.rf_addrp1
+                                                                           : vec_autogen_replay.rf_addrp1 + {4'b0,vec_autogen_incr.addrp1_incr[0]});
+            vec_autogen_incr.rf_addrp0 = vec_autogen_replay.rf_addrp0 + {4'b0,vec_autogen_incr.addrp0_incr[0]};
+         end
+
+         // IMPROVE: Same info duplicated in both structs. Cleanup
+         vecldst_autogen_incr.dest_reg = vec_autogen_incr.rf_addrp2;
+         vecldst_autogen_incr.ldst_dest_incr = vec_autogen_incr.addrp2_incr;
+         vecldst_autogen_incr.ldst_index_incr = vec_autogen_incr.addrp1_incr;
+
+         id_replay_type_start = '0;
+         id_replay_cnt_start = '0;
       end
+      else if ((valid_vec_instrn | valid_matrix_instrn) & ~raw_hazard_stall) begin	// Start replay mode
 
-	// IMPROVE: Same info duplicated in both structs. Cleanup
-      vecldst_autogen_incr.dest_reg = vec_autogen_incr.rf_addrp2;
-      vecldst_autogen_incr.ldst_dest_incr = vec_autogen_incr.addrp2_incr;
-      vecldst_autogen_incr.ldst_index_incr = vec_autogen_incr.addrp1_incr;
+         vecldst_autogen_incr.ldst_iter_cnt = 6'b1;
+               
+         if (vec_autogen.iterate) begin				// Case 1: Iterate over vector elements - Low perf
+            id_replay_type_start = `BRISCV_REPLAY_TYPE_ITER;
+            //id_replay_cnt_start = (v_vlmax << {'0,~vec_autogen.onecycle_iterate})- 1'b1;
+            //replay atleast an integral multiple of lmul size, this is to write elements that are past VL to original dst value.
+            id_replay_cnt_start = (((VLEN/8 >> v_vsew[1:0]) << ({2{~v_lmul[2]}} & v_lmul[1:0])) << {'0,~vec_autogen.onecycle_iterate})- 1'b1;	 		
+            vec_autogen_incr.addrp2_incr = 8'h0;
+            vec_autogen_incr.addrp1_incr = 8'h0;
+            vec_autogen_incr.addrp1_reset = 8'h0;
+            vec_autogen_incr.addrp1_reset = 8'h0;
+            vec_autogen_incr.addrp0_incr = 8'h0;
+         end else if (vec_autogen.vmvgrp) begin
+            id_replay_type_start = `BRISCV_REPLAY_TYPE_ITER;
+            id_replay_cnt_start = {5'd0,instrn_id[17:15]};			
+            vec_autogen_incr.addrp2_incr = {2{instrn_id[17:15] == 3'd1}} | {4{instrn_id[17:15] == 3'd3}} | {8{instrn_id[17:15] == 3'd7}};	
+            vec_autogen_incr.addrp1_incr = vec_autogen_incr.addrp2_incr;
+            vec_autogen_incr.addrp1_reset = 8'h0;
+            vec_autogen_incr.addrp0_incr = 8'h0;
+         end else if (lmul_gteq1 & (vec_autogen.wdeop)) begin		// Case 2: Widening Vector Ops needs replay
+            id_replay_type_start = `BRISCV_REPLAY_TYPE_WIDE;
+            id_replay_cnt_start = {1 << v_lmul[1:0],1'b0}-1'b1;	//spyglass disable STARC05-2.10.3.2b_sb	// Set replay for widening to 2*LMUL
 
-       id_replay_type_start = '0;
-      id_replay_cnt_start = '0;
-    end
-    else if (valid_vec_instrn & ~raw_hazard_stall) begin	// Start replay mode
+            //vec_autogen_incr.addrp2_incr =  {7'd0,v_lmul==2'b00} | {4'd0,{2{1'b0,v_lmul==2'b01}}} | {4{1'b0,v_lmul==2'b10}};
+            //vec_autogen_incr.addrp0_incr =                         {5'd0,{v_lmul==2'b01},2'b00}   | {2'd0,{2{1'b0,v_lmul==2'b10}},2'b00};
+            vec_autogen_incr.addrp0_incr =  (EncType[4:0] == `BRISCV_INSTR_TYPE_Vvv) ? 8'haa : 8'h00;
 
-      vecldst_autogen_incr.ldst_iter_cnt = 6'b1;
-              
-      if (vec_autogen.iterate) begin				// Case 1: Iterate over vector elements - Low perf
-        id_replay_type_start = `BRISCV_REPLAY_TYPE_ITER;
-        //id_replay_cnt_start = (v_vlmax << {'0,~vec_autogen.onecycle_iterate})- 1'b1;
-	//replay atleast an integral multiple of lmul size, this is to write elements that are past VL to original dst value.
-	id_replay_cnt_start = (((VLEN/8 >> v_vsew[1:0]) << ({2{~v_lmul[2]}} & v_lmul[1:0])) << {'0,~vec_autogen.onecycle_iterate})- 1'b1;	 		
-        vec_autogen_incr.addrp2_incr = 8'h0;
-        vec_autogen_incr.addrp1_incr = 8'h0;
-        vec_autogen_incr.addrp1_reset = 8'h0;
-	vec_autogen_incr.addrp1_reset = 8'h0;
-	vec_autogen_incr.addrp0_incr = 8'h0;
-	
-	
-      end else if (vec_autogen.vmvgrp) begin
-	id_replay_type_start = `BRISCV_REPLAY_TYPE_ITER;
-        id_replay_cnt_start = {5'd0,instrn_id[17:15]};			
-        vec_autogen_incr.addrp2_incr = {2{instrn_id[17:15] == 3'd1}} | {4{instrn_id[17:15] == 3'd3}} | {8{instrn_id[17:15] == 3'd7}};	
-        vec_autogen_incr.addrp1_incr = vec_autogen_incr.addrp2_incr;
-        vec_autogen_incr.addrp1_reset = 8'h0;
-	vec_autogen_incr.addrp0_incr = 8'h0;
-      end else if (lmul_gteq1 & (vec_autogen.wdeop)) begin		// Case 2: Widening Vector Ops needs replay
-        id_replay_type_start = `BRISCV_REPLAY_TYPE_WIDE;
-        id_replay_cnt_start = {1 << v_lmul[1:0],1'b0}-1'b1;	//spyglass disable STARC05-2.10.3.2b_sb	// Set replay for widening to 2*LMUL
+            vec_autogen_incr.addrp2_incr =  8'hff;
+            if(vec_autogen.src1hw)
+               vec_autogen_incr.addrp1_incr =  8'hff;
+               //vec_autogen_incr.addrp1_incr = {7'd0,v_lmul==2'b00} | {4'd0,{2{1'b0,v_lmul==2'b01}}} | {4{1'b0,v_lmul==2'b10}};
+            else
+               vec_autogen_incr.addrp1_incr =   8'haa;
+               //vec_autogen_incr.addrp1_incr =                        {5'd0,{v_lmul==2'b01},2'b00}   | {2'd0,{2{1'b0,v_lmul==2'b10}},2'b00};
+         end
+         else if (lmul_gteq1 & (vec_autogen.nrwop)) begin		// Case 2: Narrowing Vector Ops needs replay
+            id_replay_type_start = `BRISCV_REPLAY_TYPE_WIDE;
+            id_replay_cnt_start = {1 << v_lmul[1:0],1'b0}-1'b1;	//spyglass disable STARC05-2.10.3.2b_sb
+      
+            vec_autogen_incr.addrp2_incr =  8'haa;
+            vec_autogen_incr.addrp1_incr =  8'hff;
+            vec_autogen_incr.addrp0_incr = (EncType[4:0] == `BRISCV_INSTR_TYPE_Vvv) ? 8'haa : 8'h00;
+            vec_autogen_incr.addrp1_reset =  8'h0;
+         end 
+         else if (ldst_gt1) begin					// Case 3: LD/ST EMUL*nf > 1 iteration
+            id_replay_type_start = `BRISCV_REPLAY_TYPE_LDST;
+            id_replay_cnt_start = {2'b0, (vecldst_autogen.ldst_iterations[5:0])};	// Set replay to Autogen Value
+            vec_autogen_incr.addrp2_incr = vec_autogen.addrp2_incr[7:0];		//  Incr reg based on ldst autogen for incr value
+            vec_autogen_incr.addrp1_incr = vec_autogen.addrp1_incr[7:0];		//  Incr reg based on ldst autogen for incr value
+            vec_autogen_incr.addrp1_reset = vec_autogen.addrp1_reset[7:0];		//  Reset reg incr for segment-indexed ldst ops
+         end
+         else if (lmul_gt1 & ~vec_ldst_vld) begin					// Case 4: LMUL > 1 needs replay
+            id_replay_type_start = `BRISCV_REPLAY_TYPE_LMUL;
+            id_replay_cnt_start = (vsetOp_to_ex | i_ignore_lmul) ? 8'b0 : {2'b0, lmul_replay_cnt};			// 	Set replay to LMUL
 
-         //vec_autogen_incr.addrp2_incr =  {7'd0,v_lmul==2'b00} | {4'd0,{2{1'b0,v_lmul==2'b01}}} | {4{1'b0,v_lmul==2'b10}};
-  	 //vec_autogen_incr.addrp0_incr =                         {5'd0,{v_lmul==2'b01},2'b00}   | {2'd0,{2{1'b0,v_lmul==2'b10}},2'b00};
-         vec_autogen_incr.addrp0_incr =  (EncType[4:0] == `BRISCV_INSTR_TYPE_Vvv) ? 8'haa : 8'h00;
+            //todo: set to zero for opacc
+            vec_autogen_incr.addrp2_incr = ((matrix_ext | vec_autogen.rf_wren)  & ~i_ignore_dstincr) ? 8'hff : 8'h00;		// Incr reg every time if valid
+            vec_autogen_incr.addrp0_incr = (vec_autogen.rf_rden0 & ~i_ignore_srcincr 
+                                          & (matrix_ext | (EncType[4:0] == `BRISCV_INSTR_TYPE_Vvv))) ? 8'hff : 8'h00;
+            vec_autogen_incr.addrp1_incr = (vec_autogen.rf_rden1 & ~i_ignore_srcincr) ? 8'hff : 8'h00;
+            //vec_autogen_incr.addrp0_reset = 8'h0; 
+         end
+         else begin						// DEFAULT CASE: NO Replay
+            id_replay_type_start = '0;
+            id_replay_cnt_start = '0;
+            vec_autogen_incr.addrp2_incr = '0;
+            vec_autogen_incr.addrp1_incr = '0;
+            vec_autogen_incr.addrp1_reset = '0;
+         end
+         vec_autogen_incr.replay_cnt = id_replay_cnt_start;
+         //todo: add matrix decode
+         vec_autogen_incr.ldqid = vec_autogen.ldqid + {{LQ_DEPTH_LOG2-1{1'b0}},vec_autogen_incr.addrp2_incr[0]};
 
-	 vec_autogen_incr.addrp2_incr =  8'hff;
-	 if(vec_autogen.src1hw)
-	   vec_autogen_incr.addrp1_incr =  8'hff;
-	   //vec_autogen_incr.addrp1_incr = {7'd0,v_lmul==2'b00} | {4'd0,{2{1'b0,v_lmul==2'b01}}} | {4{1'b0,v_lmul==2'b10}};
-	 else
-	   vec_autogen_incr.addrp1_incr =   8'haa;
-	   //vec_autogen_incr.addrp1_incr =                        {5'd0,{v_lmul==2'b01},2'b00}   | {2'd0,{2{1'b0,v_lmul==2'b10}},2'b00};
+         if(vec_autogen.iterate) begin
+            vec_autogen_incr.rf_addrp2 = i_iterate_addrp2[4:0];
+            vec_autogen_incr.rf_addrp1 = i_iterate_addrp1[4:0];
+            vec_autogen_incr.rf_addrp0 = i_iterate_addrp0[4:0];
+         end else begin
+            vec_autogen_incr.rf_addrp2 = vec_autogen.rf_addrp2 + {4'b0,vec_autogen_incr.addrp2_incr[0]};
+            vec_autogen_incr.rf_addrp1 = vec_autogen.rf_addrp1 + {4'b0,vec_autogen_incr.addrp1_incr[0]};
+            vec_autogen_incr.rf_addrp0 = vec_autogen.rf_addrp0 + {4'b0,vec_autogen_incr.addrp0_incr[0]};
+         end
+         vecldst_autogen_incr.dest_reg = vec_autogen_incr.rf_addrp2;
       end
-      else if (lmul_gteq1 & (vec_autogen.nrwop)) begin		// Case 2: Narrowing Vector Ops needs replay
-         id_replay_type_start = `BRISCV_REPLAY_TYPE_WIDE;
-         id_replay_cnt_start = {1 << v_lmul[1:0],1'b0}-1'b1;	//spyglass disable STARC05-2.10.3.2b_sb
-	 
-         vec_autogen_incr.addrp2_incr =  8'haa;
-         vec_autogen_incr.addrp1_incr =  8'hff;
-	 vec_autogen_incr.addrp0_incr = (EncType[4:0] == `BRISCV_INSTR_TYPE_Vvv) ? 8'haa : 8'h00;
-         vec_autogen_incr.addrp1_reset =  8'h0;
-      end 
-      else if (ldst_gt1) begin					// Case 3: LD/ST EMUL*nf > 1 iteration
-        id_replay_type_start = `BRISCV_REPLAY_TYPE_LDST;
-        id_replay_cnt_start = {2'b0, (vecldst_autogen.ldst_iterations[5:0])};	// Set replay to Autogen Value
-        vec_autogen_incr.addrp2_incr = vec_autogen.addrp2_incr[7:0];		//  Incr reg based on ldst autogen for incr value
-        vec_autogen_incr.addrp1_incr = vec_autogen.addrp1_incr[7:0];		//  Incr reg based on ldst autogen for incr value
-        vec_autogen_incr.addrp1_reset = vec_autogen.addrp1_reset[7:0];		//  Reset reg incr for segment-indexed ldst ops
+      else begin
+         id_replay_type_start = '0;
+         id_replay_cnt_start = '0;
+         vec_autogen_incr.addrp2_incr = '0;
+         vec_autogen_incr.addrp1_incr = '0;
+         vec_autogen_incr.addrp1_reset = '0;
+         vec_autogen_incr.rf_addrp2 = '0;
+         vec_autogen_incr.rf_addrp1 = '0;
+         vec_autogen_incr.rf_addrp0 = '0;
+         vecldst_autogen_incr.dest_reg = 5'b0;
+         vecldst_autogen_incr.ldst_iter_cnt = 6'b0;
       end
-      else if (lmul_gt1 & ~vec_ldst_vld) begin					// Case 4: LMUL > 1 needs replay
-         id_replay_type_start = `BRISCV_REPLAY_TYPE_LMUL;
-         id_replay_cnt_start = (vsetOp_to_ex | i_ignore_lmul) ? 8'b0 : {2'b0, lmul_replay_cnt};			// 	Set replay to LMUL
-
-	 vec_autogen_incr.addrp2_incr = (vec_autogen.rf_wren  & ~i_ignore_dstincr) ? 8'hff : 8'h00;		// Incr reg every time if valid
-    	 vec_autogen_incr.addrp0_incr = (vec_autogen.rf_rden0 & ~i_ignore_srcincr & (EncType[4:0] == `BRISCV_INSTR_TYPE_Vvv)) ? 8'hff : 8'h00;
-	 vec_autogen_incr.addrp1_incr = (vec_autogen.rf_rden1 & ~i_ignore_srcincr) ? 8'hff : 8'h00;
-	
-        //vec_autogen_incr.addrp0_reset = 8'h0; 
-      end
-      else begin						// DEFAULT CASE: NO Replay
-        id_replay_type_start = '0;
-        id_replay_cnt_start = '0;
-        vec_autogen_incr.addrp2_incr = '0;
-        vec_autogen_incr.addrp1_incr = '0;
-        vec_autogen_incr.addrp1_reset = '0;
-
-      end
-
-      vec_autogen_incr.replay_cnt = id_replay_cnt_start;
-      vec_autogen_incr.ldqid = vec_autogen.ldqid + {{LQ_DEPTH_LOG2-1{1'b0}},vec_autogen_incr.addrp2_incr[0]};
-
-      if(vec_autogen.iterate) begin
-	 vec_autogen_incr.rf_addrp2 = i_iterate_addrp2[4:0];
-	 vec_autogen_incr.rf_addrp1 = i_iterate_addrp1[4:0];
-	 vec_autogen_incr.rf_addrp0 = i_iterate_addrp0[4:0];
-      end else begin
-	 vec_autogen_incr.rf_addrp2 = vec_autogen.rf_addrp2 + {4'b0,vec_autogen_incr.addrp2_incr[0]};
-	 vec_autogen_incr.rf_addrp1 = vec_autogen.rf_addrp1 + {4'b0,vec_autogen_incr.addrp1_incr[0]};
-	 vec_autogen_incr.rf_addrp0 = vec_autogen.rf_addrp0 + {4'b0,vec_autogen_incr.addrp0_incr[0]};
-      end
-      vecldst_autogen_incr.dest_reg = vec_autogen_incr.rf_addrp2;
-    end
-    else begin
-      id_replay_type_start = '0;
-      id_replay_cnt_start = '0;
-      vec_autogen_incr.addrp2_incr = '0;
-      vec_autogen_incr.addrp1_incr = '0;
-      vec_autogen_incr.addrp1_reset = '0;
-      vec_autogen_incr.rf_addrp2 = '0;
-      vec_autogen_incr.rf_addrp1 = '0;
-      vec_autogen_incr.rf_addrp0 = '0;
-      vecldst_autogen_incr.dest_reg = 5'b0;
-      vecldst_autogen_incr.ldst_iter_cnt = 6'b0;
-    end
    end
  end
 
@@ -538,8 +550,10 @@ assign valid_fp_instrn = id_rts & is_fp_instrn;
 //VEC Instructions
 assign is_vec_instrn = v_ext;
 assign valid_vec_instrn = id_rts & is_vec_instrn;
+assign valid_matrix_instrn = id_rts & matrix_ext;
+assign valid_opacc_instrn = id_rts & matrix_opacc;
 assign o_id_vex_rts    = (!raw_hazard_stall_vex) & id_rts & v_ext & ~vec_ldst_vld & ~vsetOp_to_ex;
-
+assign o_id_matrix_rts    = (!raw_hazard_stall_vex) & id_rts & matrix_ext & ~vec_ldst_vld & ~vsetOp_to_ex;;
 
 assign o_id_ex_units_rts = (!raw_hazard_stall) & id_rts;
 //////
@@ -557,13 +571,21 @@ autogen_Instruction autogen_Instruction ( opcode, funct7, funct3, vm, v_vsew, v_
 // Ext
 // autogen_Ext autogen_Ext ( opcode, funct7, funct3, Ext);
 assign illegal_op =  (instrn_id[31:0] == 32'h0);
-assign i_ext = (EncType[4:3] == 2'b00);			// 00000 - 00111
+assign i_ext = (EncType[4:3] == 2'b00) & ~matrix_ext;			// 00000 - 00111
 assign m_ext = (EncType[4:0] == `BRISCV_INSTR_TYPE_RM);	// 01000
 assign a_ext = (EncType[4:0] == `BRISCV_INSTR_TYPE_A);	// 01001
 assign b_ext = (EncType[4:1] == 4'b0101);		// 01010 - 01011
 assign f_ext = (EncType[4:2] == 3'b011);		// 01100 - 01111
-assign v_ext = (EncType[4] == 1'b1) & ~(&EncType[3:0]);	// 10000 - 11110
 
+assign matrix_ext = (opcode == `MATRIX_OPC);
+assign matrix_mrf_wr_c = matrix_ext & (funct3 == `MATRIX_FUNC_MV_M_V);
+assign matrix_mrf_rd_c = matrix_ext & (funct3 == `MATRIX_FUNC_MV_V_M);
+assign matrix_opacc = matrix_ext & (funct3 == `MATRIX_FUNC_OPACC);
+assign matrix_vrf_rd = matrix_mrf_wr_c | matrix_opacc;
+
+
+assign v_ext = (&(EncType[4] == 1'b1) & ~(&EncType[3:0])) // 10000 - 11110
+               & ~matrix_ext; 
 // Int
 autogen_EncType autogen_EncType ( opcode, funct3, funct7, mop, EncType[4:0]);
 autogen_SrcA autogen_SrcA ( opcode, funct3, funct7, SrcA);
@@ -633,12 +655,15 @@ autogen_out_from_vec_int autogen_out_from_vec_int(opcode, funct7, funct3,  vec_a
 autogen_v_wdeop autogen_v_wdeop(opcode, funct7, funct3, addrp0, vec_autogen.wdeop);
 autogen_v_nrwop autogen_v_nrwop(opcode, funct7, funct3, addrp0, vec_autogen.nrwop);
 autogen_v_src1hw autogen_v_src1hw(opcode, funct7, funct3,         vec_autogen.src1hw);
-assign vec_autogen.rf_rden0 = (SrcA == 2'b11);
-assign vec_autogen.rf_rden1 = (SrcB == 2'b11);
+assign vec_autogen.rf_rden0 = (SrcA == 2'b11) | matrix_opacc | matrix_mrf_wr_c;
+assign vec_autogen.rf_rden1 = (SrcB == 2'b11) | matrix_opacc;
 assign vec_autogen.rf_rden2 = (SrcC == 2'b00) ? (Dest == 2'b11) : (SrcC == 2'b11);
+
 autogen_v_fp_sel_scalar autogen_v_fp_sel_scalar(opcode, funct7, funct3, vec_autogen.fp_sel_scalar);
 autogen_v_sat_instrn autogen_v_sat_instrn(opcode, funct7, funct3, vec_autogen.sat_instrn);   
-assign vec_autogen.rf_wren = (Dest[1:0] == 2'b11);
+assign vec_autogen.rf_wren = (Dest[1:0] == 2'b11) | matrix_mrf_rd_c;
+assign vec_autogen.mrf_wr_c = matrix_mrf_wr_c;
+assign vec_autogen.mrf_opacc = matrix_opacc;
 assign vec_autogen.rf_addrp0 = addrp0;
 assign vec_autogen.rf_addrp1 = addrp1;
 assign vec_autogen.rf_addrp2 = addrp2;
@@ -716,7 +741,7 @@ always @* begin
    o_id_type_sb = (EncType[4:0] == `BRISCV_INSTR_TYPE_B); // branch
    o_id_type_u  = (EncType[4:0] == `BRISCV_INSTR_TYPE_U); // lui | auipc
    o_id_type_uj = (EncType[4:0] == `BRISCV_INSTR_TYPE_J); //
-   o_id_type_e  = (EncType[4:0] == `BRISCV_INSTR_TYPE_E); // system
+   o_id_type_e  = (EncType[4:0] == `BRISCV_INSTR_TYPE_E) & ~matrix_ext; // system
    o_id_type_f  = (EncType[4:0] == `BRISCV_INSTR_TYPE_F); // system
 end
 
@@ -907,14 +932,16 @@ assign o_id_immed_op = immed_op;
 //////
 // RAW hazard handling
 //////
-logic [LQ_DEPTH-1:0]    lq_hit_entry_vex_p0, lq_hit_entry_vex_p1, lq_hit_entry_vex_p2, lq_hit_entry_vex_mask, lq_hit_entry_vex_r0, lq_hit_entry_vex_f0;
-logic [LQ_DEPTH_LOG2:0] lq_hit_cnt_vex_p0, lq_hit_cnt_vex_p1, lq_hit_cnt_vex_p2, lq_hit_cnt_vex_mask, lq_hit_cnt_vex_r0, lq_hit_cnt_vex_f0;
+logic [LQ_DEPTH-1:0]    lq_hit_entry_matrix, lq_hit_entry_vex_p0, lq_hit_entry_vex_p1, lq_hit_entry_vex_p2, lq_hit_entry_vex_mask, lq_hit_entry_vex_r0, lq_hit_entry_vex_f0;
+logic [LQ_DEPTH_LOG2:0] lq_hit_cnt_matrix, lq_hit_cnt_vex_p0, lq_hit_cnt_vex_p1, lq_hit_cnt_vex_p2, lq_hit_cnt_vex_mask, lq_hit_cnt_vex_r0, lq_hit_cnt_vex_f0;
 logic vec_vs3_hazard_stall, vec_vs2_hazard_stall, vec_vs1_hazard_stall,vec_mask_hazard_stall;
 logic vec_rs1_hazard_stall;   
 logic vec_fs1_hazard_stall;   
 
 always_comb begin 
    for(int x=0;x<LQ_DEPTH;++x) begin
+      lq_hit_entry_matrix[x]   = (INCL_VEC == 1) & i_lq_broadside_valid[x] &  i_lq_broadside_info[x].mrf_wr_c & o_vec_autogen.mrf_opacc; 
+
       lq_hit_entry_vex_p0[x]   = (INCL_VEC == 1) & ((mask_rf_addrp0 & o_vec_autogen.rf_addrp0) == (i_lq_broadside_info[x].rf_wraddr & mask_rf_addrp0)) & i_lq_broadside_valid[x] &  i_lq_broadside_info[x].vrf_wr_flag   & o_vec_autogen.rf_rden0 & !(o_vec_autogen.sel_scalar || o_vec_autogen.fp_sel_scalar); 
       lq_hit_entry_vex_p1[x]   = (INCL_VEC == 1) & ((mask_rf_addrp1 & o_vec_autogen.rf_addrp1) == (i_lq_broadside_info[x].rf_wraddr & mask_rf_addrp1)) & i_lq_broadside_valid[x] &  i_lq_broadside_info[x].vrf_wr_flag   & o_vec_autogen.rf_rden1;
       lq_hit_entry_vex_p2[x]   = (INCL_VEC == 1) & ((mask_rf_addrp2 & o_vec_autogen.rf_addrp2) == (i_lq_broadside_info[x].rf_wraddr & mask_rf_addrp2)) & i_lq_broadside_valid[x] &  i_lq_broadside_info[x].vrf_wr_flag   & o_vec_autogen.rf_rden2;
@@ -926,6 +953,7 @@ always_comb begin
 end
    
 //IMPROVE_msalvi: for now not supporting forwarding from mem to vrf. For now just checking for raw_hazard.   
+tt_popcnt #(.WIDTH(LQ_DEPTH)) cnt_mrf   (.req_in(lq_hit_entry_matrix[LQ_DEPTH-1:0]),  .req_sum(lq_hit_cnt_matrix[LQ_DEPTH_LOG2:0])); 
 tt_popcnt #(.WIDTH(LQ_DEPTH)) cnt_vrf_p0   (.req_in(lq_hit_entry_vex_p0[LQ_DEPTH-1:0]),  .req_sum(lq_hit_cnt_vex_p0[LQ_DEPTH_LOG2:0])); 
 tt_popcnt #(.WIDTH(LQ_DEPTH)) cnt_vrf_p1   (.req_in(lq_hit_entry_vex_p1[LQ_DEPTH-1:0]),  .req_sum(lq_hit_cnt_vex_p1[LQ_DEPTH_LOG2:0]));
 tt_popcnt #(.WIDTH(LQ_DEPTH)) cnt_vrf_p2   (.req_in(lq_hit_entry_vex_p2[LQ_DEPTH-1:0]),  .req_sum(lq_hit_cnt_vex_p2[LQ_DEPTH_LOG2:0]));
@@ -941,9 +969,10 @@ wire   vrgatherei16op      = (opcode[6:0] == 'h57) & (funct7[6:1] == 6'b00_1110)
 assign mask_rf_addrp0[4:0] = 5'b1_1111 << ({1'b0,v_lmul[1:0]} + vec_autogen.nrwop + (vrgatherei16op & (v_vsew[1:0]==2'b00)));
 assign mask_rf_addrp1[4:0] = 5'b1_1111 << ({1'b0,v_lmul[1:0] & ~{2{vec_autogen.vmvgrp | vec_ldst_idx_vld}}} + {2'd0,vec_autogen.nrwop} + {2'd0,vec_autogen.wdeop & vec_autogen.src1hw} + (instrn_id[17:15] & {3{vec_autogen.vmvgrp}}));   
 assign mask_rf_addrp2[4:0] = 5'b1_1111 << ((v_lmul[1:0] + vec_autogen.wdeop) & ~{2{vec_ldst_vld}});
-   
-assign vec_vs1_hazard_stall =  valid_vec_instrn & (lq_hit_cnt_vex_p0 > '0) & ~id_replay; 
-assign vec_vs2_hazard_stall =  valid_vec_instrn & (lq_hit_cnt_vex_p1 > '0) & ((vec_autogen_replay.addrp1_incr[0] & vec_ldst_idx_vld) | ~id_replay); 
+
+assign matrix_vs3_hazard_stall =  valid_opacc_instrn & (lq_hit_cnt_matrix > '0) & ~id_replay;
+assign vec_vs1_hazard_stall =  (valid_vec_instrn | valid_matrix_instrn) & (lq_hit_cnt_vex_p0 > '0) & ~id_replay; 
+assign vec_vs2_hazard_stall =  (valid_vec_instrn | valid_matrix_instrn) & (lq_hit_cnt_vex_p1 > '0) & ((vec_autogen_replay.addrp1_incr[0] & vec_ldst_idx_vld) | ~id_replay); 
 assign vec_vs3_hazard_stall =  valid_vec_instrn & (lq_hit_cnt_vex_p2 > '0) & ((vec_autogen_replay.addrp2_incr[0] & vec_ldst_vld)     | ~id_replay); 
 assign vec_rs1_hazard_stall =  valid_vec_instrn & (lq_hit_cnt_vex_r0 > '0); 
 assign vec_fs1_hazard_stall =  valid_vec_instrn & (lq_hit_cnt_vex_f0 > '0); 
@@ -954,13 +983,15 @@ wire rs2_hazard_stall = vec_vs2_hazard_stall;
 wire rs3_hazard_stall = vec_vs3_hazard_stall;
 
 assign raw_hazard_stall_fwd = rs1_hazard_stall | rs2_hazard_stall | rs3_hazard_stall | vec_mask_hazard_stall;
-assign raw_hazard_stall_vex = vec_vs1_hazard_stall  | vec_rs1_hazard_stall | vec_fs1_hazard_stall |
+assign raw_hazard_stall_vex = matrix_vs3_hazard_stall |
+                              vec_vs1_hazard_stall  | vec_rs1_hazard_stall | vec_fs1_hazard_stall |
                               vec_vs2_hazard_stall  |
                               vec_vs3_hazard_stall  |
                               vec_mask_hazard_stall;
-assign raw_hazard_stall     = (valid_vec_instrn && !vec_ldst_vld && !vsetOp_to_ex) ? raw_hazard_stall_vex : raw_hazard_stall_fwd;
+   
+assign raw_hazard_stall     = ((valid_vec_instrn | valid_matrix_instrn) && !vec_ldst_vld && !vsetOp_to_ex)  ? raw_hazard_stall_vex 
+                                                                                    : raw_hazard_stall_fwd;
 
-  
 // Drive out new inst dispatch -- This should also track the number of inst retired
 wire id_ex_instdisp = id_rts & ~raw_hazard_stall & ~id_replay;
 tt_pipe_stage #(.WIDTH(1)) I_instdisp ( i_clk, i_reset_n, 1'b1, id_ex_instdisp, o_id_ex_instdisp);

@@ -558,6 +558,9 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
     val mask_idx_last_idx = Output(Bool())
   })
 
+  addResource("/vsrc/mpu/tt_matrix_unit.sv")
+  addResource("/vsrc/mpu/tt_opacc.sv")
+  
   addResource("/vsrc/vpu/briscv_defines.h")
   addResource("/vsrc/vpu/tt_briscv_pkg.vh")
   addResource("/vsrc/vpu/autogen_riscv_imabfv.v")

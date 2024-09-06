@@ -411,6 +411,10 @@ object FDivSqrtDecode extends DecodeConstants
  * VEC Decode Constants
  */
 trait VectorInstructions {
+   def V_M_MV     = BitPat("b?????????????????000?????0001011")
+   def M_V_MV     = BitPat("b?????????????????001?????0001011")
+   def V_M_OPACC  = BitPat("b?????????????????010?????0001011")
+
    def V_VL8      = BitPat("b????00???????????000?????0000111")
    def V_VL16     = BitPat("b????00???????????101?????0000111")
    def V_VL32     = BitPat("b????00???????????110?????0000111")
@@ -482,6 +486,10 @@ object VDecode extends DecodeConstants with VectorInstructions
                         //     |  |  |  |            |        unit    regtype |       |       |  |         |  |  |  |  |  cmd    |    |  |  |  |  flush on commit
                         //     |  |  |  |            |        |       |       |       |       |  |         |  |  |  |  |  |      |    |  |  |  |  |  csr cmd
                         //     |  |  |  |            |        |       |       |       |       |  |         |  |  |  |  |  |      |    |  |  |  |  |  |      is_vec
+  V_M_MV                ->List(Y, N, X, uopVEC,      IQT_VEC, FU_VEC, RT_VEC, RT_VEC, RT_X,   N, IS_X,     N, N, N, N, N, M_X,   0.U, N, N, N, N, N, CSR.N, Y),
+  M_V_MV                ->List(Y, N, X, uopVEC,      IQT_VEC, FU_VEC, RT_VEC, RT_VEC, RT_X,   N, IS_X,     N, N, N, N, N, M_X,   0.U, N, N, N, N, N, CSR.N, Y),
+  V_M_OPACC             ->List(Y, N, X, uopVEC,      IQT_VEC, FU_VEC, RT_VEC, RT_VEC, RT_VEC, N, IS_X,     N, N, N, N, N, M_X,   0.U, N, N, N, N, N, CSR.N, Y),
+  
   V_VL8                 ->List(Y, N, X, uopVEC,      IQT_VEC, FU_VEC, RT_VEC, RT_FIX, RT_X,   N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N, Y),
   V_VL16                ->List(Y, N, X, uopVEC,      IQT_VEC, FU_VEC, RT_VEC, RT_FIX, RT_X,   N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N, Y),
   V_VL32                ->List(Y, N, X, uopVEC,      IQT_VEC, FU_VEC, RT_VEC, RT_FIX, RT_X,   N, IS_X,     Y, N, N, N, N, M_XRD, 0.U, N, N, N, N, N, CSR.N, Y),

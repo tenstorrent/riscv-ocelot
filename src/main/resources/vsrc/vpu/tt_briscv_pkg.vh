@@ -4,6 +4,8 @@
  `define  TT_BRISCV_PKG_VH
 package tt_briscv_pkg;
    typedef struct packed {
+      logic 	  mrf_opacc;
+      logic 	   mrf_wr_c;
       logic 	   vrf_wr_flag;
       logic 	   squash_vec_wr_flag;
       logic 	   fp_rf_wr_flag;
@@ -75,6 +77,8 @@ localparam ADDRWIDTH=40;
       logic 	  vfp_rf_rd_op_valid;
       logic 	  vfp_mad_type_inst;
       logic 	  rf_wren;
+      logic 	  mrf_wr_c;
+      logic 	  mrf_opacc;
       logic 	  wdeop;		// implies destination is 2*sew.
       logic 	  nrwop;
       logic [4:0] rf_addrp0;
