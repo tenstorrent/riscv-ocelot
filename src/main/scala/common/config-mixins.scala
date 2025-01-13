@@ -82,7 +82,7 @@ class WithRationalBoomTiles extends Config((site, here, up) => {
 class WithBoomDebugHarness extends Config((site, here, up) => {
   case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
     case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
-      enableDebugHarness = false
+      enableDebugHarness = sys.env.get("ENABLE_COSIM") == Some("1")
     )))
     case other => other
   }
