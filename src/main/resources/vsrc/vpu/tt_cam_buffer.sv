@@ -54,32 +54,43 @@ genvar e ;
 
 integer wrport, camport, i;
 
-logic                             any_tag_valid_update                                  ;
-logic                             any_data_valid_update                                 ;
-logic  [ENTRIES-1:0]              entry_write_tag_en                                    ;
-logic  [ENTRIES-1:0]              entry_write_data_en                                   ;
-                 
-logic  [ENTRIES-1:0]              port_write_tag_en          [TAG_WRITE_PORTS-1:0]      ;
-logic  [ENTRIES-1:0]              port_write_data_en        [DATA_WRITE_PORTS-1:0]      ;
-logic  [TAG_WRITE_PORTS-1:0]      entry_write_tag_mux_sel            [ENTRIES-1:0]      ;
-logic  [DATA_WRITE_PORTS-1:0]     entry_write_data_mux_sel           [ENTRIES-1:0]      ;
-                 
-logic  [ENTRIES-1:0]              entry_tag_valid_in                                    ;
-logic  [ENTRIES-1:0]              entry_tag_valid_q                                     ;
-logic  [TAG_WIDTH-1:0]            entry_tag_in                  [ENTRIES-1:0]           ;
-logic  [TAG_WIDTH-1:0]            entry_tag_q                   [ENTRIES-1:0]           ;
+// Signals for tag/data valid update enables
+logic                             any_tag_valid_update;           // Indicates any tag valid bit update
+logic                             any_data_valid_update;          // Indicates any data valid bit update
 
-logic  [ENTRIES-1:0]              entry_data_valid_in                                   ;
-logic  [ENTRIES-1:0]              entry_data_valid_q                                    ;
-logic  [DATA_WIDTH-1:0]           entry_data_in                 [ENTRIES-1:0]           ;
-logic  [DATA_WIDTH-1:0]           entry_data_q                  [ENTRIES-1:0]           ;
-                 
-logic  [ENTRIES-1:0]              port_read_mux_sel             [READ_PORTS-1:0]        ;
-                 
-logic  [READ_WIDTH-1:0]           entry_combined_q              [ENTRIES-1:0]           ;
-                 
-logic  [ENTRIES-1:0]              tag_compare_match             [CAM_PORTS-1:0]         ;
-logic                             tag_compare_port_any_match    [CAM_PORTS-1:0]         ;
+// Write enable signals for each entry
+logic  [ENTRIES-1:0]              entry_write_tag_en;             // Tag write enable per entry
+logic  [ENTRIES-1:0]              entry_write_data_en;            // Data write enable per entry
+
+// Decoded write enables from each write port
+logic  [ENTRIES-1:0]              port_write_tag_en      [TAG_WRITE_PORTS-1:0];   // Tag write enables per port
+logic  [ENTRIES-1:0]              port_write_data_en    [DATA_WRITE_PORTS-1:0];   // Data write enables per port
+
+// Mux select signals for each entry (which port is writing to this entry)
+logic  [TAG_WRITE_PORTS-1:0]      entry_write_tag_mux_sel    [ENTRIES-1:0];       // Tag mux select per entry
+logic  [DATA_WRITE_PORTS-1:0]     entry_write_data_mux_sel   [ENTRIES-1:0];       // Data mux select per entry
+
+// Tag valid and tag value signals
+logic  [ENTRIES-1:0]              entry_tag_valid_in;              // Next state for tag valid bits
+logic  [ENTRIES-1:0]              entry_tag_valid_q;               // Registered tag valid bits
+logic  [TAG_WIDTH-1:0]            entry_tag_in        [ENTRIES-1:0]; // Tag input per entry
+logic  [TAG_WIDTH-1:0]            entry_tag_q         [ENTRIES-1:0]; // Registered tag value per entry
+
+// Data valid and data value signals
+logic  [ENTRIES-1:0]              entry_data_valid_in;             // Next state for data valid bits
+logic  [ENTRIES-1:0]              entry_data_valid_q;              // Registered data valid bits
+logic  [DATA_WIDTH-1:0]           entry_data_in       [ENTRIES-1:0]; // Data input per entry
+logic  [DATA_WIDTH-1:0]           entry_data_q        [ENTRIES-1:0]; // Registered data value per entry
+
+// Read port mux select signals
+logic  [ENTRIES-1:0]              port_read_mux_sel   [READ_PORTS-1:0]; // Read mux select per port
+
+// Combined tag+data for read mux
+logic  [READ_WIDTH-1:0]           entry_combined_q    [ENTRIES-1:0];    // Combined tag+data per entry
+
+// CAM compare signals
+logic  [ENTRIES-1:0]              tag_compare_match   [CAM_PORTS-1:0];  // CAM match per entry per port
+logic                             tag_compare_port_any_match [CAM_PORTS-1:0]; // Any match per CAM port
 
 
 
@@ -127,7 +138,7 @@ u_data_valid_flops (
   .o_q       ( entry_data_valid_q[ENTRIES-1:0]        )
 );
 
-assign o_broadside_data_valid[ENTRIES-1:0] = entry_data_valid_q[ENTRIES-1:0];
+assign o_broadside_data_valid[ENTRIES-1:0] = entry_data_valid_q[ENTRIES-1:0]; // valid
 
 generate
     for (e=0; e<ENTRIES; e=e+1) begin 
@@ -156,7 +167,7 @@ generate
 endgenerate
 
 assign o_broadside_tag_value  = entry_tag_q;
-assign o_broadside_data_value = entry_data_q;
+assign o_broadside_data_value = entry_data_q; // info
 
 // --------------------------------------------------------------------------------------------------------------------------------------------------
 // CAM READ LOGIC
@@ -319,9 +330,6 @@ u_write_data_mux [ENTRIES-1:0]
     .i_select          (entry_write_data_mux_sel),    
     .o_output          (entry_data_in)
 );
-
-
-
 
 
 endmodule

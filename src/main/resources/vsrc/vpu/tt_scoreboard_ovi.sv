@@ -255,51 +255,63 @@ module tt_scoreboard_ovi(
   always_comb begin
     issue_is_unit_stride = i_issue_inst[27:26] == 2'b00;
     issue_is_indexldst = i_issue_inst[27:26] inside {2'b01, 2'b11};
+
     issue_data_size = issue_is_indexldst ? i_issue_vsew[1:0] :
-      i_issue_inst[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
-      i_issue_inst[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
-      i_issue_inst[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
+                      i_issue_inst[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
+                      i_issue_inst[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
+                      i_issue_inst[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
+                      
     issue_index_size =  i_issue_inst[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
-      i_issue_inst[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
-      i_issue_inst[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW      
+                        i_issue_inst[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
+                        i_issue_inst[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
+
     issue_load_stride = !issue_is_indexldst ? i_issue_scalar_opnd : 
-      i_issue_vsew == 3'b000 ? 1 : // 8-bit EEW
-      i_issue_vsew == 3'b101 ? 2 : // 16-bit EEW
-      i_issue_vsew == 3'b110 ? 4 : 8; // 32-bit, 64-bit EEW;                            
+                        i_issue_vsew == 3'b000 ? 1 : // 8-bit EEW
+                        i_issue_vsew == 3'b101 ? 2 : // 16-bit EEW
+                        i_issue_vsew == 3'b110 ? 4 : 8; // 32-bit, 64-bit EEW
+
     if(issue_is_unit_stride)
       issue_load_stride_eew = 0;
+
     else if((issue_data_size == 0 && issue_load_stride == 64'd1) ||
-        (issue_data_size == 1 && issue_load_stride == 64'd2) || 
-        (issue_data_size == 2 && issue_load_stride == 64'd4) || 
-        (issue_data_size == 3 && issue_load_stride == 64'd8))
+            (issue_data_size == 1 && issue_load_stride == 64'd2) || 
+            (issue_data_size == 2 && issue_load_stride == 64'd4) || 
+            (issue_data_size == 3 && issue_load_stride == 64'd8))
       issue_load_stride_eew = 0;
+
     else if((issue_data_size == 0 && issue_load_stride == 64'd2) ||
-        (issue_data_size == 1 && issue_load_stride == 64'd4) || 
-        (issue_data_size == 2 && issue_load_stride == 64'd8) || 
-        (issue_data_size == 3 && issue_load_stride == 64'd16))
+            (issue_data_size == 1 && issue_load_stride == 64'd4) || 
+            (issue_data_size == 2 && issue_load_stride == 64'd8) || 
+            (issue_data_size == 3 && issue_load_stride == 64'd16))
       issue_load_stride_eew = 1;
+
     else if((issue_data_size == 0 && issue_load_stride == 64'd4) ||
-        (issue_data_size == 1 && issue_load_stride == 64'd8) || 
-        (issue_data_size == 2 && issue_load_stride == 64'd16) || 
-        (issue_data_size == 3 && issue_load_stride == 64'd32))
+            (issue_data_size == 1 && issue_load_stride == 64'd8) || 
+            (issue_data_size == 2 && issue_load_stride == 64'd16) || 
+            (issue_data_size == 3 && issue_load_stride == 64'd32))
       issue_load_stride_eew = 2;
+
     else if((issue_data_size == 0 && issue_load_stride == -64'd1) ||
-        (issue_data_size == 1 && issue_load_stride == -64'd2) || 
-        (issue_data_size == 2 && issue_load_stride == -64'd4) || 
-        (issue_data_size == 3 && issue_load_stride == -64'd8))
+            (issue_data_size == 1 && issue_load_stride == -64'd2) || 
+            (issue_data_size == 2 && issue_load_stride == -64'd4) || 
+            (issue_data_size == 3 && issue_load_stride == -64'd8))
       issue_load_stride_eew = 4;
+
     else if((issue_data_size == 0 && issue_load_stride == -64'd2) ||
-        (issue_data_size == 1 && issue_load_stride == -64'd4) || 
-        (issue_data_size == 2 && issue_load_stride == -64'd8) || 
-        (issue_data_size == 3 && issue_load_stride == -64'd16))
+            (issue_data_size == 1 && issue_load_stride == -64'd4) || 
+            (issue_data_size == 2 && issue_load_stride == -64'd8) || 
+            (issue_data_size == 3 && issue_load_stride == -64'd16))
       issue_load_stride_eew = 5;
+
     else if((issue_data_size == 0 && issue_load_stride == -64'd4) ||
-        (issue_data_size == 1 && issue_load_stride == -64'd8) || 
-        (issue_data_size == 2 && issue_load_stride == -64'd16) || 
-        (issue_data_size == 3 && issue_load_stride == -64'd32))
+            (issue_data_size == 1 && issue_load_stride == -64'd8) || 
+            (issue_data_size == 2 && issue_load_stride == -64'd16) || 
+            (issue_data_size == 3 && issue_load_stride == -64'd32))
       issue_load_stride_eew = 6;
+
     else
       issue_load_stride_eew = 0;
+
   end
 
   always_comb begin

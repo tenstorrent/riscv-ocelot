@@ -1,108 +1,108 @@
 // See LICENSE.TT for license details.
 `include "tt_briscv_pkg.vh"
-module tt_lq #(parameter 
-   LQ_DEPTH=8, 
-   LQ_DEPTH_LOG2=$clog2(LQ_DEPTH),
-   DATA_REQ_ID_WIDTH=tt_briscv_pkg::LQ_DEPTH_LOG2,
-   LD_DATA_WIDTH_BITS=32,
-   VLEN=128,
-   INCL_VEC=0)
-(
-   input logic 				i_clk,
-   input logic 				i_reset_n,
+module tt_lq #(
+   parameter 
+      LQ_DEPTH=8, 
+      LQ_DEPTH_LOG2=$clog2(LQ_DEPTH),
+      DATA_REQ_ID_WIDTH=tt_briscv_pkg::LQ_DEPTH_LOG2,
+      LD_DATA_WIDTH_BITS=32,
+      VLEN=128,
+      INCL_VEC=0
+)(
+   input  logic                          i_clk,
+   input  logic                          i_reset_n,
 
-   input logic                          i_bypass_disable,
+   input  logic                          i_bypass_disable,
  
    // ID <--> MEM signals
-   output logic [LQ_DEPTH_LOG2-1:0] 	o_mem_id_lqnxtid,
-   input logic 				i_id_mem_lqalloc,
-   input 				tt_briscv_pkg::lq_info_s i_id_mem_lqinfo,
+   output logic [LQ_DEPTH_LOG2-1:0]      o_mem_id_lqnxtid,
+   input  logic                          i_id_mem_lqalloc,
+   input  tt_briscv_pkg::lq_info_s       i_id_mem_lqinfo,
  
-   input logic 				i_vecld_elem_sent,
-   input logic 				i_vecld_idx_last,
-   input logic [LQ_DEPTH_LOG2-1:0] 	i_vecld_id,
+   input  logic                          i_vecld_elem_sent,
+   input  logic                          i_vecld_idx_last,
+   input  logic [LQ_DEPTH_LOG2-1:0]      i_vecld_id,
 
    // SKid buffer signals (EX 1Cycle signals will also come muxed in skidbuf signals)
-   input logic 				i_skidbuf_lqvld_1c,
-   input logic 				i_skidbuf_lqvecld128_1c,
-   input logic [VLEN/8-1:0] 		i_skidbuf_lqmask_1c, // Used for vector load  
-   input logic [2:0] 			i_skidbuf_lqsz_1c,
-   input logic [$clog2(VLEN/8)-1:0] 	i_skidbuf_lqaddr_1c,
-   input logic [LD_DATA_WIDTH_BITS-1:0] i_skidbuf_lqdata_1c,
-   input logic [LQ_DEPTH_LOG2-1:0] 	i_skidbuf_lqid_1c,
+   input  logic                          i_skidbuf_lqvld_1c,
+   input  logic                          i_skidbuf_lqvecld128_1c,
+   input  logic [VLEN/8-1:0]             i_skidbuf_lqmask_1c, // Used for vector load  
+   input  logic [2:0]                    i_skidbuf_lqsz_1c,
+   input  logic [$clog2(VLEN/8)-1:0]     i_skidbuf_lqaddr_1c,
+   input  logic [LD_DATA_WIDTH_BITS-1:0] i_skidbuf_lqdata_1c,
+   input  logic [LQ_DEPTH_LOG2-1:0]      i_skidbuf_lqid_1c,
  
    // EX --> MEM signals
-   input logic 				i_ex_mem_lqvld_2c,
-   input logic [31:0] 			i_ex_mem_lqdata_2c,
-   input logic [LQ_DEPTH_LOG2-1:0] 	i_ex_mem_lqid_2c,
+   input  logic                          i_ex_mem_lqvld_2c,
+   input  logic [31:0]                   i_ex_mem_lqdata_2c,
+   input  logic [LQ_DEPTH_LOG2-1:0]      i_ex_mem_lqid_2c,
    
    // FP EX --> MEM signals
-   input logic 				i_fp_ex_mem_lqvld_1c,
-   input logic [31:0] 			i_fp_ex_mem_lqdata_1c,
-   input logic [LQ_DEPTH_LOG2-1:0] 	i_fp_ex_mem_lqid_1c,
+   input  logic                          i_fp_ex_mem_lqvld_1c,
+   input  logic [31:0]                   i_fp_ex_mem_lqdata_1c,
+   input  logic [LQ_DEPTH_LOG2-1:0]      i_fp_ex_mem_lqid_1c,
    
-   input logic 				i_fp_ex_mem_lqvld_2c,
-   input logic [31:0] 			i_fp_ex_mem_lqdata_2c,
-   input logic [LQ_DEPTH_LOG2-1:0] 	i_fp_ex_mem_lqid_2c,
+   input  logic                          i_fp_ex_mem_lqvld_2c,
+   input  logic [31:0]                   i_fp_ex_mem_lqdata_2c,
+   input  logic [LQ_DEPTH_LOG2-1:0]      i_fp_ex_mem_lqid_2c,
    
    // VEX --> MEM signals
-   input logic 				i_vex_mem_lqvld_1c,
-   input logic [VLEN-1:0] 		i_vex_mem_lqdata_1c,
-   input tt_briscv_pkg::csr_fp_exc      i_vex_mem_lqexc_1c,
-   input logic [LQ_DEPTH_LOG2-1:0] 	i_vex_mem_lqid_1c,
+   input  logic                          i_vex_mem_lqvld_1c,
+   input  logic [VLEN-1:0]               i_vex_mem_lqdata_1c,
+   input  tt_briscv_pkg::csr_fp_exc      i_vex_mem_lqexc_1c,
+   input  logic [LQ_DEPTH_LOG2-1:0]      i_vex_mem_lqid_1c,
    
-   input logic 				i_vex_mem_lqvld_2c,
-   input logic [VLEN-1:0] 		i_vex_mem_lqdata_2c,
-   input tt_briscv_pkg::csr_fp_exc      i_vex_mem_lqexc_2c,
-   input logic [LQ_DEPTH_LOG2-1:0] 	i_vex_mem_lqid_2c,
+   input  logic                          i_vex_mem_lqvld_2c,
+   input  logic [VLEN-1:0]               i_vex_mem_lqdata_2c,
+   input  tt_briscv_pkg::csr_fp_exc      i_vex_mem_lqexc_2c,
+   input  logic [LQ_DEPTH_LOG2-1:0]      i_vex_mem_lqid_2c,
    
-   input logic 				i_vex_mem_lqvld_3c,
-   input logic [VLEN-1:0] 		i_vex_mem_lqdata_3c,
-   input tt_briscv_pkg::csr_fp_exc      i_vex_mem_lqexc_3c,
-   input logic [LQ_DEPTH_LOG2-1:0] 	i_vex_mem_lqid_3c,
+   input  logic                          i_vex_mem_lqvld_3c,
+   input  logic [VLEN-1:0]               i_vex_mem_lqdata_3c,
+   input  tt_briscv_pkg::csr_fp_exc      i_vex_mem_lqexc_3c,
+   input  logic [LQ_DEPTH_LOG2-1:0]      i_vex_mem_lqid_3c,
    
    // Load data return
-   input 				i_data_vld_0,
-   input 				i_data_vld_cancel_0,
-   input [DATA_REQ_ID_WIDTH-1:0] 	i_data_resp_id_0,
-   input [VLEN-1:0] 	                i_data_rddata_0,
+   input                                 i_data_vld_0,
+   input                                 i_data_vld_cancel_0,
+   input  [DATA_REQ_ID_WIDTH-1:0]        i_data_resp_id_0,
+   input  [VLEN-1:0]                     i_data_rddata_0,
 
-   input 				i_data_vld_1, 
-   input 				i_data_vld_cancel_1,
-   input [DATA_REQ_ID_WIDTH-1:0] 	i_data_resp_id_1,
-   input [63:0] 	                i_data_rddata_1, 
+   input                                 i_data_vld_1, 
+   input                                 i_data_vld_cancel_1,
+   input  [DATA_REQ_ID_WIDTH-1:0]        i_data_resp_id_1,
+   input  [63:0]                         i_data_rddata_1, 
 
-   input 				i_data_vld_2, 
-   input 				i_data_vld_cancel_2,
-   input [DATA_REQ_ID_WIDTH-1:0] 	i_data_resp_id_2,
-   input [63:0] 	                i_data_rddata_2, 
+   input                                 i_data_vld_2, 
+   input                                 i_data_vld_cancel_2,
+   input  [DATA_REQ_ID_WIDTH-1:0]        i_data_resp_id_2,
+   input  [63:0]                         i_data_rddata_2, 
 
    // LQ Read signals
-   input logic 				i_lq_rden,
-   output logic [LQ_DEPTH_LOG2-1:0] 	o_lq_rdid,
-   output 				tt_briscv_pkg::lq_info_s o_lq_rdinfo,
-   output [2:0] 			o_lq_rdldstsz,
-   output [1:0] 			o_lq_rdmemaddr,
-   output [VLEN-1:0] 			o_lq_rddata,
-   output [4:0] 			o_lq_rdexc,
+   input  logic                          i_lq_rden,
+   output logic [LQ_DEPTH_LOG2-1:0]      o_lq_rdid,
+   output tt_briscv_pkg::lq_info_s       o_lq_rdinfo, // <== TODO: keep tracking for info that writes to regfile (address and w_En is here)
+   output [2:0]                          o_lq_rdldstsz,
+   output [1:0]                          o_lq_rdmemaddr,
+   output [VLEN-1:0]                     o_lq_rddata, // <== TODO: keep tracking for data that writes to regfile here
+   output [4:0]                          o_lq_rdexc,
 
    // RF Fwd signals
-   output logic 			o_lq_fwdvld,
-   output logic [LQ_DEPTH_LOG2-1:0] 	o_lq_fwdid,
-   output logic [31:0] 			o_lq_fwddata, 
+   output logic                          o_lq_fwdvld,
+   output logic [LQ_DEPTH_LOG2-1:0]      o_lq_fwdid,
+   output logic [31:0]                   o_lq_fwddata, 
 
-   output logic 			lq_full,
-   output logic 			lq_empty,
-   output logic 			o_lq_data_ready,
-   output logic 			o_lq_mem_load,
-   output logic 			o_lq_mem_vec_load,
+   output logic                          lq_full,
+   output logic                          lq_empty,
+   output logic                          o_lq_data_ready, // <== TODO: keep tracking for part of w_en for regfile
+   output logic                          o_lq_mem_load,
+   output logic                          o_lq_mem_vec_load,
 
    // Broadside data
-   output 				tt_briscv_pkg::lq_info_s [LQ_DEPTH-1:0] o_lq_broadside_info,
-   output logic [LQ_DEPTH-1:0][31:0] 	o_lq_broadside_data,
-   output logic [LQ_DEPTH-1:0] 		o_lq_broadside_valid,
-   output logic [LQ_DEPTH-1:0] 		o_lq_broadside_data_valid
- 
+   output tt_briscv_pkg::lq_info_s [LQ_DEPTH-1:0] o_lq_broadside_info,
+   output logic [LQ_DEPTH-1:0][31:0]              o_lq_broadside_data,
+   output logic [LQ_DEPTH-1:0]                    o_lq_broadside_valid,
+   output logic [LQ_DEPTH-1:0]                    o_lq_broadside_data_valid
 );
 
 localparam LQ_TAG_WIDTH = $bits(tt_briscv_pkg::lq_info_s);
@@ -117,50 +117,66 @@ localparam LQ_TAG_WR_PORTS  = 1;
 localparam LQ_DATA_WR_PORTS = 6;
 localparam LQ_CAM_PORTS     = 1;               // really don't need any CAM ports, but we can just tie down the inputs / leave unused the outputs
 
-logic                   ptrs_equal;
-logic [LQ_DEPTH_LOG2:0] wr_ptr,rd_ptr;
-logic [LQ_DEPTH-1:0]    lq_set_pending, lq_clear_pending;
+// Pointer and status signals
+logic                   ptrs_equal;                        // Indicates if write and read pointers are equal
+logic [LQ_DEPTH_LOG2:0] wr_ptr, rd_ptr;                    // Write and read pointers (with extra bit for full/empty detection)
+logic [LQ_DEPTH-1:0]    lq_set_pending, lq_clear_pending;  // Pending set/clear operations for each entry
 
-logic [2:0]                    lq_bypass_en;
-logic [LD_DATA_WIDTH_BITS-1:0] lq_bypass_data;
-logic [2:0]                    lq_rf_fwd_en;
-logic [LD_DATA_WIDTH_BITS-1:0] lq_fwd_data;
-logic lq_wr_en, lq_rd_en;
-   
-logic [LQ_DEPTH-1:0] lq_set_tag_valid;
-logic [LQ_DEPTH-1:0] lq_clear_tag_valid;
-logic [LQ_DEPTH-1:0] lq_broadside_tag_valid;
-logic [LQ_TAG_WIDTH-1:0] lq_broadside_tag_value [LQ_DEPTH-1:0];
+// Bypass and forwarding logic
+logic [2:0]                    lq_bypass_en;               // Bypass enable for each data return port
+logic [LD_DATA_WIDTH_BITS-1:0] lq_bypass_data;             // Data to bypass directly to output
+logic [2:0]                    lq_rf_fwd_en;               // Register file forward enable for each port
+logic [LD_DATA_WIDTH_BITS-1:0] lq_fwd_data;                // Data to forward to register file
 
-logic [LQ_DEPTH-1:0] lq_set_data_valid;
-logic [LQ_DEPTH-1:0] lq_clear_data_valid;
-logic [LQ_DEPTH-1:0] lq_broadside_data_valid;
-logic [LQ_DATA_WIDTH-1:0] lq_broadside_data_value [LQ_DEPTH-1:0];
+// Write/read enable signals
+logic lq_wr_en, lq_rd_en;                                  // Load queue write/read enable
 
-logic [LQ_DEPTH-1:0][4:0] lq_refcount, lq_refcount_in;
-logic [LQ_DEPTH-1:0]   lq_vecld_last_idx_sent, lq_vecld_last_idx_sent_in;
-   
-logic                       lq_fifo_write_tag_en    [LQ_TAG_WR_PORTS-1:0];
-logic  [LQ_DEPTH_LOG2-1:0]  lq_fifo_write_tag_addr  [LQ_TAG_WR_PORTS-1:0];
-logic  [LQ_TAG_WIDTH-1:0]   lq_fifo_write_tag_value [LQ_TAG_WR_PORTS-1:0]; 
+// Tag valid logic
+logic [LQ_DEPTH-1:0] lq_set_tag_valid;                     // Set tag valid for each entry
+logic [LQ_DEPTH-1:0] lq_clear_tag_valid;                   // Clear tag valid for each entry
+logic [LQ_DEPTH-1:0] lq_broadside_tag_valid;               // Tag valid status for all entries
+logic [LQ_TAG_WIDTH-1:0] lq_broadside_tag_value [LQ_DEPTH-1:0]; // Tag values for all entries
 
-logic                       lq_fifo_write_data_en    [LQ_DATA_WR_PORTS-1:0];
-logic  [LQ_DEPTH_LOG2-1:0]  lq_fifo_write_data_addr  [LQ_DATA_WR_PORTS-1:0];
-logic  [LQ_DATA_WIDTH-1:0]  lq_fifo_write_data_value [LQ_DATA_WR_PORTS-1:0]; 
+// Data valid logic
+logic [LQ_DEPTH-1:0] lq_set_data_valid;                    // Set data valid for each entry
+logic [LQ_DEPTH-1:0] lq_clear_data_valid;                  // Clear data valid for each entry
+logic [LQ_DEPTH-1:0] lq_broadside_data_valid;              // Data valid status for all entries
+logic [LQ_DATA_WIDTH-1:0] lq_broadside_data_value [LQ_DEPTH-1:0]; // Data values for all entries
 
-logic 	                                  lq_fifo_read_en    [LQ_RD_PORTS-1:0];
-logic [LQ_DEPTH_LOG2-1:0]                 lq_fifo_read_addr  [LQ_RD_PORTS-1:0];
-logic [(LQ_TAG_WIDTH+LQ_DATA_WIDTH)-1:0]  lq_fifo_read_value [LQ_RD_PORTS-1:0]; 
+// Vector load tracking
+logic [LQ_DEPTH-1:0][4:0] lq_refcount, lq_refcount_in;     // Reference count for vector loads per entry
+logic [LQ_DEPTH-1:0]   lq_vecld_last_idx_sent, lq_vecld_last_idx_sent_in; // Last vector index sent flags
 
-logic                      lq_compare_en              [LQ_CAM_PORTS-1:0]; 
-logic                      lq_compare_read_en         [LQ_CAM_PORTS-1:0]; 
-logic [LQ_TAG_WIDTH-1:0]   lq_compare_tag_value       [LQ_CAM_PORTS-1:0]; 
-logic [LQ_TAG_WIDTH-1:0]   lq_compare_tag_value_mask  [LQ_CAM_PORTS-1:0]; 
-logic                      lq_compare_tag_valid_mask  [LQ_CAM_PORTS-1:0]; 
+// FIFO tag write interface
+logic                       lq_fifo_write_tag_en    [LQ_TAG_WR_PORTS-1:0];      // Tag write enable per port
+logic  [LQ_DEPTH_LOG2-1:0]  lq_fifo_write_tag_addr  [LQ_TAG_WR_PORTS-1:0];      // Tag write address per port
+logic  [LQ_TAG_WIDTH-1:0]   lq_fifo_write_tag_value [LQ_TAG_WR_PORTS-1:0];      // Tag write value per port
 
-logic [LD_DATA_WIDTH_BITS-1:0] lq_fifo_vecld_write_datafn_0, lq_fifo_vecld_write_datafn_1, lq_fifo_vecld_write_datafn_2;
-logic [31:0] 	               lq_fifo_load_write_data_0,  lq_fifo_load_write_data_1,  lq_fifo_load_write_data_2;
-logic         ret_vecld_vld_0, ret_vecld_vld_1, ret_vecld_vld_2;
+// FIFO data write interface
+logic                       lq_fifo_write_data_en    [LQ_DATA_WR_PORTS-1:0];    // Data write enable per port
+logic  [LQ_DEPTH_LOG2-1:0]  lq_fifo_write_data_addr  [LQ_DATA_WR_PORTS-1:0];    // Data write address per port
+logic  [LQ_DATA_WIDTH-1:0]  lq_fifo_write_data_value [LQ_DATA_WR_PORTS-1:0];    // Data write value per port
+
+// FIFO read interface
+logic 	                                 lq_fifo_read_en    [LQ_RD_PORTS-1:0]; // Read enable per port
+logic [LQ_DEPTH_LOG2-1:0]                 lq_fifo_read_addr  [LQ_RD_PORTS-1:0]; // Read address per port
+logic [(LQ_TAG_WIDTH+LQ_DATA_WIDTH)-1:0]  lq_fifo_read_value [LQ_RD_PORTS-1:0]; // Read value per port
+
+// CAM (Content Addressable Memory) compare interface
+logic                      lq_compare_en              [LQ_CAM_PORTS-1:0];       // Compare enable per port
+logic                      lq_compare_read_en         [LQ_CAM_PORTS-1:0];       // Compare and read enable per port
+logic [LQ_TAG_WIDTH-1:0]   lq_compare_tag_value       [LQ_CAM_PORTS-1:0];       // Tag value to compare per port
+logic [LQ_TAG_WIDTH-1:0]   lq_compare_tag_value_mask  [LQ_CAM_PORTS-1:0];       // Tag value mask per port
+logic                      lq_compare_tag_valid_mask  [LQ_CAM_PORTS-1:0];       // Tag valid mask per port
+
+// Vector load data write functions
+logic [LD_DATA_WIDTH_BITS-1:0] lq_fifo_vecld_write_datafn_0, lq_fifo_vecld_write_datafn_1, lq_fifo_vecld_write_datafn_2; // Vector load write data (function output) per port
+
+// Aligned load data for scalar loads
+logic [31:0] 	               lq_fifo_load_write_data_0,  lq_fifo_load_write_data_1,  lq_fifo_load_write_data_2; // Aligned load data per port
+
+// Vector load valid flags
+logic         ret_vecld_vld_0, ret_vecld_vld_1, ret_vecld_vld_2; // Vector load valid per port
    
 // Broadside data
 for (genvar i=0; i<LQ_DEPTH; i++) begin
@@ -201,7 +217,7 @@ for (genvar i=0; i<LQ_CAM_PORTS; i++) begin
    assign lq_compare_tag_valid_mask[i] = '0;
 end
 
-
+// TODO: change tag/data valid logic into tag/data/approve/reject FSM logic
 for (genvar i=0; i<LQ_DEPTH; i++) begin
    assign lq_set_tag_valid[i]    = lq_wr_en & (wr_ptr[LQ_DEPTH_LOG2-1:0] == i);
    assign lq_clear_tag_valid[i]  = lq_rd_en & (rd_ptr[LQ_DEPTH_LOG2-1:0] == i);
@@ -251,7 +267,7 @@ assign lq_rf_fwd_en[2:0] = { {(i_data_vld_2 & ~o_lq_broadside_info[i_data_resp_i
 assign o_lq_fwdvld   = (|lq_rf_fwd_en[2:0]) & ~(i_data_vld_cancel_2 | i_data_vld_cancel_1 | i_data_vld_cancel_0); // Use cancel late for timing
 assign o_lq_fwdid    = rd_ptr[LQ_DEPTH_LOG2-1:0];
 assign o_lq_fwddata  = ({32{lq_rf_fwd_en[2]}} & lq_fifo_load_write_data_2[31:0]) |
-		       ({32{lq_rf_fwd_en[1]}} & lq_fifo_load_write_data_1[31:0]) |
+		                 ({32{lq_rf_fwd_en[1]}} & lq_fifo_load_write_data_1[31:0]) |
                        ({32{lq_rf_fwd_en[0]}} & lq_fifo_load_write_data_0[31:0]);
    
 // Generate the per port write data enable and write data
