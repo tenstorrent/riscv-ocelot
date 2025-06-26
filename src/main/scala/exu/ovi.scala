@@ -23,6 +23,67 @@ class EnhancedFuncUnitReq(xLen: Int, vLen: Int)(implicit p: Parameters) extends 
   val req = new FuncUnitReq(xLen)
 }
 
+// Scoreboard (a queue of MicroOps with holes) to track vector operations
+// and their ordering across the CPU-VPU interface..
+class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends Module {
+  val io = IO(new Bundle {
+    // insert MicroOp
+    val insert  = Flipped(Decoupled(new MicroOp))
+    // remove MicroOp by index
+    val remove = new Bundle {
+      val idx   = Input(UInt(log2Ceil(SB_SIZE).W))
+      val valid = Input(Bool())
+      val ready = Output(Bool()) // simply a "NOT ready" signal
+      val uop   = Output(new MicroOp)
+    }
+    // expose the tail as sb_id
+    val next_sb_id = Output(UInt(log2Ceil(SB_SIZE).W))
+  })
+
+  // error if SB_SIZE is not a power of 2 (wrap bit logic wont work)
+  require(isPow2(SB_SIZE), "SB_SIZE must be a power of 2")
+
+  def wrapInc(idx: UInt, max: Int): UInt = Mux((idx === (max-1).U), 0.U, idx + 1.U)
+
+  // scoreboard (basically a uop array) and valid bits
+  val sb_uop   = Reg(Vec(SB_SIZE, new MicroOp()))
+  val sb_valid = RegInit(VecInit.fill(SB_SIZE)(false.B))
+
+  val head = RegInit(0.U((log2Ceil(SB_SIZE)+1).W)) // read ptr with wrap state
+  val tail = RegInit(0.U((log2Ceil(SB_SIZE)+1).W)) // write ptr with wrap state
+
+  val head_ptr = head(log2Ceil(SB_SIZE), 0)
+  val tail_ptr = tail(log2Ceil(SB_SIZE), 0)
+
+  val empty = (head_ptr === tail_ptr) && (head(log2Ceil(SB_SIZE)) === tail(log2Ceil(SB_SIZE)))
+  val full  = (head_ptr === tail_ptr) && (head(log2Ceil(SB_SIZE)) =/= tail(log2Ceil(SB_SIZE)))
+
+  io.insert.ready := !full  // insert ready if not full
+  io.remove.ready := !empty // remove ready if not empty
+  io.next_sb_id := tail_ptr // next avaliable id is tail for a queue-like structure
+  io.remove.uop := sb_uop(io.remove.idx) // expose the "response uop"
+
+  // invalidate on remove valid
+  when (io.remove.valid) {
+    sb_valid(io.remove.idx) := false.B
+  }
+
+  // que up next sb entry
+  when (io.insert.fire) {
+    sb_uop(tail_ptr) := io.insert.bits
+    sb_valid(tail_ptr) := true.B
+    tail := wrapInc(tail, SB_SIZE)
+  }
+
+  // track head for in-orderness
+  // NOTE: head only moves a single entry at a time so there
+  //       could be delays due to holes in the queue
+  when ((!empty && !sb_valid(head_ptr)) ||
+        (io.remove.idx === head_ptr)) {    // to bypass removed uop in same cycle
+    head := wrapInc(head, SB_SIZE)
+  }
+}
+
 class OviWrapper(implicit p: Parameters) extends BoomModule
     with freechips.rocketchip.rocket.constants.MemoryOpConstants {
   val io = IO(new Bundle {
@@ -43,17 +104,21 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   io := DontCare
   val vpu = Module(new tt_vpu_ovi(vLen))
 
-  val sb_uop = Reg(Vec(32, new MicroOp()))
-  val sb_valid = RegInit(VecInit.fill(32)(false.B))
-  val next_sb_id = PriorityEncoder(sb_valid.map(!_))
-  when(io.req.fire) {
-    sb_uop(next_sb_id) := io.req.bits.uop
-    sb_valid(next_sb_id) := true.B
-  }
 
-  val resp_valid = vpu.io.completed_valid
-  val resp_uop = sb_uop(vpu.io.completed_sb_id)
-  when(resp_valid) { sb_valid(vpu.io.completed_sb_id) := false.B }
+  val scoreboard = Module(new OviScoreboard(32))
+
+  scoreboard.io.insert.bits := io.req.bits.uop // insert uop
+  scoreboard.io.insert.valid := io.req.valid   // insert valid signal
+  val sb_ready = scoreboard.io.insert.ready // io.req.ready := <...> && sb_ready
+
+  scoreboard.io.remove.idx := vpu.io.completed_sb_id // remove idx
+  val resp_valid = vpu.io.completed_valid // remove valid
+  scoreboard.io.remove.valid := resp_valid 
+  val sb_remove_ready = scoreboard.io.remove.ready // remove ready (!empty)
+  val resp_uop = scoreboard.io.remove.uop // output uop
+
+  val next_sb_id = scoreboard.io.next_sb_id // next available sb id
+  
 
   io.resp.valid := resp_valid
   io.resp.bits.data := vpu.io.completed_dest_reg
@@ -71,7 +136,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   val MAX_ISSUE_CREDIT = 32
   val issue_credit_cnt = RegInit(MAX_ISSUE_CREDIT.U)
   issue_credit_cnt := issue_credit_cnt + vpu.io.issue_credit - vpu.io.issue_valid 
-  val vpu_ready = issue_credit_cnt =/= 0.U && !sb_valid.reduce(_ & _)
+  val vpu_ready = (issue_credit_cnt =/= 0.U) && sb_remove_ready // <== !empty
 
 /*
    OVI LS helper start
@@ -144,7 +209,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   val sbIdQueue = Module(new Queue(UInt(5.W), vlsiQDepth))
 
   // Dequeue a request whenever VPU and vLSIQueue are ready
-  io.req.ready := vpu_ready && vLSIQueue.io.enq.ready
+  io.req.ready := vpu_ready && vLSIQueue.io.enq.ready && sb_ready
 
   val req_uop = io.req.bits.uop
   when(io.req.fire && (req_uop.uses_stq || req_uop.uses_ldq)) {
