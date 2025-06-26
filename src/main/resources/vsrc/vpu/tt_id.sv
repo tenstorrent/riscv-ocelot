@@ -3,96 +3,107 @@
 `include "tt_briscv_pkg.vh"
 `include "autogen_defines.h"
 
-module tt_id #(parameter LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH, LQ_DEPTH_LOG2=3, EXP_WIDTH=8, MAN_WIDTH=23, FLEN=32, VLEN=128, FP_RF_RD_PORTS=4, INCL_VEC=0, INCL_FP=0)
-(
-   input 				     i_clk ,
-   input 				     i_reset_n ,
+module tt_id #(
+   parameter 
+      LQ_DEPTH=tt_briscv_pkg::LQ_DEPTH,
+      LQ_DEPTH_LOG2=3,
+      EXP_WIDTH=8,
+      MAN_WIDTH=23,
+      FLEN=32,
+      VLEN=128,
+      FP_RF_RD_PORTS=4,
+      INCL_VEC=0,
+      INCL_FP=0
+) (
+   input                                    i_clk,
+   input                                    i_reset_n,
 
    // IF interface
-   input [31:0] 			     i_if_instrn ,
-   input [31:0] 			     i_if_pc ,
-   input 				     i_if_instrn_rts ,
-   output wire 				     o_id_instrn_rtr ,
-   output logic 			     o_id_replay,
-   // EX interface
-   input 				     i_ex_rtr ,
-   output wire 				     o_id_ex_rts ,
-   output wire [31:0] 			     o_id_ex_pc ,
-   output wire [31:0] 			     o_id_ex_instrn ,
-   output wire [LQ_DEPTH_LOG2-1:0] 	     o_id_ex_lqid ,
-   output wire 				     o_id_ex_vecldst,
-   output wire [4:0] 			     o_id_ex_Zb_instr,
-   output wire 				     o_id_ex_units_rts ,
-   input 				     tt_briscv_pkg::csr_t i_csr,
-   output                                    tt_briscv_pkg::csr_t o_csr,
-   output logic     o_id_ex_last,
+   input  [31:0]                            i_if_instrn,
+   input  [31:0]                            i_if_pc,
+   input                                    i_if_instrn_rts,
+   output wire                              o_id_instrn_rtr,
+   output logic                             o_id_replay,
 
-   //VEC Interface
-   input 				     i_vex_id_rtr ,
-   output wire 				     o_id_vex_rts ,
-   output wire [LQ_DEPTH_LOG2-1:0] 	     o_id_vex_lqid ,
-   input [4:0] 				     i_iterate_addrp0,
-   input [4:0] 				     i_iterate_addrp1,
-   input [4:0] 				     i_iterate_addrp2,
-   input 				     i_vex_id_incr_addrp2,
-   input 				     i_ignore_lmul,
-   input 				     i_ignore_dstincr,
-   input 				     i_ignore_srcincr,
-   // VEC deocde signals
-   output 				     o_v_vm,
-   output 				     tt_briscv_pkg::vec_autogen_s o_vec_autogen,
-   output 				     tt_briscv_pkg::vecldst_autogen_s o_vecldst_autogen,
-   
+   // EX interface
+   input                                    i_ex_rtr,
+   output wire                              o_id_ex_rts,
+   output wire [31:0]                       o_id_ex_pc,
+   output wire [31:0]                       o_id_ex_instrn,
+   output wire [LQ_DEPTH_LOG2-1:0]          o_id_ex_lqid,
+   output wire                              o_id_ex_vecldst,
+   output wire [4:0]                        o_id_ex_Zb_instr,
+   output wire                              o_id_ex_units_rts,
+   input                                    tt_briscv_pkg::csr_t i_csr,
+   output                                   tt_briscv_pkg::csr_t o_csr,
+   output logic                             o_id_ex_last,
+
+   // VEC Interface
+   input                                    i_vex_id_rtr,
+   output wire                              o_id_vex_rts,
+   output wire [LQ_DEPTH_LOG2-1:0]          o_id_vex_lqid,
+   input  [4:0]                             i_iterate_addrp0,
+   input  [4:0]                             i_iterate_addrp1,
+   input  [4:0]                             i_iterate_addrp2,
+   input                                    i_vex_id_incr_addrp2,
+   input                                    i_ignore_lmul,
+   input                                    i_ignore_dstincr,
+   input                                    i_ignore_srcincr,
+   // VEC decode signals
+   output                                   o_v_vm,
+   output                                   tt_briscv_pkg::vec_autogen_s o_vec_autogen,
+   output                                   tt_briscv_pkg::vecldst_autogen_s o_vecldst_autogen,
+
    // Destination target registers for forwarding and RAW checking
-   input 				     tt_briscv_pkg::arr_lq_info_s i_lq_broadside_info,
-   input [LQ_DEPTH-1:0][31:0] 		     i_lq_broadside_data,
-   input [LQ_DEPTH-1:0] 		     i_lq_broadside_valid,
-   input [LQ_DEPTH-1:0] 		     i_lq_broadside_data_valid,
+   input                                    tt_briscv_pkg::arr_lq_info_s i_lq_broadside_info,
+   input  [LQ_DEPTH-1:0][31:0]              i_lq_broadside_data,
+   input  [LQ_DEPTH-1:0]                    i_lq_broadside_valid,
+   input  [LQ_DEPTH-1:0]                    i_lq_broadside_data_valid,
 
    // ID <--> MEM signals
-   input logic 				     i_mem_fe_lqfull,
-   input logic 				     i_mem_fe_lqempty,
-   input logic 				     i_mem_fe_skidbuffull,
-   input logic [LQ_DEPTH_LOG2-1:0] 	     i_mem_id_lqnxtid,
-   output logic 			     o_id_mem_lqalloc,
-   output logic 			     o_id_mem_lq_done,
-   output 				     tt_briscv_pkg::lq_info_s o_id_mem_lqinfo,
+   input  logic                             i_mem_fe_lqfull,
+   input  logic                             i_mem_fe_lqempty,
+   input  logic                             i_mem_fe_skidbuffull,
+   input  logic [LQ_DEPTH_LOG2-1:0]         i_mem_id_lqnxtid,
+   output logic                             o_id_mem_lqalloc,
+   output logic                             o_id_mem_lq_done,
+   output                                   tt_briscv_pkg::lq_info_s o_id_mem_lqinfo,
 
-   input logic 				     i_ex_dst_vld_1c, // forwarding control from EX
-   input logic [LQ_DEPTH_LOG2-1:0] 	     i_ex_dst_lqid_1c, // forwarding control from EX
-   input logic [31:0] 			     i_ex_fwd_data_1c, // forwarding control from EX
+   input  logic                             i_ex_dst_vld_1c, // forwarding control from EX
+   input  logic [LQ_DEPTH_LOG2-1:0]         i_ex_dst_lqid_1c, // forwarding control from EX
+   input  logic [31:0]                      i_ex_fwd_data_1c, // forwarding control from EX
 
-   input logic 				     i_ex_dst_vld_2c, // forwarding control from EX
-   input logic [LQ_DEPTH_LOG2-1:0] 	     i_ex_dst_lqid_2c, // forwarding control from EX
-   input logic [31:0] 			     i_ex_fwd_data_2c, // forwarding control from EX
+   input  logic                             i_ex_dst_vld_2c, // forwarding control from EX
+   input  logic [LQ_DEPTH_LOG2-1:0]         i_ex_dst_lqid_2c, // forwarding control from EX
+   input  logic [31:0]                      i_ex_fwd_data_2c, // forwarding control from EX
 
-   input logic 				     i_mem_dst_vld, // forwarding control from MEM
-   input logic [LQ_DEPTH_LOG2-1:0] 	     i_mem_dst_lqid, // forwarding control from MEM
-   input logic [31:0] 			     i_mem_fwd_data, // forwarding control from MEM
- 
-   input [6:0] 				     i_mem_lq_op ,
-   input 				     i_mem_lq_commit ,
+   input  logic                             i_mem_dst_vld, // forwarding control from MEM
+   input  logic [LQ_DEPTH_LOG2-1:0]         i_mem_dst_lqid, // forwarding control from MEM
+   input  logic [31:0]                      i_mem_fwd_data, // forwarding control from MEM
+
+   input  [6:0]                             i_mem_lq_op,
+   input                                    i_mem_lq_commit,
 
    // Instruction type decode info to send down the pipe
-   output reg [4:0] 			     o_id_type , // Instruction type and Ext
+   output reg  [4:0]                        o_id_type, // Instruction type and Ext
 
    // Immediate operand for consumption in EX
-   output wire [31:0] 			     o_id_immed_op ,
+   output wire [31:0]                       o_id_immed_op,
 
    // Register file read/write enables and addresses
-   output logic 			     o_rf_wr_flag ,
-   output reg [ 4:0] 			     o_rf_wraddr,
-   output logic 			     o_fp_rf_wr_flag, 
-   output reg [ 4:0] 			     o_fp_rf_wraddr,
-   
-   output 				     o_id_ex_instdisp,
+   output logic                             o_rf_wr_flag,
+   output reg  [4:0]                        o_rf_wraddr,
+   output logic                             o_fp_rf_wr_flag,
+   output reg  [4:0]                        o_fp_rf_wraddr,
 
-   output logic       o_is_whole_memop,
-   output logic       o_is_masked_memop,
-   output logic       o_is_indexldst,
-   output logic       o_is_maskldst,
-   input logic  [4:0] i_if_sb_id,
-   output logic [4:0] o_id_sb_id
+   output                                   o_id_ex_instdisp,
+
+   output logic                             o_is_whole_memop,
+   output logic                             o_is_masked_memop,
+   output logic                             o_is_indexldst,
+   output logic                             o_is_maskldst,
+   input  logic [4:0]                       i_if_sb_id,
+   output logic [4:0]                       o_id_sb_id
 );
 
 wire i_ext, m_ext, a_ext, b_ext;
@@ -249,24 +260,32 @@ assign id_mem_lqalloc_raw = id_rts & (~id_replay | vec_autogen_replay.addrp2_inc
 
 // LDQ Information for dispatch ops
 assign o_id_mem_lqalloc = id_mem_lqalloc_raw & ~raw_hazard_stall;
-assign o_id_mem_lq_done = ((o_id_vex_rts && i_vex_id_rtr) ||
-                           (o_id_ex_rts  && i_ex_rtr    )   ) && (vec_autogen_incr.replay_cnt == 0);
-assign o_id_mem_lqinfo.pc[31:0] = o_id_ex_pc;
-assign o_id_mem_lqinfo.sim_instrn[31:0] = instrn_id;
-assign o_id_mem_lqinfo.vrf_wr_flag = o_vec_autogen.rf_wren;
+assign o_id_mem_lq_done = (
+   ((o_id_vex_rts && i_vex_id_rtr) ||
+    (o_id_ex_rts  && i_ex_rtr)) &&
+   (vec_autogen_incr.replay_cnt == 0)
+);
+assign o_id_mem_lqinfo.pc[31:0]           = o_id_ex_pc;
+assign o_id_mem_lqinfo.sim_instrn[31:0]   = instrn_id;
+assign o_id_mem_lqinfo.vrf_wr_flag        = o_vec_autogen.rf_wren;
 assign o_id_mem_lqinfo.squash_vec_wr_flag = squash_vec_wr_flag;
-assign o_id_mem_lqinfo.fp_rf_wr_flag = (is_fp_instrn | is_vec_instrn) & o_fp_rf_wr_flag;
-assign o_id_mem_lqinfo.rf_wr_flag = (is_ex_instrn | is_fp_instrn | is_vec_instrn) & o_rf_wr_flag;
-assign o_id_mem_lqinfo.rf_wraddr[4:0] = ({5{o_rf_wr_flag}} &  o_rf_wraddr[4:0]) |
-                                        ({5{o_fp_rf_wr_flag}} &  o_fp_rf_wraddr[4:0]) |
-                                        ({5{o_vec_autogen.rf_wren}} & o_vec_autogen.rf_addrp2[4:0]);
-assign o_id_mem_lqinfo.is_branch = o_id_type_sb;
-assign o_id_mem_lqinfo.load = (is_ex_instrn & (EncType[4:0] == `BRISCV_INSTR_TYPE_I) & ~instrn_id[4] & ~instrn_id[5]) |
-			      (is_ex_instrn & (EncType[4:0] == `BRISCV_INSTR_TYPE_A)) |
-                              (is_fp_instrn & (EncType[4:0] == `BRISCV_INSTR_TYPE_IF)) |
-                              (is_vec_instrn & o_vecldst_autogen.load);
-assign o_id_mem_lqinfo.vec_load = (is_vec_instrn & o_vecldst_autogen.load);
+assign o_id_mem_lqinfo.fp_rf_wr_flag      = (is_fp_instrn | is_vec_instrn) & o_fp_rf_wr_flag;
+assign o_id_mem_lqinfo.rf_wr_flag         = (is_ex_instrn | is_fp_instrn | is_vec_instrn) & o_rf_wr_flag;
+assign o_id_mem_lqinfo.rf_wraddr[4:0] = (
+   ({5{o_rf_wr_flag}}          & o_rf_wraddr[4:0]) |
+   ({5{o_fp_rf_wr_flag}}       & o_fp_rf_wraddr[4:0]) |
+   ({5{o_vec_autogen.rf_wren}} & o_vec_autogen.rf_addrp2[4:0])
+);
+assign o_id_mem_lqinfo.is_branch  = o_id_type_sb;
+assign o_id_mem_lqinfo.load = (
+   (is_ex_instrn & (EncType[4:0] == `BRISCV_INSTR_TYPE_I) & ~instrn_id[4] & ~instrn_id[5]) |
+   (is_ex_instrn & (EncType[4:0] == `BRISCV_INSTR_TYPE_A)) |
+   (is_fp_instrn & (EncType[4:0] == `BRISCV_INSTR_TYPE_IF)) |
+   (is_vec_instrn & o_vecldst_autogen.load)
+);
+assign o_id_mem_lqinfo.vec_load   = (is_vec_instrn & o_vecldst_autogen.load);
 assign o_id_mem_lqinfo.vl_is_zero = ~|o_csr.v_vl;
+assign o_id_mem_lqinfo.sb_id      = o_id_sb_id;
 
 assign o_id_ex_lqid = id_mem_lqalloc_raw ? i_mem_id_lqnxtid : id_lqid;
 // assign o_id_vex_lqid = i_mem_id_lqnxtid;

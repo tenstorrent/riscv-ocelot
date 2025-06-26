@@ -659,7 +659,7 @@ wire           lq_mem_vrf_wr_flag;
 wire [4:0]     lq_mem_rf_wraddr;
 logic [31:0]   lq_mem_pc;
 logic [31:0]   lq_sim_ex_mem_instrn;
-logic          lq_rden;
+logic          lq_rden, lq_poison_rden;
 logic [2:0]    lq_rdid;
 
 tt_briscv_pkg::lq_info_s        lq_rdinfo;
@@ -744,7 +744,8 @@ tt_lq #(.LQ_DEPTH(LQ_DEPTH),
  
    .lq_full(mem_fe_lqfull),
    .lq_empty(),
-   .o_lq_data_ready(lq_rden),
+   .o_lq_data_wb_ready(lq_rden),             // normal read
+   .o_lq_data_discard_ready(lq_poison_rden), // added for a poison read
    .o_lq_mem_vec_load(),
    .o_lq_mem_load(),
 
@@ -765,7 +766,9 @@ tt_lq #(.LQ_DEPTH(LQ_DEPTH),
    .o_lq_broadside_info(lq_broadside_info),
    .o_lq_broadside_data(lq_broadside_data),
    .o_lq_broadside_valid(lq_broadside_valid),
-   .o_lq_broadside_data_valid(lq_broadside_data_valid)
+   .o_lq_broadside_data_valid(lq_broadside_data_valid),
+   .o_lq_broadside_committable(),
+   .o_lq_broadside_poisoned()
 );
 
 assign lq_mem_vrf_wr_flag     =   lq_rdinfo.vrf_wr_flag;        
@@ -775,14 +778,14 @@ assign lq_mem_pc              =   lq_rdinfo.pc           [31:0];
 assign lq_sim_ex_mem_instrn   =   lq_rdinfo.sim_instrn   [31:0]; 
 assign lq_mem_rf_wraddr       =   lq_rdinfo.rf_wraddr    [4:0];  
 
-assign vec_store_commit =  lq_rden                 &&
-                            !lq_rdinfo.rf_wr_flag    &&
-                            !lq_rdinfo.vrf_wr_flag   &&
-                            !lq_rdinfo.fp_rf_wr_flag;
+assign vec_store_commit =  lq_rden &&
+                          !lq_rdinfo.rf_wr_flag &&
+                          !lq_rdinfo.vrf_wr_flag &&
+                          !lq_rdinfo.fp_rf_wr_flag;
    
-assign vec_nonstore_commit =  lq_rden                 &&
-                             !vec_store_commit       &&
-                              lq_rdinfo.vrf_wr_flag;
+assign vec_nonstore_commit = lq_rden &&
+                            !vec_store_commit &&
+                             lq_rdinfo.vrf_wr_flag;
    
 
 // ************************ //
@@ -808,14 +811,14 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
   logic [LQ_DEPTH     -1:0] lq_last;
   logic [LQ_DEPTH_LOG2-1:0] lq_rd_ptr;
 
-  assign ocelot_instrn_commit_valid       =   mem_rf_wr || mem_fp_rf_wr ||
-                                        (vec_nonstore_commit && lq_last[lq_rd_ptr]);
-  assign ocelot_instrn_commit_data[VLEN*8-1:64] =  {VLEN*8-64{vec_nonstore_commit}} & mem_vrf_wrdata_nxt[VLEN*8-1:64];
-  assign ocelot_instrn_commit_data[      63: 0] =        ({64{vec_nonstore_commit}} & mem_vrf_wrdata_nxt[      63: 0]) |
-                                                    ({64{mem_rf_wr          }} & mem_rf_wrdata     [      63: 0]) |
-                                                    ({64{mem_fp_rf_wr       }} & mem_fp_rf_wrdata  [      63: 0]);
-  assign ocelot_instrn_commit_fflags            =        ({ 5{vec_nonstore_commit}} & mem_vrf_wrexc_nxt [       4: 0]);
-  assign ocelot_instrn_commit_mask              =                                     mem_vrf_wrmask_nxt;
+  assign ocelot_instrn_commit_valid             = mem_rf_wr || mem_fp_rf_wr ||
+                                                  (vec_nonstore_commit && lq_last[lq_rd_ptr]);
+  assign ocelot_instrn_commit_data[VLEN*8-1:64] = {VLEN*8-64{vec_nonstore_commit}} & mem_vrf_wrdata_nxt[VLEN*8-1:64];
+  assign ocelot_instrn_commit_data[      63: 0] = ({64{vec_nonstore_commit}}       & mem_vrf_wrdata_nxt[63:0]) |
+                                                  ({64{mem_rf_wr          }}       & mem_rf_wrdata     [63:0]) |
+                                                  ({64{mem_fp_rf_wr       }}       & mem_fp_rf_wrdata  [63:0]);
+  assign ocelot_instrn_commit_fflags            = ({ 5{vec_nonstore_commit}}       & mem_vrf_wrexc_nxt [ 4:0]);
+  assign ocelot_instrn_commit_mask              =                                    mem_vrf_wrmask_nxt;
 
   always_ff @(posedge clk) begin
     if (!reset_n) begin
@@ -879,33 +882,6 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
         if (mem_vrf_wr) begin
           lmul_cnt <= lmul_cnt + 1;
         end
-    end
-  end
-
-  // This queue should never overflow, so I'm not going to add phase bits
-  // to check if it's full or not.
-  localparam sbid_queue_depth = 8;
-  logic [sbid_queue_depth-1:0][4:0] sbid_queue;
-  logic [$clog2(sbid_queue_depth)-1:0] sbid_queue_wptr;
-  logic [$clog2(sbid_queue_depth)-1:0] sbid_queue_rptr;
- 
-  logic completed_valid_nxt;
-
-  always_ff@(posedge clk) begin
-    if(!reset_n) begin
-      for(int i=0; i<sbid_queue_depth; i=i+1)
-        sbid_queue[i] <= 0;
-      sbid_queue_wptr <= 0;
-      sbid_queue_rptr <= 0;
-    end
-    else begin
-      if(ocelot_read_req && read_valid) begin
-        sbid_queue[sbid_queue_wptr] <= read_issue_sb_id;
-        sbid_queue_wptr <= sbid_queue_wptr + 1;
-      end
-      if(completed_valid_nxt) begin
-        sbid_queue_rptr <= sbid_queue_rptr + 1;
-      end
     end
   end
 

@@ -4,17 +4,18 @@
  `define  TT_BRISCV_PKG_VH
 package tt_briscv_pkg;
    typedef struct packed {
-      logic 	   vrf_wr_flag;
-      logic 	   squash_vec_wr_flag;
-      logic 	   fp_rf_wr_flag;
+      logic 	    vrf_wr_flag;
+      logic 	    squash_vec_wr_flag;
+      logic 	    fp_rf_wr_flag;
       logic        rf_wr_flag;
       logic [31:0] pc;
       logic [31:0] sim_instrn;
-      logic 	   is_branch;
-      logic 	   load;
-      logic 	   vec_load;
+      logic 	    is_branch;
+      logic 	    load;
+      logic 	    vec_load;
       logic [4:0]  rf_wraddr;
       logic        vl_is_zero;
+      logic [4:0]  sb_id;
    } lq_info_s;
 
 localparam ACTUAL_LQ_DEPTH = 8;
