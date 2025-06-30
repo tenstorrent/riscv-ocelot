@@ -18,6 +18,10 @@ module tt_id #(
    input                                    i_clk,
    input                                    i_reset_n,
 
+   input logic [4:0]                        dispatch_sb_id,
+   input logic                              dispatch_next_senior,
+   input logic                              dispatch_kill,
+
    // IF interface
    input  [31:0]                            i_if_instrn,
    input  [31:0]                            i_if_pc,
@@ -103,7 +107,12 @@ module tt_id #(
    output logic                             o_is_indexldst,
    output logic                             o_is_maskldst,
    input  logic [4:0]                       i_if_sb_id,
-   output logic [4:0]                       o_id_sb_id
+   output logic [4:0]                       o_id_sb_id,
+
+   input logic                              i_if_committable,
+   output logic                             o_id_committable,
+   input logic                              i_if_poisoned,
+   output logic                             o_id_poisoned
 );
 
 wire i_ext, m_ext, a_ext, b_ext;
@@ -159,6 +168,8 @@ wire units_rtr = (i_ex_rtr & i_vex_id_rtr);
 // EX RTL will be low for div and vec ldst. See if this can be optimized
 logic [31:0] instrn_id_replay;
 logic [4:0]  id_sb_id_replay;
+logic        id_committable_replay;
+logic        id_poisoned_replay;
 logic [31:0] id_ex_pc_replay;
 tt_briscv_pkg::csr_t id_csr_replay;
 logic [$clog2(VLEN):0] id_replay_cnt_start;
@@ -185,13 +196,21 @@ reg o_id_type_e; // System
 reg o_id_type_f; // Fence
 
 logic no_lq_load_pending;
-   
+
+logic set_inst_committable, set_inst_poisoned;
+
+// Set committable and poisoned flags (either from direct dispatch or from request)
+assign set_inst_committable = ((dispatch_next_senior && (dispatch_sb_id == o_id_sb_id)));
+assign set_inst_poisoned    = ((dispatch_kill        && (dispatch_sb_id == o_id_sb_id)));
+
 `define HIGH_PERF_FETCH
 `ifdef HIGH_PERF_FETCH
-  assign instrn_id       = id_replay ? instrn_id_replay : i_if_instrn;
-  assign o_id_sb_id      = id_replay ? id_sb_id_replay : i_if_sb_id;
-  assign o_id_ex_pc      = id_replay ? id_ex_pc_replay : i_if_pc;
-  assign o_csr           = id_replay ? id_csr_replay : i_csr;
+  assign instrn_id        =  id_replay ? instrn_id_replay      : i_if_instrn;
+  assign o_id_sb_id       =  id_replay ? id_sb_id_replay       : i_if_sb_id;
+  assign o_id_committable = (id_replay ? id_committable_replay : i_if_committable) || set_inst_committable;
+  assign o_id_poisoned    = (id_replay ? id_poisoned_replay    : i_if_poisoned)    || set_inst_poisoned;
+  assign o_id_ex_pc       =  id_replay ? id_ex_pc_replay       : i_if_pc;
+  assign o_csr            =  id_replay ? id_csr_replay         : i_csr;
  
   assign id_rts          = (i_if_instrn_rts | id_replay)
                             //reduction ops don't consume another lq entry so under replay its fine to ignore full conditions.
@@ -328,6 +347,8 @@ if (INCL_VEC == 1) begin
    if(~i_reset_n) begin
       instrn_id_replay <= '0;
       id_sb_id_replay <= '0;
+      id_committable_replay <= '0;
+      id_poisoned_replay <= '0;
       id_ex_pc_replay <= '0;
       id_csr_replay <= '0;
       id_replay_type <= `BRISCV_REPLAY_TYPE_NONE;
@@ -347,6 +368,8 @@ if (INCL_VEC == 1) begin
    else if (valid_vec_instrn) begin				// Start replay mode
       instrn_id_replay <= instrn_id;
       id_sb_id_replay <= o_id_sb_id;
+      id_committable_replay <= o_id_committable;
+      id_poisoned_replay <= o_id_poisoned;
       id_ex_pc_replay <= o_id_ex_pc;
       id_csr_replay <= o_csr;
       vec_autogen_replay <= vec_autogen_incr;

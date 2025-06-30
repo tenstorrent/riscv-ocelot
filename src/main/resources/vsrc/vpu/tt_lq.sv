@@ -12,12 +12,18 @@ module tt_lq #(
    input  logic                          i_clk,
    input  logic                          i_reset_n,
 
+   input logic [4:0]                     dispatch_sb_id,
+   input logic                           dispatch_next_senior,
+   input logic                           dispatch_kill,
+
    input  logic                          i_bypass_disable,
  
    // ID <--> MEM signals
    output logic [LQ_DEPTH_LOG2-1:0]      o_mem_id_lqnxtid,
    input  logic                          i_id_mem_lqalloc,
    input  tt_briscv_pkg::lq_info_s       i_id_mem_lqinfo,
+   input  logic                          i_id_mem_commitable,
+   input  logic                          i_id_mem_poisoned,
  
    input  logic                          i_vecld_elem_sent,
    input  logic                          i_vecld_idx_last,
@@ -126,6 +132,8 @@ logic                   ptrs_equal;                        // Indicates if write
 logic [LQ_DEPTH_LOG2:0] wr_ptr, rd_ptr;                    // Write and read pointers (with extra bit for full/empty detection)
 logic [LQ_DEPTH-1:0]    lq_set_pending, lq_clear_pending;  // Pending set/clear operations for each entry
 
+logic [LQ_DEPTH-1:0] dispatch_sb_id_mask; // Mask for entries with the same SB ID as the dispatch SB ID
+
 // Bypass and forwarding logic
 logic [2:0]                    lq_bypass_en;               // Bypass enable for each data return port
 logic [LD_DATA_WIDTH_BITS-1:0] lq_bypass_data;             // Data to bypass directly to output
@@ -134,7 +142,6 @@ logic [LD_DATA_WIDTH_BITS-1:0] lq_fwd_data;                // Data to forward to
 
 // Write/read enable signals
 logic lq_wr_en, lq_rd_en;                                  // Load queue write/read enable
-logic poison_read;                                         // No writeback read signal (used for poisoned entries)
 
 // Tag valid logic
 logic [LQ_DEPTH-1:0] lq_set_tag_valid;                     // Set tag valid for each entry
@@ -202,7 +209,7 @@ for (genvar i=0; i<LQ_DEPTH; i++) begin
 end   
    
 assign lq_wr_en = i_id_mem_lqalloc;
-assign lq_rd_en = i_lq_rden || poison_read;
+assign lq_rd_en = i_lq_rden;
 
 // Pointer logic
 always_ff @(posedge i_clk) begin
@@ -232,22 +239,46 @@ for (genvar i=0; i<LQ_CAM_PORTS; i++) begin
    assign lq_compare_tag_valid_mask[i] = '0;
 end
 
-
 // TODO: change this to the correct logic (approves everything for now)
-logic [LQ_DEPTH-1:0] lq_set_data_valid_prev;
-always_ff @(posedge i_clk) begin
-   if (~i_reset_n) begin
-      lq_set_data_valid_prev <= '0;
-   end
-   else begin
-      lq_set_data_valid_prev <= lq_set_data_valid;
-   end
-end
+// temp signals
+tt_briscv_pkg::lq_info_s tag_info;
+logic [4:0] sb_id;
+logic sb_id_valid;
+
+// logic [LQ_DEPTH-1:0] lq_set_data_valid_prev;
+// always_ff @(posedge i_clk) begin
+//    if (~i_reset_n) begin
+//       lq_set_data_valid_prev <= '0;
+//    end
+//    else begin
+//       lq_set_data_valid_prev <= lq_set_data_valid;
+//    end
+// end
+
 always_comb begin
    for (int i = 0; i < LQ_DEPTH; i += 1) begin
-      lq_set_tag_committable[i] = lq_set_data_valid_prev[i];
-      lq_set_tag_poisoned[i]    = '0;
+      tag_info = tt_briscv_pkg::lq_info_s'(lq_broadside_tag_value[i]);
+      sb_id = tag_info.sb_id;
+      sb_id_valid = lq_broadside_tag_valid[i];
+      dispatch_sb_id_mask[i] = (sb_id == dispatch_sb_id) && sb_id_valid;
    end
+end
+
+always_comb begin
+   lq_set_tag_committable = '0;
+   lq_set_tag_poisoned    = '0;
+
+   // do current dispatch status update
+   if (dispatch_next_senior)
+      lq_set_tag_committable = dispatch_sb_id_mask;
+   if (dispatch_kill)
+      lq_set_tag_poisoned = dispatch_sb_id_mask;
+
+   // forward the ID instruction status too
+   if (lq_wr_en && i_id_mem_commitable)
+      lq_set_tag_committable[wr_ptr[LQ_DEPTH_LOG2-1:0]] = 1'b1;
+   if (lq_wr_en && i_id_mem_poisoned)
+      lq_set_tag_poisoned[wr_ptr[LQ_DEPTH_LOG2-1:0]] = 1'b1;
 end
 
 // TODO: change tag/data valid logic into tag/data/approve/reject FSM logic
@@ -289,7 +320,7 @@ assign o_lq_data_wb_ready = (
    // approved for commit
    (o_lq_broadside_committable[rd_ptr[LQ_DEPTH_LOG2-1:0]])
 );
-assign poison_read = (
+assign o_lq_data_discard_ready = (
    // data has returned safely
    (o_lq_broadside_data_valid[rd_ptr[LQ_DEPTH_LOG2-1:0]] || (|lq_bypass_en[2:0])) &&
    // poisoned for discard

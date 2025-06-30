@@ -1,53 +1,55 @@
 // See LICENSE.TT for license details.
 // Open Vector Interface wrapper module for Ocelot
-module tt_vpu_ovi #(parameter VLEN = 256)
-(                 input  logic clk, reset_n,
+module tt_vpu_ovi #(
+  parameter VLEN = 256
+) (
+  input  logic clk, reset_n,
 
-                  input  logic [31:0] issue_inst,
-                  input  logic [4:0]  issue_sb_id,
-                  input  logic [63:0] issue_scalar_opnd,
-                  input  logic [39:0] issue_vcsr,
-                  input  logic        issue_vcsr_lmulb2, // Added 1 more bit for vlmul
-                  input  logic        issue_valid,
-                  output logic        issue_credit,
+  input  logic [31:0] issue_inst,
+  input  logic [4:0]  issue_sb_id,
+  input  logic [63:0] issue_scalar_opnd,
+  input  logic [39:0] issue_vcsr,
+  input  logic        issue_vcsr_lmulb2, // Added 1 more bit for vlmul
+  input  logic        issue_valid,
+  output logic        issue_credit,
 
-                  input  logic [4:0]  dispatch_sb_id,
-                  input  logic        dispatch_next_senior,
-                  input  logic        dispatch_kill,
+  input  logic [4:0]  dispatch_sb_id,
+  input  logic        dispatch_next_senior,
+  input  logic        dispatch_kill,
 
-                  output logic        completed_valid,
-                  output logic [4:0]  completed_sb_id,
-                  output logic [4:0]  completed_fflags,
-                  output logic [63:0] completed_dest_reg,
-                  output logic        completed_vxsat,
-                  output logic [13:0] completed_vstart,
-                  output logic        completed_illegal,
+  output logic        completed_valid,
+  output logic [4:0]  completed_sb_id,
+  output logic [4:0]  completed_fflags,
+  output logic [63:0] completed_dest_reg,
+  output logic        completed_vxsat,
+  output logic [13:0] completed_vstart,
+  output logic        completed_illegal,
 
-                  output logic         store_valid,
-                  output logic [511:0] store_data,
-                  input  logic         store_credit,
+  output logic         store_valid,
+  output logic [511:0] store_data,
+  input  logic         store_credit,
 
-                  input  logic [33:0]  load_seq_id,
-                  input  logic [511:0] load_data,
-                  input  logic         load_valid,
-                  input  logic [63:0]  load_mask,
-                  input  logic         load_mask_valid,
+  input  logic [33:0]  load_seq_id,
+  input  logic [511:0] load_data,
+  input  logic         load_valid,
+  input  logic [63:0]  load_mask,
+  input  logic         load_mask_valid,
 
-                  output logic         memop_sync_start,
-                  input  logic         memop_sync_end,
-                  input  logic [4:0]   memop_sb_id,
+  output logic         memop_sync_start,
+  input  logic         memop_sync_end,
+  input  logic [4:0]   memop_sb_id,
 
-                  input  logic         mask_idx_credit,
-                  output logic [64:0]  mask_idx_item,
-                  output logic         mask_idx_valid,
-                  output logic         mask_idx_last_idx,
+  input  logic         mask_idx_credit,
+  output logic [64:0]  mask_idx_item,
+  output logic         mask_idx_valid,
+  output logic         mask_idx_last_idx,
 
-                  // Debug signals for cosim checker
-                  output logic              debug_wb_vec_valid,
-                  output logic [VLEN*8-1:0] debug_wb_vec_wdata,
-                  output logic [7:0]        debug_wb_vec_wmask
+  // Debug signals for cosim checker
+  output logic              debug_wb_vec_valid,
+  output logic [VLEN*8-1:0] debug_wb_vec_wdata,
+  output logic [7:0]        debug_wb_vec_wmask
 );
-                  // TODO: Add the signals for memory operations...
+  // TODO: Add the signals for memory operations...
 
   localparam LOCAL_MEM_BYTE_ADDR_WIDTH = 12;
   localparam INCL_VEC = 1;
@@ -208,6 +210,8 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [63:0] read_issue_scalar_opnd;
   logic [39:0] read_issue_vcsr;
   logic        read_issue_vcsr_lmulb2;
+  logic        read_issue_committable;
+  logic        read_issue_poisoned;
 
   logic [VLEN*8-1:0] ocelot_instrn_commit_data;
   logic [7:0] ocelot_instrn_commit_mask;
@@ -295,8 +299,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
 
   tt_fifo #(
     .DEPTH(32)
-  ) fifo0
-  (
+  ) fifo0 (
     .clk(clk),
     .reset_n(reset_n),
 
@@ -324,7 +327,10 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .read_issue_sb_id(read_issue_sb_id),
     .read_issue_scalar_opnd(read_issue_scalar_opnd),
     .read_issue_vcsr(read_issue_vcsr),
-    .read_issue_vcsr_lmulb2(read_issue_vcsr_lmulb2)
+    .read_issue_vcsr_lmulb2(read_issue_vcsr_lmulb2),
+
+    .read_issue_committable(read_issue_committable),
+    .read_issue_poisoned(read_issue_poisoned)
   );
 
   assign issue_credit = read_valid && ocelot_read_req;
@@ -354,8 +360,11 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   assign csr_de0.v_vxrm  = vcsr[30:29];
   assign csr_de0.frm     = vcsr[33:31];
 
-  tt_id
-  #(
+  // ID -> LQ (ROB) signals
+  logic id_mem_committable;
+  logic id_mem_poisoned;
+
+  tt_id #(
     .LQ_DEPTH(LQ_DEPTH),
     .LQ_DEPTH_LOG2(LQ_DEPTH_LOG2), 
     .EXP_WIDTH(EXP_WIDTH),
@@ -365,10 +374,14 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .FP_RF_RD_PORTS(FP_RF_RD_PORTS),
     .INCL_VEC(INCL_VEC),
     .INCL_FP(INCL_FP)
-  ) id
-  (
-    .i_clk                                 (clk             ),    
+  ) id (
+    .i_clk                                 (clk),    
     .i_reset_n                             (reset_n), 
+
+    // Dispatch signals
+    .dispatch_sb_id                        (dispatch_sb_id),
+    .dispatch_next_senior                  (dispatch_next_senior),
+    .dispatch_kill                         (dispatch_kill),
 
     .i_csr                                 (csr_de0),             
     .o_csr                                 (csr_ex0),             
@@ -444,12 +457,17 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_mem_id_lqnxtid                      (mem_id_lqnxtid[LQ_DEPTH_LOG2-1:0]),
 
     .o_is_whole_memop                      (id_is_whole_memop),
-    .o_is_masked_memop                      (id_is_masked_memop),
+    .o_is_masked_memop                     (id_is_masked_memop),
     .o_is_indexldst                        (id_is_indexldst),
     .o_is_maskldst                         (id_is_maskldst),
     .i_if_sb_id                            (read_issue_sb_id),
-    .o_id_sb_id                            (id_sb_id)
-  );  
+    .o_id_sb_id                            (id_sb_id),
+
+    .i_if_committable                      (read_issue_committable),
+    .o_id_committable                      (id_mem_committable),
+    .i_if_poisoned                         (read_issue_poisoned),
+    .o_id_poisoned                         (id_mem_poisoned)
+  );
 
   //////////
   // EX
@@ -476,12 +494,11 @@ module tt_vpu_ovi #(parameter VLEN = 256)
      end
   end
  
-  tt_ex
-  #(.INCL_VEC(INCL_VEC),
+  tt_ex #(
+    .INCL_VEC(INCL_VEC),
     .VLEN(VLEN),
     .LQ_DEPTH_LOG2(LQ_DEPTH_LOG2)
-  ) ex
-  (
+  ) ex (
     .i_clk               (clk             ),
     .i_reset_n           (reset_n),
     .i_sat_csr           ('0),
@@ -582,9 +599,9 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   assign vrf_p2_rdaddr = id_vec_autogen.rf_rd_p2_is_rs2 ? id_vec_autogen.rf_addrp1
                                                         : id_vec_autogen.rf_addrp2;
 
-  tt_vec_regfile #(.VLEN(VLEN))
-  regfile
-  (
+  tt_vec_regfile #(
+    .VLEN(VLEN)
+  ) regfile (
     .i_clk               (clk),
     .i_reset_n           (reset_n),
     // Outputs
@@ -599,10 +616,10 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_wrdata_0a         (mem_vrf_wrdata)
   );
 
-  tt_vec #(.VLEN(VLEN),
-          .XLEN(64  ) )
-  vecu
-  (
+  tt_vec #(
+    .VLEN(VLEN),
+    .XLEN(64  )
+  ) vecu (
     .i_clk                 (clk),                 
     .i_reset_n             (reset_n), 
     .i_csr                 (csr_ex0),             
@@ -647,7 +664,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_mem_vrf_wraddr      (mem_vrf_wraddr),   
     .i_mem_vrf_wrdata      (mem_vrf_wrdata), 
     .i_mem_ex_rtr          (1'b1)            
-  );    
+  );
 
 // *********************** //
 // Load Queue              //
@@ -664,111 +681,118 @@ logic [2:0]    lq_rdid;
 
 tt_briscv_pkg::lq_info_s        lq_rdinfo;
 
-tt_lq #(.LQ_DEPTH(LQ_DEPTH), 
-        .LQ_DEPTH_LOG2(LQ_DEPTH_LOG2), 
-        .DATA_REQ_ID_WIDTH(DATA_REQ_ID_WIDTH),
-        .LD_DATA_WIDTH_BITS(LD_DATA_WIDTH_BITS),
-        .VLEN(VLEN),
-        .INCL_VEC(INCL_VEC)) lq_fifo
-(
-   .i_clk            (clk                    ),
-   .i_reset_n        (reset_n                ),
+tt_lq #(
+  .LQ_DEPTH(LQ_DEPTH), 
+  .LQ_DEPTH_LOG2(LQ_DEPTH_LOG2), 
+  .DATA_REQ_ID_WIDTH(DATA_REQ_ID_WIDTH),
+  .LD_DATA_WIDTH_BITS(LD_DATA_WIDTH_BITS),
+  .VLEN(VLEN),
+  .INCL_VEC(INCL_VEC)
+) lq_fifo (
+  .i_clk            (clk                    ),
+  .i_reset_n        (reset_n                ),
 
-   .i_bypass_disable (1'b0),
+  .dispatch_sb_id(dispatch_sb_id),
+  .dispatch_next_senior(dispatch_next_senior),
+  .dispatch_kill(dispatch_kill),
 
-   .i_vecld_elem_sent(ex_mem_payload.vecldst_vld & 
-                      ex_mem_payload.mem_load    &
-                      ex_mem_vld                     ),
-   .i_vecld_idx_last (ex_mem_payload.vecldst_idx_last),
-   .i_vecld_id       (ex_mem_lqid_1c                 ),
- 
-   // ID <--> MEM signals
-   .o_mem_id_lqnxtid(mem_id_lqnxtid),
-   .i_id_mem_lqalloc(id_mem_lqalloc),
-   .i_id_mem_lqinfo(id_mem_lqinfo),
- 
-   // Skid buffer signals
-   .i_skidbuf_lqvld_1c(ex_mem_lqvld_1c),
-   .i_skidbuf_lqsz_1c(ex_mem_payload.mem_sz[2:0]),
-   .i_skidbuf_lqaddr_1c(ex_mem_payload.mem_addr[$clog2(VLEN/8)-1:0]),
-   .i_skidbuf_lqmask_1c(ex_mem_payload.vecldst_byte_mask),
-   .i_skidbuf_lqvecld128_1c(ex_mem_payload.vecldst_128),
-   .i_skidbuf_lqdata_1c(ex_mem_payload.mem_store_data),
-   .i_skidbuf_lqid_1c(ex_mem_lqid_1c),
+  .i_bypass_disable (1'b0),
 
-   // EX 2 cycle signals
-   .i_ex_mem_lqvld_2c(ex_mem_lqvld_2c),
-   .i_ex_mem_lqdata_2c(ex_mem_lqdata_2c),
-   .i_ex_mem_lqid_2c(ex_mem_lqid_2c),
- 
-   // FP EX 2 cycle signals
-   .i_fp_ex_mem_lqvld_1c('0),
-   .i_fp_ex_mem_lqdata_1c('0),
-   .i_fp_ex_mem_lqid_1c('0),
- 
-   .i_fp_ex_mem_lqvld_2c('0),
-   .i_fp_ex_mem_lqdata_2c('0),
-   .i_fp_ex_mem_lqid_2c('0),
- 
-   // VEX 1/2/3 cycle signals
-   .i_vex_mem_lqvld_1c(vex_mem_lqvld_1c),
-   .i_vex_mem_lqdata_1c(vex_mem_lqdata_1c),
-   .i_vex_mem_lqexc_1c(vex_mem_lqexc_1c),
-   .i_vex_mem_lqid_1c(vex_mem_lqid_1c),
+  .i_vecld_elem_sent(ex_mem_payload.vecldst_vld & 
+                    ex_mem_payload.mem_load    &
+                    ex_mem_vld                     ),
+  .i_vecld_idx_last (ex_mem_payload.vecldst_idx_last),
+  .i_vecld_id       (ex_mem_lqid_1c                 ),
 
-   .i_vex_mem_lqvld_2c(vex_mem_lqvld_2c),
-   .i_vex_mem_lqdata_2c(vex_mem_lqdata_2c),
-   .i_vex_mem_lqexc_2c(vex_mem_lqexc_2c),
-   .i_vex_mem_lqid_2c(vex_mem_lqid_2c),
+  // ID <--> MEM signals
+  .o_mem_id_lqnxtid(mem_id_lqnxtid),
+  .i_id_mem_lqalloc(id_mem_lqalloc),
+  .i_id_mem_lqinfo(id_mem_lqinfo),
+  .i_id_mem_commitable(id_mem_committable),
+  .i_id_mem_poisoned(id_mem_poisoned),
 
-   .i_vex_mem_lqvld_3c(vex_mem_lqvld_3c),
-   .i_vex_mem_lqdata_3c(vex_mem_lqdata_3c),
-   .i_vex_mem_lqexc_3c(vex_mem_lqexc_3c),
-   .i_vex_mem_lqid_3c(vex_mem_lqid_3c),
+  // Skid buffer signals
+  .i_skidbuf_lqvld_1c(ex_mem_lqvld_1c),
+  .i_skidbuf_lqsz_1c(ex_mem_payload.mem_sz[2:0]),
+  .i_skidbuf_lqaddr_1c(ex_mem_payload.mem_addr[$clog2(VLEN/8)-1:0]),
+  .i_skidbuf_lqmask_1c(ex_mem_payload.vecldst_byte_mask),
+  .i_skidbuf_lqvecld128_1c(ex_mem_payload.vecldst_128),
+  .i_skidbuf_lqdata_1c(ex_mem_payload.mem_store_data),
+  .i_skidbuf_lqid_1c(ex_mem_lqid_1c),
 
-   // Load return data
-   .i_data_vld_0(drain_load_buffer),
-   .i_data_vld_cancel_0('0),
-   .i_data_resp_id_0(DATA_REQ_ID_WIDTH'(load_buffer_lqid)),
-   .i_data_rddata_0(load_buffer[load_buffer_rptr[2:0]]),
- 
-   .i_data_vld_1('0),
-   .i_data_vld_cancel_1('0),
-   .i_data_resp_id_1('0),
-   .i_data_rddata_1('0),
- 
-   .i_data_vld_2('0),
-   .i_data_vld_cancel_2('0),
-   .i_data_resp_id_2('0),
-   .i_data_rddata_2('0),
- 
-   .lq_full(mem_fe_lqfull),
-   .lq_empty(),
-   .o_lq_data_wb_ready(lq_rden),             // normal read
-   .o_lq_data_discard_ready(lq_poison_rden), // added for a poison read
-   .o_lq_mem_vec_load(),
-   .o_lq_mem_load(),
+  // EX 2 cycle signals
+  .i_ex_mem_lqvld_2c(ex_mem_lqvld_2c),
+  .i_ex_mem_lqdata_2c(ex_mem_lqdata_2c),
+  .i_ex_mem_lqid_2c(ex_mem_lqid_2c),
 
-   // LQ Read signals
-   .i_lq_rden(lq_rden),
-   .o_lq_rdid(lq_rdid),
-   .o_lq_rdinfo(lq_rdinfo),
-   .o_lq_rdmemaddr(),
-   .o_lq_rdldstsz(),
-   .o_lq_rddata(lq_rddata),
-   .o_lq_rdexc(lq_rdexc),
+  // FP EX 2 cycle signals
+  .i_fp_ex_mem_lqvld_1c('0),
+  .i_fp_ex_mem_lqdata_1c('0),
+  .i_fp_ex_mem_lqid_1c('0),
 
-   .o_lq_fwdvld(),
-   .o_lq_fwdid(),
-   .o_lq_fwddata(),
+  .i_fp_ex_mem_lqvld_2c('0),
+  .i_fp_ex_mem_lqdata_2c('0),
+  .i_fp_ex_mem_lqid_2c('0),
 
-   // Broadside data
-   .o_lq_broadside_info(lq_broadside_info),
-   .o_lq_broadside_data(lq_broadside_data),
-   .o_lq_broadside_valid(lq_broadside_valid),
-   .o_lq_broadside_data_valid(lq_broadside_data_valid),
-   .o_lq_broadside_committable(),
-   .o_lq_broadside_poisoned()
+  // VEX 1/2/3 cycle signals
+  .i_vex_mem_lqvld_1c(vex_mem_lqvld_1c),
+  .i_vex_mem_lqdata_1c(vex_mem_lqdata_1c),
+  .i_vex_mem_lqexc_1c(vex_mem_lqexc_1c),
+  .i_vex_mem_lqid_1c(vex_mem_lqid_1c),
+
+  .i_vex_mem_lqvld_2c(vex_mem_lqvld_2c),
+  .i_vex_mem_lqdata_2c(vex_mem_lqdata_2c),
+  .i_vex_mem_lqexc_2c(vex_mem_lqexc_2c),
+  .i_vex_mem_lqid_2c(vex_mem_lqid_2c),
+
+  .i_vex_mem_lqvld_3c(vex_mem_lqvld_3c),
+  .i_vex_mem_lqdata_3c(vex_mem_lqdata_3c),
+  .i_vex_mem_lqexc_3c(vex_mem_lqexc_3c),
+  .i_vex_mem_lqid_3c(vex_mem_lqid_3c),
+
+  // Load return data
+  .i_data_vld_0(drain_load_buffer),
+  .i_data_vld_cancel_0('0),
+  .i_data_resp_id_0(DATA_REQ_ID_WIDTH'(load_buffer_lqid)),
+  .i_data_rddata_0(load_buffer[load_buffer_rptr[2:0]]),
+
+  .i_data_vld_1('0),
+  .i_data_vld_cancel_1('0),
+  .i_data_resp_id_1('0),
+  .i_data_rddata_1('0),
+
+  .i_data_vld_2('0),
+  .i_data_vld_cancel_2('0),
+  .i_data_resp_id_2('0),
+  .i_data_rddata_2('0),
+
+  .lq_full(mem_fe_lqfull),
+  .lq_empty(),
+  .o_lq_data_wb_ready(lq_rden),             // normal read
+  .o_lq_data_discard_ready(lq_poison_rden), // added for a poison read
+  .o_lq_mem_vec_load(),
+  .o_lq_mem_load(),
+
+  // LQ Read signals
+  .i_lq_rden(lq_rden),
+  .o_lq_rdid(lq_rdid),
+  .o_lq_rdinfo(lq_rdinfo),
+  .o_lq_rdmemaddr(),
+  .o_lq_rdldstsz(),
+  .o_lq_rddata(lq_rddata),
+  .o_lq_rdexc(lq_rdexc),
+
+  .o_lq_fwdvld(),
+  .o_lq_fwdid(),
+  .o_lq_fwddata(),
+
+  // Broadside data
+  .o_lq_broadside_info(lq_broadside_info),
+  .o_lq_broadside_data(lq_broadside_data),
+  .o_lq_broadside_valid(lq_broadside_valid),
+  .o_lq_broadside_data_valid(lq_broadside_data_valid),
+  .o_lq_broadside_committable(),
+  .o_lq_broadside_poisoned()
 );
 
 assign lq_mem_vrf_wr_flag     =   lq_rdinfo.vrf_wr_flag;        
@@ -826,7 +850,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
         lq_rd_ptr        <= '0;
         mem_id_lqnxtid_r <= '0;
     end else begin
-        if (lq_rden) begin
+        if (lq_rden || lq_poison_rden) begin
           lq_rd_ptr <= lq_rd_ptr + 1;
         end
 
@@ -885,68 +909,69 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     end
   end
 
-  tt_scoreboard_ovi scoreboard
-                   (.clk(clk),
-                    .reset_n(reset_n),
-                    .i_issue_valid(issue_valid),
-                    .i_issue_sb_id(issue_sb_id),
-                    .i_issue_inst(issue_inst),
-                    .i_issue_vsew(issue_vcsr[38:36]),
-                    .i_issue_scalar_opnd(issue_scalar_opnd),
-                    .i_vd(id_ex_instrn[11:7]),
-                    .i_rd(ocelot_instrn_commit_data[63:0]),
-                    .i_rd_valid(lq_rden),
-                    .i_rd_lqid(lq_rdid),
-                    .i_fflags(ocelot_instrn_commit_fflags),
-                    .i_lqnxtid(mem_id_lqnxtid),
-                    .i_data_size(data_size),
-                    .i_index_size(index_size),
-                    .i_load_stride_eew(load_stride_eew),
-                    .i_memop_sync_end(memop_sync_end),
-                    .i_memop_sync_end_sb_id(memop_sb_id),
-                    .i_id_store(vecldst_autogen_store),
-                    .i_id_load(vecldst_autogen_load),
-                    .i_id_ex_rts(id_ex_rts),
-                    .i_ex_id_rtr(ex_id_rtr),
-                    .i_vex_id_rtr(vex_id_rtr),
-                    .i_id_vex_rts(id_vex_rts),
-                    .i_id_sb_id(id_sb_id),
-                    .i_id_mem_lqalloc(id_mem_lqalloc),
-                    .i_first_alloc(id_vec_autogen.replay_cnt == 0),
-                    .i_last_alloc(id_mem_lq_done),
-                    .i_load_sb_id(load_seq_id[33:29]),
+  tt_scoreboard_ovi scoreboard (
+    .clk(clk),
+    .reset_n(reset_n),
+    .i_issue_valid(issue_valid),
+    .i_issue_sb_id(issue_sb_id),
+    .i_issue_inst(issue_inst),
+    .i_issue_vsew(issue_vcsr[38:36]),
+    .i_issue_scalar_opnd(issue_scalar_opnd),
+    .i_vd(id_ex_instrn[11:7]),
+    .i_rd(ocelot_instrn_commit_data[63:0]),
+    .i_rd_valid(lq_rden || lq_poison_rden),
+    .i_rd_lqid(lq_rdid),
+    .i_fflags(ocelot_instrn_commit_fflags),
+    .i_lqnxtid(mem_id_lqnxtid),
+    .i_data_size(data_size),
+    .i_index_size(index_size),
+    .i_load_stride_eew(load_stride_eew),
+    .i_memop_sync_end(memop_sync_end),
+    .i_memop_sync_end_sb_id(memop_sb_id),
+    .i_id_store(vecldst_autogen_store),
+    .i_id_load(vecldst_autogen_load),
+    .i_id_ex_rts(id_ex_rts),
+    .i_ex_id_rtr(ex_id_rtr),
+    .i_vex_id_rtr(vex_id_rtr),
+    .i_id_vex_rts(id_vex_rts),
+    .i_id_sb_id(id_sb_id),
+    .i_id_mem_lqalloc(id_mem_lqalloc),
+    .i_first_alloc(id_vec_autogen.replay_cnt == 0),
+    .i_last_alloc(id_mem_lq_done),
+    .i_load_sb_id(load_seq_id[33:29]),
 
-                    .i_memop_sync_start(memop_sync_start_nxt),
-                    .i_memop_sync_start_sb_id(memop_sync_start_sb_id_nxt),
+    .i_memop_sync_start(memop_sync_start_nxt),
+    .i_memop_sync_start_sb_id(memop_sync_start_sb_id_nxt),
 
-                    .ldb_alloc_valid(ldb_alloc_valid),
-                    .ldb_alloc_ack(ldb_alloc_ack),
-                    .ldb_alloc_sb_id(ldb_alloc_sb_id),
-                    .ldb_alloc_size(ldb_alloc_size),
+    .ldb_alloc_valid(ldb_alloc_valid),
+    .ldb_alloc_ack(ldb_alloc_ack),
+    .ldb_alloc_sb_id(ldb_alloc_sb_id),
+    .ldb_alloc_size(ldb_alloc_size),
 
-                    .o_vd(sb_vd),
-                    .o_ldb_start(sb_ldb_start),
-                    .o_data_size(sb_data_size),
-                    .o_index_size(sb_index_size),
-                    .o_load_stride_eew(sb_load_stride_eew),
+    .o_vd(sb_vd),
+    .o_ldb_start(sb_ldb_start),
+    .o_data_size(sb_data_size),
+    .o_index_size(sb_index_size),
+    .o_load_stride_eew(sb_load_stride_eew),
 
-                    .o_drain_load_buffer(sb_drain_load_buffer),
-                    .i_draining_load_buffer(drain_load_buffer),
-                    .o_drain_ref_count(sb_ref_count),
-                    .o_drain_lqid_start(sb_drain_lqid_start),
-                    .o_drain_ldb_start(sb_drain_ldb_start),
+    .o_drain_load_buffer(sb_drain_load_buffer),
+    .i_draining_load_buffer(drain_load_buffer),
+    .o_drain_ref_count(sb_ref_count),
+    .o_drain_lqid_start(sb_drain_lqid_start),
+    .o_drain_ldb_start(sb_drain_ldb_start),
 
-                    .i_drain_complete_valid(drain_complete_valid),
-                    .i_drain_complete_ldb_idx(drain_complete_ldb_idx),
+    .i_drain_complete_valid(drain_complete_valid),
+    .i_drain_complete_ldb_idx(drain_complete_ldb_idx),
 
-                    .o_completed_valid(sb_completed_valid),
-                    .o_completed_sb_id(sb_completed_sb_id),
-                    .o_completed_dest_reg(sb_completed_dest_reg),
-                    .o_completed_fflags(sb_completed_fflags),
-                    .i_debug_commit_data(ocelot_instrn_commit_data),
-                    .i_debug_commit_mask(ocelot_instrn_commit_mask),
-                    .o_debug_commit_data(sb_debug_commit_data),
-                    .o_debug_commit_mask(sb_debug_commit_mask));
+    .o_completed_valid(sb_completed_valid),
+    .o_completed_sb_id(sb_completed_sb_id),
+    .o_completed_dest_reg(sb_completed_dest_reg),
+    .o_completed_fflags(sb_completed_fflags),
+    .i_debug_commit_data(ocelot_instrn_commit_data),
+    .i_debug_commit_mask(ocelot_instrn_commit_mask),
+    .o_debug_commit_data(sb_debug_commit_data),
+    .o_debug_commit_mask(sb_debug_commit_mask)
+  );
 
   assign vcsr        = ocelot_read_req && read_valid ? read_issue_vcsr : vcsr_reg;
   assign vcsr_lmulb2 = ocelot_read_req && read_valid ? read_issue_vcsr_lmulb2 : vcsr_lmulb2_reg;
@@ -1023,18 +1048,17 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
   end
   assign scalar_opnd = (ocelot_read_req && read_valid) ? read_issue_scalar_opnd : scalar_opnd_reg;
 
-  lrm_model lrm
-  (
-   .clk(clk),
-   .reset_n(reset_n),
-   .load_valid(load_valid),
-   .load_data(load_data),
-   .load_seq_id(load_seq_id),
-   .stride(sb_load_stride_eew),
-   .eew(sb_data_size), 
+  lrm_model lrm (
+    .clk(clk),
+    .reset_n(reset_n),
+    .load_valid(load_valid),
+    .load_data(load_data),
+    .load_seq_id(load_seq_id),
+    .stride(sb_load_stride_eew),
+    .eew(sb_data_size), 
 
-   .packed_data(shifted_load_data),
-   .byte_en(byte_en)
+    .packed_data(shifted_load_data),
+    .byte_en(byte_en)
   );
 
   logic [2:0] load_buffer_drain_cntr;
@@ -1107,50 +1131,52 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
   logic         store_valid_nxt;
   logic [511:0] store_data_nxt;
 
-  tt_store_fsm #(.VLEN(VLEN),
-                .STORE_CREDITS(STORE_CREDITS))
-                store_fsm
-               (.i_clk(clk),
-                .i_reset_n(reset_n),
-                .i_uop_fire(id_ex_units_rts && ex_id_rtr && !id_mem_lqinfo.squash_vec_wr_flag),
-                .i_uop_first(id_ex_vecldst_autogen.ldst_iter_cnt == 0),
-                .i_uop_last(id_ex_last),
-                .i_uop_is_store(vecldst_autogen_store),
-                .i_uop_is_vsm(id_is_maskldst),
-                .i_uop_is_vsx(id_is_indexldst),
-                .i_uop_is_vsr(id_is_whole_memop),
-                .i_uop_index_size(index_size),
-                .i_uop_data_size(data_size),
-                .i_uop_vl(csr_ex0.v_vl),
-                .i_uop_nfield(id_ex_instrn[31:29]),
-                .i_store_data(vs3_rddata),
-                .i_store_credit(store_credit),
-                .o_store_valid(store_valid_nxt),
-                .o_store_data(store_data_nxt),
-                .o_stall(store_fsm_stall)
-              );
+  tt_store_fsm #(
+    .VLEN(VLEN),
+    .STORE_CREDITS(STORE_CREDITS)
+  ) store_fsm (
+    .i_clk(clk),
+    .i_reset_n(reset_n),
+    .i_uop_fire(id_ex_units_rts && ex_id_rtr && !id_mem_lqinfo.squash_vec_wr_flag),
+    .i_uop_first(id_ex_vecldst_autogen.ldst_iter_cnt == 0),
+    .i_uop_last(id_ex_last),
+    .i_uop_is_store(vecldst_autogen_store),
+    .i_uop_is_vsm(id_is_maskldst),
+    .i_uop_is_vsx(id_is_indexldst),
+    .i_uop_is_vsr(id_is_whole_memop),
+    .i_uop_index_size(index_size),
+    .i_uop_data_size(data_size),
+    .i_uop_vl(csr_ex0.v_vl),
+    .i_uop_nfield(id_ex_instrn[31:29]),
+    .i_store_data(vs3_rddata),
+    .i_store_credit(store_credit),
+    .o_store_valid(store_valid_nxt),
+    .o_store_data(store_data_nxt),
+    .o_stall(store_fsm_stall)
+  );
 
 
-  tt_mask_fsm #(.VLEN(VLEN),
-                .MASK_CREDITS(2))
-                mask_fsm
-               (.i_clk(clk),
-                .i_reset_n(reset_n),
-                .i_is_masked_memop(id_is_masked_memop),
-                .i_memop_sync_start_next(id_ex_units_rts && ex_id_rtr),
-                .i_is_indexed(id_is_indexldst),
-                .i_mask_data(vmask_rddata),
-                .i_index_data(vs2_rddata),
-                .i_index_data_valid(id_ex_units_rts && ex_id_rtr),
-                .i_last_index(id_ex_last),
-                .o_draining_mask_idx(mask_fsm_stall),
-                .i_vl(csr_ex0.v_vl),
-                .i_eew(index_size),
-                .i_mask_idx_credit(mask_idx_credit),
-                .o_mask_idx_item(mask_idx_item),
-                .o_mask_idx_valid(mask_idx_valid),
-                .o_mask_idx_last_idx(mask_idx_last_idx)
-               );
+  tt_mask_fsm #(
+    .VLEN(VLEN),
+    .MASK_CREDITS(2)
+  ) mask_fsm (
+    .i_clk(clk),
+    .i_reset_n(reset_n),
+    .i_is_masked_memop(id_is_masked_memop),
+    .i_memop_sync_start_next(id_ex_units_rts && ex_id_rtr),
+    .i_is_indexed(id_is_indexldst),
+    .i_mask_data(vmask_rddata),
+    .i_index_data(vs2_rddata),
+    .i_index_data_valid(id_ex_units_rts && ex_id_rtr),
+    .i_last_index(id_ex_last),
+    .o_draining_mask_idx(mask_fsm_stall),
+    .i_vl(csr_ex0.v_vl),
+    .i_eew(index_size),
+    .i_mask_idx_credit(mask_idx_credit),
+    .o_mask_idx_item(mask_idx_item),
+    .o_mask_idx_valid(mask_idx_valid),
+    .o_mask_idx_last_idx(mask_idx_last_idx)
+  );
 
   // OVI Outputs
   always @(posedge clk) begin

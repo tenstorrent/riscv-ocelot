@@ -565,9 +565,20 @@ MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbR
     Cat(0.U((15-log2Ceil(vLen+1)).W), io.vconfig.vl), // vl
     0.U(14.W) // vstart
   )
+
+  // def pipe[T <: Data](in: T, cycles: Int): T = {
+  //   require(cycles >= 0)
+  //   if (cycles == 0) in
+  //   else (0 until cycles).foldLeft(in)((x, _) => RegNext(x))
+  // }
+
+  // val dispatchDelayCycles = 10 // or make this a parameter
+  // vpu.io.dispatch_sb_id := pipe(next_sb_id, dispatchDelayCycles)
+  // vpu.io.dispatch_next_senior := pipe(io.req.fire, dispatchDelayCycles)
+
   vpu.io.issue_vcsr_lmulb2 := io.vconfig.vtype.vlmul_sign
   vpu.io.dispatch_sb_id := next_sb_id
-  vpu.io.dispatch_next_senior := io.req.fire
+  vpu.io.dispatch_next_senior := io.req.fire  
   vpu.io.dispatch_kill := 0.B
   
    vpu.io.memop_sync_end := MemSyncEnd
