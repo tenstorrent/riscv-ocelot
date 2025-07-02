@@ -209,6 +209,11 @@ class OviWrapperWrapper(implicit p: Parameters) extends BoomModule // Yeah...
 
   ovi_wrapper.io.vGenIO <> io.core.vGenIO
 
+  ovi_wrapper.io.core.rob_pnr_idx  := io.core.rob_pnr_idx
+  ovi_wrapper.io.core.rob_head_idx := io.core.rob_head_idx
+  ovi_wrapper.io.core.brupdate     := io.brupdate
+  ovi_wrapper.io.core.exception    := io.core.exception
+
   ovi_wrapper.io.debug_wb_vec_valid <> io.core.debug_wb_vec_valid
   ovi_wrapper.io.debug_wb_vec_wdata <> io.core.debug_wb_vec_wdata
   ovi_wrapper.io.debug_wb_vec_wmask <> io.core.debug_wb_vec_wmask

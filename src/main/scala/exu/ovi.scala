@@ -15,73 +15,13 @@ import boom.util._
 import boom.lsu.{LSUExeIO}
 
 import hardfloat._
+import boom.exu.OviScoreboard // moved the SB to a different file
 
 class EnhancedFuncUnitReq(xLen: Int, vLen: Int)(implicit p: Parameters) extends Bundle {
   val vconfig = new VConfig()
   val vxrm = UInt(2.W)
   val fcsr_rm = UInt(3.W)
   val req = new FuncUnitReq(xLen)
-}
-
-// Scoreboard (a queue of MicroOps with holes) to track vector operations
-// and their ordering across the CPU-VPU interface..
-class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends Module {
-  val io = IO(new Bundle {
-    // insert MicroOp
-    val insert  = Flipped(Decoupled(new MicroOp))
-    // remove MicroOp by index
-    val remove = new Bundle {
-      val idx   = Input(UInt(log2Ceil(SB_SIZE).W))
-      val valid = Input(Bool())
-      val ready = Output(Bool()) // simply a "NOT ready" signal
-      val uop   = Output(new MicroOp)
-    }
-    // expose the tail as sb_id
-    val next_sb_id = Output(UInt(log2Ceil(SB_SIZE).W))
-  })
-
-  // error if SB_SIZE is not a power of 2 (wrap bit logic wont work)
-  require(isPow2(SB_SIZE), "SB_SIZE must be a power of 2")
-
-  def wrapInc(idx: UInt, max: Int): UInt = Mux((idx === (max-1).U), 0.U, idx + 1.U)
-
-  // scoreboard (basically a uop array) and valid bits
-  val sb_uop   = Reg(Vec(SB_SIZE, new MicroOp()))
-  val sb_valid = RegInit(VecInit.fill(SB_SIZE)(false.B))
-
-  val head = RegInit(0.U((log2Ceil(SB_SIZE)+1).W)) // read ptr with wrap state
-  val tail = RegInit(0.U((log2Ceil(SB_SIZE)+1).W)) // write ptr with wrap state
-
-  val head_ptr = head(log2Ceil(SB_SIZE), 0)
-  val tail_ptr = tail(log2Ceil(SB_SIZE), 0)
-
-  val empty = (head_ptr === tail_ptr) && (head(log2Ceil(SB_SIZE)) === tail(log2Ceil(SB_SIZE)))
-  val full  = (head_ptr === tail_ptr) && (head(log2Ceil(SB_SIZE)) =/= tail(log2Ceil(SB_SIZE)))
-
-  io.insert.ready := !full  // insert ready if not full
-  io.remove.ready := !empty // remove ready if not empty
-  io.next_sb_id := tail_ptr // next avaliable id is tail for a queue-like structure
-  io.remove.uop := sb_uop(io.remove.idx) // expose the "response uop"
-
-  // invalidate on remove valid
-  when (io.remove.valid) {
-    sb_valid(io.remove.idx) := false.B
-  }
-
-  // que up next sb entry
-  when (io.insert.fire) {
-    sb_uop(tail_ptr) := io.insert.bits
-    sb_valid(tail_ptr) := true.B
-    tail := wrapInc(tail, SB_SIZE)
-  }
-
-  // track head for in-orderness
-  // NOTE: head only moves a single entry at a time so there
-  //       could be delays due to holes in the queue
-  when ((!empty && !sb_valid(head_ptr)) ||
-        (io.remove.idx === head_ptr)) {    // to bypass removed uop in same cycle
-    head := wrapInc(head, SB_SIZE)
-  }
 }
 
 class OviWrapper(implicit p: Parameters) extends BoomModule
@@ -99,16 +39,22 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
     val debug_wb_vec_valid = Output(Bool())
     val debug_wb_vec_wdata = Output(UInt((vLen * 8).W))
     val debug_wb_vec_wmask = Output(UInt(8.W))
+
+    val core = new Bundle {
+      val rob_pnr_idx  = Input(UInt(robAddrSz.W))
+      val rob_head_idx = Input(UInt(robAddrSz.W))
+      val brupdate     = Input(new BrUpdateInfo())
+      val exception    = Input(Bool())
+    }
   })
 
   io := DontCare
   val vpu = Module(new tt_vpu_ovi(vLen))
-
-
   val scoreboard = Module(new OviScoreboard(32))
 
+  // == sb connections ==
   scoreboard.io.insert.bits := io.req.bits.uop // insert uop
-  scoreboard.io.insert.valid := io.req.valid   // insert valid signal
+  scoreboard.io.insert.valid := io.req.fire   // use fire instead of valid so that other readys are also taken into account
   val sb_ready = scoreboard.io.insert.ready // io.req.ready := <...> && sb_ready
 
   scoreboard.io.remove.idx := vpu.io.completed_sb_id // remove idx
@@ -118,8 +64,17 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   val resp_uop = scoreboard.io.remove.uop // output uop
 
   val next_sb_id = scoreboard.io.next_sb_id // next available sb id
-  
 
+  scoreboard.io.core.rob_pnr_idx := io.core.rob_pnr_idx
+  scoreboard.io.core.rob_head_idx := io.core.rob_head_idx
+  scoreboard.io.core.brupdate := io.core.brupdate
+  scoreboard.io.core.exception := io.core.exception
+
+  val dispatch_sb_id = scoreboard.io.dispatch.dispatch_sb_id
+  val dispatch_next_senior = scoreboard.io.dispatch.dispatch_next_senior
+  val dispatch_kill = scoreboard.io.dispatch.dispatch_kill
+
+  // == vpu connections ==
   io.resp.valid := resp_valid
   io.resp.bits.data := vpu.io.completed_dest_reg
   io.resp.bits.uop := resp_uop
@@ -136,7 +91,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   val MAX_ISSUE_CREDIT = 32
   val issue_credit_cnt = RegInit(MAX_ISSUE_CREDIT.U)
   issue_credit_cnt := issue_credit_cnt + vpu.io.issue_credit - vpu.io.issue_valid 
-  val vpu_ready = (issue_credit_cnt =/= 0.U) && sb_remove_ready // <== !empty
+  val vpu_ready = (issue_credit_cnt =/= 0.U) && sb_ready // <== !full
 
 /*
    OVI LS helper start
@@ -209,7 +164,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   val sbIdQueue = Module(new Queue(UInt(5.W), vlsiQDepth))
 
   // Dequeue a request whenever VPU and vLSIQueue are ready
-  io.req.ready := vpu_ready && vLSIQueue.io.enq.ready && sb_ready
+  io.req.ready := vpu_ready && vLSIQueue.io.enq.ready
 
   val req_uop = io.req.bits.uop
   when(io.req.fire && (req_uop.uses_stq || req_uop.uses_ldq)) {
@@ -566,21 +521,11 @@ MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbR
     0.U(14.W) // vstart
   )
 
-  // def pipe[T <: Data](in: T, cycles: Int): T = {
-  //   require(cycles >= 0)
-  //   if (cycles == 0) in
-  //   else (0 until cycles).foldLeft(in)((x, _) => RegNext(x))
-  // }
-
-  // val dispatchDelayCycles = 10 // or make this a parameter
-  // vpu.io.dispatch_sb_id := pipe(next_sb_id, dispatchDelayCycles)
-  // vpu.io.dispatch_next_senior := pipe(io.req.fire, dispatchDelayCycles)
-
   vpu.io.issue_vcsr_lmulb2 := io.vconfig.vtype.vlmul_sign
-  vpu.io.dispatch_sb_id := next_sb_id
-  vpu.io.dispatch_next_senior := io.req.fire  
-  vpu.io.dispatch_kill := 0.B
-  
+  vpu.io.dispatch_sb_id := dispatch_sb_id
+  vpu.io.dispatch_next_senior := dispatch_next_senior
+  vpu.io.dispatch_kill := dispatch_kill
+
    vpu.io.memop_sync_end := MemSyncEnd
    vpu.io.memop_sb_id := MemSbId  
 // vpu.io.mem_vstart := MEMVstart
