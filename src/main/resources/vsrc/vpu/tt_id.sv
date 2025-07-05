@@ -361,6 +361,8 @@ if (INCL_VEC == 1) begin
         // instrn_id_replay <= instrn_id_replay;
         // id_ex_pc_replay <= id_ex_pc_replay;
         // id_replay_type <= id_replay_type;
+        id_committable_replay <= o_id_committable; // here
+        id_poisoned_replay <= o_id_poisoned;
         vec_autogen_replay <= vec_autogen_incr;
         vecldst_autogen_replay <= vecldst_autogen_incr;
      end

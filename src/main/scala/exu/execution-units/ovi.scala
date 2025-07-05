@@ -33,6 +33,15 @@ class OviReqQueue(val num_entries: Int)(implicit p: Parameters)
 
   ////////////////////////////////////////////////////////////////
 
+  // these are the type of instructions that send a memop sync start
+  // in the VPU. so i will send just these non-speculatively..
+  val deq_is_load_store = (
+    (io.deq.bits.uop.inst(6,0) === 7.U) ||
+    (io.deq.bits.uop.inst(6,0) === 39.U)
+  )
+  // for some reason same-cycle kills dont work on VPU
+  val kill_on_deq = (is_killed(io.deq.bits.uop))
+
   io.count := PopCount(entries_valid)
 
   // Allow enqueue when not full
@@ -41,7 +50,9 @@ class OviReqQueue(val num_entries: Int)(implicit p: Parameters)
   // Allow dequeue when not empty and past PNR
   io.deq.valid := entries_valid.asUInt =/= 0.U && (
     IsOlder(io.deq.bits.uop.rob_idx, io.rob_pnr_idx, io.rob_head_idx)
-    || io.deq.bits.uop.rob_idx === io.rob_pnr_idx
+    || (io.deq.bits.uop.rob_idx === io.rob_pnr_idx)
+    || (!kill_on_deq && (
+      !deq_is_load_store)) // <= allow non-load/store to bypass PNR
   )
 
   ////////////////////////////////////////////////////////////////

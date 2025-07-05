@@ -84,8 +84,8 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
   val head = RegInit(0.U((log2Ceil(SB_SIZE)+1).W)) // read ptr with wrap state
   val tail = RegInit(0.U((log2Ceil(SB_SIZE)+1).W)) // write ptr with wrap state
 
-  val head_ptr = head(log2Ceil(SB_SIZE), 0)
-  val tail_ptr = tail(log2Ceil(SB_SIZE), 0)
+  val head_ptr = head(log2Ceil(SB_SIZE)-1, 0)
+  val tail_ptr = tail(log2Ceil(SB_SIZE)-1, 0)
 
   val empty = (head_ptr === tail_ptr) && (head(log2Ceil(SB_SIZE)) === tail(log2Ceil(SB_SIZE)))
   val full  = (head_ptr === tail_ptr) && (head(log2Ceil(SB_SIZE)) =/= tail(log2Ceil(SB_SIZE)))
@@ -110,12 +110,6 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
   io.dispatch.dispatch_next_senior := false.B
   io.dispatch.dispatch_kill := false.B
 
-  // same cycle enq-kill check
-  val same_cycle_kill = (
-    IsKilledByBranch(io.core.brupdate, io.insert.bits) ||
-    io.core.exception || RegNext(io.core.exception)
-  )
-
   // per-entry state machine
   for (i <- 0 until SB_SIZE) {
     switch (sb_state(i)) {
@@ -129,7 +123,7 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
             io.insert.bits
           ) // same cycle enq-br update
           sb_state(i) := Mux(
-            same_cycle_kill,
+            is_to_be_killed(io.insert.bits),
             SBState.KILL_PENDING,
             SBState.DISPATCH
           ) // same cycle enq-kill
@@ -144,7 +138,6 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
         } .elsewhen (is_to_be_killed(sb_uop(i))) {
           sb_state(i) := SBState.KILL_PENDING
         } .otherwise {
-            // printf(p"[SB] Entry $i stuck in DISPATCH: uop.rob_idx=${sb_uop(i).rob_idx} uop.uopc=${sb_uop(i).uopc} uop.inst=0x${Hexadecimal(sb_uop(i).inst)}\n")
           sb_uop(i).br_mask := GetNewBrMask(io.core.brupdate, sb_uop(i))
         }
       }
@@ -204,6 +197,31 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
       "[SB] There is a pending entry but both next_sen and kill are either on or off!")
   }
 
+  // Assert: For all entries from head_ptr to tail_ptr in DISPATCH state,
+  // no instruction after should be IsOlder than any uop before it.
+  // Only check entries in DISPATCH state.
+  for (i <- 0 until SB_SIZE) {
+    for (j <- (i + 1) until SB_SIZE) {
+
+      val old   = (head + i.U)(log2Ceil(SB_SIZE), 0)
+      val young = (head + j.U)(log2Ceil(SB_SIZE), 0)
+      val old_ptr   =   old(log2Ceil(SB_SIZE)-1, 0)
+      val young_ptr = young(log2Ceil(SB_SIZE)-1, 0)
+
+      when ((sb_state(old_ptr) === SBState.DISPATCH) && (sb_state(young_ptr) === SBState.DISPATCH)) {
+        // younger is returning older in function
+        when (IsOlder(sb_uop(young_ptr).rob_idx, sb_uop(old_ptr).rob_idx, io.core.rob_head_idx)) {
+          // assert false
+          val young_rob_idx = sb_uop(young_ptr).rob_idx
+          val old_rob_idx   = sb_uop(old_ptr).rob_idx
+          val rob_head_idx = io.core.rob_head_idx
+          // print debug info
+          assert(false.B, p"[SB] Entry $young_ptr after $old_ptr in queue is older (IsOlder) than $old_ptr! young_rob_idx=$young_rob_idx, old_rob_idx=$old_rob_idx, rob_head_idx=$rob_head_idx")
+        }
+      }
+    }
+  }
+
   // debug signals
   io.debug.debug_head     := head_ptr
   io.debug.debug_tail     := tail_ptr
@@ -211,9 +229,13 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
   io.debug.debug_sb_uop   := sb_uop
 
   // Prevent Chisel from optimizing away these signals
-  dontTouch(io.insert)
-  dontTouch(io.remove)
-  dontTouch(io.core)
+  dontTouch(io.insert.valid)
+  dontTouch(io.insert.bits.rob_idx)
+  dontTouch(io.insert.bits.debug_inst)
+  dontTouch(io.insert.bits.debug_pc)
+  dontTouch(io.remove.valid)
+  dontTouch(io.remove.idx)
+  // dontTouch(io.core)
   dontTouch(io.dispatch)
   dontTouch(io.debug.debug_head)
   dontTouch(io.debug.debug_tail)

@@ -774,7 +774,7 @@ tt_lq #(
   .o_lq_mem_load(),
 
   // LQ Read signals
-  .i_lq_rden(lq_rden),
+  .i_lq_rden(lq_rden || lq_poison_rden),
   .o_lq_rdid(lq_rdid),
   .o_lq_rdinfo(lq_rdinfo),
   .o_lq_rdmemaddr(),
@@ -919,7 +919,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .i_issue_scalar_opnd(issue_scalar_opnd),
     .i_vd(id_ex_instrn[11:7]),
     .i_rd(ocelot_instrn_commit_data[63:0]),
-    .i_rd_valid(lq_rden || lq_poison_rden),
+    .i_rd_valid(lq_rden),
     .i_rd_lqid(lq_rdid),
     .i_fflags(ocelot_instrn_commit_fflags),
     .i_lqnxtid(mem_id_lqnxtid),
