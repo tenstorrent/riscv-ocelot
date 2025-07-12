@@ -1,26 +1,28 @@
 // See LICENSE.TT for license details.
-module tt_store_fsm #(parameter VLEN = 256,
-                     parameter STORE_CREDITS = 4)
-                    (input  logic                      i_clk,
-                     input  logic                      i_reset_n,
-                     input  logic                      i_uop_last,
-                     input  logic                      i_uop_first,
-                     input  logic                      i_uop_fire,
-                     input  logic                      i_uop_is_store,
-                     input  logic                      i_uop_is_vsm, // mask store
-                     input  logic                      i_uop_is_vsx, // index store
-                     input  logic                      i_uop_is_vsr, // whole register store
-                     input  logic [1:0]                i_uop_index_size, // used to calculate index/data ratio
-                     input  logic [1:0]                i_uop_data_size,
-                     input  logic [$clog2(VLEN+1)-1:0] i_uop_vl,
-                     input  logic [2:0]                i_uop_nfield, // used for whole register store
+module tt_store_fsm #(
+   parameter VLEN = 256,
+   parameter STORE_CREDITS = 4
+) (
+   input  logic                      i_clk,
+   input  logic                      i_reset_n,
+   input  logic                      i_uop_last,
+   input  logic                      i_uop_first,
+   input  logic                      i_uop_fire,
+   input  logic                      i_uop_is_store,
+   input  logic                      i_uop_is_vsm, // mask store
+   input  logic                      i_uop_is_vsx, // index store
+   input  logic                      i_uop_is_vsr, // whole register store
+   input  logic [1:0]                i_uop_index_size, // used to calculate index/data ratio
+   input  logic [1:0]                i_uop_data_size,
+   input  logic [$clog2(VLEN+1)-1:0] i_uop_vl,
+   input  logic [2:0]                i_uop_nfield, // used for whole register store
 
-                     input  logic [VLEN-1:0]           i_store_data,
-                     input  logic                      i_store_credit,
+   input  logic [VLEN-1:0]           i_store_data,
+   input  logic                      i_store_credit,
 
-                     output logic                      o_store_valid,
-                     output logic [511:0]              o_store_data,
-                     output logic                      o_stall
+   output logic                      o_store_valid,
+   output logic [511:0]              o_store_data,
+   output logic                      o_stall
 );
 
   // Store logic
@@ -31,10 +33,10 @@ module tt_store_fsm #(parameter VLEN = 256,
   logic [2:0] num_store_transactions_next;
 
   typedef enum logic [1:0] {
-  IDLE = 2'b00,
-  WAIT = 2'b01, // Wait for ID finish cracking
-  SEND = 2'b10, // Send mask packets
-  RSVD = 2'b11
+   IDLE = 2'b00,
+   WAIT = 2'b01, // Wait for ID finish cracking
+   SEND = 2'b10, // Send mask packets
+   RSVD = 2'b11
   } store_state_t;
   store_state_t store_fsm_state;
   store_state_t store_fsm_next_state;
@@ -164,4 +166,5 @@ module tt_store_fsm #(parameter VLEN = 256,
   assign o_store_data[255:  0] = store_buffer[store_buffer_rptr];
   assign o_store_data[511:256] = store_buffer[store_buffer_rptr+1];
   assign o_stall               = store_fsm_state == SEND;
+
 endmodule

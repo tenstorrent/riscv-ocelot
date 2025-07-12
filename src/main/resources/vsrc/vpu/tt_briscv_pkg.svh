@@ -1,7 +1,7 @@
 // See LICENSE.TT for license details.
 
 `ifndef TT_BRISCV_PKG_VH
- `define  TT_BRISCV_PKG_VH
+`define  TT_BRISCV_PKG_VH
 package tt_briscv_pkg;
    typedef struct packed {
       logic 	    vrf_wr_flag;
@@ -17,6 +17,16 @@ package tt_briscv_pkg;
       logic        vl_is_zero;
       logic [4:0]  sb_id;
    } lq_info_s;
+
+   typedef enum logic [2:0] {
+      INVALID = 'b0,
+      DISPATCH,
+      SENIOR,
+      KILL,
+      COMPLETE,
+      COMMITTABLE,
+      DISCARDABLE
+   } inst_state_e;
 
 localparam ACTUAL_LQ_DEPTH = 8;
 
@@ -390,5 +400,5 @@ function automatic [2:0] get_vecldst_emul;
 endfunction      
 
 endpackage
-   
+
 `endif

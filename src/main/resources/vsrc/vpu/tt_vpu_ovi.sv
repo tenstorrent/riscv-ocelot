@@ -210,8 +210,7 @@ module tt_vpu_ovi #(
   logic [63:0] read_issue_scalar_opnd;
   logic [39:0] read_issue_vcsr;
   logic        read_issue_vcsr_lmulb2;
-  logic        read_issue_committable;
-  logic        read_issue_poisoned;
+  logic [2:0]  read_issue_state;
 
   logic [VLEN*8-1:0] ocelot_instrn_commit_data;
   logic [7:0] ocelot_instrn_commit_mask;
@@ -329,8 +328,7 @@ module tt_vpu_ovi #(
     .read_issue_vcsr(read_issue_vcsr),
     .read_issue_vcsr_lmulb2(read_issue_vcsr_lmulb2),
 
-    .read_issue_committable(read_issue_committable),
-    .read_issue_poisoned(read_issue_poisoned)
+    .read_issue_state(read_issue_state)
   );
 
   assign issue_credit = read_valid && ocelot_read_req;
@@ -361,8 +359,7 @@ module tt_vpu_ovi #(
   assign csr_de0.frm     = vcsr[33:31];
 
   // ID -> LQ (ROB) signals
-  logic id_mem_committable;
-  logic id_mem_poisoned;
+  logic [2:0] id_mem_state;
 
   tt_id #(
     .LQ_DEPTH(LQ_DEPTH),
@@ -463,10 +460,8 @@ module tt_vpu_ovi #(
     .i_if_sb_id                            (read_issue_sb_id),
     .o_id_sb_id                            (id_sb_id),
 
-    .i_if_committable                      (read_issue_committable),
-    .o_id_committable                      (id_mem_committable),
-    .i_if_poisoned                         (read_issue_poisoned),
-    .o_id_poisoned                         (id_mem_poisoned)
+    .i_if_state                            (read_issue_state),
+    .o_id_state                            (id_mem_state)
   );
 
   //////////
@@ -708,8 +703,7 @@ tt_lq #(
   .o_mem_id_lqnxtid(mem_id_lqnxtid),
   .i_id_mem_lqalloc(id_mem_lqalloc),
   .i_id_mem_lqinfo(id_mem_lqinfo),
-  .i_id_mem_commitable(id_mem_committable),
-  .i_id_mem_poisoned(id_mem_poisoned),
+  .i_id_mem_state(id_mem_state),
 
   // Skid buffer signals
   .i_skidbuf_lqvld_1c(ex_mem_lqvld_1c),

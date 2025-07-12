@@ -580,7 +580,7 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   })
 
   addResource("/vsrc/vpu/briscv_defines.h")
-  addResource("/vsrc/vpu/tt_briscv_pkg.vh")
+  addResource("/vsrc/vpu/tt_briscv_pkg.svh")
   addResource("/vsrc/vpu/autogen_riscv_imabfv.v")
   addResource("/vsrc/vpu/autogen_defines.h")
   addResource("/vsrc/vpu/tt_id.sv")

@@ -1,6 +1,6 @@
 // See LICENSE.TT for license details.
 `include "briscv_defines.h"
-`include "tt_briscv_pkg.vh"
+`include "tt_briscv_pkg.svh"
 //`define BRISCV_LOG
 
 module tt_ex #(parameter INCL_VEC=0, VLEN=128, ADDRWIDTH=40, ST_DATA_WIDTH_BITS=128, LQ_DEPTH_LOG2=tt_briscv_pkg::LQ_DEPTH_LOG2)

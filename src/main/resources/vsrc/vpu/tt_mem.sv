@@ -1,5 +1,5 @@
 // See LICENSE.TT for license details.
-`include "tt_briscv_pkg.vh"
+`include "tt_briscv_pkg.svh"
 module tt_mem #( parameter 
    LQ_DEPTH=8, 
    LQ_DEPTH_LOG2=3, 

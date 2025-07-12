@@ -30,6 +30,7 @@ module tt_cam_buffer #(
    input  logic                        i_compare_tag_valid_mask  [CAM_PORTS-1:0]  ,       // masks the tag_valid bit from the compare
    output logic    [DATA_WIDTH-1:0]    o_cam_data_value          [CAM_PORTS-1:0]  ,       // data value associated with the matching tag value (only valid when the compare_read_en signal is active)
    output logic       [ENTRIES-1:0]    o_compare_tag_hit         [CAM_PORTS-1:0]  ,       // bit vector which indicates which valid entry(s) were matched by the given tag_value
+   input logic        [ENTRIES-1:0]    i_compare_tag_valid,
 
    input  logic                        i_write_tag_en      [TAG_WRITE_PORTS-1:0]  ,       // enable signal for direct write of the tag portion of a buffer entry
    input  logic  [ENTRIES_LOG2-1:0]    i_write_tag_addr    [TAG_WRITE_PORTS-1:0]  ,       // address of the buffer entry whose tag portion is to be written
@@ -39,22 +40,8 @@ module tt_cam_buffer #(
    input  logic  [ENTRIES_LOG2-1:0]    i_write_data_addr  [DATA_WRITE_PORTS-1:0]  ,       // address of the buffer entry whose data portion is to be written
    input  logic    [DATA_WIDTH-1:0]    i_write_data_value [DATA_WRITE_PORTS-1:0]  ,       // value to be written into the data portion of the buffer entry
 
-   input  logic       [ENTRIES-1:0]    i_set_tag_valid                            ,       // signal to set the tag valid bit of a buffer entry (would be expected to accompany a write of the tag to enable a later compare match)
-   input  logic       [ENTRIES-1:0]    i_clear_tag_valid                          ,       // signal to clear the tag valid bit of a buffer entry (to prevent a later compare match); Clear is dominant over set!
-   output logic       [ENTRIES-1:0]    o_broadside_tag_valid                      ,       // broadside output of the tag valid bit for all buffer entries
    output logic     [TAG_WIDTH-1:0]    o_broadside_tag_value       [ENTRIES-1:0]  ,       // broadside output of the tag values for all buffer entries
 
-   input  logic       [ENTRIES-1:0]    i_set_tag_committable                       ,      // signal to set the tag committable bit of a buffer entry
-   input  logic       [ENTRIES-1:0]    i_clear_tag_committable                     ,      // signal to clear the tag committable bit of a buffer entry (Clear is dominant over set!)
-   output logic       [ENTRIES-1:0]    o_broadside_tag_committable                 ,      // broadside output of the tag committable bit for all buffer entries
-
-   input  logic       [ENTRIES-1:0]    i_set_tag_poisoned                         ,       // signal to set the tag poisoned bit of a buffer entry
-   input  logic       [ENTRIES-1:0]    i_clear_tag_poisoned                       ,       // signal to clear the tag poisoned bit of a buffer entry (Clear is dominant over set!)
-   output logic       [ENTRIES-1:0]    o_broadside_tag_poisoned                   ,       // broadside output of the tag poisoned bit for all buffer entries
-
-   input  logic       [ENTRIES-1:0]    i_set_data_valid                           ,       // signal to set the data valid bit of a buffer entry (would be expected to accompany a write of the data to enable a later check of the data valid status)
-   input  logic       [ENTRIES-1:0]    i_clear_data_valid                         ,       // signal to clear the data valid bit of a buffer entry (might accompnay the set_tag_valid when the data portion is not yet written); Clear is dominant over set!
-   output logic       [ENTRIES-1:0]    o_broadside_data_valid                     ,       // broadside output of the data valid bit for all buffer entries
    output logic    [DATA_WIDTH-1:0]    o_broadside_data_value      [ENTRIES-1:0]          // broadside output of the data values for all buffer entries
 );
 
@@ -62,12 +49,6 @@ module tt_cam_buffer #(
 genvar e ;
 
 integer wrport, camport, i;
-
-// Signals for tag/data valid update enables
-logic                             any_tag_valid_update;           // Indicates any tag valid bit update
-logic                             any_data_valid_update;          // Indicates any data valid bit update
-logic                             any_tag_committable_update;      // Indicates any tag committable bit update
-logic                             any_tag_poisoned_update;        // Indicates any tag poisoned bit update
 
 // Write enable signals for each entry
 logic  [ENTRIES-1:0]              entry_write_tag_en;             // Tag write enable per entry
@@ -82,20 +63,10 @@ logic  [TAG_WRITE_PORTS-1:0]      entry_write_tag_mux_sel    [ENTRIES-1:0];     
 logic  [DATA_WRITE_PORTS-1:0]     entry_write_data_mux_sel   [ENTRIES-1:0];       // Data mux select per entry
 
 // Tag valid and tag value signals
-logic  [ENTRIES-1:0]              entry_tag_valid_in;              // Next state for tag valid bits
-logic  [ENTRIES-1:0]              entry_tag_valid_q;               // Registered tag valid bits
 logic  [TAG_WIDTH-1:0]            entry_tag_in        [ENTRIES-1:0]; // Tag input per entry
 logic  [TAG_WIDTH-1:0]            entry_tag_q         [ENTRIES-1:0]; // Registered tag value per entry
 
-// Tag committable and tag poisoned signals
-logic [ENTRIES-1:0]              entry_tag_committable_in;         // Next state for tag committable bits
-logic [ENTRIES-1:0]              entry_tag_committable_q;          // Registered tag committable bits
-logic [ENTRIES-1:0]              entry_tag_poisoned_in;           // Next state for tag poisoned bits
-logic [ENTRIES-1:0]              entry_tag_poisoned_q;            // Registered tag poisoned bits
-
 // Data valid and data value signals
-logic  [ENTRIES-1:0]              entry_data_valid_in;             // Next state for data valid bits
-logic  [ENTRIES-1:0]              entry_data_valid_q;              // Registered data valid bits
 logic  [DATA_WIDTH-1:0]           entry_data_in       [ENTRIES-1:0]; // Data input per entry
 logic  [DATA_WIDTH-1:0]           entry_data_q        [ENTRIES-1:0]; // Registered data value per entry
 
@@ -110,19 +81,6 @@ logic  [ENTRIES-1:0]              tag_compare_match   [CAM_PORTS-1:0];  // CAM m
 logic                             tag_compare_port_any_match [CAM_PORTS-1:0]; // Any match per CAM port
 
 
-
-// Use a common enable for all valid bit updates, since it's a smaller number of flops and may not otherwise be given a clock gater
-assign any_tag_valid_update      = (|i_set_tag_valid)      || (|i_clear_tag_valid);
-assign any_data_valid_update     = (|i_set_data_valid)     || (|i_clear_data_valid);
-assign any_tag_committable_update = (|i_set_tag_committable) || (|i_clear_tag_committable);
-assign any_tag_poisoned_update   = (|i_set_tag_poisoned)   || (|i_clear_tag_poisoned);
-
-// new values for tag and data flops
-assign entry_tag_valid_in       = (entry_tag_valid_q       | i_set_tag_valid)       & ~i_clear_tag_valid;
-assign entry_data_valid_in      = (entry_data_valid_q      | i_set_data_valid)      & ~i_clear_data_valid;
-assign entry_tag_committable_in = (entry_tag_committable_q | i_set_tag_committable) & ~i_clear_tag_committable;
-assign entry_tag_poisoned_in    = (entry_tag_poisoned_q    | i_set_tag_poisoned)    & ~i_clear_tag_poisoned;
-
 // combine all ports into a "per entry" write enable signal for use as the flop enable
 always_comb begin 
   entry_write_tag_en    = '0;
@@ -134,51 +92,6 @@ always_comb begin
      entry_write_data_en = entry_write_data_en | port_write_data_en[wrport];
   end
 end
-
-
-tt_pipe_stage #(.WIDTH (ENTRIES)) 
-u_tag_valid_flops (
-  .i_clk     ( i_clk                                 ), 
-  .i_reset_n ( i_reset_n                             ), 
-  .i_en      ( any_tag_valid_update                  ),
-  .i_d       ( entry_tag_valid_in[ENTRIES-1:0]       ), 
-  .o_q       ( entry_tag_valid_q[ENTRIES-1:0]        )
-);
-
-assign o_broadside_tag_valid[ENTRIES-1:0] = entry_tag_valid_q[ENTRIES-1:0];
-
-tt_pipe_stage #(.WIDTH (ENTRIES)) 
-u_tag_committable_flops (
-  .i_clk     ( i_clk                                 ), 
-  .i_reset_n ( i_reset_n                             ), 
-  .i_en      ( any_tag_committable_update             ),
-  .i_d       ( entry_tag_committable_in[ENTRIES-1:0]  ), 
-  .o_q       ( entry_tag_committable_q[ENTRIES-1:0]   )
-);
-
-assign o_broadside_tag_committable[ENTRIES-1:0] = entry_tag_committable_q[ENTRIES-1:0]; // committable
-
-tt_pipe_stage #(.WIDTH (ENTRIES)) 
-u_tag_poisoned_flops (
-  .i_clk     ( i_clk                                 ), 
-  .i_reset_n ( i_reset_n                             ), 
-  .i_en      ( any_tag_poisoned_update               ),
-  .i_d       ( entry_tag_poisoned_in[ENTRIES-1:0]    ), 
-  .o_q       ( entry_tag_poisoned_q[ENTRIES-1:0]     )
-);
-
-assign o_broadside_tag_poisoned[ENTRIES-1:0] = entry_tag_poisoned_q[ENTRIES-1:0]; // poisoned
-
-tt_pipe_stage #(.WIDTH (ENTRIES)) 
-u_data_valid_flops (
-  .i_clk     ( i_clk                                 ), 
-  .i_reset_n ( i_reset_n                             ), 
-  .i_en      ( any_data_valid_update                 ),
-  .i_d       ( entry_data_valid_in[ENTRIES-1:0]      ), 
-  .o_q       ( entry_data_valid_q[ENTRIES-1:0]       )
-);
-
-assign o_broadside_data_valid[ENTRIES-1:0] = entry_data_valid_q[ENTRIES-1:0]; // valid
 
 generate
     for (e=0; e<ENTRIES; e=e+1) begin 
@@ -233,10 +146,9 @@ u_tag_compare [CAM_PORTS-1:0]
     .i_compare_value_mask   (i_compare_tag_value_mask),        
     .i_compare_valid_mask   (i_compare_tag_valid_mask),            
     .i_entry_values         (entry_tag_q),
-    .i_entry_valids         (entry_tag_valid_q),
+    .i_entry_valids         (i_compare_tag_valid),
     .o_compare_match        (tag_compare_match)
 );
-
 
 //assign o_compare_hit[CAM_PORTS-1:0][ENTRIES-1:0] = tag_compare_match[CAM_PORTS-1:0][ENTRIES-1:0];
 assign o_compare_tag_hit = tag_compare_match;
@@ -370,6 +282,5 @@ u_write_data_mux [ENTRIES-1:0]
     .i_select          (entry_write_data_mux_sel),    
     .o_output          (entry_data_in)
 );
-
 
 endmodule

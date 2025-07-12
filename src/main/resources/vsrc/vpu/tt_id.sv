@@ -1,7 +1,9 @@
 // See LICENSE.TT for license details.
 `include "briscv_defines.h"
-`include "tt_briscv_pkg.vh"
+`include "tt_briscv_pkg.svh"
 `include "autogen_defines.h"
+
+import tt_briscv_pkg::*;
 
 module tt_id #(
    parameter 
@@ -112,7 +114,10 @@ module tt_id #(
    input logic                              i_if_committable,
    output logic                             o_id_committable,
    input logic                              i_if_poisoned,
-   output logic                             o_id_poisoned
+   output logic                             o_id_poisoned,
+
+   input tt_briscv_pkg::inst_state_e        i_if_state,
+   output tt_briscv_pkg::inst_state_e       o_id_state
 );
 
 wire i_ext, m_ext, a_ext, b_ext;
@@ -168,8 +173,7 @@ wire units_rtr = (i_ex_rtr & i_vex_id_rtr);
 // EX RTL will be low for div and vec ldst. See if this can be optimized
 logic [31:0] instrn_id_replay;
 logic [4:0]  id_sb_id_replay;
-logic        id_committable_replay;
-logic        id_poisoned_replay;
+tt_briscv_pkg::inst_state_e id_state_replay;
 logic [31:0] id_ex_pc_replay;
 tt_briscv_pkg::csr_t id_csr_replay;
 logic [$clog2(VLEN):0] id_replay_cnt_start;
@@ -197,18 +201,26 @@ reg o_id_type_f; // Fence
 
 logic no_lq_load_pending;
 
-logic set_inst_committable, set_inst_poisoned;
+// sb_id and state for ID stage
+always_comb begin
+   // base case?
+   o_id_sb_id = id_replay ? id_sb_id_replay : i_if_sb_id;
+   o_id_state = id_replay ? id_state_replay : i_if_state;
 
-// Set committable and poisoned flags (either from direct dispatch or from request)
-assign set_inst_committable = ((dispatch_next_senior && (dispatch_sb_id == o_id_sb_id)));
-assign set_inst_poisoned    = ((dispatch_kill        && (dispatch_sb_id == o_id_sb_id)));
+   // overwrite state for dispatch signal
+   if ((o_id_sb_id == dispatch_sb_id) && (o_id_state == DISPATCH)) begin
+      if (dispatch_next_senior) begin
+         o_id_state = SENIOR;
+      end
+      else if (dispatch_kill) begin
+         o_id_state = KILL;
+      end
+   end
+end
 
 `define HIGH_PERF_FETCH
 `ifdef HIGH_PERF_FETCH
   assign instrn_id        =  id_replay ? instrn_id_replay      : i_if_instrn;
-  assign o_id_sb_id       =  id_replay ? id_sb_id_replay       : i_if_sb_id;
-  assign o_id_committable = (id_replay ? id_committable_replay : i_if_committable) || set_inst_committable;
-  assign o_id_poisoned    = (id_replay ? id_poisoned_replay    : i_if_poisoned)    || set_inst_poisoned;
   assign o_id_ex_pc       =  id_replay ? id_ex_pc_replay       : i_if_pc;
   assign o_csr            =  id_replay ? id_csr_replay         : i_csr;
  
@@ -347,8 +359,7 @@ if (INCL_VEC == 1) begin
    if(~i_reset_n) begin
       instrn_id_replay <= '0;
       id_sb_id_replay <= '0;
-      id_committable_replay <= '0;
-      id_poisoned_replay <= '0;
+      id_state_replay <= '0;
       id_ex_pc_replay <= '0;
       id_csr_replay <= '0;
       id_replay_type <= `BRISCV_REPLAY_TYPE_NONE;
@@ -361,8 +372,7 @@ if (INCL_VEC == 1) begin
         // instrn_id_replay <= instrn_id_replay;
         // id_ex_pc_replay <= id_ex_pc_replay;
         // id_replay_type <= id_replay_type;
-        id_committable_replay <= o_id_committable; // here
-        id_poisoned_replay <= o_id_poisoned;
+        id_state_replay <= o_id_state;
         vec_autogen_replay <= vec_autogen_incr;
         vecldst_autogen_replay <= vecldst_autogen_incr;
      end
@@ -370,8 +380,7 @@ if (INCL_VEC == 1) begin
    else if (valid_vec_instrn) begin				// Start replay mode
       instrn_id_replay <= instrn_id;
       id_sb_id_replay <= o_id_sb_id;
-      id_committable_replay <= o_id_committable;
-      id_poisoned_replay <= o_id_poisoned;
+      id_state_replay <= o_id_state;
       id_ex_pc_replay <= o_id_ex_pc;
       id_csr_replay <= o_csr;
       vec_autogen_replay <= vec_autogen_incr;

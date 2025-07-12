@@ -1,5 +1,7 @@
 // See LICENSE.TT for license details.
-`include "tt_briscv_pkg.vh"
+`include "tt_briscv_pkg.svh"
+
+import tt_briscv_pkg::*;
 
 module tt_fifo #(parameter DEPTH = 4)
 (
@@ -35,8 +37,7 @@ module tt_fifo #(parameter DEPTH = 4)
   output logic [63:0] read_issue_scalar_opnd,
   output logic [39:0] read_issue_vcsr,
   output logic        read_issue_vcsr_lmulb2,
-  output logic        read_issue_committable,
-  output logic        read_issue_poisoned
+  output tt_briscv_pkg::inst_state_e read_issue_state
 );
 
   // === internal signals and definitions ===
@@ -49,9 +50,7 @@ module tt_fifo #(parameter DEPTH = 4)
     logic        issue_vcsr_lmulb2;
     logic        pending_mem_sync;
     logic        ldb_allocated;
-    logic        valid;
-    logic        committable;
-    logic        poisoned;
+    tt_briscv_pkg::inst_state_e state;
   } fifo_entry;
 
   fifo_entry fifo [DEPTH-1:0];
@@ -65,19 +64,10 @@ module tt_fifo #(parameter DEPTH = 4)
   logic queue_full;
   logic queue_empty;
 
-  logic [DEPTH-1:0] dispatch_sb_id_mask;
-
   // === logic ===
 
   assign queue_full  = (wr_ptr[PTR_SIZE] != rd_ptr[PTR_SIZE]) && (wr_ptr[PTR_SIZE-1:0] == rd_ptr[PTR_SIZE-1:0]);
   assign queue_empty = (wr_ptr[PTR_SIZE] == rd_ptr[PTR_SIZE]) && (wr_ptr[PTR_SIZE-1:0] == rd_ptr[PTR_SIZE-1:0]);
-
-  // CAM to find sb_id
-  generate
-    for (genvar i = 0; i < DEPTH; i += 1) begin
-      assign dispatch_sb_id_mask[i] = (fifo[i].valid && fifo[i].issue_sb_id == dispatch_sb_id);
-    end
-  endgenerate
 
   // fifo update
   always_ff @(posedge clk) begin
@@ -91,9 +81,7 @@ module tt_fifo #(parameter DEPTH = 4)
         fifo[i].issue_vcsr_lmulb2 <= '0;
         fifo[i].pending_mem_sync  <= '0;
         fifo[i].ldb_allocated     <= '0;
-        fifo[i].valid             <= '0;
-        fifo[i].committable       <= '0;
-        fifo[i].poisoned          <= '0;
+        fifo[i].state             <= INVALID;
       end
     end
     
@@ -102,10 +90,12 @@ module tt_fifo #(parameter DEPTH = 4)
 
       // update committable/poison status
       for (int i = 0; i < DEPTH; i += 1) begin
-        if (dispatch_next_senior && dispatch_sb_id_mask[i])
-          fifo[i].committable <= 1'b1;
-        if (dispatch_kill && dispatch_sb_id_mask[i])
-          fifo[i].poisoned <= 1'b1;
+        if ((fifo[i].state == DISPATCH) && (fifo[i].issue_sb_id == dispatch_sb_id)) begin
+          if (dispatch_next_senior)
+            fifo[i].state <= SENIOR;
+          if (dispatch_kill)
+            fifo[i].state <= KILL;
+        end
       end
 
       // write new entry
@@ -115,18 +105,15 @@ module tt_fifo #(parameter DEPTH = 4)
         fifo[wr_ptr[PTR_SIZE-1:0]].issue_scalar_opnd <= issue_scalar_opnd;
         fifo[wr_ptr[PTR_SIZE-1:0]].issue_vcsr        <= issue_vcsr;
         fifo[wr_ptr[PTR_SIZE-1:0]].issue_vcsr_lmulb2 <= issue_vcsr_lmulb2;
-        fifo[wr_ptr[PTR_SIZE-1:0]].valid             <= 1;
         fifo[wr_ptr[PTR_SIZE-1:0]].pending_mem_sync  <= issue_inst[6:0] inside {7'h7, 7'h27};
         fifo[wr_ptr[PTR_SIZE-1:0]].ldb_allocated     <= 1'b0;
-        fifo[wr_ptr[PTR_SIZE-1:0]].committable       <= dispatch_next_senior && (issue_sb_id == dispatch_sb_id); // same cycle senior logic
-        fifo[wr_ptr[PTR_SIZE-1:0]].poisoned          <= dispatch_kill; // same cycle kill logic
+        fifo[wr_ptr[PTR_SIZE-1:0]].state             <= ((issue_sb_id == dispatch_sb_id) && dispatch_next_senior) ? SENIOR :
+                                                        ((issue_sb_id == dispatch_sb_id) &&        dispatch_kill) ? KILL   : DISPATCH;
       end
 
       // invalidate read entry
       if (read_req && read_valid) begin
-        fifo[rd_ptr[PTR_SIZE-1:0]].valid       <= 0;
-        fifo[rd_ptr[PTR_SIZE-1:0]].committable <= 1'b0; // override and clear committable bit
-        fifo[rd_ptr[PTR_SIZE-1:0]].poisoned    <= 1'b0; // override and clear poisoned bit
+        fifo[rd_ptr[PTR_SIZE-1:0]].state <= INVALID;
       end
 
       // memop update
@@ -155,7 +142,7 @@ module tt_fifo #(parameter DEPTH = 4)
         rd_ptr <= rd_ptr + 1;
       end
       if ((memop_sync_start) ||
-          (ls_candidate.valid && !ls_candidate.pending_mem_sync) &&
+          ((ls_candidate.state != INVALID) && !ls_candidate.pending_mem_sync) &&
           (ls_ptr != wr_ptr))
       begin
         ls_ptr <= ls_ptr + 1;
@@ -170,10 +157,7 @@ module tt_fifo #(parameter DEPTH = 4)
     read_issue_scalar_opnd =  fifo[rd_ptr[PTR_SIZE-1:0]].issue_scalar_opnd;
     read_issue_vcsr        =  fifo[rd_ptr[PTR_SIZE-1:0]].issue_vcsr;
     read_issue_vcsr_lmulb2 =  fifo[rd_ptr[PTR_SIZE-1:0]].issue_vcsr_lmulb2;
-    read_issue_committable = (fifo[rd_ptr[PTR_SIZE-1:0]].committable || 
-                               (dispatch_sb_id_mask[rd_ptr[PTR_SIZE-1:0]] && dispatch_next_senior)); // forward committable bit
-    read_issue_poisoned    = (fifo[rd_ptr[PTR_SIZE-1:0]].poisoned || 
-                               (dispatch_sb_id_mask[rd_ptr[PTR_SIZE-1:0]] && dispatch_kill)); // formward poisoned bit
+    read_issue_state       =  fifo[rd_ptr[PTR_SIZE-1:0]].state;
 
     // // We don't speculatively issue vector instructions to Ocelot
     // // as it does not support flushing.
@@ -183,7 +167,11 @@ module tt_fifo #(parameter DEPTH = 4)
     //   read_valid             = 1'b0;
 
     // Enabling speculative read:
-    read_valid = (!queue_empty && fifo[rd_ptr[PTR_SIZE-1:0]].valid && !fifo[rd_ptr[PTR_SIZE-1:0]].pending_mem_sync);
+    read_valid = (
+      !queue_empty &&
+      (fifo[rd_ptr[PTR_SIZE-1:0]].state != INVALID) &&
+      !fifo[rd_ptr[PTR_SIZE-1:0]].pending_mem_sync
+    );
   end
 
   // immediate_dispatch: assert property(@(posedge clk) disable iff (!reset_n)
@@ -196,16 +184,16 @@ module tt_fifo #(parameter DEPTH = 4)
 
   assign ls_candidate = fifo[ls_ptr[PTR_SIZE-1:0]];
 
-  assign memop_sync_start = ls_candidate.valid &&
-                            ls_candidate.pending_mem_sync &&
-                          ( ls_candidate.issue_inst[6:0] == 7'h27 ||
-                           (ls_candidate.issue_inst[6:0] == 7'h7 && ls_candidate.ldb_allocated));
+  assign memop_sync_start = (ls_candidate.state != INVALID) &&
+                             ls_candidate.pending_mem_sync &&
+                            (ls_candidate.issue_inst[6:0] == 7'h27 ||
+                            (ls_candidate.issue_inst[6:0] == 7'h7 && ls_candidate.ldb_allocated));
   assign memop_sync_start_sb_id = ls_candidate.issue_sb_id;
 
   // allocate Load Data Buffer entry(s) for load
-  assign ldb_alloc_valid = ls_candidate.valid &&
-                           ls_candidate.issue_inst[6:0] == 7'h7 &&
-                          !ls_candidate.ldb_allocated;
+  assign ldb_alloc_valid = (ls_candidate.state != INVALID) &&
+                           (ls_candidate.issue_inst[6:0] == 7'h7) &&
+                           !ls_candidate.ldb_allocated;
 
   // Allocation size calculation
   logic [1:0] ldb_alloc_mop;

@@ -19,7 +19,7 @@ autogen_riscv_imabfv.v \
 lrm_assertions.sv \
 lrm_model.sv \
 tt_ascii_instrn_decode.sv \
-tt_briscv_pkg.vh \
+tt_briscv_pkg.svh \
 tt_cam_buffer.sv \
 tt_compare.sv \
 tt_decoded_mux.sv \

@@ -1,5 +1,8 @@
 // See LICENSE.TT for license details.
-`include "tt_briscv_pkg.vh"
+`include "tt_briscv_pkg.svh"
+
+import tt_briscv_pkg::*;
+
 module tt_lq #(
    parameter 
       LQ_DEPTH=8, 
@@ -22,6 +25,7 @@ module tt_lq #(
    output logic [LQ_DEPTH_LOG2-1:0]      o_mem_id_lqnxtid,
    input  logic                          i_id_mem_lqalloc,
    input  tt_briscv_pkg::lq_info_s       i_id_mem_lqinfo,
+   input  tt_briscv_pkg::inst_state_e    i_id_mem_state,
    input  logic                          i_id_mem_commitable,
    input  logic                          i_id_mem_poisoned,
  
@@ -132,7 +136,9 @@ logic                   ptrs_equal;                        // Indicates if write
 logic [LQ_DEPTH_LOG2:0] wr_ptr, rd_ptr;                    // Write and read pointers (with extra bit for full/empty detection)
 logic [LQ_DEPTH-1:0]    lq_set_pending, lq_clear_pending;  // Pending set/clear operations for each entry
 
+// sb_id CAM masks
 logic [LQ_DEPTH-1:0] dispatch_sb_id_mask; // Mask for entries with the same SB ID as the dispatch SB ID
+logic dispatch_sb_id_rd;                  // sb_id being read from lq is the same as dispatch_sb_id
 
 // Bypass and forwarding logic
 logic [2:0]                    lq_bypass_en;               // Bypass enable for each data return port
@@ -144,23 +150,10 @@ logic [LD_DATA_WIDTH_BITS-1:0] lq_fwd_data;                // Data to forward to
 logic lq_wr_en, lq_rd_en;                                  // Load queue write/read enable
 
 // Tag valid logic
-logic [LQ_DEPTH-1:0] lq_set_tag_valid;                     // Set tag valid for each entry
-logic [LQ_DEPTH-1:0] lq_clear_tag_valid;                   // Clear tag valid for each entry
-logic [LQ_DEPTH-1:0] lq_broadside_tag_valid;               // Tag valid status for all entries
 logic [LQ_TAG_WIDTH-1:0] lq_broadside_tag_value [LQ_DEPTH-1:0]; // Tag values for all entries
 
-// Tag committable/poisoned logic
-logic [LQ_DEPTH-1:0] lq_set_tag_committable;               // Set tag committable for each entry
-logic [LQ_DEPTH-1:0] lq_clear_tag_committable;             // Clear tag committable for each entry
-logic [LQ_DEPTH-1:0] lq_broadside_tag_committable;         // Tag committable status for all entries
-logic [LQ_DEPTH-1:0] lq_set_tag_poisoned;                  // Set tag poisoned for each entry
-logic [LQ_DEPTH-1:0] lq_clear_tag_poisoned;                // Clear tag poisoned for each entry
-logic [LQ_DEPTH-1:0] lq_broadside_tag_poisoned;            // Tag poisoned status for all entries
-
 // Data valid logic
-logic [LQ_DEPTH-1:0] lq_set_data_valid;                    // Set data valid for each entry
-logic [LQ_DEPTH-1:0] lq_clear_data_valid;                  // Clear data valid for each entry
-logic [LQ_DEPTH-1:0] lq_broadside_data_valid;              // Data valid status for all entries
+logic [LQ_DEPTH-1:0]      lq_set_data_valid;
 logic [LQ_DATA_WIDTH-1:0] lq_broadside_data_value [LQ_DEPTH-1:0]; // Data values for all entries
 
 // Vector load tracking
@@ -189,6 +182,9 @@ logic [LQ_TAG_WIDTH-1:0]   lq_compare_tag_value       [LQ_CAM_PORTS-1:0];       
 logic [LQ_TAG_WIDTH-1:0]   lq_compare_tag_value_mask  [LQ_CAM_PORTS-1:0];       // Tag value mask per port
 logic                      lq_compare_tag_valid_mask  [LQ_CAM_PORTS-1:0];       // Tag valid mask per port
 
+// state vector
+tt_briscv_pkg::inst_state_e [LQ_DEPTH-1:0] lq_state_vec;
+
 // Vector load data write functions
 logic [LD_DATA_WIDTH_BITS-1:0] lq_fifo_vecld_write_datafn_0, lq_fifo_vecld_write_datafn_1, lq_fifo_vecld_write_datafn_2; // Vector load write data (function output) per port
 
@@ -200,10 +196,18 @@ logic         ret_vecld_vld_0, ret_vecld_vld_1, ret_vecld_vld_2; // Vector load 
    
 // Broadside data
 for (genvar i=0; i<LQ_DEPTH; i++) begin
-   assign o_lq_broadside_valid[i]       = lq_broadside_tag_valid[i];
-   assign o_lq_broadside_data_valid[i]  = lq_broadside_data_valid[i];
-   assign o_lq_broadside_committable[i] = lq_broadside_tag_committable[i];
-   assign o_lq_broadside_poisoned[i]    = lq_broadside_tag_poisoned[i];
+   assign o_lq_broadside_valid[i]       = (lq_state_vec[i] != INVALID);
+
+   assign o_lq_broadside_data_valid[i]  = (lq_state_vec[i] == COMPLETE) ||
+                                          (lq_state_vec[i] == COMMITTABLE) ||
+                                          (lq_state_vec[i] == DISCARDABLE);
+
+   assign o_lq_broadside_committable[i] = (lq_state_vec[i] == SENIOR) ||
+                                          (lq_state_vec[i] == COMMITTABLE);
+                                          
+   assign o_lq_broadside_poisoned[i]    = (lq_state_vec[i] == KILL) ||
+                                          (lq_state_vec[i] == DISCARDABLE);
+
    assign o_lq_broadside_info[i]        = tt_briscv_pkg::lq_info_s'(lq_broadside_tag_value[i]);
    assign o_lq_broadside_data[i]        = lq_broadside_data_value[i][31:0];
 end   
@@ -239,64 +243,155 @@ for (genvar i=0; i<LQ_CAM_PORTS; i++) begin
    assign lq_compare_tag_valid_mask[i] = '0;
 end
 
-// TODO: change this to the correct logic (approves everything for now)
+
 // temp signals
 tt_briscv_pkg::lq_info_s tag_info;
 logic [4:0] sb_id;
-logic sb_id_valid;
-
-// logic [LQ_DEPTH-1:0] lq_set_data_valid_prev;
-// always_ff @(posedge i_clk) begin
-//    if (~i_reset_n) begin
-//       lq_set_data_valid_prev <= '0;
-//    end
-//    else begin
-//       lq_set_data_valid_prev <= lq_set_data_valid;
-//    end
-// end
 
 always_comb begin
+   tag_info = tt_briscv_pkg::lq_info_s'(i_id_mem_lqinfo);
+   sb_id = tag_info.sb_id;
+   
+   dispatch_sb_id_rd = (sb_id == dispatch_sb_id);
+
    for (int i = 0; i < LQ_DEPTH; i += 1) begin
       tag_info = tt_briscv_pkg::lq_info_s'(lq_broadside_tag_value[i]);
       sb_id = tag_info.sb_id;
-      sb_id_valid = lq_broadside_tag_valid[i];
-      dispatch_sb_id_mask[i] = (sb_id == dispatch_sb_id) && sb_id_valid;
+
+      dispatch_sb_id_mask[i] = (sb_id == dispatch_sb_id);
+
+      lq_set_data_valid[i] = ((lq_fifo_write_data_en[0] & (lq_fifo_write_data_addr[0] == i))) |
+                             ((lq_fifo_write_data_en[1] & (lq_fifo_write_data_addr[1] == i))) |
+                             ((lq_fifo_write_data_en[2] & (lq_fifo_write_data_addr[2] == i))) | 
+                             ((lq_fifo_write_data_en[3] & (lq_fifo_write_data_addr[3] == i))) |
+      // Don't set the valid for loads ((lq_fifo_write_data_en[4] & (lq_fifo_write_data_addr[4] == i))) |
+                             ((lq_fifo_write_data_en[5] & (lq_fifo_write_data_addr[5] == i))); 
    end
 end
 
-always_comb begin
-   lq_set_tag_committable = '0;
-   lq_set_tag_poisoned    = '0;
-
-   // do current dispatch status update
-   if (dispatch_next_senior)
-      lq_set_tag_committable = dispatch_sb_id_mask;
-   if (dispatch_kill)
-      lq_set_tag_poisoned = dispatch_sb_id_mask;
-
-   // forward the ID instruction status too
-   if (lq_wr_en && i_id_mem_commitable)
-      lq_set_tag_committable[wr_ptr[LQ_DEPTH_LOG2-1:0]] = 1'b1;
-   if (lq_wr_en && i_id_mem_poisoned)
-      lq_set_tag_poisoned[wr_ptr[LQ_DEPTH_LOG2-1:0]] = 1'b1;
-end
-
 // TODO: change tag/data valid logic into tag/data/approve/reject FSM logic
-for (genvar i = 0; i < LQ_DEPTH; i += 1) begin
-   assign lq_set_tag_valid[i]    = lq_wr_en & (wr_ptr[LQ_DEPTH_LOG2-1:0] == i);
-   assign lq_clear_tag_valid[i]  = lq_rd_en & (rd_ptr[LQ_DEPTH_LOG2-1:0] == i);
+always_ff @(posedge i_clk) begin
 
-   assign lq_clear_tag_committable[i] = lq_clear_tag_valid[i];
-   assign lq_clear_tag_poisoned[i]    = lq_clear_tag_valid[i];
-   assign lq_clear_data_valid[i]      = lq_clear_tag_valid[i];
+   if (~i_reset_n) begin
+      for (int i = 0; i < LQ_DEPTH; i += 1) begin
+         lq_state_vec[i] <= INVALID;
+      end
+   end
 
-   assign lq_set_data_valid[i] = ((lq_fifo_write_data_en[0] & (lq_fifo_write_data_addr[0] == i))) |
-                                 ((lq_fifo_write_data_en[1] & (lq_fifo_write_data_addr[1] == i))) |
-                                 ((lq_fifo_write_data_en[2] & (lq_fifo_write_data_addr[2] == i))) | 
-                                 ((lq_fifo_write_data_en[3] & (lq_fifo_write_data_addr[3] == i))) |
-// Don't set the valid for loads ((lq_fifo_write_data_en[4] & (lq_fifo_write_data_addr[4] == i))) |
-                                 ((lq_fifo_write_data_en[5] & (lq_fifo_write_data_addr[5] == i))); 
-end
+   else begin
+      for (int i = 0; i < LQ_DEPTH; i += 1) begin
+         case (lq_state_vec[i])
+
+            INVALID: begin
+               if (lq_wr_en && (wr_ptr[LQ_DEPTH_LOG2-1:0] == i)) begin
+                  if ((i_id_mem_state == DISPATCH)) begin
+                     if (dispatch_sb_id_rd && dispatch_next_senior) begin
+                        if (lq_set_data_valid[i]) begin
+                           lq_state_vec[i] <= COMMITTABLE;
+                        end
+                        else begin
+                           lq_state_vec[i] <= SENIOR;
+                        end
+                     end
+                     else if (dispatch_sb_id_rd && dispatch_kill) begin
+                        if (lq_set_data_valid[i]) begin
+                           lq_state_vec[i] <= DISCARDABLE;
+                        end
+                        else begin
+                           lq_state_vec[i] <= KILL;
+                        end
+                     end
+                     else begin
+                        if (lq_set_data_valid[i]) begin
+                           lq_state_vec[i] <= COMPLETE;
+                        end
+                        else begin
+                           lq_state_vec[i] <= DISPATCH;
+                        end
+                     end
+                  end
+                  else if (i_id_mem_state == SENIOR) begin
+                     if (lq_set_data_valid[i]) begin
+                        lq_state_vec[i] <= COMMITTABLE;
+                     end
+                     else begin
+                        lq_state_vec[i] <= SENIOR;
+                     end
+                  end
+                  else if (i_id_mem_state == KILL) begin
+                     if (lq_set_data_valid[i]) begin
+                        lq_state_vec[i] <= DISCARDABLE;
+                     end
+                     else begin
+                        lq_state_vec[i] <= KILL;
+                     end
+                  end
+               end
+            end
+
+            DISPATCH: begin
+               if (dispatch_sb_id_mask[i] && dispatch_next_senior) begin
+                  if (lq_set_data_valid[i]) begin
+                     lq_state_vec[i] <= COMMITTABLE;
+                  end
+                  else begin
+                     lq_state_vec[i] <= SENIOR;
+                  end
+               end
+               else if (dispatch_sb_id_mask[i] && dispatch_kill) begin
+                  if (lq_set_data_valid[i]) begin
+                     lq_state_vec[i] <= DISCARDABLE;
+                  end
+                  else begin
+                     lq_state_vec[i] <= KILL;
+                  end
+               end
+               else begin
+                  if (lq_set_data_valid[i]) begin
+                     lq_state_vec[i] <= COMPLETE;
+                  end
+               end
+            end
+
+            SENIOR: begin
+               if (lq_set_data_valid[i]) begin
+                  lq_state_vec[i] <= COMMITTABLE;
+               end
+            end
+
+            KILL: begin
+               if (lq_set_data_valid[i]) begin
+                  lq_state_vec[i] <= DISCARDABLE;
+               end
+            end
+
+            COMPLETE: begin
+               if (dispatch_sb_id_mask[i] && dispatch_next_senior) begin
+                  lq_state_vec[i] <= COMMITTABLE;
+               end
+               else if (dispatch_sb_id_mask[i] && dispatch_kill) begin
+                  lq_state_vec[i] <= DISCARDABLE;
+               end
+            end
+
+            COMMITTABLE: begin
+               if (lq_rd_en & (rd_ptr[LQ_DEPTH_LOG2-1:0] == i)) begin
+                  lq_state_vec[i] <= INVALID;
+               end
+            end
+
+            DISCARDABLE: begin
+               if (lq_rd_en & (rd_ptr[LQ_DEPTH_LOG2-1:0] == i)) begin
+                  lq_state_vec[i] <= INVALID;
+               end
+            end
+
+         endcase // case
+      end // for loop
+   end // else
+
+end // always_ff
+
    
 // Bypass the read return if it's to the top entry
 assign lq_bypass_en[2:0] = {
@@ -436,7 +531,7 @@ if (INCL_VEC == 1) begin: GenInclVec
                                       (i_data_vld_1 & ~i_data_vld_cancel_1 & o_lq_broadside_info[i].vec_load & (i_data_resp_id_1[LQ_DEPTH_LOG2-1:0] == i)) -
                                       (i_data_vld_2 & ~i_data_vld_cancel_2 & o_lq_broadside_info[i].vec_load & (i_data_resp_id_2[LQ_DEPTH_LOG2-1:0] == i));
    
-      assign lq_vecld_last_idx_sent_in[i] = ~lq_clear_tag_valid[i] & (lq_vecld_last_idx_sent[i] | ((i_vecld_elem_sent & i_vecld_idx_last) & (i_vecld_id == i)));
+      assign lq_vecld_last_idx_sent_in[i] = ~(lq_rd_en & (rd_ptr[LQ_DEPTH_LOG2-1:0] == i)) & (lq_vecld_last_idx_sent[i] | ((i_vecld_elem_sent & i_vecld_idx_last) & (i_vecld_id == i)));
    
       tt_pipe_stage #(.WIDTH(6)) refcount_ff (
          .i_clk    (i_clk), 
@@ -535,6 +630,7 @@ tt_cam_buffer #(
   .i_compare_tag_valid_mask      (lq_compare_tag_valid_mask), // masks the tag_valid bit from the compare  
   .o_cam_data_value              (                        ),  // data value associated with the matching tag value (only valid when the compare_read_en signal is active)  
   .o_compare_tag_hit             (                        ),  // bit vector which indicates which valid entry(s) were matched by the given tag_value  
+  .i_compare_tag_valid           (o_lq_broadside_valid    ),  // tag valid for all entries
 
   .i_write_tag_en                (lq_fifo_write_tag_en    ),  // enable signal for direct write of the tag portion of a buffer entry  
   .i_write_tag_addr              (lq_fifo_write_tag_addr  ),  // address of the buffer entry whose tag portion is to be written  
@@ -544,22 +640,8 @@ tt_cam_buffer #(
   .i_write_data_addr             (lq_fifo_write_data_addr ),  // address of the buffer entry whose data portion is to be written  
   .i_write_data_value            (lq_fifo_write_data_value),  // value to be written into the data portion of the buffer entry 
 
-  .i_set_tag_valid               (lq_set_tag_valid        ),  // signal to set the tag valid bit of a buffer entry (would be expected to accompany a write of the tag to enable a later compare match)  
-  .i_clear_tag_valid             (lq_clear_tag_valid      ),  // signal to clear the tag valid bit of a buffer entry (to prevent a later compare match); Clear is dominant over set!  
-  .o_broadside_tag_valid         (lq_broadside_tag_valid  ),  // broadside output of the tag valid bit for all buffer entries 
   .o_broadside_tag_value         (lq_broadside_tag_value  ),  // broadside output of the tag values for all buffer entries 
 
-   .i_set_tag_committable        (lq_set_tag_committable  ),  // signal to set the tag committable bit of a buffer entry
-   .i_clear_tag_committable      (lq_clear_tag_committable),  // signal to clear the tag committable bit of a buffer entry; Clear is dominant over set!
-   .o_broadside_tag_committable  (lq_broadside_tag_committable), // broadside output of the tag committable bit for all buffer entries
-
-   .i_set_tag_poisoned           (lq_set_tag_poisoned     ),  // signal to set the tag poisoned bit of a buffer entry
-   .i_clear_tag_poisoned         (lq_clear_tag_poisoned   ),  // signal to clear the tag poisoned bit of a buffer entry; Clear is dominant over set!
-   .o_broadside_tag_poisoned     (lq_broadside_tag_poisoned), // broadside output of the tag poisoned bit for all buffer entries
-
-  .i_set_data_valid              (lq_set_data_valid       ),  // signal to set the data valid bit of a buffer entry (would be expected to accompany a write of the data to enable a later check of the data valid status)  
-  .i_clear_data_valid            (lq_clear_data_valid     ),  // signal to clear the data valid bit of a buffer entry (might accompnay the set_tag_valid when the data portion is not yet written); Clear is dominant over set!  
-  .o_broadside_data_valid        (lq_broadside_data_valid ),  // broadside output of the data valid bit for all buffer entries
   .o_broadside_data_value        (lq_broadside_data_value )   // broadside output of the data values for all buffer entries
 );
    
@@ -596,7 +678,7 @@ endfunction
 `ifdef SIM
    // Can't set the data valid if tag valid is not high
    for (genvar i=0; i<LQ_DATA_WR_PORTS; i++) begin
-      `ASSERT_COND_CLK(lq_fifo_write_data_en[i], lq_broadside_tag_valid[lq_fifo_write_data_addr[i]], "Setting LQ Data valid for port %0d but Tag valid is low", i);
+      `ASSERT_COND_CLK(lq_fifo_write_data_en[i], o_lq_broadside_valid[lq_fifo_write_data_addr[i]], "Setting LQ Data valid for port %0d but Tag valid is low", i);
    end
 `endif
 
