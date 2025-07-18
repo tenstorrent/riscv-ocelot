@@ -1,4 +1,4 @@
-// iSee LICENSE.TT for license details.
+// See LICENSE.TT for license details.
 package boom.exu
 
 import chisel3._
@@ -987,22 +987,25 @@ class VIdGen(val M: Int, val N: Int)(implicit p: Parameters) extends Module {
 
 }  
 
-
+//val vdb = Module (new VDB(oviWidth, lsuDmemWidth, vpuVlen, vdbDepth))
 class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Parameters) extends Module {
-  require(isPow2(M), "M must be a power of 2")
-  require(isPow2(N), "N must be a power of 2")
+  require(isPow2(M), "M must be a power of 2") // oviWidth
+  require(isPow2(N), "N must be a power of 2") // lsuDmemWidth
   require(isPow2(Vlen), "Vlen must be a power of 2")
   require(M >= N, "M must be greater than or equal to N")
   require(M % 8 == 0, "M must be a multiple of 8")
   require(N % 8 == 0, "N must be a multiple of 8")
   val S = log2Ceil(N / 8 + 1)
   val I = log2Ceil(M / 8 + 1)
-  val maxIndex = (M / 8)
+  val maxIndex = (M / 8) // how many bytes per entry
 
   val io = IO(new Bundle {
+// VLSIQ
     val configValid = Input(Bool())
+// from VPU through OVI
     val writeValid = Input(Bool())
     val writeData = Input(UInt(M.W))
+// AGEN to VDB
     val pop = Input(Bool())
     val last = Input(Bool())
 //    val vlmul = Input(UInt(3.W))
@@ -1013,29 +1016,35 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
     val packId = Input (UInt(I.W))
     val packSkipVDB = Input (Bool())
   })
-
+// each store data from OVI occupies an entry (512 bits according to OVI)
   val buffer = RegInit(VecInit(Seq.fill(Depth)(0.U(M.W))))
+// readptr and writeptr are different entries in the VDB
   val readPtr = RegInit(0.U(log2Ceil(Depth).W))
   val writePtr = RegInit(0.U(log2Ceil(Depth).W))
+// currentIndex point at parts of the entry pointed by the readptr
   val currentIndex = Reg(UInt(I.W))
-
+// new Vector Store Instruction
   when(io.configValid) {
    currentIndex := 0.U
   }
 
   val currentEntry = buffer(readPtr)
-
+// new data enqueued by OVI
   when(io.writeValid) {
     buffer(writePtr) := io.writeData
     writePtr := WrapInc(writePtr, Depth)
   }
-
+// making it easier for slicing, the reason for (dmemwidth - 8) of 0 is because smallest data packet is 8 bits
  val paddedEntry = Cat(0.U((N-8).W), currentEntry)
+// making a 2D array, where each slice is lsuWidth bits, a sliding window 8 bits granularity
  val slices = VecInit(Seq.tabulate(M/8)(i => paddedEntry(i*8+N-1, i*8)))
+ // make sure outData is always lsuMemWidth
  io.outData := slices(currentIndex) 
- 
+// release is related to the MemStoreCredit, this is 1 when we move on to the next entry  
   io.release := false.B 
+// pop means new LSU entry
   when (io.pop) {
+// sPacker doing somethiing, VDB is passive, not making decisions
     when (io.packOveride) {
         when (io.packSkipVDB || io.last) {
           readPtr := WrapInc(readPtr, Depth)
@@ -1044,17 +1053,22 @@ class VDB(val M: Int, val N: Int, val Vlen: Int, val Depth: Int)(implicit p: Par
         }.otherwise {
           currentIndex := currentIndex + io.packId
         }
+// no packing
     }.otherwise {
     when (io.last) {
+// it's the last one, but maybe something is left in the current entry, force readPtr to move on, current Index forced reset
+// force return credit
+// One entry is exclusive to 1 instruction.
       readPtr := WrapInc(readPtr, Depth)
       currentIndex := 0.U
       io.release := true.B 
     } .otherwise {
+// currentIndex is Byte granularity, it's sometimes smaller than SEW (sliceSize), sliceSize = SEW/8
      when (currentIndex + io.sliceSize === maxIndex.U) {
           currentIndex := 0.U
           readPtr := WrapInc(readPtr, Depth)
           io.release := true.B 
-        }.otherwise {
+        }.otherwise { 
           currentIndex := currentIndex + io.sliceSize
         }
     }
