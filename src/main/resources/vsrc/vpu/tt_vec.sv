@@ -950,7 +950,7 @@ module tt_vec #(
        //          
        // );
   tt_vfp_unit #(
-    .NUM_LANE(VLEN/64),
+    .NUM_LANE(VLEN/64)
   ) vfp (
     .i_clk                    (i_clk), 
     .i_reset_n                (i_reset_n),

@@ -16,6 +16,7 @@ import boom.lsu.{LSUExeIO}
 
 import hardfloat._
 import boom.exu.OviScoreboard // moved the SB to a different file
+import boom.exu.LoadPacker // moved the load packer to a different file
 
 class EnhancedFuncUnitReq(xLen: Int, vLen: Int)(implicit p: Parameters) extends Bundle {
   val vconfig = new VConfig()
@@ -211,6 +212,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
    v-Helper Start
 */
 
+  val loadPacker = Module (new LoadPacker (VLEN))
 
   val vAGen = Module (new VAgen (lsuDmemWidth, 66, vAGenDepth, vpuVlen, oviWidth))
 
@@ -310,6 +312,24 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   val isLoadMask =   instOP === 7.U  && instUMop === 11.U && instMop === 0.U
   val isIndex =                         instMop === 1.U || instMop === 3.U
   val isUnit =                                             instMop === 0.U 
+
+
+
+    loadPacker.io.start.valid := newVGenConfig && !vGenEnable
+    loadPacker.io.start.sb_id := sbIdQueue.io.deq.bits 
+    loadPacker.io.start.base_v_reg := instVldDest
+    loadPacker.io.start.vl := vLSIQueue.io.deq.bits.vconfig.vl
+    loadPacker.io.start.eew_enc := vLSIQueue.io.deq.bits.vconfig.vtype.vsew
+    loadPacker.io.start.emul_enc := vLSIQueue.io.deq.bits.vconfig.vtype.vlmul_mag
+    loadPacker.io.start.stride_enc := Mux(isUnit, 0.U, Mux(is))
+    loadPacker.io.start.seg_enc := 0.U
+    loadPacker.io.start.is_mask := false.B
+    loadPacker.io.start.base_addr := vLSIQueue.io.deq.bits.req.rs1_data
+    loadPacker.io.kill := false.B
+    loadPacker.io.load_packet.ready := false.B
+
+
+
 
   // start of a new round of vector load store
   when (newVGenConfig && !vGenEnable) {
