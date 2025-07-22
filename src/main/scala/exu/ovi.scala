@@ -17,6 +17,7 @@ import boom.lsu.{LSUExeIO}
 import hardfloat._
 import boom.exu.OviScoreboard // moved the SB to a different file
 import boom.exu.LoadPacker // moved the load packer to a different file
+import chisel3.dontTouch // this is for debugging purposes
 
 class EnhancedFuncUnitReq(xLen: Int, vLen: Int)(implicit p: Parameters) extends Bundle {
   val vconfig = new VConfig()
@@ -213,6 +214,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 */
 
   val loadPacker = Module (new LoadPacker (VLEN))
+//  dontTouch(loadPacker)
 
   val vAGen = Module (new VAgen (lsuDmemWidth, 66, vAGenDepth, vpuVlen, oviWidth))
 
@@ -314,19 +316,34 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   val isUnit =                                             instMop === 0.U 
 
 
+  
+    val strideDetector = Module (new StrideDetector())
+    strideDetector.io.mem_size := Mux(isIndex, vLSIQueue.io.deq.bits.vconfig.vtype.vsew,
+                                               vLSIQueue.io.deq.bits.req.uop.mem_size)
+    strideDetector.io.stride := vLSIQueue.io.deq.bits.req.rs2_data
+    val isZero = WireInit(false.B)
+    val isOne = WireInit(false.B)
+    val isTwo = WireInit(false.B)
+    val isFour = WireInit(false.B)
 
-    loadPacker.io.start.valid := newVGenConfig && !vGenEnable
+    val isZero = strideDetector.io.isZero
+    val isOne = strideDetector.io.isOne
+    val isTwo = strideDetector.io.isTwo
+    val isFour = strideDetector.io.isFour
+//    logStride := strideDetector.io.logStride 
+    val canPack = io.configValid && (io.isUnit || (io.isStride && (isOne || isTwo || isFour))) && io.isLoad && (io.vl =/= 0.U)
+
+    loadPacker.io.start.valid := newVGenConfig && !vGenEnable && !isIndex && canPack
     loadPacker.io.start.sb_id := sbIdQueue.io.deq.bits 
     loadPacker.io.start.base_v_reg := instVldDest
     loadPacker.io.start.vl := vLSIQueue.io.deq.bits.vconfig.vl
     loadPacker.io.start.eew_enc := vLSIQueue.io.deq.bits.vconfig.vtype.vsew
     loadPacker.io.start.emul_enc := vLSIQueue.io.deq.bits.vconfig.vtype.vlmul_mag
-    loadPacker.io.start.stride_enc := Mux(isUnit, 0.U, Mux(is))
+    loadPacker.io.start.stride_enc := strideDetector.io.logStride
     loadPacker.io.start.seg_enc := 0.U
     loadPacker.io.start.is_mask := false.B
     loadPacker.io.start.base_addr := vLSIQueue.io.deq.bits.req.rs1_data
     loadPacker.io.kill := false.B
-    loadPacker.io.load_packet.ready := false.B
 
 
 
@@ -441,6 +458,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     vdb.io.pop := io.vGenIO.req.bits.uop.uses_stq && !vlIsZero
     vAGen.io.pop := true.B 
     vIdGen.io.pop := io.vGenIO.req.bits.uop.uses_ldq && !vlIsZero
+    loadPacker.io.load_packet.ready := io.vGenIO.req.bits.uop.uses_ldq && !vlIsZero
     when (vAGen.io.last) {
       vGenEnable := false.B         
       vdb.io.last := io.vGenIO.req.bits.uop.uses_stq && !vlIsZero

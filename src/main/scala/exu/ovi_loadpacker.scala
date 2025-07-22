@@ -47,7 +47,6 @@ class LoadPacker(val VLEN: Int) extends Module {
             // mask stuff
     }
   })
-
     // ===== Definitions =====
   object State extends ChiselEnum {
     val IDLE, PACKING = Value
@@ -163,5 +162,9 @@ class LoadPacker(val VLEN: Int) extends Module {
       }
     }
   }
+
+  // ===== Debugging =====
+  dontTouch(io.start)
+  dontTouch(io.load_packet)
 
 }
