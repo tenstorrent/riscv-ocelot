@@ -213,7 +213,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
    v-Helper Start
 */
 
-  val loadPacker = Module (new LoadPacker (VLEN))
+  val loadPacker = Module (new LoadPacker (vLen))
 //  dontTouch(loadPacker)
 
   val vAGen = Module (new VAgen (lsuDmemWidth, 66, vAGenDepth, vpuVlen, oviWidth))
@@ -321,17 +321,17 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     strideDetector.io.mem_size := Mux(isIndex, vLSIQueue.io.deq.bits.vconfig.vtype.vsew,
                                                vLSIQueue.io.deq.bits.req.uop.mem_size)
     strideDetector.io.stride := vLSIQueue.io.deq.bits.req.rs2_data
-    val isZero = WireInit(false.B)
+/*    val isZero = WireInit(false.B)
     val isOne = WireInit(false.B)
     val isTwo = WireInit(false.B)
     val isFour = WireInit(false.B)
-
+*/
     val isZero = strideDetector.io.isZero
     val isOne = strideDetector.io.isOne
     val isTwo = strideDetector.io.isTwo
     val isFour = strideDetector.io.isFour
 //    logStride := strideDetector.io.logStride 
-    val canPack = io.configValid && (io.isUnit || (io.isStride && (isOne || isTwo || isFour))) && io.isLoad && (io.vl =/= 0.U)
+    val canPack = (isUnit || (!isIndex && (isOne || isTwo || isFour))) && vLSIQueue.io.deq.bits.req.uop.uses_ldq && (vLSIQueue.io.deq.bits.vconfig.vl =/= 0.U)
 
     loadPacker.io.start.valid := newVGenConfig && !vGenEnable && !isIndex && canPack
     loadPacker.io.start.sb_id := sbIdQueue.io.deq.bits 
