@@ -214,7 +214,6 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 */
 
   val loadPacker = Module (new LoadPacker (vLen))
-//  dontTouch(loadPacker)
 
   val vAGen = Module (new VAgen (lsuDmemWidth, 66, vAGenDepth, vpuVlen, oviWidth))
 
@@ -344,6 +343,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     loadPacker.io.start.is_mask := false.B
     loadPacker.io.start.base_addr := vLSIQueue.io.deq.bits.req.rs1_data
     loadPacker.io.kill := false.B
+    loadPacker.io.load_packet.ready := false.B // override below with IDGen's pop
 
 
 
@@ -458,7 +458,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     vdb.io.pop := io.vGenIO.req.bits.uop.uses_stq && !vlIsZero
     vAGen.io.pop := true.B 
     vIdGen.io.pop := io.vGenIO.req.bits.uop.uses_ldq && !vlIsZero
-    loadPacker.io.load_packet.ready := io.vGenIO.req.bits.uop.uses_ldq && !vlIsZero
+    loadPacker.io.load_packet.ready := io.vGenIO.req.bits.uop.uses_ldq && !vlIsZero // "pop" here
     when (vAGen.io.last) {
       vGenEnable := false.B         
       vdb.io.last := io.vGenIO.req.bits.uop.uses_stq && !vlIsZero
