@@ -343,14 +343,14 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     val loadPackerCanPack = (
       vLSIQueue.io.deq.bits.req.uop.uses_ldq &&
       (vLSIQueue.io.deq.bits.vconfig.vl =/= 0.U) &&
-      (strideIs1 || strideIs2 || strideIs4) && !isIndex && !isWholeLoad && !isLoadMask
+      (strideIs1 || strideIs2 || strideIs4) && !isIndex && !isLoadMask
     )
 
     loadPacker.io.start.valid := (newVGenConfig && !vGenEnable) && loadPackerCanPack
     loadPacker.io.start.sb_id := sbIdQueue.io.deq.bits 
     loadPacker.io.start.base_v_reg := instVldDest
     loadPacker.io.start.vl := vLSIQueue.io.deq.bits.vconfig.vl
-    loadPacker.io.start.eew_enc := vLSIQueue.io.deq.bits.vconfig.vtype.vsew
+    loadPacker.io.start.eew_enc := vLSIQueue.io.deq.bits.req.uop.mem_size
     loadPacker.io.start.emul_enc := vLSIQueue.io.deq.bits.vconfig.vtype.vlmul_mag
     // loadPacker.io.start.stride_enc := strideDetector.io.logStride // Doesnt work for some reason
     loadPacker.io.start.stride_enc := Mux(strideIs1, 0.U, Mux(strideIs2, 1.U, Mux(strideIs4, 2.U, 3.U)))
@@ -400,6 +400,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     vwhls.io.nf := instNf
     vwhls.io.wth := instElemSize 
     vAGen.io.vl := vwhls.io.overVl 
+    loadPacker.io.start.vl := vwhls.io.overVl
     }.elsewhen (isStoreMask || isLoadMask) {
       vAGen.io.vl := (vLSIQueue.io.deq.bits.vconfig.vl + 7.U) >> 3
     }
@@ -611,6 +612,8 @@ MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbR
     assert(loadPacker.io.load_packet.sb_id === sbIdHold, "Load packer sb_id mismatch!")
     assert(loadPacker.io.load_packet.last === vAGen.io.last, "Load packer last mismatch!")
   }
+
+  dontTouch(loadpacker_is_packing)
 
   // ================================================
 

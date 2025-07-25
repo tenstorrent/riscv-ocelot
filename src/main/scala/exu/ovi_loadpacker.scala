@@ -155,21 +155,19 @@ class LoadPacker(val VLEN: Int, val DMEM_WIDTH: Int) extends Module {
   // ======== Packing Constraints ========
 
   // elements until DMEM has hit its boundary
-  val dmem_constraint = dmem_max - dmem_off          // check distance to boundary
+  val dmem_constraint = dmem_max - dmem_off             // check distance to boundary
 
   // elements until the next EMUL_FIELD in CTR
   val vreg_constraint = (
-    (EEW_CTR & ~((1.U << v_group_mask_off) - 1.U)) + // clear all fields except the EMUL_FIELD
-    (1.U << v_group_mask_off)                        // add one to the EMUL_FIELD (to get to next group_id)
-  ) - EEW_CTR                                        // take distance of value from current ctr
+    (EEW_CTR & ~((1.U << v_group_mask_off) - 1.U)) +    // clear all fields except the EMUL_FIELD
+    (1.U << v_group_mask_off)                           // add one to the EMUL_FIELD (to get to next group_id)
+  ) - EEW_CTR                                           // take distance of value from current ctr
 
   // elements until VL is reached in CTR
   val vl_constraint   = (
-    (          ((1.U << v_group_mask_width) - 1.U) << v_group_mask_off) | // <msb> EMUL_FIELD:   final group_id (all 1s in field)
-    (((vl - 1.U) & ((1.U << el_mask_width) - 1.U)) << el_mask_off) |      //   |   EL_ID_FIELD:  remainder of "vl" by "IDs per VLEN" by masking (yes, vl-1 is required)
-    ((0.U)                                         << stride_mask_off) |  //   |   STRIDE_FIELD: all 0s
-    (            ((1.U << (seg_mask_width)) - 1.U) << seg_mask_off)       // <lsb> SEG_ID_FIELD: log2(seg) wide ctr's max value
-  ) - EEW_CTR + 1.U                                                       // take distance of value from current ctr
+    (vl << el_mask_off) |                               // EMUL_FIELD/EL_ID_FIELD: vl
+    (((1.U << (seg_mask_width)) - 1.U) << seg_mask_off) // SEG_ID_FIELD:           last seg_id (all 1s)
+  ) - EEW_CTR                                           // take distance of value from current ctr
 
 
   // ======== Advance CTR based on constraints ========
