@@ -336,9 +336,14 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     // ================================================
     // Load Packer Port Connections
 
-    val strideIs1 = (instMop === 0.U) || ((instMop === 2.U) && (vLSIQueue.io.deq.bits.req.rs2_data === 1.U));
-    val strideIs2 = (instMop === 2.U) && (vLSIQueue.io.deq.bits.req.rs2_data === 2.U);
-    val strideIs4 = (instMop === 2.U) && (vLSIQueue.io.deq.bits.req.rs2_data === 4.U);
+    val strideIs1 = (instMop === 0.U) || ((instMop === 2.U) && isOne);
+    val strideIs2 = (instMop === 2.U) && isTwo;
+    val strideIs4 = (instMop === 2.U) && isFour;
+
+    val lmul_enc = vLSIQueue.io.deq.bits.vconfig.vtype.vlmul_mag
+    val eew_enc = vLSIQueue.io.deq.bits.req.uop.mem_size
+    val sew_enc = vLSIQueue.io.deq.bits.vconfig.vtype.vsew
+    val emul_enc = lmul_enc + (eew_enc - sew_enc)
 
     val loadPackerCanPack = (
       vLSIQueue.io.deq.bits.req.uop.uses_ldq &&
@@ -349,9 +354,9 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     loadPacker.io.start.valid := (newVGenConfig && !vGenEnable) && loadPackerCanPack
     loadPacker.io.start.sb_id := sbIdQueue.io.deq.bits 
     loadPacker.io.start.base_v_reg := instVldDest
-    loadPacker.io.start.vl := vLSIQueue.io.deq.bits.vconfig.vl
-    loadPacker.io.start.eew_enc := vLSIQueue.io.deq.bits.req.uop.mem_size
-    loadPacker.io.start.emul_enc := vLSIQueue.io.deq.bits.vconfig.vtype.vlmul_mag
+    loadPacker.io.start.vl := vLSIQueue.io.deq.bits.vconfig.vl // override below for whls
+    loadPacker.io.start.eew_enc := eew_enc
+    loadPacker.io.start.emul_enc := emul_enc // override below for whls
     // loadPacker.io.start.stride_enc := strideDetector.io.logStride // Doesnt work for some reason
     loadPacker.io.start.stride_enc := Mux(strideIs1, 0.U, Mux(strideIs2, 1.U, Mux(strideIs4, 2.U, 3.U)))
     loadPacker.io.start.seg_enc := 0.U
@@ -401,6 +406,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     vwhls.io.wth := instElemSize 
     vAGen.io.vl := vwhls.io.overVl 
     loadPacker.io.start.vl := vwhls.io.overVl
+    loadPacker.io.start.emul_enc := vwhls.io.overVlmul
     }.elsewhen (isStoreMask || isLoadMask) {
       vAGen.io.vl := (vLSIQueue.io.deq.bits.vconfig.vl + 7.U) >> 3
     }

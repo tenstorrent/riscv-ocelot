@@ -31,7 +31,11 @@ class LoadPacker(val VLEN: Int, val DMEM_WIDTH: Int) extends Module {
   val EMUL_ENC_W   = 3
   val STRIDE_ENC_W = 3
   val SEG_ENC_W    = 3
+  // val EL_ID_W      = log2Ceil(VLEN/8) // TODO: use this and add padding for OVI for efficiency
   val CTR_WIDTH    = SEG_ENC_W+STRIDE_ENC_W+11+EMUL_ENC_W
+  // TODO: use this for accuracy and make the _enc_w's as 2 bits (since bit 3 is reserved in RVV)
+  // val CTR_WIDTH    = (((1<<SEG_ENC_W)-1)+((1<<STRIDE_ENC_W)-1)+EL_ID_W+((1<<EMUL_ENC_W)-1))
+
 
   // ======== Input-Output Ports ========
   val io = IO(new Bundle {
@@ -166,7 +170,7 @@ class LoadPacker(val VLEN: Int, val DMEM_WIDTH: Int) extends Module {
   // elements until VL is reached in CTR
   val vl_constraint   = (
     (vl << el_mask_off) |                               // EMUL_FIELD/EL_ID_FIELD: vl
-    (((1.U << (seg_mask_width)) - 1.U) << seg_mask_off) // SEG_ID_FIELD:           last seg_id (all 1s)
+    (((1.U << (seg_mask_width)) - 1.U) << seg_mask_off) // SEG_ID_FIELD: last seg_id (all 1s)
   ) - EEW_CTR                                           // take distance of value from current ctr
 
 
