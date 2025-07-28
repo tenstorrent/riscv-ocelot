@@ -17,6 +17,7 @@ import boom.lsu.{LSUExeIO}
 import hardfloat._
 import boom.exu.OviScoreboard // moved the SB to a different file
 import boom.exu.LoadPacker // moved the load packer to a different file
+import boom.exu.LoadWalker
 import chisel3.dontTouch // this is for debugging purposes
 
 class EnhancedFuncUnitReq(xLen: Int, vLen: Int)(implicit p: Parameters) extends Bundle {
@@ -214,6 +215,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 */
 
   val loadPacker = Module (new LoadPacker (vLen, lsuDmemWidth))
+  val loadWalker = Module (new LoadWalker (vLen, lsuDmemWidth))
 
   val vAGen = Module (new VAgen (lsuDmemWidth, 66, vAGenDepth, vpuVlen, oviWidth))
 
@@ -348,7 +350,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     val loadPackerCanPack = (
       vLSIQueue.io.deq.bits.req.uop.uses_ldq &&
       (vLSIQueue.io.deq.bits.vconfig.vl =/= 0.U) &&
-      (strideIs1 || strideIs2 || strideIs4) && !isIndex && !isLoadMask
+      (strideIs1 || strideIs2 || strideIs4) && !isIndex && !isLoadMask && !instMaskEnable
     )
 
     loadPacker.io.start.valid := (newVGenConfig && !vGenEnable) && loadPackerCanPack
@@ -364,6 +366,28 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     loadPacker.io.start.base_addr := vLSIQueue.io.deq.bits.req.rs1_data
     loadPacker.io.kill := false.B
     loadPacker.io.load_packet.ready := false.B // override below with IDGen's pop
+
+    // ================================================
+    // Load Walker Port Connections
+
+    val loadWalkerCanPack = (
+      vLSIQueue.io.deq.bits.req.uop.uses_ldq &&
+      (vLSIQueue.io.deq.bits.vconfig.vl =/= 0.U) &&
+      !(strideIs1 || strideIs2 || strideIs4) && !isIndex && !isLoadMask && !instMaskEnable
+    )
+
+    loadWalker.io.start.valid := (newVGenConfig && !vGenEnable) && loadWalkerCanPack
+    loadWalker.io.start.sb_id := sbIdQueue.io.deq.bits
+    loadWalker.io.start.base_v_reg := instVldDest
+    loadWalker.io.start.vl := vLSIQueue.io.deq.bits.vconfig.vl // override below for whls
+    loadWalker.io.start.eew_enc := eew_enc
+    loadWalker.io.start.emul_enc := emul_enc // override below for whls
+    loadWalker.io.start.stride := vLSIQueue.io.deq.bits.req.rs2_data
+    loadWalker.io.start.seg_count := 1.U
+    loadWalker.io.start.is_mask := false.B
+    loadWalker.io.start.base_addr := vLSIQueue.io.deq.bits.req.rs1_data
+    loadWalker.io.kill := false.B
+    loadWalker.io.load_packet.ready := false.B // override below with IDGen's pop
 
     // ================================================
 
@@ -407,6 +431,8 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     vAGen.io.vl := vwhls.io.overVl 
     loadPacker.io.start.vl := vwhls.io.overVl
     loadPacker.io.start.emul_enc := vwhls.io.overVlmul
+    loadWalker.io.start.vl := vwhls.io.overVl
+    loadWalker.io.start.emul_enc := vwhls.io.overVlmul
     }.elsewhen (isStoreMask || isLoadMask) {
       vAGen.io.vl := (vLSIQueue.io.deq.bits.vconfig.vl + 7.U) >> 3
     }
@@ -482,6 +508,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     vAGen.io.pop := true.B 
     vIdGen.io.pop := io.vGenIO.req.bits.uop.uses_ldq && !vlIsZero
     loadPacker.io.load_packet.ready := io.vGenIO.req.bits.uop.uses_ldq && !vlIsZero // "pop" here
+    loadWalker.io.load_packet.ready := io.vGenIO.req.bits.uop.uses_ldq && !vlIsZero // "pop" here
     when (vAGen.io.last) {
       vGenEnable := false.B         
       vdb.io.last := io.vGenIO.req.bits.uop.uses_stq && !vlIsZero
@@ -602,11 +629,18 @@ MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbR
   // Assertions
 
   val loadpacker_is_packing = RegInit(false.B)
+  val loadwalker_is_packing = RegInit(false.B)
 
-  when ((newVGenConfig && !vGenEnable) && loadPackerCanPack) {
-    loadpacker_is_packing := true.B
+  when (!loadpacker_is_packing) {
+    loadpacker_is_packing := ((newVGenConfig && !vGenEnable) && loadPackerCanPack)
   } .elsewhen (loadPacker.io.load_packet.last) {
     loadpacker_is_packing := false.B
+  }
+
+  when (!loadwalker_is_packing) {
+    loadwalker_is_packing := ((newVGenConfig && !vGenEnable) && loadWalkerCanPack)
+  } .elsewhen (loadWalker.io.load_packet.last) {
+    loadwalker_is_packing := false.B
   }
 
   when (loadpacker_is_packing) {
@@ -619,7 +653,18 @@ MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbR
     assert(loadPacker.io.load_packet.last === vAGen.io.last, "Load packer last mismatch!")
   }
 
+  when (loadwalker_is_packing) {
+    assert(loadWalker.io.load_packet.addr === vAGen.io.outAddr, "Load walker addr mismatch!")
+    assert(loadWalker.io.load_packet.v_reg === vIdGen.io.outVD, "Load walker v_reg mismatch!")
+    assert(loadWalker.io.load_packet.el_id === vIdGen.io.outID, "Load walker el_id mismatch!")
+    assert(loadWalker.io.load_packet.el_off === vAGen.io.elemOffset, "Load walker el_off mismatch!")
+    // assert(loadWalker.io.load_packet.el_count === vAGen.io.elemCount, "Load walker el_count mismatch!")
+    assert(loadWalker.io.load_packet.sb_id === sbIdHold, "Load walker sb_id mismatch!")
+    assert(loadWalker.io.load_packet.last === vAGen.io.last, "Load walker last mismatch!")
+  }
+
   dontTouch(loadpacker_is_packing)
+  dontTouch(loadwalker_is_packing)
 
   // ================================================
 
