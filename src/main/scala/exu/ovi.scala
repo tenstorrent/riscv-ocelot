@@ -1485,14 +1485,19 @@ class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
     strideDetector.io.stride := io.stride
     
     val logStride = WireInit(3.U(2.W)) // this is the log2 of stride
-    logStride := strideDetector.io.logStride 
+    logStride := strideDetector.io.logStride
+    // can do mask skip when:
+    // 1. non-index store
+    // 2. index load
+    // 3. Bad strided load 
     canPack := io.configValid && io.isMask && ((!io.isLoad && !io.isIndex) || (io.isLoad && !(io.isUnit || (io.isStride && (logStride =/= 3.U))) && !io.isIndex)) && (io.vl =/= 0.U)
-
+    // latching the state after config valid
     val isPacking = RegInit(false.B)  // drive override
     val isLoad = RegInit(false.B)
 
-
+   // load mask skipping override
    io.packOveride := isPacking && isLoad
+   // store mask skipping override
    io.spackOveride := isPacking && !isLoad
 
 //   io.packOveride := false.B 
@@ -1502,12 +1507,12 @@ class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
    val stride = RegInit(0.U(64.W))
 
    val currentVMax = RegInit(0.U(7.W)) // max element count per vReg for load, max element count per VDB entry for store
-   val currentIndex = RegInit(0.U(9.W)) // the index of element (as a whole in the vector)
-   val currentVIndex = RegInit(0.U(7.W))
-   val currentMIndex = RegInit(0.U(7.W))
+   val currentIndex = RegInit(0.U(9.W)) // the index of element (as a whole in the vector process, multiple v-reg)
+   val currentVIndex = RegInit(0.U(7.W)) // the index of element in the current v-reg, only 1 v-reg, think of it as local index
+   val currentMIndex = RegInit(0.U(7.W)) // the index of the current mask entry in the mask buffer, non-index
    val vlHold = RegInit(0.U(9.W))
    val memSize = RegInit(0.U(2.W))
-
+   // same cycle as config valid
    when (canPack) {
     isPacking := canPack
     isLoad := io.isLoad 
@@ -1515,12 +1520,16 @@ class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
     currentVIndex := 0.U 
     currentMIndex := 0.U 
     vlHold := io.vl 
-    memSize := io.memSize 
+    memSize := io.memSize
+// this is per v-reg if load
     when (io.isLoad) {
        currentVMax := VLENByte.U >> (io.memSize)
+// this is per vdb-entry if store
     }.otherwise {
        currentVMax := VDBLENByte.U >> (io.memSize)
     }
+// the stride here is by Byte, not element
+// Why? because it is later used for address calculation
     when (io.isUnit) {
       stride := 1.U << io.memSize
     }.otherwise {
@@ -1530,47 +1539,62 @@ class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
     io.validMask := io.currentMask(0)
         
     val theoreticalCount = WireInit(0.U(6.W)) //max count in this transaction if ignore vl and vReg boundary
+    // if mask is all 0, all mask off
     when (io.currentMask === 0.U) {
       theoreticalCount := VLENByte.U
+    // the closest element is mask on, so we can only pop 1 element
     }.elsewhen (io.currentMask(0)) {
       theoreticalCount := 1.U 
+    // not all are mask off, but the closest element is mask off, so we can try to skip some of them
     }.otherwise {
       theoreticalCount := PriorityEncoder (io.currentMask)
     }
     val actualTheoreticalCount = WireInit(0.U(6.W)) //max count in this transaction if ignore vl and vReg boundary
+    // this is to make sure that the count is a power of 2, and we go from smallest to largest
     actualTheoreticalCount := PriorityEncoderOH (theoreticalCount)
     val vRegDistant = WireInit(0.U(7.W))
+    // we want to know how many elements are left in the current v-reg
     vRegDistant := currentVMax - currentVIndex
     val actualVRegDistant = WireInit(0.U(7.W))
     val vRegPower2 = Module (new SmallPowerOfTwo(7))
     vRegPower2.io.inData := vRegDistant 
+    // find the largest power of 2 that is smaller than or equal to the remaining elements in the current v-reg
     actualVRegDistant := vRegPower2.io.outData 
 
     val vlDistant = WireInit(0.U(9.W))
+    // how many elemeents left before we touch vl boundary
     vlDistant := vlHold - currentIndex 
     val actualVlDistant = WireInit(0.U(9.W))
     val vlPower2 = Module (new SmallPowerOfTwo(9))
     vlPower2.io.inData := vlDistant 
+    // find the largest power of 2 that is smaller than or equal to the remaining elements before we touch vl boundary
     actualVlDistant := vlPower2.io.outData 
     
-    
-    val afterVRegCount = WireInit(0.U(6.W)) // we consider VReg first
+    // find the smallest of the 3: actual theoretical, actual v-reg distant, actual vl distant 
+    val afterVRegCount = WireInit(0.U(6.W)) // we consider VReg first, order doesn't matter to be honest
     afterVRegCount := Mux((actualTheoreticalCount > actualVRegDistant), actualVRegDistant, actualTheoreticalCount)
     val afterVLCount = WireInit(0.U(6.W))
     afterVLCount := Mux((afterVRegCount > actualVlDistant), actualVlDistant, afterVRegCount)
+    // we are still in the element number domain here, at this point, we determined how many elements to skip
 
-
+    // this is byte number domain
     io.packVDBId := afterVLCount << memSize
-    io.elemCount := afterVLCount 
+    // this is still element domain
+    io.elemCount := afterVLCount
+    // if the skipping element amount is the current v-reg distant, we need to jump to the next entry of the VDB
+    // because each entry of VDB is just 1 v-reg 
     io.packSkipVDB := (afterVLCount === vRegDistant) && isPacking && !isLoad
     io.packLast := (afterVLCount === vlDistant) && isPacking
+    // how much the address should increment, stride is in byte domain, so we shift it by log of element packed count
     io.packIncrement := stride << PriorityEncoder (afterVLCount)
-
-    io.packId := afterVLCount 
+    // how many elements we packed
+    io.packId := afterVLCount
+    // move on to the next v-reg 
     io.packSkipVreg := (afterVLCount === vRegDistant) && isPacking && isLoad 
     io.packLast := (afterVLCount === vlDistant) && isPacking
+    // check to see if we need to go to the next mask buffer entry
     io.packSkipVMask := ((currentMIndex + io.elemCount) === 64.U) && isPacking 
-
+    // just incrementing and updating the state, if we ever reach the end of v-reg, vdb, or mask buffer entry.
     when(io.pop) {
       when(io.packLast) {
         isPacking := false.B 
