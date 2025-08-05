@@ -18,7 +18,7 @@ extends Module with VecLSGenConstants {
   // ======== Input-Output Ports ========
   val io = IO(new Bundle {
     // start config signals
-    val start = DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH))
+    val start = Flipped(DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH)))
     // store data interface
     val vdb_data = new Bundle {
       val read_bytes  = Output(UInt(log2Ceil(DMEM_WIDTH/8).W)) // like a ready signal
@@ -27,7 +27,7 @@ extends Module with VecLSGenConstants {
     }
     val kill = Input(Bool())
     // store packet
-    val store_packet = Flipped(DecoupledIO(new StorePacket(VLEN, DMEM_WIDTH)))
+    val store_packet = DecoupledIO(new StorePacket(VLEN, DMEM_WIDTH))
   })
 
   // ======== Definitions ========

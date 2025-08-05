@@ -18,7 +18,7 @@ extends Module with VecLSGenConstants {
   // ======== Input-Output Ports ========
   val io = IO(new Bundle {
     // start config signals
-    val start = DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH))
+    val start = Flipped(DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH)))
     // index interface (for indexed stores)
     val index = new Bundle {
       val ready = Output(Bool())
@@ -36,7 +36,7 @@ extends Module with VecLSGenConstants {
       val data        = Input(UInt(DMEM_WIDTH.W))
     }
     // store packet
-    val store_packet = Flipped(DecoupledIO(new StorePacket(VLEN, DMEM_WIDTH)))
+    val store_packet = DecoupledIO(new StorePacket(VLEN, DMEM_WIDTH))
   })
 
   // ======== Definitions ========

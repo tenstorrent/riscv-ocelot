@@ -37,7 +37,7 @@ extends Module with VecLSGenConstants {
   // ======== Input-Output Ports ========
   val io = IO(new Bundle {
     // start config signals
-    val start = DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH))
+    val start = Flipped(DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH)))
     // mask/index interface (for masked/indexed loads)
     val mask_idx = new Bundle {
       val ready = Output(Bool())
@@ -75,7 +75,7 @@ extends Module with VecLSGenConstants {
   val packer = Module(new LoadPacker(VLEN, DMEM_WIDTH))
   // start config
   packer.io.start.valid := (io.start.valid && packable)
-  packer.io.start.bits  <> config_info
+  packer.io.start.bits  := config_info
   // mask config
   packer.io.mask.valid     := io.mask_idx.valid
   packer.io.mask.mask_data := io.mask_idx.data(MASK_W-1, 0) // data only
@@ -88,7 +88,7 @@ extends Module with VecLSGenConstants {
   val skipper = Module(new LoadSkipper(VLEN, DMEM_WIDTH))
   // start config
   skipper.io.start.valid := (io.start.valid && skipable)
-  skipper.io.start.bits  <> config_info
+  skipper.io.start.bits  := config_info
   // mask config
   skipper.io.mask.valid     := io.mask_idx.valid
   skipper.io.mask.mask_data := io.mask_idx.data(MASK_W-1, 0) // data only
@@ -101,12 +101,12 @@ extends Module with VecLSGenConstants {
   val walker = Module(new LoadWalker(VLEN, DMEM_WIDTH))
   // start config
   walker.io.start.valid := (io.start.valid && walkable)
-  walker.io.start.bits  <> config_info
+  walker.io.start.bits  := config_info
   // index config
   walker.io.index.valid       := io.mask_idx.valid
-  walker.io.index.index_value := io.mask_idx.data(MASK_W-1, 0) // idx val
-  walker.io.index.mask_bit    := io.mask_idx.data(MASK_W)      // mask bit
-  walker.io.index.last_index  := io.mask_idx.data(MASK_W+1)    // last bit
+  walker.io.index.index_value := io.mask_idx.data(MASK_W-1, 0).asSInt // idx val
+  walker.io.index.mask_bit    := io.mask_idx.data(MASK_W)             // mask bit
+  walker.io.index.last_index  := io.mask_idx.data(MASK_W+1)           // last bit
   // kill config
   walker.io.kill := io.kill
   // load packet config
@@ -114,8 +114,50 @@ extends Module with VecLSGenConstants {
 
   // ======== Outputs ========
 
-  // IDLE case (no output)
-  when (state === State.IDLE) {
+  // bypass packet: had to do this because of chisel binding conflicts
+  val bypass_packet = Wire(new LoadPacket(VLEN, DMEM_WIDTH))
+  bypass_packet.addr       := DontCare
+  bypass_packet.v_reg      := DontCare
+  bypass_packet.el_id      := DontCare
+  bypass_packet.el_off     := DontCare
+  bypass_packet.el_count   := config_info.vl // should be 0 if bypassable
+  bypass_packet.sb_id      := DontCare
+  bypass_packet.mask_data  := DontCare
+  bypass_packet.mask_valid := DontCare
+  bypass_packet.is_fake    := true.B         // fake load
+  bypass_packet.misaligned := DontCare
+  bypass_packet.last       := true.B         // assert end
+
+  // BYPASS case (no output but assert last and el_count = 0)
+  when (state === State.BYPASS) {
+    io.start.ready       := false.B
+    io.mask_idx.ready    := false.B
+    io.load_packet.valid := true.B
+    io.load_packet.bits  := bypass_packet
+
+  // PACKING case (pass through packer)
+  } .elsewhen (state === State.PACKING) {
+    io.start.ready       := packer.io.start.ready
+    io.mask_idx.ready    := packer.io.mask.ready
+    io.load_packet.valid := packer.io.load_packet.valid
+    io.load_packet.bits  := packer.io.load_packet.bits
+
+  // SKIPPING case (pass through skipper)
+  } .elsewhen (state === State.SKIPPING) {
+    io.start.ready       := skipper.io.start.ready
+    io.mask_idx.ready    := skipper.io.mask.ready
+    io.load_packet.valid := skipper.io.load_packet.valid
+    io.load_packet.bits  := skipper.io.load_packet.bits
+
+  // WALKING case (pass through walker)
+  } .elsewhen (state === State.WALKING) {
+    io.start.ready       := walker.io.start.ready
+    io.mask_idx.ready    := walker.io.index.ready
+    io.load_packet.valid := walker.io.load_packet.valid
+    io.load_packet.bits  := walker.io.load_packet.bits
+
+  // IDLE case (no output but transparent to inputs)
+  } .otherwise {
     io.start.ready       := PriorityMux(Seq(
       (packable)   -> packer.io.start.ready,
       (skipable)   -> skipper.io.start.ready,
@@ -130,36 +172,6 @@ extends Module with VecLSGenConstants {
     ))
     io.load_packet.valid := false.B
     io.load_packet.bits  := DontCare
-  
-  // BYPASS case (no output but assert last and el_count = 0)
-  } .elsewhen (state === State.BYPASS) {
-    io.start.ready       := false.B
-    io.mask_idx.ready    := false.B
-    io.load_packet.valid := true.B
-    io.load_packet.bits  := DontCare
-    io.load_packet.bits.el_count := config_info.vl // should be 0
-    io.load_packet.bits.last := true.B             // assert end
-  
-  // PACKING case (pass through packer)
-  } .elsewhen (state === State.PACKING) {
-    io.start.ready       := packer.io.start.ready
-    io.mask_idx.ready    := packer.io.mask.ready
-    io.load_packet.valid := packer.io.load_packet.valid
-    io.load_packet.bits  <> packer.io.load_packet.bits
-
-  // SKIPPING case (pass through skipper)
-  } .elsewhen (state === State.SKIPPING) {
-    io.start.ready       := skipper.io.start.ready
-    io.mask_idx.ready    := skipper.io.mask.ready
-    io.load_packet.valid := skipper.io.load_packet.valid
-    io.load_packet.bits  <> skipper.io.load_packet.bits
-
-  // WALKING case (pass through walker)
-  } .elsewhen (state === State.WALKING) {
-    io.start.ready       := walker.io.start.ready
-    io.mask_idx.ready    := walker.io.index.ready
-    io.load_packet.valid := walker.io.load_packet.valid
-    io.load_packet.bits  <> walker.io.load_packet.bits
   }
 
   // ======== State Machine ========

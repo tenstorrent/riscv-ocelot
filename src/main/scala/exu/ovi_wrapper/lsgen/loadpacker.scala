@@ -31,7 +31,7 @@ extends Module with VecLSGenConstants {
   // ======== Input-Output Ports ========
   val io = IO(new Bundle {
     // start config signals
-    val start = new DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH)) // expects latched config info (DO NOT CHANGE DURING FSM)
+    val start = Flipped(DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH))) // expects latched config info (DO NOT CHANGE DURING FSM)
     // mask interface (for masked loads)
     val mask = new Bundle {
       val ready = Output(Bool())
@@ -41,7 +41,7 @@ extends Module with VecLSGenConstants {
     // kill signal (used to reset the FSM)
     val kill = Input(Bool())
     // load process FSM outputs (packet info)
-    val load_packet = Flipped(DecoupledIO(new LoadPacket(VLEN, DMEM_WIDTH)))
+    val load_packet = DecoupledIO(new LoadPacket(VLEN, DMEM_WIDTH))
     val debug = new Bundle {
       val debug_CTR_seg_id     = Output(UInt(SEG_ENC_W.W))
       val debug_CTR_stride_id  = Output(UInt(STRIDE_ENC_W.W))

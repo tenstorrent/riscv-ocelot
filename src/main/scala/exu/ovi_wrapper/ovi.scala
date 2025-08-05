@@ -213,6 +213,51 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 */
 
 
+  // ===============  OSC3 LSGEN SHADOW CODE START ===============
+  // code written by Kishore S (8/5/2025)
+
+  // Instantiate the new LS decoder
+  val lsDecoder = Module(new OviLsDecode(vpuVlen, lsuDmemWidth))
+  lsDecoder.io.deq_data := vLSIQueue.io.deq.bits
+  lsDecoder.io.deq_sb_id := sbIdQueue.io.deq.bits
+
+  // Instantiate load and store generators
+  val loadGen = Module(new LoadGen(vpuVlen, lsuDmemWidth))
+  val storeGen = Module(new StoreGen(vpuVlen, lsuDmemWidth))
+
+  // Connect decoder outputs to generators
+  loadGen.io.start.valid := vLSIQueue.io.deq.fire && lsDecoder.io.is_load
+  loadGen.io.start.bits := lsDecoder.io.dec_info
+  // TODO: Connect real mask/index interface when ready
+  loadGen.io.mask_idx.valid := false.B
+  loadGen.io.mask_idx.data := DontCare
+  loadGen.io.kill := false.B // TODO: Connect to appropriate kill signal
+
+  storeGen.io.start.valid := vLSIQueue.io.deq.fire && !lsDecoder.io.is_load
+  storeGen.io.start.bits := lsDecoder.io.dec_info
+  // TODO: Connect real mask/index interface when ready
+  storeGen.io.mask_idx.valid := false.B
+  storeGen.io.mask_idx.data := DontCare
+  // TODO: Connect real VDB interface when ready
+  storeGen.io.vdb_data.valid_bytes := 0.U
+  storeGen.io.vdb_data.data := DontCare
+  storeGen.io.kill := false.B // TODO: Connect to appropriate kill signal
+
+  // Shadow outputs - always ready to avoid blocking, with dontTouch for observation
+  loadGen.io.load_packet.ready := true.B
+  storeGen.io.store_packet.ready := true.B
+
+  // Add dontTouch to preserve signals for observation (shadow code)
+  dontTouch(loadGen.io.load_packet.valid)
+  dontTouch(loadGen.io.load_packet.bits)
+  dontTouch(storeGen.io.store_packet.valid) 
+  dontTouch(storeGen.io.store_packet.bits)
+  dontTouch(lsDecoder.io.is_load)
+  dontTouch(lsDecoder.io.dec_info)
+
+  // ===============  OSC3 LSGEN SHADOW CODE END ===============
+
+
   val vAGen = Module (new VAgen (lsuDmemWidth, 66, vAGenDepth, vpuVlen, oviWidth))
 
   vAGen.io.configValid := false.B 
