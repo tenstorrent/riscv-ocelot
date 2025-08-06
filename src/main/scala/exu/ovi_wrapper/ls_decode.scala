@@ -24,6 +24,7 @@ trait VecLSGenConstants {
   val DMEM_BYTES = DMEM_WIDTH/8
   val DMEM_ENC   = log2Ceil(DMEM_WIDTH/8+1) // +1 to use the wrap value in comparator
   val ADDR_BREAK = log2Ceil(DMEM_WIDTH/8)
+  val VDB_R_SIZE_BYTES = log2Ceil(DMEM_WIDTH/8+1)
   val EEW_ENC_W    = 2
   val EMUL_ENC_W   = 2
   val STRIDE_ENC_W = 2
@@ -108,7 +109,7 @@ extends BoomModule with VecLSGenConstants {
   val strideIs1   = (isStride && ((rs2_data === (1.U << (instWidth + 0.U))) || (rs2_data.asSInt === (-(1.U << (instWidth + 0.U)).asSInt)))) || (isUnit)
   val strideIs2   = (isStride && ((rs2_data === (1.U << (instWidth + 1.U))) || (rs2_data.asSInt === (-(1.U << (instWidth + 1.U)).asSInt))))
   val strideIs4   = (isStride && ((rs2_data === (1.U << (instWidth + 2.U))) || (rs2_data.asSInt === (-(1.U << (instWidth + 2.U)).asSInt))))
-  val strideIsNeg = rs2_data(31)
+  val strideIsNeg = rs2_data(63)
 
   // ========= Whole Load/Store Decoder ========
 
@@ -186,7 +187,7 @@ extends BoomModule with VecLSGenConstants {
   ))
   
   // Segment outputs (for both loads and stores)
-  io.dec_info.is_good_seg := isSeg && (((instNf + 1.U) & instNf) === 0.U) // nf+1 is power of 2
+  io.dec_info.is_good_seg := !isSeg || (((instNf + 1.U) & instNf) === 0.U) // either not segmented (seg=1) or segment (seg=nf+1) is power of 2
   io.dec_info.seg_count   := Mux(isSeg, instNf + 1.U, 1.U)
   
   // seg_enc: log2 of segment count

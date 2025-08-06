@@ -216,44 +216,101 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   // ===============  OSC3 LSGEN SHADOW CODE START ===============
   // code written by Kishore S (8/5/2025)
 
-  // Instantiate the new LS decoder
+  class DecoderInputBundle extends Bundle {
+    val req_data = new EnhancedFuncUnitReq(xLen, vLen)
+    val sb_id = UInt(5.W)
+  }
+  
+  // 3-element deep buffer for decoder inputs
+  val decoder_buffer = Module(new Queue(new DecoderInputBundle, 3))
+  
+  // Enqueue on vLSIQueue fire
+  decoder_buffer.io.enq.valid := vLSIQueue.io.deq.fire
+  decoder_buffer.io.enq.bits.req_data := vLSIQueue.io.deq.bits
+  decoder_buffer.io.enq.bits.sb_id := sbIdQueue.io.deq.bits
+  
+  // Assert if trying to enqueue when buffer is full
+  assert(!(vLSIQueue.io.deq.fire && !decoder_buffer.io.enq.ready),
+         "ERROR: Decoder buffer full! Cannot enqueue new instruction while 3 previous instructions still pending.")
+
+  // Instantiate the new LS decoder - connect to buffer output
   val lsDecoder = Module(new OviLsDecode(vpuVlen, lsuDmemWidth))
-  lsDecoder.io.deq_data := vLSIQueue.io.deq.bits
-  lsDecoder.io.deq_sb_id := sbIdQueue.io.deq.bits
+  lsDecoder.io.deq_data := decoder_buffer.io.deq.bits.req_data
+  lsDecoder.io.deq_sb_id := decoder_buffer.io.deq.bits.sb_id
+
+  // Instantiate mask/index buffer (for small control data)
+  val maskIdxBuffer = Module(new MaskIdxBuff(WIDTH = 66, DEPTH = 4)) // 66-bit width, 4 entries deep
+  
+  // Instantiate Vector Data Buffer (for large store data)
+  val vecDataBuffer = Module(new VecDataBuffer(R_WIDTH = lsuDmemWidth, W_WIDTH = oviWidth, DEPTH = vdbDepth))
 
   // Instantiate load and store generators
   val loadGen = Module(new LoadGen(vpuVlen, lsuDmemWidth))
   val storeGen = Module(new StoreGen(vpuVlen, lsuDmemWidth))
 
+  // Connect mask/index buffer to VPU mask/index data
+  maskIdxBuffer.io.mask_idx_in.valid := MemMaskValid
+  maskIdxBuffer.io.mask_idx_in.bits := MemMaskId
+  
+  // Connect Vector Data Buffer to VPU store data
+  vecDataBuffer.io.data_in.valid := MemStoreValid
+  vecDataBuffer.io.data_in.bits := MemStoreData
+  
+  // ======== Connect Decoder Buffer to Generators ========
+  // Dequeue from buffer when generators accept
+  val load_gen_handshake = decoder_buffer.io.deq.valid && lsDecoder.io.is_load && loadGen.io.start.ready
+  val store_gen_handshake = decoder_buffer.io.deq.valid && !lsDecoder.io.is_load && storeGen.io.start.ready
+  decoder_buffer.io.deq.ready := load_gen_handshake || store_gen_handshake
+  
   // Connect decoder outputs to generators
-  loadGen.io.start.valid := vLSIQueue.io.deq.fire && lsDecoder.io.is_load
+  loadGen.io.start.valid := decoder_buffer.io.deq.valid && lsDecoder.io.is_load
   loadGen.io.start.bits := lsDecoder.io.dec_info
-  // TODO: Connect real mask/index interface when ready
-  loadGen.io.mask_idx.valid := false.B
-  loadGen.io.mask_idx.data := DontCare
+  // Connect mask/index buffer to load generator
+  loadGen.io.mask_idx.valid := maskIdxBuffer.io.mask_idx_out.valid
+  loadGen.io.mask_idx.data := maskIdxBuffer.io.mask_idx_out.bits
   loadGen.io.kill := false.B // TODO: Connect to appropriate kill signal
 
-  storeGen.io.start.valid := vLSIQueue.io.deq.fire && !lsDecoder.io.is_load
+  storeGen.io.start.valid := decoder_buffer.io.deq.valid && !lsDecoder.io.is_load
   storeGen.io.start.bits := lsDecoder.io.dec_info
-  // TODO: Connect real mask/index interface when ready
-  storeGen.io.mask_idx.valid := false.B
-  storeGen.io.mask_idx.data := DontCare
-  // TODO: Connect real VDB interface when ready
-  storeGen.io.vdb_data.valid_bytes := 0.U
-  storeGen.io.vdb_data.data := DontCare
+  // Connect mask/index buffer to store generator
+  storeGen.io.mask_idx.valid := maskIdxBuffer.io.mask_idx_out.valid
+  storeGen.io.mask_idx.data := maskIdxBuffer.io.mask_idx_out.bits
+  // Connect Vector Data Buffer to store generator
+  storeGen.io.vdb_data.valid_bytes := vecDataBuffer.io.data_out.valid_bytes
+  storeGen.io.vdb_data.data := vecDataBuffer.io.data_out.bits
   storeGen.io.kill := false.B // TODO: Connect to appropriate kill signal
 
   // Shadow outputs - always ready to avoid blocking, with dontTouch for observation
   loadGen.io.load_packet.ready := true.B
   storeGen.io.store_packet.ready := true.B
-
+  
+  // Connect buffer ready signals (shadow connections)
+  maskIdxBuffer.io.mask_idx_out.ready := loadGen.io.mask_idx.ready || storeGen.io.mask_idx.ready
+  vecDataBuffer.io.data_out.read_bytes := storeGen.io.vdb_data.read_bytes
+  vecDataBuffer.io.data_out.read_all := storeGen.io.vdb_data.read_all
+  
   // Add dontTouch to preserve signals for observation (shadow code)
+  dontTouch(loadGen.io.start.valid)
+  dontTouch(loadGen.io.start.bits)
+  dontTouch(storeGen.io.start.valid)
+  dontTouch(storeGen.io.start.bits)
   dontTouch(loadGen.io.load_packet.valid)
   dontTouch(loadGen.io.load_packet.bits)
   dontTouch(storeGen.io.store_packet.valid) 
   dontTouch(storeGen.io.store_packet.bits)
   dontTouch(lsDecoder.io.is_load)
   dontTouch(lsDecoder.io.dec_info)
+  
+  // Add dontTouch for buffer observation
+  dontTouch(maskIdxBuffer.io.mask_idx_in.valid)
+  dontTouch(maskIdxBuffer.io.mask_idx_in.bits)
+  dontTouch(maskIdxBuffer.io.mask_idx_out.valid)
+  dontTouch(maskIdxBuffer.io.mask_idx_out.bits)
+  dontTouch(vecDataBuffer.io.data_in.valid)
+  dontTouch(vecDataBuffer.io.data_in.bits)
+  dontTouch(vecDataBuffer.io.data_out.valid_bytes)
+  dontTouch(vecDataBuffer.io.data_out.bits)
+  dontTouch(vecDataBuffer.io.credit)
 
   // ===============  OSC3 LSGEN SHADOW CODE END ===============
 

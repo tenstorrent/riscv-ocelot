@@ -74,43 +74,69 @@ extends Module with VecLSGenConstants {
   // --- packer ---
   val packer = Module(new LoadPacker(VLEN, DMEM_WIDTH))
   // start config
-  packer.io.start.valid := (io.start.valid && packable)
   packer.io.start.bits  := config_info
   // mask config
   packer.io.mask.valid     := io.mask_idx.valid
   packer.io.mask.mask_data := io.mask_idx.data(MASK_W-1, 0) // data only
-  // kill config
+  // kill signal
   packer.io.kill := io.kill
-  // load packet config
+  // load packet
   packer.io.load_packet.ready := io.load_packet.ready
 
   // --- skipper ---
   val skipper = Module(new LoadSkipper(VLEN, DMEM_WIDTH))
   // start config
-  skipper.io.start.valid := (io.start.valid && skipable)
   skipper.io.start.bits  := config_info
   // mask config
   skipper.io.mask.valid     := io.mask_idx.valid
   skipper.io.mask.mask_data := io.mask_idx.data(MASK_W-1, 0) // data only
-  // kill config
+  // kill signal
   skipper.io.kill := io.kill
-  // load packet config
+  // load packet
   skipper.io.load_packet.ready := io.load_packet.ready
 
   // --- walker ---
   val walker = Module(new LoadWalker(VLEN, DMEM_WIDTH))
   // start config
-  walker.io.start.valid := (io.start.valid && walkable)
   walker.io.start.bits  := config_info
   // index config
   walker.io.index.valid       := io.mask_idx.valid
   walker.io.index.index_value := io.mask_idx.data(MASK_W-1, 0).asSInt // idx val
   walker.io.index.mask_bit    := io.mask_idx.data(MASK_W)             // mask bit
   walker.io.index.last_index  := io.mask_idx.data(MASK_W+1)           // last bit
-  // kill config
+  // kill signal
   walker.io.kill := io.kill
-  // load packet config
+  // load packet
   walker.io.load_packet.ready := io.load_packet.ready
+
+  // ======== Start Mux ========
+
+  // BYPASS case (no gens valid)
+  when (bypassable) {
+    packer.io.start.valid  := false.B
+    skipper.io.start.valid := false.B
+    walker.io.start.valid  := false.B
+  // PACKING case (packer valid)
+  } .elsewhen (packable) {
+    packer.io.start.valid  := io.start.valid
+    skipper.io.start.valid := false.B
+    walker.io.start.valid  := false.B
+  // SKIPPING case (skipper valid)
+  } .elsewhen (skipable) {
+    packer.io.start.valid  := false.B
+    skipper.io.start.valid := io.start.valid
+    walker.io.start.valid  := false.B
+  // WALKING case (walker valid)
+  } .elsewhen (walkable) {
+    packer.io.start.valid  := false.B
+    skipper.io.start.valid := false.B
+    walker.io.start.valid  := io.start.valid
+  // IDLE case (no gens valid)
+  } .otherwise {
+    packer.io.start.valid  := false.B
+    skipper.io.start.valid := false.B
+    walker.io.start.valid  := false.B
+  }
 
   // ======== Outputs ========
 
@@ -159,12 +185,14 @@ extends Module with VecLSGenConstants {
   // IDLE case (no output but transparent to inputs)
   } .otherwise {
     io.start.ready       := PriorityMux(Seq(
+      (bypassable) -> true.B,
       (packable)   -> packer.io.start.ready,
       (skipable)   -> skipper.io.start.ready,
       (walkable)   -> walker.io.start.ready,
-      (true.B)     -> true.B
+      (true.B)     -> false.B
     ))
     io.mask_idx.ready    := PriorityMux(Seq(
+      (bypassable) -> false.B,
       (packable)   -> packer.io.mask.ready,
       (skipable)   -> skipper.io.mask.ready,
       (walkable)   -> walker.io.index.ready,

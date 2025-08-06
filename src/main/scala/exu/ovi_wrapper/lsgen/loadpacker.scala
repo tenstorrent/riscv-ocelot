@@ -219,7 +219,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.sb_id  := sb_id
   io.load_packet.bits.mask_data  := current_mask_data & ((1.U << el_count) - 1.U)
   io.load_packet.bits.mask_valid := is_mask
-  io.load_packet.bits.is_fake    := (el_count === 0.U) || ((current_mask_data & ((1.U << el_count) - 1.U)) === 0.U)
+  io.load_packet.bits.is_fake    := (el_count === 0.U) || (is_mask && ((current_mask_data & ((1.U << el_count) - 1.U)) === 0.U))
   io.load_packet.bits.misaligned := ((base_addr & ((1.U << eew_enc) - 1.U)) =/= 0.U)
   io.load_packet.bits.last   := (state === State.PACKING) && (vl_constraint_met)
 
@@ -266,7 +266,7 @@ extends Module with VecLSGenConstants {
           current_mask_data := io.mask.mask_data
         }.otherwise {
           current_mask_off := next_mask_off
-          current_mask_data := current_mask_data  << (next_mask_off - current_mask_off)
+          current_mask_data := current_mask_data >> (next_mask_off - current_mask_off)
         }
       }
       

@@ -152,11 +152,11 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.v_reg    := base_v_reg + (current_seg_id << emul_enc) + current_v_group_id
   io.load_packet.bits.el_id    := current_el_id
   io.load_packet.bits.el_off   := dmem_off
-  io.load_packet.bits.el_count := (seg_inc_val << skip_enc)
+  io.load_packet.bits.el_count := Mux(skippable, (seg_inc_val << skip_enc), seg_inc_val)
   io.load_packet.bits.sb_id    := sb_id
   io.load_packet.bits.mask_data  := Mux(skippable, 0.U, current_mask_data)
   io.load_packet.bits.mask_valid := is_mask
-  io.load_packet.bits.is_fake    := (seg_inc_val === 0.U) || skippable
+  io.load_packet.bits.is_fake    := (seg_inc_val === 0.U) || (is_mask && skippable)
   io.load_packet.bits.misaligned := ((current_addr & ((1.U << eew_enc) - 1.U)) =/= 0.U)
   io.load_packet.bits.last     := (state === State.SKIPPING) && (max_ctr_met || vl_constraint_met)
 
@@ -191,24 +191,34 @@ extends Module with VecLSGenConstants {
       }.elsewhen (io.load_packet.fire) {
 
         // -- Next Address calculation --
-        val next_addr = (current_addr.asSInt + (stride << skip_enc)).asUInt
+        val next_addr = (current_addr.asSInt + Mux(skippable, (stride << skip_enc), stride)).asUInt
 
         // -- Counter ripple logic --
         // direct skip case (seg_id is always 0 when this happens)
         when (skippable) {
-          current_el_id := current_el_id + skip_val
-        // [v_group, el, seg]: [x, x, +1]
-        }.elsewhen (!max_seg_id_met) {
-          current_seg_id := current_seg_id + seg_inc_val
-        // [v_group, el, seg]: [x, +1, 0]
-        }.elsewhen (!max_el_id_met) {
-          current_seg_id := 0.U
-          current_el_id := current_el_id + 1.U
-        // [v_group, el, seg]: [+1, 0, 0]
+          // [v_group, el, seg]: [x, +1, 0]
+          when (!vreg_constraint_met) {
+            current_el_id := current_el_id + skip_val
+          }.otherwise {
+            // [v_group, el, seg]: [+1, 0, 0]
+            current_el_id := 0.U
+            current_v_group_id := current_v_group_id + 1.U
+          }
+        // normal "ripple" case
         }.otherwise {
-          current_seg_id := 0.U
-          current_el_id := 0.U
-          current_v_group_id := current_v_group_id + 1.U
+          // [v_group, el, seg]: [x, x, +1]
+          when (!max_seg_id_met) {
+            current_seg_id := current_seg_id + seg_inc_val
+          // [v_group, el, seg]: [x, +1, 0]
+          }.elsewhen (!max_el_id_met) {
+            current_seg_id := 0.U
+            current_el_id := current_el_id + 1.U
+          // [v_group, el, seg]: [+1, 0, 0]
+          }.otherwise {
+            current_seg_id := 0.U
+            current_el_id := 0.U
+            current_v_group_id := current_v_group_id + 1.U
+          }
         }
 
         // -- Next element config/updates --
@@ -235,10 +245,10 @@ extends Module with VecLSGenConstants {
           current_mask_data := io.mask.mask_data
         } .elsewhen (skippable) {
           current_mask_off  := current_mask_off + skip_val
-          current_mask_data := current_mask_data << skip_val
+          current_mask_data := current_mask_data >> skip_val
         } .elsewhen (max_seg_id_met) {
           current_mask_off  := current_mask_off + 1.U
-          current_mask_data := current_mask_data << 1.U
+          current_mask_data := current_mask_data >> 1.U
         }
 
         // -- Last packet transition --
@@ -270,6 +280,21 @@ extends Module with VecLSGenConstants {
   dontTouch(io.start)
   dontTouch(io.load_packet)
   dontTouch(io.kill)
+
+  dontTouch(skippable)
+  dontTouch(skip_val)
+  dontTouch(skip_enc)
+  dontTouch(vreg_constraint)
+  dontTouch(vl_constraint)
+  dontTouch(dmem_constraint)
+  dontTouch(packing_constraint)
+  dontTouch(dmem_constraint_met)
+  dontTouch(packing_constraint_met)
+  dontTouch(max_seg_id_met)
+  dontTouch(max_el_id_met)
+  dontTouch(max_v_group_met)
+  dontTouch(max_ctr_met)
+  dontTouch(max_mask_met)
 
 }
 

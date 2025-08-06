@@ -134,7 +134,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.sb_id    := sb_id
   io.load_packet.bits.mask_data  := current_mask_bit
   io.load_packet.bits.mask_valid := (is_index && is_mask)
-  io.load_packet.bits.is_fake    := (seg_inc_val === 0.U) || (current_mask_bit === false.B)
+  io.load_packet.bits.is_fake    := (seg_inc_val === 0.U) || (is_mask && (current_mask_bit === false.B))
   io.load_packet.bits.misaligned := ((current_addr & ((1.U << eew_enc) - 1.U)) =/= 0.U)
   io.load_packet.bits.last     := (state === State.WALKING) && (max_ctr_met)
 

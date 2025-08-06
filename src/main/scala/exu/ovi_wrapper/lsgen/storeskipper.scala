@@ -27,8 +27,9 @@ extends Module with VecLSGenConstants {
     }
     // store data interface
     val vdb_data = new Bundle {
-      val read_bytes  = Output(UInt(log2Ceil(DMEM_WIDTH/8).W)) // like a ready signal
-      val valid_bytes = Input(UInt(log2Ceil(DMEM_WIDTH/8).W))  // like a valid signal
+      val read_bytes  = Output(UInt(VDB_R_SIZE_BYTES.W)) // like a ready signal
+      val read_all    = Output(Bool())
+      val valid_bytes = Input(UInt(VDB_R_SIZE_BYTES.W))  // like a valid signal
       val data        = Input(UInt(DMEM_WIDTH.W))
     }
     val kill = Input(Bool())
@@ -73,20 +74,24 @@ extends Module with VecLSGenConstants {
     PriorityEncoder(current_mask_data),
     MASK_W.U - current_mask_off
   )
+  val vdb_constraint = io.vdb_data.valid_bytes >> eew_enc
   val vl_constraint = (vl - 1.U) - current_ctr
 
   // skip_val is the biggest power of 2 value smaller than the smallest of skipping constraints
   val skip_val = WireInit(0.U(11.W))
-  when (mask_constraint <= vl_constraint) {
+  when ((mask_constraint <= vl_constraint) && (mask_constraint <= vdb_constraint)) {
     skip_val := Reverse(PriorityEncoderOH(Reverse(mask_constraint)))
-  }.elsewhen (vl_constraint <= mask_constraint) {
+  }.elsewhen ((vdb_constraint <= mask_constraint) && (vdb_constraint <= vl_constraint)) {
+    skip_val := Reverse(PriorityEncoderOH(Reverse(vdb_constraint)))
+  }.elsewhen ((vl_constraint <= mask_constraint) && (vl_constraint <= vdb_constraint)) {
     skip_val := Reverse(PriorityEncoderOH(Reverse(vl_constraint)))
   }
 
   val skippable = (skip_val =/= 0.U)
   val skip_enc  = PriorityEncoder(skip_val)
 
-  val vl_constraint_met = (skip_val === vl_constraint)
+  val vdb_constraint_met = (skip_val === vdb_constraint)
+  val vl_constraint_met  = (skip_val === vl_constraint)
 
   // ======== Packing Constraints ========
 
@@ -124,13 +129,14 @@ extends Module with VecLSGenConstants {
   io.store_packet.valid  := ((state === State.SKIPPING) && (!io.mask.ready || io.mask.valid) && (vdb_valid))
   val vdb_ready           = ((state === State.SKIPPING) && (!io.mask.ready || io.mask.valid) && (io.store_packet.ready))
   io.vdb_data.read_bytes := Mux(vdb_ready, Mux(skippable, (seg_count << (skip_enc + eew_enc)), (1.U << (seg_inc_enc + eew_enc))), 0.U)
+  io.vdb_data.read_all   := (state === State.SKIPPING) && (vl_constraint_met) // last packet
 
   // store packet
   io.store_packet.bits.addr     := current_addr
   io.store_packet.bits.data     := io.vdb_data.data
   io.store_packet.bits.mem_size := Mux(skippable, 0.U, (seg_inc_enc + eew_enc))
   io.store_packet.bits.sb_id    := sb_id
-  io.store_packet.bits.is_fake  := (seg_inc_val === 0.U) || skippable
+  io.store_packet.bits.is_fake  := (seg_inc_val === 0.U) || (is_mask && skippable)
   io.store_packet.bits.misaligned := false.B
   io.store_packet.bits.last     := (state === State.SKIPPING) && (vl_constraint_met)
 
@@ -165,7 +171,7 @@ extends Module with VecLSGenConstants {
       } .elsewhen (io.store_packet.fire) {
 
         // -- Next Address calculation --
-        val next_addr = (current_addr.asSInt + (stride << skip_enc)).asUInt
+        val next_addr = (current_addr.asSInt + Mux(skippable, (stride << skip_enc), stride)).asUInt
 
         // -- Counter ripple logic --
         // direct skip case (seg_id is always 0 when this happens)
@@ -209,10 +215,10 @@ extends Module with VecLSGenConstants {
           current_mask_data := io.mask.mask_data
         } .elsewhen (skippable) {
           current_mask_off  := current_mask_off + skip_val
-          current_mask_data := current_mask_data << skip_val
+          current_mask_data := current_mask_data >> skip_val
         } .elsewhen (max_seg_id_met) {
           current_mask_off  := current_mask_off + 1.U
-          current_mask_data := current_mask_data << 1.U
+          current_mask_data := current_mask_data >> 1.U
         }
 
         // -- Last packet transition --
@@ -223,4 +229,59 @@ extends Module with VecLSGenConstants {
       }
     }
   }
+
+  // ======== Debug ========
+
+  when (vdb_valid && vdb_ready && !io.vdb_data.read_all) {
+    assert((seg_inc_val =/= 0.U), "seg_inc_val must be non-zero when vdb_valid and vdb_ready are true")
+  }
+
+  // IO ports
+  dontTouch(io.start)
+  dontTouch(io.mask)
+  dontTouch(io.vdb_data)
+  dontTouch(io.kill)
+  dontTouch(io.store_packet)
+
+  // Internal state and config
+  dontTouch(state)
+  dontTouch(sb_id)
+  dontTouch(vl)
+  dontTouch(eew_enc)
+  dontTouch(emul_enc)
+  dontTouch(stride_dir)
+  dontTouch(base_addr)
+  dontTouch(stride)
+  dontTouch(seg_count)
+  dontTouch(is_mask)
+
+  // Skipping state
+  dontTouch(current_seg_id)
+  dontTouch(current_el_id)
+  dontTouch(current_v_group_id)
+  dontTouch(current_addr)
+  dontTouch(current_ctr)
+  dontTouch(current_mask_data)
+  dontTouch(current_mask_off)
+  dontTouch(dmem_off)
+  dontTouch(dmem_max)
+
+  // Skipping logic
+  dontTouch(skippable)
+  dontTouch(skip_val)
+  dontTouch(skip_enc)
+  dontTouch(mask_constraint)
+  dontTouch(vl_constraint)
+  dontTouch(vl_constraint_met)
+  dontTouch(vdb_constraint)
+  dontTouch(vdb_constraint_met)
+
+  // Packing logic
+  dontTouch(dmem_constraint)
+  dontTouch(packing_constraint)
+  dontTouch(dmem_constraint_met)
+  dontTouch(packing_constraint_met)
+  dontTouch(seg_inc_val)
+  dontTouch(seg_inc_enc)
+
 }

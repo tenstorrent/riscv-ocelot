@@ -31,8 +31,9 @@ extends Module with VecLSGenConstants {
     val kill = Input(Bool())
     // store data interface
     val vdb_data = new Bundle {
-      val read_bytes  = Output(UInt(log2Ceil(DMEM_WIDTH/8).W)) // like a ready signal
-      val valid_bytes = Input(UInt(log2Ceil(DMEM_WIDTH/8).W))  // like a valid signal
+      val read_bytes  = Output(UInt(VDB_R_SIZE_BYTES.W)) // like a ready signal
+      val read_all    = Output(Bool())
+      val valid_bytes = Input(UInt(VDB_R_SIZE_BYTES.W))  // like a valid signal
       val data        = Input(UInt(DMEM_WIDTH.W))
     }
     // store packet
@@ -76,18 +77,24 @@ extends Module with VecLSGenConstants {
   // elements that can be stored contiguously depending on mem alignment
   val dmem_constraint = PriorityEncoderOH(dmem_off | ~(dmem_max-1.U))
 
+  // elements that can be provided from VDB
+  val vdb_constraint = io.vdb_data.valid_bytes >> eew_enc
+
   // elements until the next stride update
   val packing_constraint = seg_count - current_seg_id
 
   val seg_inc_val = WireInit(0.U(SEG_W.W))
-  when (dmem_constraint <= packing_constraint) {
+  when ((dmem_constraint <= packing_constraint) && (dmem_constraint <= vdb_constraint)) {
     seg_inc_val := Reverse(PriorityEncoderOH(Reverse(dmem_constraint)))
-  }.elsewhen (packing_constraint <= dmem_constraint) {
+  }.elsewhen ((vdb_constraint <= dmem_constraint) && (vdb_constraint <= packing_constraint)) {
+    seg_inc_val := Reverse(PriorityEncoderOH(Reverse(vdb_constraint)))
+  }.elsewhen ((packing_constraint <= dmem_constraint) && (packing_constraint <= vdb_constraint)) {
     seg_inc_val := Reverse(PriorityEncoderOH(Reverse(packing_constraint)))
   }
   val seg_inc_enc = PriorityEncoder(seg_inc_val)
 
   val dmem_constraint_met    = (seg_inc_val === dmem_constraint)
+  val vdb_constraint_met     = (seg_inc_val === vdb_constraint)
   val packing_constraint_met = (seg_inc_val === packing_constraint)
 
   // ======== Max Constraints ========
@@ -107,13 +114,14 @@ extends Module with VecLSGenConstants {
   io.store_packet.valid  := ((state === State.WALKING) && (!io.index.ready || io.index.valid) && (vdb_valid))
   val vdb_ready           = ((state === State.WALKING) && (!io.index.ready || io.index.valid) && (io.store_packet.ready))
   io.vdb_data.read_bytes := Mux(vdb_ready, (1.U << (seg_inc_enc + eew_enc)), 0.U)
+  io.vdb_data.read_all   := (state === State.WALKING) && (max_ctr_met) // last packet
 
   // packet info
   io.store_packet.bits.addr     := current_addr + (current_seg_id << emul_enc)
   io.store_packet.bits.data     := io.vdb_data.data
   io.store_packet.bits.mem_size := (seg_inc_enc + eew_enc)
   io.store_packet.bits.sb_id    := sb_id
-  io.store_packet.bits.is_fake  := (seg_inc_val === 0.U) || (current_mask_bit === false.B)
+  io.store_packet.bits.is_fake  := (seg_inc_val === 0.U) || (is_mask && (current_mask_bit === false.B))
   io.store_packet.bits.misaligned := false.B
   io.store_packet.bits.last     := (state === State.WALKING) && (max_ctr_met)
 
@@ -200,5 +208,52 @@ extends Module with VecLSGenConstants {
       }
     }
   }
+
+  // ======== Debug ========
+
+  when (vdb_valid && vdb_ready && !io.vdb_data.read_all) {
+    assert((seg_inc_val =/= 0.U), "seg_inc_val must be non-zero when vdb_valid and vdb_ready are true")
+  }
+
+  // IO ports
+  dontTouch(io.start)
+  dontTouch(io.index)
+  dontTouch(io.vdb_data)
+  dontTouch(io.kill)
+  dontTouch(io.store_packet)
+
+  // Internal state and config
+  dontTouch(state)
+  dontTouch(sb_id)
+  dontTouch(base_v_reg)
+  dontTouch(vl)
+  dontTouch(eew_enc)
+  dontTouch(emul_enc)
+  dontTouch(stride)
+  dontTouch(seg_count)
+  dontTouch(is_mask)
+  dontTouch(is_index)
+  dontTouch(base_addr)
+
+  // Walking state
+  dontTouch(current_seg_id)
+  dontTouch(current_el_id)
+  dontTouch(current_v_group_id)
+  dontTouch(current_addr)
+  dontTouch(current_ctr)
+  dontTouch(current_mask_bit)
+  dontTouch(current_last_index)
+  dontTouch(dmem_off)
+  dontTouch(dmem_max)
+
+  // Constraint logic
+  dontTouch(dmem_constraint)
+  dontTouch(packing_constraint)
+  dontTouch(vdb_constraint)
+  dontTouch(vdb_constraint_met)
+  dontTouch(dmem_constraint_met)
+  dontTouch(packing_constraint_met)
+  dontTouch(seg_inc_val)
+  dontTouch(seg_inc_enc)
 
 } 
