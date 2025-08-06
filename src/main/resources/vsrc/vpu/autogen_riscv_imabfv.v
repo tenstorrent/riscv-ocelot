@@ -7972,5 +7972,60 @@ v_ldst_index_reset[0] = 1'b0; // Assigning Default value of 0
 end
 endmodule
 
+// Division operation decoder modules
+module autogen_v_idivop (
+input [6:0] Opcode,
+input [6:0] funct7,
+input [2:0] funct3,
+output reg [0:0] v_idivop
+);
+
+always_comb begin
+	casez({Opcode[6], Opcode[5], Opcode[4], Opcode[3], Opcode[2], Opcode[1], Opcode[0], funct7[6], funct7[5], funct7[4], funct7[3], funct7[2], funct7[1], funct7[0], funct3[2], funct3[1], funct3[0]})
+	    // vdiv.vv  - funct7=100001, funct3=000
+	    17'b10101111000001000  :  v_idivop[0] = 1'b1;
+	    // vdivu.vv - funct7=100000, funct3=000  
+	    17'b10101111000000000  :  v_idivop[0] = 1'b1;
+	    // vrem.vv  - funct7=100011, funct3=000
+	    17'b10101111000011000  :  v_idivop[0] = 1'b1;
+	    // vremu.vv - funct7=100010, funct3=000
+	    17'b10101111000010000  :  v_idivop[0] = 1'b1;
+	    // vdiv.vx  - funct7=100001, funct3=100
+	    17'b10101111000001100  :  v_idivop[0] = 1'b1;
+	    // vdivu.vx - funct7=100000, funct3=100
+	    17'b10101111000000100  :  v_idivop[0] = 1'b1;
+	    // vrem.vx  - funct7=100011, funct3=100
+	    17'b10101111000011100  :  v_idivop[0] = 1'b1;
+	    // vremu.vx - funct7=100010, funct3=100
+	    17'b10101111000010100  :  v_idivop[0] = 1'b1;
+	    default : v_idivop[0] = 1'b0;
+	endcase
+end
+endmodule
+
+module autogen_v_fdivop (
+input [6:0] Opcode,
+input [6:0] funct7,
+input [2:0] funct3,
+output reg [0:0] v_fdivop
+);
+
+always_comb begin
+	casez({Opcode[6], Opcode[5], Opcode[4], Opcode[3], Opcode[2], Opcode[1], Opcode[0], funct7[6], funct7[5], funct7[4], funct7[3], funct7[2], funct7[1], funct7[0], funct3[2], funct3[1], funct3[0]})
+	    // vfdiv.vv  - funct7=100000, funct3=001
+	    17'b10101111000000001  :  v_fdivop[0] = 1'b1;
+	    // vfrdiv.vv - funct7=100001, funct3=001
+	    17'b10101111000001001  :  v_fdivop[0] = 1'b1;
+	    // vfsqrt.v  - funct7=100011, funct3=001, vs1=00000
+	    17'b10101111000011001  :  v_fdivop[0] = 1'b1;
+	    // vfdiv.vf  - funct7=100000, funct3=101
+	    17'b10101111000000101  :  v_fdivop[0] = 1'b1;
+	    // vfrdiv.vf - funct7=100001, funct3=101
+	    17'b10101111000001101  :  v_fdivop[0] = 1'b1;
+	    default : v_fdivop[0] = 1'b0;
+	endcase
+end
+endmodule
+
 //spyglass enable_block OneModule-ML
 //spyglass enable_block W398

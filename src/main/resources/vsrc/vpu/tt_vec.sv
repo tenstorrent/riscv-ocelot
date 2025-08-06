@@ -53,6 +53,7 @@ module tt_vec #(parameter
               
               //To ID
               output                                          o_vex_id_rtr,
+              output logic                                    o_vex_div_busy,
               output logic [4:0]                              o_iterate_addrp0,
               output logic [4:0]                              o_iterate_addrp1,
               output logic [4:0]                              o_iterate_addrp2,
@@ -65,7 +66,7 @@ module tt_vec #(parameter
               
               input [XLEN-1:0]                                    i_fprf_vex_p0  //fp to vrf moves; note this align with 0a, and read pre flop.                   
               );
-
+  assign o_vex_div_busy = 1'b0;
    /*AUTOWIRE*/
    // Beginning of automatic wires (for undeclared instantiated-module outputs)
    logic                sat_csr_2a;             // From idp of tt_vec_idp.v

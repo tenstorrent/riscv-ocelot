@@ -354,6 +354,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   assign csr_de0.v_vxrm  = vcsr[30:29];
   assign csr_de0.frm     = vcsr[33:31];
 
+  logic vex_div_busy;
   tt_id
   #(
     .LQ_DEPTH(LQ_DEPTH),
@@ -390,6 +391,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_v_vm                                (v_vm              ),    
 
     // EX Interface
+    .i_div_resource_busy                   (vex_div_busy),
     .o_id_ex_rts                           (id_ex_rts),             
     .i_ex_rtr                              (ex_id_rtr         ),    
     .o_id_ex_pc                            (id_ex_pc),        
@@ -610,6 +612,7 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .i_id_vec_autogen      (id_vec_autogen),        
     .o_sat_csr             (ocelot_sat_csr),
     // ID Interface
+    .o_vex_div_busy        (vex_div_busy),
     .i_id_vex_rts          (id_vex_rts),            
     .o_vex_id_rtr          (vex_id_rtr),            
     .i_id_ex_vecldst       (id_ex_vecldst),         
