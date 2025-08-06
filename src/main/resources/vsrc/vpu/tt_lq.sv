@@ -61,6 +61,12 @@ module tt_lq #(parameter
    input tt_briscv_pkg::csr_fp_exc      i_vex_mem_lqexc_3c,
    input logic [LQ_DEPTH_LOG2-1:0] 	i_vex_mem_lqid_3c,
    
+   // VEX Division --> MEM signals
+   input logic 				i_vex_mem_lqvld_div,
+   input logic [VLEN-1:0] 		i_vex_mem_lqdata_div,
+   input tt_briscv_pkg::csr_fp_exc      i_vex_mem_lqexc_div,
+   input logic [LQ_DEPTH_LOG2-1:0] 	i_vex_mem_lqid_div,
+   
    // Load data return
    input 				i_data_vld_0,
    input 				i_data_vld_cancel_0,
@@ -114,7 +120,7 @@ localparam LQ_DATA_WIDTH = INCL_VEC ? (LD_DATA_WIDTH_BITS + // data
                                     : (LD_DATA_WIDTH_BITS + 4 + 3);
 localparam LQ_RD_PORTS      = 1;
 localparam LQ_TAG_WR_PORTS  = 1;
-localparam LQ_DATA_WR_PORTS = 6;
+localparam LQ_DATA_WR_PORTS = 7;  // Added division write port
 localparam LQ_CAM_PORTS     = 1;               // really don't need any CAM ports, but we can just tie down the inputs / leave unused the outputs
 
 logic                   ptrs_equal;
@@ -213,7 +219,8 @@ for (genvar i=0; i<LQ_DEPTH; i++) begin
                                  ((lq_fifo_write_data_en[2] & (lq_fifo_write_data_addr[2] == i))) | 
                                  ((lq_fifo_write_data_en[3] & (lq_fifo_write_data_addr[3] == i))) |
 // Don't set the valid for loads ((lq_fifo_write_data_en[4] & (lq_fifo_write_data_addr[4] == i))) |
-                                 ((lq_fifo_write_data_en[5] & (lq_fifo_write_data_addr[5] == i))); 
+                                 ((lq_fifo_write_data_en[5] & (lq_fifo_write_data_addr[5] == i))) |
+                                 ((lq_fifo_write_data_en[6] & (lq_fifo_write_data_addr[6] == i))); 
 end
    
 // Bypass the read return if it's to the top entry
@@ -280,6 +287,11 @@ assign lq_fifo_write_data_value[4] = LQ_DATA_WIDTH'({i_skidbuf_lqvecld128_1c,i_s
 assign lq_fifo_write_data_en[5]    = i_ex_mem_lqvld_2c;
 assign lq_fifo_write_data_addr[5]  = i_ex_mem_lqid_2c;
 assign lq_fifo_write_data_value[5] = LQ_DATA_WIDTH'(i_ex_mem_lqdata_2c);
+
+// Division write port
+assign lq_fifo_write_data_en[6]    = i_vex_mem_lqvld_div;
+assign lq_fifo_write_data_addr[6]  = i_vex_mem_lqid_div;
+assign lq_fifo_write_data_value[6] = LQ_DATA_WIDTH'({i_vex_mem_lqexc_div, i_vex_mem_lqdata_div});
 
 // Align the load return data before storing in load queue
 assign lq_fifo_load_write_data_0 = align_load_data(i_data_rddata_0[31:0], 

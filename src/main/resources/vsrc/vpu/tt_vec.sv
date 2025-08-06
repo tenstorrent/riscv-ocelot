@@ -61,12 +61,24 @@ module tt_vec #(parameter
               output logic                                    o_ignore_lmul,
               output logic                                    o_ignore_dstincr,
               output logic                                    o_ignore_srcincr, //This should be set for instructions that are processing mask bits.(eg: vmand.mm, viota vid ,vmsof...)
+              
+              //Division write back path
+              output logic                                    o_vex_mem_lqvld_div,
+              output logic [VLEN-1:0]                         o_vex_mem_lqdata_div,
+              output tt_briscv_pkg::csr_fp_exc                o_vex_mem_lqexc_div,
+              output logic [tt_briscv_pkg::LQ_DEPTH_LOG2-1:0] o_vex_mem_lqid_div,
               //From Int RF
               input [XLEN-1:0]                                    i_rf_vex_p0, //int to vrf moves; note this align with 0a, and read pre flop.
               
               input [XLEN-1:0]                                    i_fprf_vex_p0  //fp to vrf moves; note this align with 0a, and read pre flop.                   
               );
   assign o_vex_div_busy = 1'b0;
+  
+  // Division write back ports - tied to 0 for now
+  assign o_vex_mem_lqvld_div = 1'b0;
+  assign o_vex_mem_lqdata_div = '0;
+  assign o_vex_mem_lqexc_div = '0;
+  assign o_vex_mem_lqid_div = '0;
    /*AUTOWIRE*/
    // Beginning of automatic wires (for undeclared instantiated-module outputs)
    logic                sat_csr_2a;             // From idp of tt_vec_idp.v

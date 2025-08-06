@@ -189,6 +189,12 @@ module tt_vpu_ovi #(parameter VLEN = 256)
   logic [LQ_DEPTH_LOG2-1:0] vex_mem_lqid_3c;
   tt_briscv_pkg::csr_fp_exc vex_mem_lqexc_3c;
 
+  // VEX Division --> MEM signals
+  logic                     vex_mem_lqvld_div;
+  logic [VLEN-1:0]          vex_mem_lqdata_div;
+  logic [LQ_DEPTH_LOG2-1:0] vex_mem_lqid_div;
+  tt_briscv_pkg::csr_fp_exc vex_mem_lqexc_div;
+
   logic [63:0]  rf_vex_p0_reg;
   logic [63:0]  rf_vex_p1_reg;
   logic [63:0]  fprf_vex_p0_reg;
@@ -646,6 +652,11 @@ module tt_vpu_ovi #(parameter VLEN = 256)
     .o_vex_mem_lqdata_3c   (vex_mem_lqdata_3c), 
     .o_vex_mem_lqexc_3c    (vex_mem_lqexc_3c),      
     .o_vex_mem_lqid_3c     (vex_mem_lqid_3c), 
+    // Division connections
+    .o_vex_mem_lqvld_div   (vex_mem_lqvld_div),      
+    .o_vex_mem_lqdata_div  (vex_mem_lqdata_div), 
+    .o_vex_mem_lqexc_div   (vex_mem_lqexc_div),      
+    .o_vex_mem_lqid_div    (vex_mem_lqid_div), 
     .i_mem_vrf_wr          (mem_vrf_wr),            
     .i_mem_vrf_wraddr      (mem_vrf_wraddr),   
     .i_mem_vrf_wrdata      (mem_vrf_wrdata), 
@@ -728,6 +739,12 @@ tt_lq #(.LQ_DEPTH(LQ_DEPTH),
    .i_vex_mem_lqdata_3c(vex_mem_lqdata_3c),
    .i_vex_mem_lqexc_3c(vex_mem_lqexc_3c),
    .i_vex_mem_lqid_3c(vex_mem_lqid_3c),
+
+   // Division connections
+   .i_vex_mem_lqvld_div(vex_mem_lqvld_div),
+   .i_vex_mem_lqdata_div(vex_mem_lqdata_div),
+   .i_vex_mem_lqexc_div(vex_mem_lqexc_div),
+   .i_vex_mem_lqid_div(vex_mem_lqid_div),
 
    // Load return data
    .i_data_vld_0(drain_load_buffer),
