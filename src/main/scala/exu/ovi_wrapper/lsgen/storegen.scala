@@ -15,7 +15,7 @@ import boom.util._
 
 import chisel3.dontTouch // this is for debugging purposes
 
-class StorePacket(override val VLEN: Int, override val DMEM_WIDTH: Int)
+class StorePacket(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
 extends Bundle with VecLSGenConstants {
   val addr     = UInt(64.W)
   val data     = UInt(DMEM_WIDTH.W)
@@ -24,11 +24,12 @@ extends Bundle with VecLSGenConstants {
   val is_fake  = Bool()    // must ignore (since BOOM doesn't support masked stores)
   val misaligned = Bool()
   val last     = Bool()    // last element in sequence
+  val uop      = new MicroOp()
 }
 
 // Store Generator for OVI
 // holds all the store generators for OVI
-class StoreGen(override val VLEN: Int, override val DMEM_WIDTH: Int)
+class StoreGen(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
 extends Module with VecLSGenConstants {
   // ======== Input-Output Ports ========
   val io = IO(new Bundle {
@@ -158,7 +159,8 @@ extends Module with VecLSGenConstants {
   bypass_packet.is_fake    := true.B   // fake store
   bypass_packet.misaligned := DontCare
   bypass_packet.last       := true.B   // assert end
-
+  bypass_packet.uop        := DontCare
+  
   // BYPASS case (no output but assert last)
   when (state === State.BYPASS) {
     io.start.ready         := false.B

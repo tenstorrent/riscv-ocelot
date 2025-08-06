@@ -10,7 +10,7 @@ import freechips.rocketchip.rocket.{VConfig}
 
 import boom.exu.FUConstants._
 
-class StoreWalker(override val VLEN: Int, override val DMEM_WIDTH: Int)
+class StoreWalker(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
 extends Module with VecLSGenConstants {
   // ======== Parameters ========
   val CTR_WIDTH = (EL_ID_W+((1<<EMUL_ENC_W)-1)) // same as max of vl
@@ -69,6 +69,7 @@ extends Module with VecLSGenConstants {
   val current_ctr      = RegInit(0.U(CTR_WIDTH.W))             // element counter to vl
   val current_mask_bit = RegInit(false.B)                      // current mask bit (for indexed stores)
   val current_last_index = RegInit(false.B)                    // current "last index" state (remember across segments)
+  val current_dir        = RegInit(false.B)                    // current direction of stride/index
   val dmem_off   = RegInit(0.U(DMEM_ENC.W)) // memory alignment offset
   val dmem_max   = RegInit(0.U(DMEM_ENC.W)) // max elements to fit in DMEM
 
@@ -117,19 +118,23 @@ extends Module with VecLSGenConstants {
   io.vdb_data.read_all   := (state === State.WALKING) && (max_ctr_met) // last packet
 
   // packet info
-  io.store_packet.bits.addr     := current_addr + (current_seg_id << emul_enc)
+  io.store_packet.bits.addr     := current_addr + (Mux(current_dir, -current_seg_id, current_seg_id) << emul_enc)
   io.store_packet.bits.data     := io.vdb_data.data
   io.store_packet.bits.mem_size := (seg_inc_enc + eew_enc)
   io.store_packet.bits.sb_id    := sb_id
   io.store_packet.bits.is_fake  := (seg_inc_val === 0.U) || (is_mask && (current_mask_bit === false.B))
   io.store_packet.bits.misaligned := false.B
   io.store_packet.bits.last     := (state === State.WALKING) && (max_ctr_met)
+  io.store_packet.bits.uop      := io.start.bits.uop
 
   // ======== State Machine ========
 
   switch (state) {
     is (State.IDLE) {
       when (io.start.fire) {
+        // temp value for direction
+        val next_direction = Mux(is_index, io.index.index_value, stride)(63)
+
         // -- Input config --
         state := State.WALKING
 
@@ -141,12 +146,12 @@ extends Module with VecLSGenConstants {
         current_ctr     := 0.U
         current_mask_bit   := io.index.mask_bit
         current_last_index := io.index.last_index
+        current_dir        := next_direction
 
         // -- Initialize DMEM info --
-        val direction = Mux(is_index, io.index.index_value, stride)(63)
         val high_off  = (((1<<(ADDR_BREAK))-1).U - base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
         val low_off   = (base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from start of DMEM (low) to base_addr
-        dmem_off := Mux(direction, high_off, low_off)
+        dmem_off := Mux(next_direction, high_off, low_off)
         dmem_max := (DMEM_BYTES.U >> eew_enc)
       }
     }
@@ -161,6 +166,7 @@ extends Module with VecLSGenConstants {
           (base_addr.asSInt + io.index.index_value).asUInt,
           (current_addr.asSInt + stride).asUInt
         )
+        val next_direction = Mux(is_index, io.index.index_value, stride)(63)
 
         // -- Counter ripple logic --
         // [v_group, el, seg]: [x, x, +1]
@@ -183,15 +189,15 @@ extends Module with VecLSGenConstants {
           current_ctr        := current_ctr + 1.U   // increment CTR
           current_mask_bit   := io.index.mask_bit   // update mask bit
           current_last_index := io.index.last_index // update last index
+          current_dir        := next_direction     // update direction
         }
 
         // -- DMEM offset increment --
         // recalc dmem_off for next element
         when (max_seg_id_met) {
-          val direction = Mux(is_index, io.index.index_value, stride)(63)
           val high_off  = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc
           val low_off   = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc
-          dmem_off := Mux(direction, high_off, low_off)
+          dmem_off := Mux(next_direction, high_off, low_off)
         // wrap inc dmem_off
         }.elsewhen(dmem_constraint_met) {
           dmem_off := 0.U

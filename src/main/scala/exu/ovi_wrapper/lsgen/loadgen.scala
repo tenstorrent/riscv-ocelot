@@ -15,24 +15,26 @@ import boom.util._
 
 import chisel3.dontTouch // this is for debugging purposes
 
-class LoadPacket(override val VLEN: Int, override val DMEM_WIDTH: Int)
+class LoadPacket(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
 extends Bundle with VecLSGenConstants {
-  val addr     = UInt(64.W)
-  val v_reg    = UInt(5.W)
-  val el_id    = UInt(EL_ID_W.W)
-  val el_off   = UInt(6.W)
-  val el_count = UInt(7.W)
-  val sb_id    = UInt(5.W)
+  val addr       = UInt(64.W)
+  val v_reg      = UInt(5.W)
+  val el_id      = UInt(EL_ID_W.W)
+  val el_off     = UInt(6.W)
+  val el_count   = UInt(7.W)
+  val sb_id      = UInt(5.W)
   val mask_data  = UInt(64.W)
   val mask_valid = Bool()
-  val is_fake  = Bool() // not significant (all masked off or el_count is 0)
+  val is_fake    = Bool() // not significant (all masked off or el_count is 0)
   val misaligned = Bool()
-  val last     = Bool()
+  val last       = Bool()
+  val dir = Bool() // for padding of return data
+  val uop        = new MicroOp()
 }
 
 // Load Generator for OVI
 // holds all the load generators for OVI
-class LoadGen(override val VLEN: Int, override val DMEM_WIDTH: Int)
+class LoadGen(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
 extends Module with VecLSGenConstants {
   // ======== Input-Output Ports ========
   val io = IO(new Bundle {
@@ -153,6 +155,8 @@ extends Module with VecLSGenConstants {
   bypass_packet.is_fake    := true.B         // fake load
   bypass_packet.misaligned := DontCare
   bypass_packet.last       := true.B         // assert end
+  bypass_packet.uop        := DontCare
+  bypass_packet.dir        := DontCare
 
   // BYPASS case (no output but assert last and el_count = 0)
   when (state === State.BYPASS) {

@@ -10,7 +10,7 @@ import freechips.rocketchip.rocket.{VConfig}
 
 import boom.exu.FUConstants._
 
-class StorePacker(override val VLEN: Int, override val DMEM_WIDTH: Int)
+class StorePacker(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
 extends Module with VecLSGenConstants {
   // ======== Parameters ========
   val CTR_WIDTH = (((1<<SEG_ENC_W)-1)+EL_ID_W+((1<<EMUL_ENC_W)-1))
@@ -110,6 +110,7 @@ extends Module with VecLSGenConstants {
   io.store_packet.bits.is_fake  := false.B
   io.store_packet.bits.misaligned := false.B
   io.store_packet.bits.last     := (state === State.PACKING) && (vl_constraint_met)
+  io.store_packet.bits.uop      := io.start.bits.uop
 
   // ======== State Machine ========
 

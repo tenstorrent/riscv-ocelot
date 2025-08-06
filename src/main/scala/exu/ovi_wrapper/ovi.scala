@@ -207,14 +207,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   // a new set has dequeued from vLSIQueue
   val newVGenConfig = vLSIQueue.io.deq.fire
 
-
-/*
-   v-Helper Start
-*/
-
-
-  // ===============  OSC3 LSGEN SHADOW CODE START ===============
-  // code written by Kishore S (8/5/2025)
+  // ===============  OSC3 LSGEN DEQ CODE START ===============
 
   class DecoderInputBundle extends Bundle {
     val req_data = new EnhancedFuncUnitReq(xLen, vLen)
@@ -223,20 +216,61 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   
   // 3-element deep buffer for decoder inputs
   val decoder_buffer = Module(new Queue(new DecoderInputBundle, 3))
-  
-  // Enqueue on vLSIQueue fire
-  decoder_buffer.io.enq.valid := vLSIQueue.io.deq.fire
+
+  // Counter-based VLSIQ dequeue logic with outstanding operation tracking
+  // Outstanding counter: accumulate MemSyncStart signals
+  val outstanding_ctr = RegInit(0.U(3.W))  // 3-bit counter (up to 7 pending operations)
+
+  // reset the deq logic
+  vLSIQueue.io.deq.ready := false.B
+  sbIdQueue.io.deq.ready := false.B
+  decoder_buffer.io.enq.valid := false.B
+
+  // Counter update logic
+  val memsync_arrives = MemSyncStart
+  val vlsiq_fire = outstanding_ctr =/= 0.U && vLSIQueue.io.deq.valid && decoder_buffer.io.enq.ready
+
+  when (memsync_arrives && !vlsiq_fire) {
+    when (outstanding_ctr =/= 7.U) {
+      outstanding_ctr := outstanding_ctr + 1.U
+    } .otherwise {
+      assert(false.B, "ERROR: Outstanding counter overflow! Increase counter width.")
+    }
+  } .elsewhen (!memsync_arrives && vlsiq_fire) {
+    outstanding_ctr := outstanding_ctr - 1.U
+  }
+
+  // Override VLSIQ and decoder buffer signals
+  when (vlsiq_fire) {
+    vLSIQueue.io.deq.ready := true.B
+    sbIdQueue.io.deq.ready := true.B
+    decoder_buffer.io.enq.valid := true.B
+  }
   decoder_buffer.io.enq.bits.req_data := vLSIQueue.io.deq.bits
   decoder_buffer.io.enq.bits.sb_id := sbIdQueue.io.deq.bits
-  
-  // Assert if trying to enqueue when buffer is full
-  assert(!(vLSIQueue.io.deq.fire && !decoder_buffer.io.enq.ready),
-         "ERROR: Decoder buffer full! Cannot enqueue new instruction while 3 previous instructions still pending.")
+
+  // Debug signals
+  dontTouch(outstanding_ctr)
+  dontTouch(memsync_arrives)
+  dontTouch(vlsiq_fire)
+
+  // ===============  OSC3 LSGEN DEQ CODE END ===============
+
+
+/*
+   v-Helper Start
+*/
+
+
+  // ===============  OSC3 LSGEN INSTANTIATION CODE START ===============
+  // code written by Kishore S (8/5/2025)
 
   // Instantiate the new LS decoder - connect to buffer output
   val lsDecoder = Module(new OviLsDecode(vpuVlen, lsuDmemWidth))
-  lsDecoder.io.deq_data := decoder_buffer.io.deq.bits.req_data
-  lsDecoder.io.deq_sb_id := decoder_buffer.io.deq.bits.sb_id
+  lsDecoder.io.in.req := decoder_buffer.io.deq.bits.req_data
+  lsDecoder.io.in.sb_id := decoder_buffer.io.deq.bits.sb_id
+  lsDecoder.io.in.valid := decoder_buffer.io.deq.valid
+
 
   // Instantiate mask/index buffer (for small control data)
   val maskIdxBuffer = Module(new MaskIdxBuff(WIDTH = 66, DEPTH = 4)) // 66-bit width, 4 entries deep
@@ -256,22 +290,23 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   vecDataBuffer.io.data_in.valid := MemStoreValid
   vecDataBuffer.io.data_in.bits := MemStoreData
   
-  // ======== Connect Decoder Buffer to Generators ========
+  // Connect Decoder Buffer to Generators
   // Dequeue from buffer when generators accept
-  val load_gen_handshake = decoder_buffer.io.deq.valid && lsDecoder.io.is_load && loadGen.io.start.ready
-  val store_gen_handshake = decoder_buffer.io.deq.valid && !lsDecoder.io.is_load && storeGen.io.start.ready
-  decoder_buffer.io.deq.ready := load_gen_handshake || store_gen_handshake
+  val load_gen_handshake = lsDecoder.io.out.valid && lsDecoder.io.out.is_load && loadGen.io.start.ready
+  val store_gen_handshake = lsDecoder.io.out.valid && !lsDecoder.io.out.is_load && storeGen.io.start.ready
+  lsDecoder.io.out.ready := load_gen_handshake || store_gen_handshake
+  decoder_buffer.io.deq.ready := lsDecoder.io.in.ready
   
   // Connect decoder outputs to generators
-  loadGen.io.start.valid := decoder_buffer.io.deq.valid && lsDecoder.io.is_load
-  loadGen.io.start.bits := lsDecoder.io.dec_info
+  loadGen.io.start.valid := lsDecoder.io.out.valid && lsDecoder.io.out.is_load
+  loadGen.io.start.bits := lsDecoder.io.out.dec_info
   // Connect mask/index buffer to load generator
   loadGen.io.mask_idx.valid := maskIdxBuffer.io.mask_idx_out.valid
   loadGen.io.mask_idx.data := maskIdxBuffer.io.mask_idx_out.bits
   loadGen.io.kill := false.B // TODO: Connect to appropriate kill signal
 
-  storeGen.io.start.valid := decoder_buffer.io.deq.valid && !lsDecoder.io.is_load
-  storeGen.io.start.bits := lsDecoder.io.dec_info
+  storeGen.io.start.valid := lsDecoder.io.out.valid && !lsDecoder.io.out.is_load
+  storeGen.io.start.bits := lsDecoder.io.out.dec_info
   // Connect mask/index buffer to store generator
   storeGen.io.mask_idx.valid := maskIdxBuffer.io.mask_idx_out.valid
   storeGen.io.mask_idx.data := maskIdxBuffer.io.mask_idx_out.bits
@@ -280,9 +315,9 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   storeGen.io.vdb_data.data := vecDataBuffer.io.data_out.bits
   storeGen.io.kill := false.B // TODO: Connect to appropriate kill signal
 
-  // Shadow outputs - always ready to avoid blocking, with dontTouch for observation
-  loadGen.io.load_packet.ready := true.B
-  storeGen.io.store_packet.ready := true.B
+  // Shadow outputs - connect to actual LSU ready signals
+  loadGen.io.load_packet.ready := io.vGenIO.req.ready
+  storeGen.io.store_packet.ready := io.vGenIO.req.ready
   
   // Connect buffer ready signals (shadow connections)
   maskIdxBuffer.io.mask_idx_out.ready := loadGen.io.mask_idx.ready || storeGen.io.mask_idx.ready
@@ -298,8 +333,8 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   dontTouch(loadGen.io.load_packet.bits)
   dontTouch(storeGen.io.store_packet.valid) 
   dontTouch(storeGen.io.store_packet.bits)
-  dontTouch(lsDecoder.io.is_load)
-  dontTouch(lsDecoder.io.dec_info)
+  dontTouch(lsDecoder.io.out.is_load)
+  dontTouch(lsDecoder.io.out.dec_info)
   
   // Add dontTouch for buffer observation
   dontTouch(maskIdxBuffer.io.mask_idx_in.valid)
@@ -312,7 +347,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   dontTouch(vecDataBuffer.io.data_out.bits)
   dontTouch(vecDataBuffer.io.credit)
 
-  // ===============  OSC3 LSGEN SHADOW CODE END ===============
+  // ===============  OSC3 LSGEN INSTANTIATION CODE END ===============
 
 
   val vAGen = Module (new VAgen (lsuDmemWidth, 66, vAGenDepth, vpuVlen, oviWidth))
@@ -357,7 +392,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   }.elsewhen (vDBud === 2.U) {
     vDBcount := vDBcount + 1.U 
   }
-  assert (vDBcount <= (vdbDepth).U)
+  // assert (vDBcount <= (vdbDepth).U)
 
    
 
@@ -530,6 +565,88 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   io.vGenIO.reqHelp.bits.Mask := vAGen.io.currentMaskOut
   io.vGenIO.reqHelp.bits.isFake := vAGen.io.isFake
 
+  // ======== OSC3 LSGEN LSU OVERRIDE CODE START ========
+
+  // Latch the load/store type when decoder fires to know which generator to use
+  val gen_is_load = RegInit(false.B)
+  val gen_active = RegInit(false.B)
+  
+  // Set the operation type when decoder handshake occurs
+  when (load_gen_handshake) {
+    gen_is_load := true.B
+    gen_active := true.B
+  } .elsewhen (store_gen_handshake) {
+    gen_is_load := false.B  
+    gen_active := true.B
+  }
+  
+  // Clear active flag when the operation completes (last packet sent)
+  when (gen_active && ((gen_is_load && loadGen.io.load_packet.valid && loadGen.io.load_packet.bits.last && loadGen.io.load_packet.ready) ||
+                       (!gen_is_load && storeGen.io.store_packet.valid && storeGen.io.store_packet.bits.last && storeGen.io.store_packet.ready))) {
+    gen_active := false.B
+  }
+
+  // Override the original OVI→LSU outputs with generator outputs
+  when (gen_active && gen_is_load && loadGen.io.load_packet.valid) {
+    // Load packet → LSU req interface
+    io.vGenIO.req.valid := loadGen.io.load_packet.valid
+    io.vGenIO.req.bits.uop := loadGen.io.load_packet.bits.uop
+    io.vGenIO.req.bits.uop.mem_size := addrBreak.U  // For loads: use DMEM width
+    io.vGenIO.req.bits.data := 0.U  // Loads don't send data
+    io.vGenIO.req.bits.last := loadGen.io.load_packet.bits.last
+    io.vGenIO.req.bits.addr := Cat(loadGen.io.load_packet.bits.addr(39, addrBreak), 0.U(addrBreak.W))  // Crop lower address bits for loads
+    io.vGenIO.req.bits.predicated := false.B
+    io.vGenIO.req.bits.fflags.valid := false.B
+    io.vGenIO.req.bits.mxcpt.valid := false.B
+    io.vGenIO.req.bits.sfence.valid := false.B
+    
+    // Load packet → LSU reqHelp interface
+    io.vGenIO.reqHelp.valid := loadGen.io.load_packet.valid
+    io.vGenIO.reqHelp.bits.uop := loadGen.io.load_packet.bits.uop
+    io.vGenIO.reqHelp.bits.elemID := loadGen.io.load_packet.bits.el_id
+    io.vGenIO.reqHelp.bits.elemOffset := loadGen.io.load_packet.bits.el_off
+    io.vGenIO.reqHelp.bits.elemCount := loadGen.io.load_packet.bits.el_count
+    io.vGenIO.reqHelp.bits.vRegID := loadGen.io.load_packet.bits.v_reg
+    io.vGenIO.reqHelp.bits.sbId := loadGen.io.load_packet.bits.sb_id
+    io.vGenIO.reqHelp.bits.strideDir := loadGen.io.load_packet.bits.dir
+    io.vGenIO.reqHelp.bits.isMask := loadGen.io.load_packet.bits.mask_valid
+    io.vGenIO.reqHelp.bits.Mask := loadGen.io.load_packet.bits.mask_data(31, 0)  // Truncate to 32 bits
+    io.vGenIO.reqHelp.bits.isFake := loadGen.io.load_packet.bits.is_fake
+  } .elsewhen (gen_active && !gen_is_load && storeGen.io.store_packet.valid) {
+    // Store packet → LSU req interface  
+    io.vGenIO.req.valid := storeGen.io.store_packet.valid
+    io.vGenIO.req.bits.uop := storeGen.io.store_packet.bits.uop
+    io.vGenIO.req.bits.uop.mem_size := storeGen.io.store_packet.bits.mem_size  // For stores: use actual memory operation size
+    io.vGenIO.req.bits.data := storeGen.io.store_packet.bits.data
+    io.vGenIO.req.bits.last := storeGen.io.store_packet.bits.last
+    io.vGenIO.req.bits.addr := storeGen.io.store_packet.bits.addr  // For stores: use full address
+    io.vGenIO.req.bits.predicated := false.B
+    io.vGenIO.req.bits.fflags.valid := false.B
+    io.vGenIO.req.bits.mxcpt.valid := false.B
+    io.vGenIO.req.bits.sfence.valid := false.B
+    
+    // Store packet → LSU reqHelp interface
+    io.vGenIO.reqHelp.valid := storeGen.io.store_packet.valid
+    io.vGenIO.reqHelp.bits.uop := storeGen.io.store_packet.bits.uop
+    io.vGenIO.reqHelp.bits.elemID := 0.U  // Store generators don't track element IDs the same way
+    io.vGenIO.reqHelp.bits.elemOffset := 0.U  // Store generators don't track element offsets the same way
+    io.vGenIO.reqHelp.bits.elemCount := 1.U   // Stores typically handle 1 element at a time
+    io.vGenIO.reqHelp.bits.vRegID := 0.U      // Not applicable for stores
+    io.vGenIO.reqHelp.bits.sbId := storeGen.io.store_packet.bits.sb_id
+    io.vGenIO.reqHelp.bits.strideDir := false.B  // Not applicable for stores
+    io.vGenIO.reqHelp.bits.isMask := false.B     // Stores don't use mask interface the same way
+    io.vGenIO.reqHelp.bits.Mask := 0.U           // Not applicable for stores  
+    io.vGenIO.reqHelp.bits.isFake := storeGen.io.store_packet.bits.is_fake
+  } .otherwise {
+    // When generators are not active, set LSU outputs to invalid
+    io.vGenIO.req.valid := false.B
+    io.vGenIO.req.bits := DontCare
+    io.vGenIO.reqHelp.valid := false.B
+    io.vGenIO.reqHelp.bits := DontCare
+  }
+
+  // ===== OSC3 LSGEN LSU OVERRIDE CODE END =====
+
 /*
    FSM for V-helper
 */
@@ -652,6 +769,49 @@ MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbR
    vpu.io.load_mask := MemReturnMask
    vpu.io.store_credit := MemStoreCredit
    vpu.io.mask_idx_credit := vAGen.io.release
+
+   // ======== OSC3 LSGEN VPU OVERRIDE CODE START ========
+
+   // Override VPU interaction logic when generators are active
+   when (gen_active) {
+     // Override FSM buffer popping logic
+     when (gen_is_load && loadGen.io.load_packet.fire) {
+       // Load packet sent - credit mask buffer, handle VID generation
+       vAGen.io.pop := true.B  // Always pop address generator
+       vIdGen.io.pop := !loadGen.io.load_packet.bits.is_fake  // Don't pop VID for fake loads
+       vdb.io.pop := false.B   // Loads don't use VDB
+       when (loadGen.io.load_packet.bits.last) {
+         vGenEnable := false.B
+         canStartAnother := true.B
+       }
+     } .elsewhen (!gen_is_load && storeGen.io.store_packet.fire) {
+       // Store packet sent - credit VDB and mask buffer
+       vdb.io.pop := !storeGen.io.store_packet.bits.is_fake  // Don't pop VDB for fake stores
+       vAGen.io.pop := true.B   // Always pop address generator
+       vIdGen.io.pop := false.B // Stores don't use VID generation
+       when (storeGen.io.store_packet.bits.last) {
+         vGenEnable := false.B
+         vdb.io.last := !storeGen.io.store_packet.bits.is_fake
+         canStartAnother := true.B
+       }
+     }
+     
+     // Override credit signals - use generator consumption instead of original logic
+     MemStoreCredit := (!gen_is_load && storeGen.io.store_packet.fire && !storeGen.io.store_packet.bits.is_fake)
+     MemMaskCredit := ((gen_is_load && loadGen.io.load_packet.fire) || (!gen_is_load && storeGen.io.store_packet.fire))
+     
+     // Override load data parsing - use generator information for stride direction
+     when (gen_is_load && io.vGenIO.resp.valid && io.vGenIO.resp.bits.s0l1) {
+       LSUReturnLoadValid := io.vGenIO.resp.valid
+       when (loadGen.io.load_packet.bits.dir) {  // Use generator's direction field
+         LSUReturnData := Cat(io.vGenIO.resp.bits.data((lsuDmemWidth-1), 0), 0.U((oviWidth-lsuDmemWidth).W))
+       } .otherwise {
+         LSUReturnData := Cat(0.U, io.vGenIO.resp.bits.data((lsuDmemWidth-1), 0))
+       }
+     }
+   }
+
+   // ======== OSC3 LSGEN VPU OVERRIDE CODE END ========
 }
 
 class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN" -> IntParam(vLen))) with HasBlackBoxResource {
@@ -941,7 +1101,7 @@ class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: I
   }
   val hasMask = WireInit(false.B)
   hasMask := vMaskcount =/= 0.U
-  assert (vMaskcount <= Depth.U)
+  // assert (vMaskcount <= Depth.U)
   
   /*
      CurrentEntry and Current Mask

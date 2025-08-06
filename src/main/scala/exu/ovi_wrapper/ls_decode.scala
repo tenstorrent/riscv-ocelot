@@ -34,7 +34,7 @@ trait VecLSGenConstants {
   val EL_ID_W      = log2Ceil(VLEN/8) // should be 11 in OVI (add padding)
 }
 
-class ConfigInfo(override val VLEN: Int, override val DMEM_WIDTH: Int)
+class ConfigInfo(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
 extends Bundle with VecLSGenConstants {
   val sb_id      = UInt(5.W)
   val base_v_reg = UInt(5.W)
@@ -52,6 +52,7 @@ extends Bundle with VecLSGenConstants {
   val is_mask    = Bool()
   val is_index   = Bool()
   val base_addr  = UInt(64.W)
+  val uop        = new MicroOp()
 }
 
 class OviLsDecode(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
@@ -59,34 +60,47 @@ extends BoomModule with VecLSGenConstants {
   // ======== Input-Output Ports ========
   val io = IO(new Bundle {
     // Input from the VLSIQ and the SBIDQ
-    val deq_data  = Input(new EnhancedFuncUnitReq(xLen, VLEN))
-    val deq_sb_id = Input(UInt(5.W))
-
+    val in = new Bundle {
+      val ready = Output(Bool())
+      val valid = Input(Bool())
+      val req   = Input(new EnhancedFuncUnitReq(xLen, VLEN))
+      val sb_id = Input(UInt(5.W))
+    }
     // Outputs
-    val is_load  = Output(Bool()) // control for loadgen vs storegen
-    val dec_info = new ConfigInfo(VLEN, DMEM_WIDTH)
+    val out = new Bundle {
+      val ready    = Input(Bool())
+      val valid    = Output(Bool())
+      val is_load  = Output(Bool()) // control signal for loadgen vs storegen
+      val dec_info = Output(new ConfigInfo(VLEN, DMEM_WIDTH))
+    }
   })
+
+  // ======== RV Handshake ========
+
+  // not clocked so simply pass through
+  io.in.ready  := io.out.ready
+  io.out.valid := io.in.valid
 
   // ========= Config and Register Values ========
 
-  val rs1_data    = io.deq_data.req.rs1_data
-  val rs2_data    = io.deq_data.req.rs2_data
-  val vtype_vl    = io.deq_data.vconfig.vl
-  val vtype_vlmul = io.deq_data.vconfig.vtype.vlmul_mag
-  val vtype_vsew  = io.deq_data.vconfig.vtype.vsew
+  val rs1_data    = io.in.req.req.rs1_data
+  val rs2_data    = io.in.req.req.rs2_data
+  val vtype_vl    = io.in.req.vconfig.vl
+  val vtype_vlmul = io.in.req.vconfig.vtype.vlmul_mag
+  val vtype_vsew  = io.in.req.vconfig.vtype.vsew
 
   // ========= Instruction Fields ========
 
-  val instOP   = io.deq_data.req.uop.inst(6, 0)
-  val instUMop = io.deq_data.req.uop.inst(24, 20)
-  val instMop  = io.deq_data.req.uop.inst(27, 26)
+  val instOP   = io.in.req.req.uop.inst(6, 0)
+  val instUMop = io.in.req.req.uop.inst(24, 20)
+  val instMop  = io.in.req.req.uop.inst(27, 26)
 
-  val instNf         = io.deq_data.req.uop.inst(31, 29)
-  val instMaskEnable = !io.deq_data.req.uop.inst(25) // 0: enable, 1 disable
-  val instElemSize   = io.deq_data.req.uop.inst(14, 12)
+  val instNf         = io.in.req.req.uop.inst(31, 29)
+  val instMaskEnable = !io.in.req.req.uop.inst(25) // 0: enable, 1 disable
+  val instElemSize   = io.in.req.req.uop.inst(14, 12)
   val instWidth      = instElemSize(1, 0) // EEW field
   val instMew        = instElemSize(2)    // reserved: must be 0
-  val instVldDest    = io.deq_data.req.uop.inst(11, 7)
+  val instVldDest    = io.in.req.req.uop.inst(11, 7)
 
   // ========= Operation type flags ========
 
@@ -143,23 +157,23 @@ extends BoomModule with VecLSGenConstants {
   // ========= Outputs ========
   
   // is_load - detect load operations
-  io.is_load := isLoad
+  io.out.is_load := isLoad
 
   // sb_id - from the SBIDQ
-  io.dec_info.sb_id := io.deq_sb_id
+  io.out.dec_info.sb_id := io.in.sb_id
   
   // base_v_reg (Base Vector Register) - vd for loads, vs3 for stores
-  io.dec_info.base_v_reg := instVldDest  // For loads: vd[4:0], For stores: vs3[4:0] (same bit position)
+  io.out.dec_info.base_v_reg := instVldDest  // For loads: vd[4:0], For stores: vs3[4:0] (same bit position)
   
   // vl/evl (Vector Length) - with special cases for both loads and stores
-  io.dec_info.vl := MuxLookup(Cat(isWhole, isMaskLS), vtype_vl, Seq(
+  io.out.dec_info.vl := MuxLookup(Cat(isWhole, isMaskLS), vtype_vl, Seq(
     Cat(true.B, false.B)  -> whole_vl,        // Whole register: NFIELDS * VLEN / EEW
     Cat(false.B, true.B)  -> ((vtype_vl + 7.U) >> 3),  // Mask: ceil(vl/8)
     Cat(false.B, false.B) -> vtype_vl        // Normal: vl CSR value
   ))
   
   // eew_enc (Encoded Effective Element Width)
-  io.dec_info.eew_enc := MuxLookup(Cat(isMaskLS, isIndex), instWidth, Seq(
+  io.out.dec_info.eew_enc := MuxLookup(Cat(isMaskLS, isIndex), instWidth, Seq(
     Cat(true.B, false.B)  -> 0.U,             // Mask: fixed at 8 bits (encoded as 0)
     Cat(false.B, true.B)  -> vtype_vsew,      // Indexed: config sew value
     Cat(false.B, false.B) -> instWidth        // Others: data width from instruction
@@ -167,38 +181,41 @@ extends BoomModule with VecLSGenConstants {
   
   // emul_enc (Effective LMUL) - calculated based on instruction type  
   val emul_normal = vtype_vlmul + instWidth - vtype_vsew  // EMUL = LMUL * (EEW / SEW) in log domain
-  io.dec_info.emul_enc := MuxLookup(Cat(isWhole, isIndex), vtype_vlmul, Seq(
+  io.out.dec_info.emul_enc := MuxLookup(Cat(isWhole, isIndex), vtype_vlmul, Seq(
     Cat(true.B, false.B)  -> whole_vlmul,     // Whole register: derived from nf
     Cat(false.B, true.B)  -> vtype_vlmul,     // Indexed: LMUL from vtype CSR
     Cat(false.B, false.B) -> emul_normal      // Others: EMUL = LMUL * (EEW / SEW)
   ))
   
   // Stride detection and outputs (for both loads and stores)
-  io.dec_info.is_good_stride := strideIs1 || strideIs2 || strideIs4
-  io.dec_info.stride_dir := strideIsNeg  // 0: positive, 1: negative
-  io.dec_info.stride := rs2_data.asSInt
-  io.dec_info.is_unit_stride := strideIs1
+  io.out.dec_info.is_good_stride := strideIs1 || strideIs2 || strideIs4
+  io.out.dec_info.stride_dir := strideIsNeg  // 0: positive, 1: negative
+  io.out.dec_info.stride := rs2_data.asSInt
+  io.out.dec_info.is_unit_stride := strideIs1
 
   // stride_enc: log2 of stride magnitude for good strides
-  io.dec_info.stride_enc := MuxLookup(Cat(strideIs4, strideIs2, strideIs1), 0.U, Seq(
+  io.out.dec_info.stride_enc := MuxLookup(Cat(strideIs4, strideIs2, strideIs1), 0.U, Seq(
     Cat(false.B, false.B, true.B) -> 0.U,   // stride = 1*EEW
     Cat(false.B, true.B, false.B) -> 1.U,   // stride = 2*EEW  
     Cat(true.B, false.B, false.B) -> 2.U    // stride = 4*EEW
   ))
   
   // Segment outputs (for both loads and stores)
-  io.dec_info.is_good_seg := !isSeg || (((instNf + 1.U) & instNf) === 0.U) // either not segmented (seg=1) or segment (seg=nf+1) is power of 2
-  io.dec_info.seg_count   := Mux(isSeg, instNf + 1.U, 1.U)
+  io.out.dec_info.is_good_seg := !isSeg || (((instNf + 1.U) & instNf) === 0.U) // either not segmented (seg=1) or segment (seg=nf+1) is power of 2
+  io.out.dec_info.seg_count   := Mux(isSeg, instNf + 1.U, 1.U)
   
   // seg_enc: log2 of segment count
-  io.dec_info.seg_enc := PriorityEncoder(io.dec_info.seg_count)
+  io.out.dec_info.seg_enc := PriorityEncoder(io.out.dec_info.seg_count)
   
   // Operation type flags (for both loads and stores)
-  io.dec_info.is_mask := instMaskEnable // this is for masked LS (use the mask buffer) NOT mask-type LS
-  io.dec_info.is_index := isIndex
+  io.out.dec_info.is_mask := instMaskEnable // this is for masked LS (use the mask buffer) NOT mask-type LS
+  io.out.dec_info.is_index := isIndex
   
   // base_addr (Base Memory Address) - from rs1 (for both loads and stores)
-  io.dec_info.base_addr := rs1_data
+  io.out.dec_info.base_addr := rs1_data
+
+  // entire MicroOp
+  io.out.dec_info.uop := io.in.req.req.uop
 
   // ========= Illegal Check ========
 

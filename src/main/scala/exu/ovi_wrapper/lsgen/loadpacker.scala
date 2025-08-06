@@ -23,7 +23,7 @@ import chisel3.dontTouch // this is for debugging purposes
 
 // NOTE: "signal_enc" refers to the signal value encoded as its log2Ceil(value)
 // since they are expected to be in powers of 2
-class LoadPacker(override val VLEN: Int, override val DMEM_WIDTH: Int)
+class LoadPacker(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
 extends Module with VecLSGenConstants {
   // ======== Parameters ========
   val CTR_WIDTH = (((1<<SEG_ENC_W)-1)+((1<<STRIDE_ENC_W)-1)+EL_ID_W+((1<<EMUL_ENC_W)-1))
@@ -222,7 +222,8 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.is_fake    := (el_count === 0.U) || (is_mask && ((current_mask_data & ((1.U << el_count) - 1.U)) === 0.U))
   io.load_packet.bits.misaligned := ((base_addr & ((1.U << eew_enc) - 1.U)) =/= 0.U)
   io.load_packet.bits.last   := (state === State.PACKING) && (vl_constraint_met)
-
+  io.load_packet.bits.uop    := io.start.bits.uop
+  io.load_packet.bits.dir    := stride_dir
 
   // ======== State Machine ========
 

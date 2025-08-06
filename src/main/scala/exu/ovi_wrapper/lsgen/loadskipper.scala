@@ -21,7 +21,7 @@ import chisel3.dontTouch // this is for debugging purposes
 // Segments are packed. Masked off elements are skipped. Masked elements are walked through.
 // no index support (use walker for that)
 // This packer will not send a packet (or even start) if the next requires a new mask entry (to avoid "wait" states)
-class LoadSkipper(override val VLEN: Int, override val DMEM_WIDTH: Int)
+class LoadSkipper(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
 extends Module with VecLSGenConstants {
   // ======== Parameters ========
   val CTR_WIDTH    = (EL_ID_W+((1<<EMUL_ENC_W)-1)) // should be same as vl
@@ -148,7 +148,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.valid := ((state === State.SKIPPING) && (!io.mask.ready || io.mask.valid))
 
   // packet info
-  io.load_packet.bits.addr     := current_addr + (current_seg_id << emul_enc)
+  io.load_packet.bits.addr     := current_addr + (Mux(stride_dir, -current_seg_id, current_seg_id) << emul_enc)
   io.load_packet.bits.v_reg    := base_v_reg + (current_seg_id << emul_enc) + current_v_group_id
   io.load_packet.bits.el_id    := current_el_id
   io.load_packet.bits.el_off   := dmem_off
@@ -159,6 +159,8 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.is_fake    := (seg_inc_val === 0.U) || (is_mask && skippable)
   io.load_packet.bits.misaligned := ((current_addr & ((1.U << eew_enc) - 1.U)) =/= 0.U)
   io.load_packet.bits.last     := (state === State.SKIPPING) && (max_ctr_met || vl_constraint_met)
+  io.load_packet.bits.uop      := io.start.bits.uop
+  io.load_packet.bits.dir      := stride_dir
 
   // ======== State Machine ========
 

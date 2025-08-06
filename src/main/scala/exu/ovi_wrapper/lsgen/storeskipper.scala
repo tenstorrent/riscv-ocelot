@@ -10,7 +10,7 @@ import freechips.rocketchip.rocket.{VConfig}
 
 import boom.exu.FUConstants._   
 
-class StoreSkipper(override val VLEN: Int, override val DMEM_WIDTH: Int)
+class StoreSkipper(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
 extends Module with VecLSGenConstants {
   // ======== Parameters ========
   val CTR_WIDTH = (EL_ID_W+((1<<EMUL_ENC_W)-1)) // same as max of vl
@@ -132,13 +132,14 @@ extends Module with VecLSGenConstants {
   io.vdb_data.read_all   := (state === State.SKIPPING) && (vl_constraint_met) // last packet
 
   // store packet
-  io.store_packet.bits.addr     := current_addr
+  io.store_packet.bits.addr     := current_addr + (Mux(stride_dir, -current_seg_id, current_seg_id) << emul_enc)
   io.store_packet.bits.data     := io.vdb_data.data
   io.store_packet.bits.mem_size := Mux(skippable, 0.U, (seg_inc_enc + eew_enc))
   io.store_packet.bits.sb_id    := sb_id
   io.store_packet.bits.is_fake  := (seg_inc_val === 0.U) || (is_mask && skippable)
   io.store_packet.bits.misaligned := false.B
   io.store_packet.bits.last     := (state === State.SKIPPING) && (vl_constraint_met)
+  io.store_packet.bits.uop      := io.start.bits.uop
 
   // ======== State Machine ========
 
