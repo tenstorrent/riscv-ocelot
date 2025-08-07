@@ -8018,6 +8018,10 @@ always_comb begin
 	    17'b10101111000001001  :  v_fdivop[0] = 1'b1;
 	    // vfsqrt.v  - funct7=100011, funct3=001, vs1=00000
 	    17'b10101111000011001  :  v_fdivop[0] = 1'b1;
+	    // vfrec7.v  - funct7=100101, funct3=001, vs1=00000
+	    17'b10101111001001001  :  v_fdivop[0] = 1'b1;
+	    // vfsqrt7.v - funct7=100100, funct3=001, vs1=00000
+	    17'b10101111001000001  :  v_fdivop[0] = 1'b1;
 	    // vfdiv.vf  - funct7=100000, funct3=101
 	    17'b10101111000000101  :  v_fdivop[0] = 1'b1;
 	    // vfrdiv.vf - funct7=100001, funct3=101
