@@ -3,7 +3,6 @@ package boom.exu
 
 import chisel3._
 import chisel3.util._
-import chisel3.experimental._
 
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.{VConfig}
@@ -29,6 +28,8 @@ extends Module with VecLSGenConstants {
     val kill = Input(Bool())
     // store packet
     val store_packet = DecoupledIO(new StorePacket(VLEN, DMEM_WIDTH))
+    // status signal
+    val gen_active = Output(Bool())
   })
 
   // ======== Definitions ========
@@ -100,10 +101,13 @@ extends Module with VecLSGenConstants {
   io.store_packet.valid  := (state === State.PACKING) && vdb_valid
   val vdb_ready           = (state === State.PACKING) && (io.store_packet.ready)
   io.vdb_data.read_bytes := Mux(vdb_ready, (1.U << (ctr_inc_enc + eew_enc)), 0.U)
-  io.vdb_data.read_all   := (state === State.PACKING) && (vl_constraint_met) // last packet
+  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.PACKING) && (vl_constraint_met), false.B) // last packet
+  io.gen_active          := (state === State.PACKING)
 
+  val addr_off = (EEW_CTR << eew_enc).asSInt
+  
   // store packet
-  io.store_packet.bits.addr     := base_addr + (Mux(stride_dir, -EEW_CTR, EEW_CTR) << eew_enc)
+  io.store_packet.bits.addr     := (base_addr.asSInt + Mux(stride_dir, -addr_off, addr_off)).asUInt
   io.store_packet.bits.data     := io.vdb_data.data
   io.store_packet.bits.mem_size := (ctr_inc_enc + eew_enc)
   io.store_packet.bits.sb_id    := sb_id

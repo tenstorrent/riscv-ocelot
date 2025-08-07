@@ -113,4 +113,9 @@ class VecDataBuffer(val R_WIDTH: Int, val W_WIDTH: Int, val DEPTH: Int) extends 
     assert(io.data_out.read_bytes <= R_WIDTH_BYTES.U, "attempting to read more than max of R_WIDTH_BYTES")
   }
 
+  // no "!ready" tolerance (vpu should know when to send data if credit is available)
+  when (io.data_in.valid) {
+    assert((io.data_in.ready), "VDB: data_in.ready is false when data_in.valid is true")
+  }
+
 }

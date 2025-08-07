@@ -3,7 +3,6 @@ package boom.exu
 
 import chisel3._
 import chisel3.util._
-import chisel3.experimental._
 
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.{VConfig}
@@ -42,6 +41,9 @@ extends Module with VecLSGenConstants {
     val kill = Input(Bool())
     // load process FSM outputs (packet info)
     val load_packet = DecoupledIO(new LoadPacket(VLEN, DMEM_WIDTH))
+    // status signal
+    val gen_active = Output(Bool())
+    // debug signals
     val debug = new Bundle {
       val debug_CTR_seg_id     = Output(UInt(SEG_ENC_W.W))
       val debug_CTR_stride_id  = Output(UInt(STRIDE_ENC_W.W))
@@ -194,13 +196,15 @@ extends Module with VecLSGenConstants {
   // ======== Outputs ========
 
   // ready-valid signals
+  val need_next_mask    = (is_mask && mask_constraint_met && !vl_constraint_met)
   io.start.ready       := (state === State.IDLE) && (!is_mask || io.mask.valid)
-  io.mask.ready        := (state === State.PACKING) && (is_mask && mask_constraint_met && !vl_constraint_met) ||
+  io.mask.ready        := ((state === State.PACKING) && need_next_mask && (io.load_packet.ready)) ||
                           ((state === State.IDLE)   && (is_mask && io.start.valid))
-  io.load_packet.valid := (state === State.PACKING) && (!io.mask.ready || io.mask.valid)
+  io.load_packet.valid := (state === State.PACKING) && (!need_next_mask || io.mask.valid)
+  io.gen_active        := (state === State.PACKING)
 
   // some math to figure out how many elements to load (comments below this file for explanation)
-  val inc_past_off = ctr_inc_val - el_off
+  val inc_past_off = ctr_inc_val - el_off + 1.U
   val el_count = PriorityMux(Seq(
     (ctr_inc_val <= el_off)
       -> (0.U),
@@ -209,9 +213,10 @@ extends Module with VecLSGenConstants {
     (split_ctr(inc_past_off).stride_id === 0.U)
       -> (((inc_past_off & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width) | split_ctr(inc_past_off).seg_id)
   ))
+  val addr_off = (EEW_CTR << eew_enc).asSInt
 
   // packet info
-  io.load_packet.bits.addr   := base_addr + (Mux(stride_dir, -EEW_CTR, EEW_CTR) << eew_enc) // base + (EEW_CTR * EEW)
+  io.load_packet.bits.addr   := (base_addr.asSInt + Mux(stride_dir, -addr_off, addr_off)).asUInt // base + (EEW_CTR * EEW)
   io.load_packet.bits.v_reg  := base_v_reg + (split_ctr(ctr_past_off).seg_id << emul_enc) + split_ctr(ctr_past_off).v_group_id // base + [(seg_id * total_groups) + group_id]
   io.load_packet.bits.el_id  := split_ctr(ctr_past_off).el_id
   io.load_packet.bits.el_off := el_off + dmem_off // offset to valid strided element + offset to align dmem

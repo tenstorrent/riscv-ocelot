@@ -3,7 +3,6 @@ package boom.exu
 
 import chisel3._
 import chisel3.util._
-import chisel3.experimental._
 
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.{VConfig}
@@ -40,6 +39,8 @@ extends Module with VecLSGenConstants {
     }
     // kill signal (used to reset the FSM)
     val kill = Input(Bool())
+    // status signal
+    val gen_active = Output(Bool())
     // load process FSM outputs (packet info)
     val load_packet = DecoupledIO(new LoadPacket(VLEN, DMEM_WIDTH))
     // debug signals
@@ -121,13 +122,17 @@ extends Module with VecLSGenConstants {
   // ready-valid signals
   // NOTE: I am not releasing the last segment for any index element until I get the next index
   //       I am also not starting the config until I get the first index (this is to avoid using a wait state)
+  val need_next_index   = (is_index && max_seg_id_met && !max_ctr_met)
   io.start.ready       := ((state === State.IDLE)    && (!is_index || io.index.valid))
-  io.index.ready       := ((state === State.WALKING) && (is_index && max_seg_id_met && !max_ctr_met)) ||
+  io.index.ready       := ((state === State.WALKING) && need_next_index && (io.load_packet.ready)) ||
                           ((state === State.IDLE)    && (is_index && io.start.valid))
-  io.load_packet.valid := ((state === State.WALKING) && (!io.index.ready || io.index.valid))
+  io.load_packet.valid := ((state === State.WALKING) && (!need_next_index || io.index.valid))
+  io.gen_active        := (state === State.WALKING)
 
+  val addr_off = (current_seg_id << emul_enc).asSInt
+  
   // packet info
-  io.load_packet.bits.addr     := current_addr + (Mux(current_dir, -current_seg_id, current_seg_id) << emul_enc)
+  io.load_packet.bits.addr     := (current_addr.asSInt + Mux(current_dir, -addr_off, addr_off)).asUInt
   io.load_packet.bits.v_reg    := base_v_reg + (current_seg_id << emul_enc) + current_v_group_id
   io.load_packet.bits.el_id    := current_el_id
   io.load_packet.bits.el_off   := dmem_off
@@ -147,7 +152,9 @@ extends Module with VecLSGenConstants {
     
     is(State.IDLE) {
       when(io.start.fire) {
-        // temp value for direction
+        
+        // -- Next Address and dir calculation --
+        val next_addr = (base_addr.asSInt + Mux(is_index, io.index.index_value, 0.S)).asUInt
         val next_direction = Mux(is_index, io.index.index_value, stride)(63)
         
         // -- Input config --
@@ -157,15 +164,15 @@ extends Module with VecLSGenConstants {
         current_el_id   := 0.U
         current_seg_id  := 0.U
         current_v_group_id := 0.U
-        current_addr    := (base_addr.asSInt + Mux(is_index, io.index.index_value, 0.S)).asUInt
+        current_addr    := next_addr
         current_ctr     := 0.U
         current_mask_bit   := io.index.mask_bit
         current_last_index := io.index.last_index
         current_dir     := next_direction
 
         // -- Initialize DMEM info --
-        val high_off  = (((1<<(ADDR_BREAK))-1).U - base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
-        val low_off   = (base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from start of DMEM (low) to base_addr
+        val high_off  = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
+        val low_off   = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from start of DMEM (low) to base_addr
         dmem_off := Mux(next_direction, high_off, low_off)
         dmem_max := (DMEM_BYTES.U >> eew_enc)
       }

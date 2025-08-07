@@ -3,7 +3,6 @@ package boom.exu
 
 import chisel3._
 import chisel3.util._
-import chisel3.experimental._
 
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.{VConfig}
@@ -50,6 +49,8 @@ extends Module with VecLSGenConstants {
     val kill = Input(Bool())
     // load process FSM outputs (packet info)
     val load_packet = DecoupledIO(new LoadPacket(VLEN, DMEM_WIDTH))
+    // status signal
+    val gen_active = Output(Bool())
   })
 
   // ======== Definitions ========
@@ -164,6 +165,7 @@ extends Module with VecLSGenConstants {
     io.mask_idx.ready    := false.B
     io.load_packet.valid := true.B
     io.load_packet.bits  := bypass_packet
+    io.gen_active        := true.B
 
   // PACKING case (pass through packer)
   } .elsewhen (state === State.PACKING) {
@@ -171,6 +173,7 @@ extends Module with VecLSGenConstants {
     io.mask_idx.ready    := packer.io.mask.ready
     io.load_packet.valid := packer.io.load_packet.valid
     io.load_packet.bits  := packer.io.load_packet.bits
+    io.gen_active        := packer.io.gen_active
 
   // SKIPPING case (pass through skipper)
   } .elsewhen (state === State.SKIPPING) {
@@ -178,6 +181,7 @@ extends Module with VecLSGenConstants {
     io.mask_idx.ready    := skipper.io.mask.ready
     io.load_packet.valid := skipper.io.load_packet.valid
     io.load_packet.bits  := skipper.io.load_packet.bits
+    io.gen_active        := skipper.io.gen_active
 
   // WALKING case (pass through walker)
   } .elsewhen (state === State.WALKING) {
@@ -185,6 +189,7 @@ extends Module with VecLSGenConstants {
     io.mask_idx.ready    := walker.io.index.ready
     io.load_packet.valid := walker.io.load_packet.valid
     io.load_packet.bits  := walker.io.load_packet.bits
+    io.gen_active        := walker.io.gen_active
 
   // IDLE case (no output but transparent to inputs)
   } .otherwise {
@@ -204,6 +209,7 @@ extends Module with VecLSGenConstants {
     ))
     io.load_packet.valid := false.B
     io.load_packet.bits  := DontCare
+    io.gen_active        := false.B
   }
 
   // ======== State Machine ========
@@ -229,6 +235,36 @@ extends Module with VecLSGenConstants {
       when (io.load_packet.bits.last) {
         state := State.IDLE
       }
+    }
+  }
+
+  // ======== Debug Signals ========
+
+  switch (state) {
+    is (State.IDLE) {
+      assert(packer.io.gen_active === false.B, "packer should not be active in IDLE")
+      assert(skipper.io.gen_active === false.B, "skipper should not be active in IDLE")
+      assert(walker.io.gen_active === false.B, "walker should not be active in IDLE")
+    }
+    is (State.BYPASS) {
+      assert(packer.io.gen_active === false.B, "packer should not be active in BYPASS")
+      assert(skipper.io.gen_active === false.B, "skipper should not be active in BYPASS")
+      assert(walker.io.gen_active === false.B, "walker should not be active in BYPASS")
+    }
+    is (State.PACKING) {
+      assert(packer.io.gen_active === true.B, "packer should be active in PACKING")
+      assert(skipper.io.gen_active === false.B, "skipper should not be active in PACKING")
+      assert(walker.io.gen_active === false.B, "walker should not be active in PACKING")
+    }
+    is (State.SKIPPING) {
+      assert(packer.io.gen_active === false.B, "packer should not be active in SKIPPING")
+      assert(skipper.io.gen_active === true.B, "skipper should be active in SKIPPING")
+      assert(walker.io.gen_active === false.B, "walker should not be active in SKIPPING")
+    }
+    is (State.WALKING) {
+      assert(packer.io.gen_active === false.B, "packer should not be active in WALKING")
+      assert(skipper.io.gen_active === false.B, "skipper should not be active in WALKING")
+      assert(walker.io.gen_active === true.B, "walker should be active in WALKING")
     }
   }
 

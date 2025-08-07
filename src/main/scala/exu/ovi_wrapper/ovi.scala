@@ -267,6 +267,13 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 
   // Instantiate the new LS decoder - connect to buffer output
   val lsDecoder = Module(new OviLsDecode(vpuVlen, lsuDmemWidth))
+  // Instantiate load and store generators
+  val loadGen = Module(new LoadGen(vpuVlen, lsuDmemWidth))
+  val storeGen = Module(new StoreGen(vpuVlen, lsuDmemWidth))
+
+  // Use OR of both generators' gen_active signals instead of separate register
+  val gen_active = (loadGen.io.gen_active || storeGen.io.gen_active)
+
   lsDecoder.io.in.req := decoder_buffer.io.deq.bits.req_data
   lsDecoder.io.in.sb_id := decoder_buffer.io.deq.bits.sb_id
   lsDecoder.io.in.valid := decoder_buffer.io.deq.valid
@@ -278,9 +285,6 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   // Instantiate Vector Data Buffer (for large store data)
   val vecDataBuffer = Module(new VecDataBuffer(R_WIDTH = lsuDmemWidth, W_WIDTH = oviWidth, DEPTH = vdbDepth))
 
-  // Instantiate load and store generators
-  val loadGen = Module(new LoadGen(vpuVlen, lsuDmemWidth))
-  val storeGen = Module(new StoreGen(vpuVlen, lsuDmemWidth))
 
   // Connect mask/index buffer to VPU mask/index data
   maskIdxBuffer.io.mask_idx_in.valid := MemMaskValid
@@ -291,21 +295,21 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   vecDataBuffer.io.data_in.bits := MemStoreData
   
   // Connect Decoder Buffer to Generators
-  // Dequeue from buffer when generators accept
-  val load_gen_handshake = lsDecoder.io.out.valid && lsDecoder.io.out.is_load && loadGen.io.start.ready
-  val store_gen_handshake = lsDecoder.io.out.valid && !lsDecoder.io.out.is_load && storeGen.io.start.ready
+  // Dequeue from buffer when generators accept and when no generators are currently active
+  val load_gen_handshake = lsDecoder.io.out.valid && lsDecoder.io.out.is_load && loadGen.io.start.ready && !gen_active
+  val store_gen_handshake = lsDecoder.io.out.valid && !lsDecoder.io.out.is_load && storeGen.io.start.ready && !gen_active
   lsDecoder.io.out.ready := load_gen_handshake || store_gen_handshake
   decoder_buffer.io.deq.ready := lsDecoder.io.in.ready
   
   // Connect decoder outputs to generators
-  loadGen.io.start.valid := lsDecoder.io.out.valid && lsDecoder.io.out.is_load
+  loadGen.io.start.valid := lsDecoder.io.out.valid && lsDecoder.io.out.is_load && !gen_active
   loadGen.io.start.bits := lsDecoder.io.out.dec_info
   // Connect mask/index buffer to load generator
   loadGen.io.mask_idx.valid := maskIdxBuffer.io.mask_idx_out.valid
   loadGen.io.mask_idx.data := maskIdxBuffer.io.mask_idx_out.bits
   loadGen.io.kill := false.B // TODO: Connect to appropriate kill signal
 
-  storeGen.io.start.valid := lsDecoder.io.out.valid && !lsDecoder.io.out.is_load
+  storeGen.io.start.valid := lsDecoder.io.out.valid && !lsDecoder.io.out.is_load && !gen_active
   storeGen.io.start.bits := lsDecoder.io.out.dec_info
   // Connect mask/index buffer to store generator
   storeGen.io.mask_idx.valid := maskIdxBuffer.io.mask_idx_out.valid
@@ -569,21 +573,12 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 
   // Latch the load/store type when decoder fires to know which generator to use
   val gen_is_load = RegInit(false.B)
-  val gen_active = RegInit(false.B)
   
   // Set the operation type when decoder handshake occurs
   when (load_gen_handshake) {
     gen_is_load := true.B
-    gen_active := true.B
   } .elsewhen (store_gen_handshake) {
     gen_is_load := false.B  
-    gen_active := true.B
-  }
-  
-  // Clear active flag when the operation completes (last packet sent)
-  when (gen_active && ((gen_is_load && loadGen.io.load_packet.valid && loadGen.io.load_packet.bits.last && loadGen.io.load_packet.ready) ||
-                       (!gen_is_load && storeGen.io.store_packet.valid && storeGen.io.store_packet.bits.last && storeGen.io.store_packet.ready))) {
-    gen_active := false.B
   }
 
   // Override the original OVI→LSU outputs with generator outputs
@@ -770,48 +765,13 @@ MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbR
    vpu.io.store_credit := MemStoreCredit
    vpu.io.mask_idx_credit := vAGen.io.release
 
-   // ======== OSC3 LSGEN VPU OVERRIDE CODE START ========
+  // ======== OSC3 LSGEN VPU OVERRIDE CODE START ========
 
-   // Override VPU interaction logic when generators are active
-   when (gen_active) {
-     // Override FSM buffer popping logic
-     when (gen_is_load && loadGen.io.load_packet.fire) {
-       // Load packet sent - credit mask buffer, handle VID generation
-       vAGen.io.pop := true.B  // Always pop address generator
-       vIdGen.io.pop := !loadGen.io.load_packet.bits.is_fake  // Don't pop VID for fake loads
-       vdb.io.pop := false.B   // Loads don't use VDB
-       when (loadGen.io.load_packet.bits.last) {
-         vGenEnable := false.B
-         canStartAnother := true.B
-       }
-     } .elsewhen (!gen_is_load && storeGen.io.store_packet.fire) {
-       // Store packet sent - credit VDB and mask buffer
-       vdb.io.pop := !storeGen.io.store_packet.bits.is_fake  // Don't pop VDB for fake stores
-       vAGen.io.pop := true.B   // Always pop address generator
-       vIdGen.io.pop := false.B // Stores don't use VID generation
-       when (storeGen.io.store_packet.bits.last) {
-         vGenEnable := false.B
-         vdb.io.last := !storeGen.io.store_packet.bits.is_fake
-         canStartAnother := true.B
-       }
-     }
-     
-     // Override credit signals - use generator consumption instead of original logic
-     MemStoreCredit := (!gen_is_load && storeGen.io.store_packet.fire && !storeGen.io.store_packet.bits.is_fake)
-     MemMaskCredit := ((gen_is_load && loadGen.io.load_packet.fire) || (!gen_is_load && storeGen.io.store_packet.fire))
-     
-     // Override load data parsing - use generator information for stride direction
-     when (gen_is_load && io.vGenIO.resp.valid && io.vGenIO.resp.bits.s0l1) {
-       LSUReturnLoadValid := io.vGenIO.resp.valid
-       when (loadGen.io.load_packet.bits.dir) {  // Use generator's direction field
-         LSUReturnData := Cat(io.vGenIO.resp.bits.data((lsuDmemWidth-1), 0), 0.U((oviWidth-lsuDmemWidth).W))
-       } .otherwise {
-         LSUReturnData := Cat(0.U, io.vGenIO.resp.bits.data((lsuDmemWidth-1), 0))
-       }
-     }
-   }
-
-   // ======== OSC3 LSGEN VPU OVERRIDE CODE END ========
+  vpu.io.store_credit := vecDataBuffer.io.credit
+  vpu.io.mask_idx_credit := maskIdxBuffer.io.mask_idx_out.ready && maskIdxBuffer.io.mask_idx_out.valid
+  
+  // ======== OSC3 LSGEN VPU OVERRIDE CODE END ========
+  
 }
 
 class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN" -> IntParam(vLen))) with HasBlackBoxResource {

@@ -3,7 +3,6 @@ package boom.exu
 
 import chisel3._
 import chisel3.util._
-import chisel3.experimental._
 
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.{VConfig}
@@ -35,6 +34,8 @@ extends Module with VecLSGenConstants {
     val kill = Input(Bool())
     // store packet
     val store_packet = DecoupledIO(new StorePacket(VLEN, DMEM_WIDTH))
+    // status signal
+    val gen_active = Output(Bool())
   })
 
   // ======== Definitions ========
@@ -122,17 +123,21 @@ extends Module with VecLSGenConstants {
   // ======== Outputs ========
 
   // ready-valid signals
+  val need_next_mask    = (is_mask && max_mask_met && !max_ctr_met)
   val vdb_valid           = (io.vdb_data.valid_bytes =/= 0.U)
   io.start.ready         := ((state === State.IDLE)     && (!is_mask || io.mask.valid))
-  io.mask.ready          := ((state === State.SKIPPING) && (is_mask && max_mask_met && !max_ctr_met) && vdb_valid) ||
+  io.mask.ready          := ((state === State.SKIPPING) && need_next_mask && (io.store_packet.ready) && (vdb_valid)) ||
                             ((state === State.IDLE)     && (is_mask && io.start.valid))
-  io.store_packet.valid  := ((state === State.SKIPPING) && (!io.mask.ready || io.mask.valid) && (vdb_valid))
-  val vdb_ready           = ((state === State.SKIPPING) && (!io.mask.ready || io.mask.valid) && (io.store_packet.ready))
+  io.store_packet.valid  := ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid) && (vdb_valid))
+  val vdb_ready           = ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid) && (io.store_packet.ready))
   io.vdb_data.read_bytes := Mux(vdb_ready, Mux(skippable, (seg_count << (skip_enc + eew_enc)), (1.U << (seg_inc_enc + eew_enc))), 0.U)
-  io.vdb_data.read_all   := (state === State.SKIPPING) && (vl_constraint_met) // last packet
+  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.SKIPPING) && (vl_constraint_met), false.B) // last packet
+  io.gen_active          := (state === State.SKIPPING)
 
+  val addr_off = (current_seg_id << emul_enc).asSInt
+  
   // store packet
-  io.store_packet.bits.addr     := current_addr + (Mux(stride_dir, -current_seg_id, current_seg_id) << emul_enc)
+  io.store_packet.bits.addr     := (current_addr.asSInt + Mux(stride_dir, -addr_off, addr_off)).asUInt
   io.store_packet.bits.data     := io.vdb_data.data
   io.store_packet.bits.mem_size := Mux(skippable, 0.U, (seg_inc_enc + eew_enc))
   io.store_packet.bits.sb_id    := sb_id

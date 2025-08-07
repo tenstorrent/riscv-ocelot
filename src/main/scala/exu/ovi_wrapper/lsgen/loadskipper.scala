@@ -3,7 +3,6 @@ package boom.exu
 
 import chisel3._
 import chisel3.util._
-import chisel3.experimental._
 
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.{VConfig}
@@ -40,6 +39,8 @@ extends Module with VecLSGenConstants {
     val kill = Input(Bool())
     // load process FSM outputs (packet info)
     val load_packet = DecoupledIO(new LoadPacket(VLEN, DMEM_WIDTH))
+    // status signal
+    val gen_active = Output(Bool())
     // debug signals
     val debug = new Bundle {
       val debug_curr_seg_id     = Output(UInt(SEG_W.W))
@@ -142,13 +143,17 @@ extends Module with VecLSGenConstants {
 
   // ======== Outputs ========
 
+  val need_next_mask    = (is_mask && max_mask_met && !max_ctr_met)
   io.start.ready       := ((state === State.IDLE) && (!is_mask || io.mask.valid))
-  io.mask.ready        := ((state === State.SKIPPING) && (is_mask && max_mask_met && !max_ctr_met)) ||
+  io.mask.ready        := ((state === State.SKIPPING) && need_next_mask && (io.load_packet.ready)) ||
                           ((state === State.IDLE)     && (is_mask && io.start.valid))
-  io.load_packet.valid := ((state === State.SKIPPING) && (!io.mask.ready || io.mask.valid))
+  io.load_packet.valid := ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid))
+  io.gen_active        := (state === State.SKIPPING)
 
+  val addr_off = (current_seg_id << emul_enc).asSInt
+  
   // packet info
-  io.load_packet.bits.addr     := current_addr + (Mux(stride_dir, -current_seg_id, current_seg_id) << emul_enc)
+  io.load_packet.bits.addr     := (current_addr.asSInt + Mux(stride_dir, -addr_off, addr_off)).asUInt
   io.load_packet.bits.v_reg    := base_v_reg + (current_seg_id << emul_enc) + current_v_group_id
   io.load_packet.bits.el_id    := current_el_id
   io.load_packet.bits.el_off   := dmem_off

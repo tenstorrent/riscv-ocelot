@@ -3,7 +3,6 @@ package boom.exu
 
 import chisel3._
 import chisel3.util._
-import chisel3.experimental._
 
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.{VConfig}
@@ -36,6 +35,8 @@ extends Module with VecLSGenConstants {
       val valid_bytes = Input(UInt(VDB_R_SIZE_BYTES.W))  // like a valid signal
       val data        = Input(UInt(DMEM_WIDTH.W))
     }
+    // status signal
+    val gen_active = Output(Bool())
     // store packet
     val store_packet = DecoupledIO(new StorePacket(VLEN, DMEM_WIDTH))
   })
@@ -103,22 +104,26 @@ extends Module with VecLSGenConstants {
   val max_seg_id_met  = (seg_inc_val === packing_constraint)
   val max_el_id_met   = (current_el_id === ((VLEN_BYTES.U >> eew_enc) - 1.U))
   val max_v_group_met = (current_v_group_id === ((1.U << emul_enc) - 1.U))
-  val max_ctr_met     = ((current_ctr === (vl - 1.U)) || (current_last_index)) && max_seg_id_met // last ever packet
+  val max_ctr_met     = ((current_ctr === (vl - 1.U)) || (is_index && current_last_index)) && max_seg_id_met // last ever packet
 
   // ======== Outputs ========
 
   // ready-valid signals
+  val need_next_index   = (is_index && max_seg_id_met && !max_ctr_met)
   val vdb_valid           = (io.vdb_data.valid_bytes =/= 0.U)
   io.start.ready         := ((state === State.IDLE)    && (!is_index || io.index.valid))
-  io.index.ready         := ((state === State.WALKING) && (is_index && max_seg_id_met && !max_ctr_met) && vdb_valid) ||
+  io.index.ready         := ((state === State.WALKING) && need_next_index && (io.store_packet.ready) && (vdb_valid)) ||
                             ((state === State.IDLE)    && (is_index && io.start.valid))
-  io.store_packet.valid  := ((state === State.WALKING) && (!io.index.ready || io.index.valid) && (vdb_valid))
-  val vdb_ready           = ((state === State.WALKING) && (!io.index.ready || io.index.valid) && (io.store_packet.ready))
+  io.store_packet.valid  := ((state === State.WALKING) && (!need_next_index || io.index.valid) && (vdb_valid))
+  val vdb_ready           = ((state === State.WALKING) && (!need_next_index || io.index.valid) && (io.store_packet.ready))
   io.vdb_data.read_bytes := Mux(vdb_ready, (1.U << (seg_inc_enc + eew_enc)), 0.U)
-  io.vdb_data.read_all   := (state === State.WALKING) && (max_ctr_met) // last packet
+  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.WALKING) && (max_ctr_met), false.B) // last packet
+  io.gen_active          := (state === State.WALKING)
 
+  val addr_off = (current_seg_id << emul_enc).asSInt
+  
   // packet info
-  io.store_packet.bits.addr     := current_addr + (Mux(current_dir, -current_seg_id, current_seg_id) << emul_enc)
+  io.store_packet.bits.addr     := (current_addr.asSInt + Mux(current_dir, -addr_off, addr_off)).asUInt
   io.store_packet.bits.data     := io.vdb_data.data
   io.store_packet.bits.mem_size := (seg_inc_enc + eew_enc)
   io.store_packet.bits.sb_id    := sb_id
@@ -132,7 +137,9 @@ extends Module with VecLSGenConstants {
   switch (state) {
     is (State.IDLE) {
       when (io.start.fire) {
-        // temp value for direction
+        
+        // -- Next Address and dir calculation --
+        val next_addr = (base_addr.asSInt + Mux(is_index, io.index.index_value, 0.S)).asUInt
         val next_direction = Mux(is_index, io.index.index_value, stride)(63)
 
         // -- Input config --
@@ -142,15 +149,15 @@ extends Module with VecLSGenConstants {
         current_el_id   := 0.U
         current_seg_id  := 0.U
         current_v_group_id := 0.U
-        current_addr    := (base_addr.asSInt + Mux(is_index, io.index.index_value, 0.S)).asUInt
+        current_addr    := next_addr
         current_ctr     := 0.U
         current_mask_bit   := io.index.mask_bit
         current_last_index := io.index.last_index
         current_dir        := next_direction
 
         // -- Initialize DMEM info --
-        val high_off  = (((1<<(ADDR_BREAK))-1).U - base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
-        val low_off   = (base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from start of DMEM (low) to base_addr
+        val high_off  = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
+        val low_off   = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from start of DMEM (low) to base_addr
         dmem_off := Mux(next_direction, high_off, low_off)
         dmem_max := (DMEM_BYTES.U >> eew_enc)
       }

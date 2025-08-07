@@ -129,22 +129,22 @@ extends BoomModule with VecLSGenConstants {
 
   val nf_wth = Cat(instNf, instElemSize)
   val whole_vl = MuxLookup(nf_wth, 0.U, Seq(
-    0.U  -> (DMEM_BYTES.U),
-    5.U  -> (DMEM_BYTES.U >> 1),
-    6.U  -> (DMEM_BYTES.U >> 2),
-    7.U  -> (DMEM_BYTES.U >> 3),
-    8.U  -> (DMEM_BYTES.U << 1),
-    13.U -> (DMEM_BYTES.U),
-    14.U -> (DMEM_BYTES.U >> 1),
-    15.U -> (DMEM_BYTES.U >> 2),
-    24.U -> (DMEM_BYTES.U << 2),
-    29.U -> (DMEM_BYTES.U << 1),
-    30.U -> (DMEM_BYTES.U),
-    31.U -> (DMEM_BYTES.U >> 1),
-    56.U -> (DMEM_BYTES.U << 3),
-    61.U -> (DMEM_BYTES.U << 2),
-    62.U -> (DMEM_BYTES.U << 1),
-    63.U -> (DMEM_BYTES.U)
+    0.U  -> (VLEN_BYTES.U),       // nf=0, width=00 (8bit):  1*VLEN/8
+    5.U  -> (VLEN_BYTES.U >> 1),  // nf=0, width=01 (16bit): 1*VLEN/16
+    6.U  -> (VLEN_BYTES.U >> 2),  // nf=0, width=10 (32bit): 1*VLEN/32
+    7.U  -> (VLEN_BYTES.U >> 3),  // nf=0, width=11 (64bit): 1*VLEN/64
+    8.U  -> (VLEN_BYTES.U << 1),  // nf=1, width=00 (8bit):  2*VLEN/8
+    13.U -> (VLEN_BYTES.U),       // nf=1, width=01 (16bit): 2*VLEN/16
+    14.U -> (VLEN_BYTES.U >> 1),  // nf=1, width=10 (32bit): 2*VLEN/32
+    15.U -> (VLEN_BYTES.U >> 2),  // nf=1, width=11 (64bit): 2*VLEN/64
+    24.U -> (VLEN_BYTES.U << 2),  // nf=3, width=00 (8bit):  4*VLEN/8
+    29.U -> (VLEN_BYTES.U << 1),  // nf=3, width=01 (16bit): 4*VLEN/16
+    30.U -> (VLEN_BYTES.U),       // nf=3, width=10 (32bit): 4*VLEN/32
+    31.U -> (VLEN_BYTES.U >> 1),  // nf=3, width=11 (64bit): 4*VLEN/64
+    56.U -> (VLEN_BYTES.U << 3),  // nf=7, width=00 (8bit):  8*VLEN/8
+    61.U -> (VLEN_BYTES.U << 2),  // nf=7, width=01 (16bit): 8*VLEN/16
+    62.U -> (VLEN_BYTES.U << 1),  // nf=7, width=10 (32bit): 8*VLEN/32
+    63.U -> (VLEN_BYTES.U)        // nf=7, width=11 (64bit): 8*VLEN/64
   ))
 
   val whole_vlmul = MuxLookup(instNf, 0.U, Seq(
@@ -263,5 +263,11 @@ extends BoomModule with VecLSGenConstants {
   // Note: The VPU may complete illegal operations by sending completed.illegal
   // without setting memop.sync_start. This triggers an exception during commit,
   // causing pipeline flush and killing younger instructions.
+
+  dontTouch(isWhole)
+  dontTouch(whole_vl)
+  dontTouch(whole_vlmul)
+  dontTouch(io.in)
+  dontTouch(io.out)
 
 }
