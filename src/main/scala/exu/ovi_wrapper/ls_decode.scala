@@ -190,7 +190,10 @@ extends BoomModule with VecLSGenConstants {
   // Stride detection and outputs (for both loads and stores)
   io.out.dec_info.is_good_stride := strideIs1 || strideIs2 || strideIs4
   io.out.dec_info.stride_dir := strideIsNeg  // 0: positive, 1: negative
-  io.out.dec_info.stride := rs2_data.asSInt
+  io.out.dec_info.stride := MuxLookup(isUnit, rs2_data.asSInt, Seq( // need to force the stride value in case of unit stride (rs2 data isnt the right value)
+    true.B  -> (1.U << instWidth).zext.asSInt, // (chisel tries to find the effective width then extend casuing in negative so force zero extend)
+    false.B -> rs2_data.asSInt                 // in other cases, when stride is required, use the rs2 field
+  ))
   io.out.dec_info.is_unit_stride := strideIs1
 
   // stride_enc: log2 of stride magnitude for good strides

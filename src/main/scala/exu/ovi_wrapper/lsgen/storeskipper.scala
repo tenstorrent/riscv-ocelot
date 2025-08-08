@@ -76,7 +76,7 @@ extends Module with VecLSGenConstants {
     MASK_W.U - current_mask_off
   )
   val vdb_constraint = io.vdb_data.valid_bytes >> eew_enc
-  val vl_constraint = (vl - 1.U) - current_ctr
+  val vl_constraint  = vl - current_ctr
 
   // skip_val is the biggest power of 2 value smaller than the smallest of skipping constraints
   val skip_val = WireInit(0.U(11.W))
@@ -123,7 +123,7 @@ extends Module with VecLSGenConstants {
   // ======== Outputs ========
 
   // ready-valid signals
-  val need_next_mask    = (is_mask && max_mask_met && !max_ctr_met)
+  val need_next_mask      = (is_mask && max_mask_met && !max_ctr_met)
   val vdb_valid           = (io.vdb_data.valid_bytes =/= 0.U)
   io.start.ready         := ((state === State.IDLE)     && (!is_mask || io.mask.valid))
   io.mask.ready          := ((state === State.SKIPPING) && need_next_mask && (io.store_packet.ready) && (vdb_valid)) ||
@@ -131,7 +131,7 @@ extends Module with VecLSGenConstants {
   io.store_packet.valid  := ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid) && (vdb_valid))
   val vdb_ready           = ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid) && (io.store_packet.ready))
   io.vdb_data.read_bytes := Mux(vdb_ready, Mux(skippable, (seg_count << (skip_enc + eew_enc)), (1.U << (seg_inc_enc + eew_enc))), 0.U)
-  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.SKIPPING) && (vl_constraint_met), false.B) // last packet
+  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.SKIPPING) && (vl_constraint_met || max_ctr_met), false.B) // last packet
   io.gen_active          := (state === State.SKIPPING)
 
   val addr_off = (current_seg_id << emul_enc).asSInt
@@ -143,7 +143,7 @@ extends Module with VecLSGenConstants {
   io.store_packet.bits.sb_id    := sb_id
   io.store_packet.bits.is_fake  := (seg_inc_val === 0.U) || (is_mask && skippable)
   io.store_packet.bits.misaligned := false.B
-  io.store_packet.bits.last     := (state === State.SKIPPING) && (vl_constraint_met)
+  io.store_packet.bits.last     := (state === State.SKIPPING) && (vl_constraint_met || max_ctr_met)
   io.store_packet.bits.uop      := io.start.bits.uop
 
   // ======== State Machine ========
@@ -178,6 +178,7 @@ extends Module with VecLSGenConstants {
 
         // -- Next Address calculation --
         val next_addr = (current_addr.asSInt + Mux(skippable, (stride << skip_enc), stride)).asUInt
+        dontTouch(next_addr)
 
         // -- Counter ripple logic --
         // direct skip case (seg_id is always 0 when this happens)
@@ -289,5 +290,11 @@ extends Module with VecLSGenConstants {
   dontTouch(packing_constraint_met)
   dontTouch(seg_inc_val)
   dontTouch(seg_inc_enc)
+
+  dontTouch(max_seg_id_met)
+  dontTouch(max_el_id_met)
+  dontTouch(max_v_group_met)
+  dontTouch(max_ctr_met)
+  dontTouch(max_mask_met)
 
 }

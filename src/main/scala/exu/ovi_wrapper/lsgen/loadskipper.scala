@@ -93,7 +93,7 @@ extends Module with VecLSGenConstants {
     MASK_W.U - current_mask_off
   )
   val vreg_constraint = ((VLEN_BYTES.U >> eew_enc) -1.U) - current_el_id
-  val vl_constraint   = (vl - 1.U) - current_ctr
+  val vl_constraint   = vl - current_ctr
 
   // skip_val is the biggest power of 2 value smaller than the smallest of skipping constraints
   val skip_val = WireInit(0.U(11.W))
@@ -163,7 +163,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.mask_valid := is_mask
   io.load_packet.bits.is_fake    := (seg_inc_val === 0.U) || (is_mask && skippable)
   io.load_packet.bits.misaligned := ((current_addr & ((1.U << eew_enc) - 1.U)) =/= 0.U)
-  io.load_packet.bits.last     := (state === State.SKIPPING) && (max_ctr_met || vl_constraint_met)
+  io.load_packet.bits.last     := (state === State.SKIPPING) && (vl_constraint_met || max_ctr_met)
   io.load_packet.bits.uop      := io.start.bits.uop
   io.load_packet.bits.dir      := stride_dir
 

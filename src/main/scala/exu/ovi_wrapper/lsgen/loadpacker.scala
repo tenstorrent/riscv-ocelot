@@ -204,12 +204,12 @@ extends Module with VecLSGenConstants {
   io.gen_active        := (state === State.PACKING)
 
   // some math to figure out how many elements to load (comments below this file for explanation)
-  val inc_past_off = ctr_inc_val - el_off + 1.U
+  val inc_past_off = ctr_inc_val - el_off
   val el_count = PriorityMux(Seq(
     (ctr_inc_val <= el_off)
       -> (0.U),
     (split_ctr(inc_past_off).stride_id =/= 0.U)
-      -> ((inc_past_off & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width),
+      -> (((inc_past_off & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width) + (1.U << seg_mask_width)),
     (split_ctr(inc_past_off).stride_id === 0.U)
       -> (((inc_past_off & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width) | split_ctr(inc_past_off).seg_id)
   ))
@@ -219,7 +219,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.addr   := (base_addr.asSInt + Mux(stride_dir, -addr_off, addr_off)).asUInt // base + (EEW_CTR * EEW)
   io.load_packet.bits.v_reg  := base_v_reg + (split_ctr(ctr_past_off).seg_id << emul_enc) + split_ctr(ctr_past_off).v_group_id // base + [(seg_id * total_groups) + group_id]
   io.load_packet.bits.el_id  := split_ctr(ctr_past_off).el_id
-  io.load_packet.bits.el_off := el_off + dmem_off // offset to valid strided element + offset to align dmem
+  io.load_packet.bits.el_off := el_off + dmem_off // offset to valid strided element + offset to align dmem (remember this exists since address is forcefully aligned later)
   io.load_packet.bits.el_count   := el_count
   io.load_packet.bits.sb_id  := sb_id
   io.load_packet.bits.mask_data  := current_mask_data & ((1.U << el_count) - 1.U)
@@ -274,12 +274,14 @@ extends Module with VecLSGenConstants {
           current_mask_off := next_mask_off
           current_mask_data := current_mask_data >> (next_mask_off - current_mask_off)
         }
+
+        // -- Reset when last packet is reached --
+        when (io.load_packet.bits.last) {
+          state := State.IDLE
+        }
+
       }
       
-      // -- Reset when last packet is reached --
-      when (io.load_packet.bits.last) {
-        state := State.IDLE
-      }
     }
   }
 
