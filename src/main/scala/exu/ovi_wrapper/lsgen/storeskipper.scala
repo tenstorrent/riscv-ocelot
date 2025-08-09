@@ -18,6 +18,7 @@ extends Module with VecLSGenConstants {
   val io = IO(new Bundle {
     // start config signals
     val start = Flipped(DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH)))
+    val use_seg_constraint = Input(Bool())
     // mask interface (for masked stores)
     val mask = new Bundle {
       val ready = Output(Bool())
@@ -56,6 +57,7 @@ extends Module with VecLSGenConstants {
   val seg_count  = io.start.bits.seg_count
   val is_mask    = io.start.bits.is_mask
   val base_addr  = io.start.bits.base_addr
+  val use_seg_constraint = io.use_seg_constraint
 
   // ======== Walking state ========
   val current_seg_id    = RegInit(0.U(SEG_W.W))
@@ -64,7 +66,7 @@ extends Module with VecLSGenConstants {
   val current_addr      = RegInit(0.U(64.W))
   val current_ctr       = RegInit(0.U(CTR_WIDTH.W))
   val current_mask_data = RegInit(0.U(MASK_W.W))
-  val current_mask_off  = RegInit(0.U(log2Ceil(MASK_W).W))
+  val current_mask_off  = RegInit(0.U(MASK_W_SIZE.W))
   val dmem_off          = RegInit(0.U(DMEM_ENC.W))
   val dmem_max          = RegInit(0.U(DMEM_ENC.W))
 
@@ -131,7 +133,7 @@ extends Module with VecLSGenConstants {
   io.store_packet.valid  := ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid) && (vdb_valid))
   val vdb_ready           = ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid) && (io.store_packet.ready))
   io.vdb_data.read_bytes := Mux(vdb_ready, Mux(skippable, (seg_count << (skip_enc + eew_enc)), (1.U << (seg_inc_enc + eew_enc))), 0.U)
-  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.SKIPPING) && (vl_constraint_met || max_ctr_met), false.B) // last packet
+  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.SKIPPING) && (vl_constraint_met || max_ctr_met || (max_seg_id_met && use_seg_constraint)), false.B) // last packet
   io.gen_active          := (state === State.SKIPPING)
 
   val addr_off = (current_seg_id << emul_enc).asSInt

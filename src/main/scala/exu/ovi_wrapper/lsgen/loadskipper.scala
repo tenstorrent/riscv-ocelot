@@ -82,7 +82,7 @@ extends Module with VecLSGenConstants {
   val current_addr     = RegInit(0.U(64.W))                    // current address (incremental)
   val current_ctr      = RegInit(0.U(CTR_WIDTH.W))             // element counter to vl
   val current_mask_data = RegInit(0.U(MASK_W.W))               // mask data will be shifted as used
-  val current_mask_off = RegInit(0.U(log2Ceil(MASK_W).W))      // running shifted offset amount
+  val current_mask_off = RegInit(0.U(MASK_W_SIZE.W))           // running shifted offset amount
   val dmem_max   = RegInit(0.U(DMEM_ENC.W)) // max elements to fit in DMEM
   val dmem_off   = RegInit(0.U(DMEM_ENC.W)) // memory alignment offset
 

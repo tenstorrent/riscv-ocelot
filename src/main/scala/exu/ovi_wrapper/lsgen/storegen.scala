@@ -74,12 +74,16 @@ extends Module with VecLSGenConstants {
   val skipable   = (config_info.is_mask  && !config_info.is_index)
   val walkable   = (!config_info.is_mask ||  config_info.is_index)
 
+  // to force and not pack across segments to reduce hardware complexity (ckicken bit)
+  val use_seg_constraint = (config_info.seg_count > 1.U)
+
   // ======== Store Generators ========
 
   // --- packer ---
   val packer = Module(new StorePacker(VLEN, DMEM_WIDTH))
   // start config
   packer.io.start.bits  := config_info
+  packer.io.use_seg_constraint := use_seg_constraint
   // vdb data
   packer.io.vdb_data.valid_bytes := io.vdb_data.valid_bytes
   packer.io.vdb_data.data        := io.vdb_data.data
@@ -92,6 +96,7 @@ extends Module with VecLSGenConstants {
   val skipper = Module(new StoreSkipper(VLEN, DMEM_WIDTH))
   // start config
   skipper.io.start.bits  := config_info
+  skipper.io.use_seg_constraint := use_seg_constraint
   // mask config
   skipper.io.mask.valid     := io.mask_idx.valid
   skipper.io.mask.mask_data := io.mask_idx.data(MASK_W-1, 0) // data only
@@ -112,6 +117,7 @@ extends Module with VecLSGenConstants {
   walker.io.index.index_value := io.mask_idx.data(MASK_W-1, 0).asSInt // idx val
   walker.io.index.mask_bit    := io.mask_idx.data(MASK_W)      // mask bit
   walker.io.index.last_index  := io.mask_idx.data(MASK_W+1)    // last bit
+  walker.io.use_seg_constraint := use_seg_constraint
   // vdb data
   walker.io.vdb_data.valid_bytes := io.vdb_data.valid_bytes
   walker.io.vdb_data.data        := io.vdb_data.data

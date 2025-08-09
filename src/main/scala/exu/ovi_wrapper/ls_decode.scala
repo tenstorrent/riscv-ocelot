@@ -31,6 +31,7 @@ trait VecLSGenConstants {
   val SEG_W        = 4
   val SEG_ENC_W    = 3
   val MASK_W       = 64
+  val MASK_W_SIZE  = log2Ceil(MASK_W)
   val EL_ID_W      = log2Ceil(VLEN/8) // should be 11 in OVI (add padding)
 }
 

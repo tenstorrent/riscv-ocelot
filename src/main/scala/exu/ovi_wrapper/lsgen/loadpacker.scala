@@ -31,6 +31,7 @@ extends Module with VecLSGenConstants {
   val io = IO(new Bundle {
     // start config signals
     val start = Flipped(DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH))) // expects latched config info (DO NOT CHANGE DURING FSM)
+    val use_seg_constraint = Input(Bool())
     // mask interface (for masked loads)
     val mask = new Bundle {
       val ready = Output(Bool())
@@ -105,10 +106,11 @@ extends Module with VecLSGenConstants {
   val stride_dir = io.start.bits.stride_dir
   val is_mask    = io.start.bits.is_mask
   val base_addr  = io.start.bits.base_addr
-
+  val use_seg_constraint = io.use_seg_constraint
+  
   // ======== Packing info ========
   val EEW_CTR = RegInit(0.U(CTR_WIDTH.W)) // single EEW wide slice counter
-  val current_mask_off = RegInit(0.U(log2Ceil(MASK_W).W))  // mask offset tracking for mask data
+  val current_mask_off = RegInit(0.U(MASK_W_SIZE.W))  // mask offset tracking for mask data
   val current_mask_data = RegInit(0.U(MASK_W.W))           // mask data will be shifted as used
   val dmem_off   = RegInit(0.U(DMEM_ENC.W)) // offset tracking for mem alignment
   val dmem_max   = RegInit(0.U(DMEM_ENC.W)) // max elements to fit in DMEM
@@ -141,14 +143,20 @@ extends Module with VecLSGenConstants {
 
   // elements until mask buffer is used up
   val mask_constraint = (
-    (EEW_CTR & ~((1.U << (el_mask_off+log2Ceil(MASK_W).U)) - 1.U)) + // clear bits under the mask offset of EL_ID_FIELD
-    (1.U << (el_mask_off+log2Ceil(MASK_W).U))                        // add one to the mask part of the EL_ID_FIELD
+    (EEW_CTR & ~((1.U << (el_mask_off+MASK_W_SIZE.U(6.W))) - 1.U)) + // clear bits under the mask offset of EL_ID_FIELD
+    (1.U << (el_mask_off+MASK_W_SIZE.U(6.W)))                        // add one to the mask part of the EL_ID_FIELD
   ) - EEW_CTR                                                        // take distance of value from current ctr
 
   // elements until the next EMUL_FIELD in CTR
   val vreg_constraint = (
     (EEW_CTR & ~((1.U << v_group_mask_off) - 1.U)) +    // clear all fields except the EMUL_FIELD
     (1.U << v_group_mask_off)                           // add one to the EMUL_FIELD (to get to next group_id)
+  ) - EEW_CTR                                           // take distance of value from current ctr
+
+  // elements until the next EL_ID_FIELD in CTR (to force and not pack across segments to reduce hardware complexity)
+  val seg_constraint = (
+    (EEW_CTR & ~((1.U << el_mask_off) - 1.U)) +         // clear all fields upto the EL_ID_FIELD
+    (1.U << el_mask_off)                                // add one to the EL_ID_FIELD (to get to next el_id)
   ) - EEW_CTR                                           // take distance of value from current ctr
 
   // elements until VL is reached in CTR
@@ -162,10 +170,11 @@ extends Module with VecLSGenConstants {
   val ctr_inc_val = WireInit(0.U(CTR_WIDTH.W))
   
   // check constraints hit (NOTE: multiple can be triggered due to "less OR eq")
-  val dmem_constraint_met = (dmem_constraint <= vl_constraint) && (dmem_constraint <= vreg_constraint) && ((dmem_constraint <= mask_constraint) || !is_mask)
-  val vreg_constraint_met = (vreg_constraint <= vl_constraint) && (vreg_constraint <= dmem_constraint) && ((vreg_constraint <= mask_constraint) || !is_mask)
-  val vl_constraint_met   = (vl_constraint <= vreg_constraint) && (vl_constraint <= dmem_constraint)   && ((vl_constraint <= mask_constraint)   || !is_mask)
-  val mask_constraint_met = (mask_constraint <= vl_constraint) && (mask_constraint <= vreg_constraint) && ((mask_constraint <= dmem_constraint) &&  is_mask)
+  val dmem_constraint_met = (dmem_constraint <= vl_constraint) && (dmem_constraint <= vreg_constraint) && ((dmem_constraint <= mask_constraint) || !is_mask) && ((dmem_constraint <= seg_constraint) || !use_seg_constraint)
+  val vreg_constraint_met = (vreg_constraint <= vl_constraint) && (vreg_constraint <= dmem_constraint) && ((vreg_constraint <= mask_constraint) || !is_mask) && ((vreg_constraint <= seg_constraint) || !use_seg_constraint)
+  val vl_constraint_met   = (vl_constraint <= vreg_constraint) && (vl_constraint <= dmem_constraint)   && ((vl_constraint <= mask_constraint)   || !is_mask) && ((vl_constraint <= seg_constraint)   || !use_seg_constraint)
+  val seg_constraint_met  = (seg_constraint <= vl_constraint)  && (seg_constraint <= vreg_constraint)  && ((seg_constraint <= dmem_constraint)  || !is_mask) && ((seg_constraint <= mask_constraint) &&  use_seg_constraint)
+  val mask_constraint_met = (mask_constraint <= vl_constraint) && (mask_constraint <= vreg_constraint) && ((mask_constraint <= dmem_constraint) &&  is_mask) && ((mask_constraint <= seg_constraint) || !use_seg_constraint)
   
   // increment based on constraint met
   // VL is smallest
@@ -177,6 +186,9 @@ extends Module with VecLSGenConstants {
   // DMEM is smallest
   }.elsewhen (dmem_constraint_met) {
     ctr_inc_val := dmem_constraint
+  // SEG is smallest
+  }.elsewhen (seg_constraint_met) {
+    ctr_inc_val := seg_constraint
   // MASK is smallest
   }.elsewhen (mask_constraint_met) {
     ctr_inc_val := mask_constraint
@@ -322,6 +334,8 @@ extends Module with VecLSGenConstants {
   dontTouch(io.load_packet)
   dontTouch(io.kill)
   dontTouch(io.debug)
+  dontTouch(seg_constraint)
+  dontTouch(seg_constraint_met)
   
 }
 

@@ -18,6 +18,7 @@ extends Module with VecLSGenConstants {
   val io = IO(new Bundle {
     // start config signals
     val start = Flipped(DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH)))
+    val use_seg_constraint = Input(Bool())
     // store data interface
     val vdb_data = new Bundle {
       val read_bytes  = Output(UInt(VDB_R_SIZE_BYTES.W)) // like a ready signal
@@ -48,6 +49,7 @@ extends Module with VecLSGenConstants {
   val stride_dir = io.start.bits.stride_dir
   val seg_enc    = io.start.bits.seg_enc
   val base_addr  = io.start.bits.base_addr
+  val use_seg_constraint = io.use_seg_constraint
 
   // ======== Packing info ========
   val EEW_CTR  = RegInit(0.U(CTR_WIDTH.W)) // single EEW wide slice counter
@@ -70,6 +72,12 @@ extends Module with VecLSGenConstants {
   // elements that can be provided from VDB
   val vdb_constraint = io.vdb_data.valid_bytes >> eew_enc
 
+  // constraint to the next element id
+  val seg_constraint = (
+    (EEW_CTR & ~((1.U << el_mask_off)-1.U)) +
+    (1.U << el_mask_off)
+  ) - EEW_CTR
+
   // elements until VL is reached in CTR
   val vl_constraint   = (
     (vl << el_mask_off) |                               // EMUL_FIELD/EL_ID_FIELD: vl
@@ -78,11 +86,13 @@ extends Module with VecLSGenConstants {
 
   // ======== Advance CTR based on constraints ========
   val ctr_inc_val = WireInit(0.U(CTR_WIDTH.W))
-  when ((dmem_constraint <= vl_constraint) && (dmem_constraint <= vdb_constraint)) {
+  when ((dmem_constraint <= vl_constraint) && (dmem_constraint <= vdb_constraint) && ((dmem_constraint <= seg_constraint) || !use_seg_constraint)) {
     ctr_inc_val := Reverse(PriorityEncoderOH(Reverse(dmem_constraint)))
-  }.elsewhen ((vdb_constraint <= dmem_constraint) && (vdb_constraint <= vl_constraint)) {
+  }.elsewhen ((vdb_constraint <= dmem_constraint) && (vdb_constraint <= vl_constraint) && ((vdb_constraint <= seg_constraint) || !use_seg_constraint)) {
     ctr_inc_val := Reverse(PriorityEncoderOH(Reverse(vdb_constraint)))
-  }.elsewhen ((vl_constraint <= dmem_constraint) && (vl_constraint <= vdb_constraint)) {
+  }.elsewhen ((seg_constraint <= dmem_constraint) && (seg_constraint <= vdb_constraint) && ((seg_constraint <= vl_constraint) && use_seg_constraint)) {
+    ctr_inc_val := Reverse(PriorityEncoderOH(Reverse(seg_constraint)))
+  }.elsewhen ((vl_constraint <= dmem_constraint) && (vl_constraint <= vdb_constraint) && ((vl_constraint <= seg_constraint) || !use_seg_constraint)) {
     ctr_inc_val := Reverse(PriorityEncoderOH(Reverse(vl_constraint)))
   }
 
@@ -92,6 +102,7 @@ extends Module with VecLSGenConstants {
   val dmem_constraint_met = (ctr_inc_val === dmem_constraint)
   val vdb_constraint_met  = (ctr_inc_val === vdb_constraint)
   val vl_constraint_met   = (ctr_inc_val === vl_constraint)
+  val seg_constraint_met  = (ctr_inc_val === seg_constraint) && use_seg_constraint
 
   // ======== Outputs ========
 
@@ -101,7 +112,7 @@ extends Module with VecLSGenConstants {
   io.store_packet.valid  := (state === State.PACKING) && vdb_valid
   val vdb_ready           = (state === State.PACKING) && (io.store_packet.ready)
   io.vdb_data.read_bytes := Mux(vdb_ready, (1.U << (ctr_inc_enc + eew_enc)), 0.U)
-  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.PACKING) && (vl_constraint_met), false.B) // last packet
+  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.PACKING) && (vl_constraint_met || (use_seg_constraint && seg_constraint_met)), false.B) // last packet
   io.gen_active          := (state === State.PACKING)
 
   val addr_off = (EEW_CTR << eew_enc).asSInt

@@ -72,12 +72,16 @@ extends Module with VecLSGenConstants {
   val skipable   = (config_info.is_mask && !config_info.is_index)
   val walkable   = !(config_info.is_mask && !config_info.is_index)
 
+  // to force and not pack across segments to reduce hardware complexity (ckicken bit)
+  val use_seg_constraint = (config_info.seg_count > 1.U)
+
   // ======== Load Generators ========
 
   // --- packer ---
   val packer = Module(new LoadPacker(VLEN, DMEM_WIDTH))
   // start config
   packer.io.start.bits  := config_info
+  packer.io.use_seg_constraint := use_seg_constraint
   // mask config
   packer.io.mask.valid     := io.mask_idx.valid
   packer.io.mask.mask_data := io.mask_idx.data(MASK_W-1, 0) // data only

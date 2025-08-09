@@ -18,6 +18,7 @@ extends Module with VecLSGenConstants {
   val io = IO(new Bundle {
     // start config signals
     val start = Flipped(DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH)))
+    val use_seg_constraint = Input(Bool())
     // index interface (for indexed stores)
     val index = new Bundle {
       val ready = Output(Bool())
@@ -60,6 +61,7 @@ extends Module with VecLSGenConstants {
   val is_mask   = io.start.bits.is_mask
   val is_index  = io.start.bits.is_index
   val base_addr = io.start.bits.base_addr
+  val use_seg_constraint = io.use_seg_constraint
 
   // ======== Walking state ========
 
@@ -117,7 +119,7 @@ extends Module with VecLSGenConstants {
   io.store_packet.valid  := ((state === State.WALKING) && (!need_next_index || io.index.valid) && (vdb_valid))
   val vdb_ready           = ((state === State.WALKING) && (!need_next_index || io.index.valid) && (io.store_packet.ready))
   io.vdb_data.read_bytes := Mux(vdb_ready, (1.U << (seg_inc_enc + eew_enc)), 0.U)
-  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.WALKING) && (max_ctr_met), false.B) // last packet
+  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.WALKING) && (max_ctr_met || (max_seg_id_met && use_seg_constraint)), false.B) // last packet
   io.gen_active          := (state === State.WALKING)
 
   val addr_off = (current_seg_id << emul_enc).asSInt
