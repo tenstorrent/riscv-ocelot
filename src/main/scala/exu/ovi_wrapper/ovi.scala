@@ -586,6 +586,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     // Load packet → LSU req interface
     io.vGenIO.req.valid := loadGen.io.load_packet.valid
     io.vGenIO.req.bits.uop := loadGen.io.load_packet.bits.uop
+    // i dont like the idea of changing the uop itself but i will reverse this when reconstructing the LSU
     io.vGenIO.req.bits.uop.mem_size := addrBreak.U  // For loads: use DMEM width
     io.vGenIO.req.bits.data := 0.U  // Loads don't send data
     io.vGenIO.req.bits.last := loadGen.io.load_packet.bits.last
@@ -611,6 +612,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     // Store packet → LSU req interface  
     io.vGenIO.req.valid := storeGen.io.store_packet.valid
     io.vGenIO.req.bits.uop := storeGen.io.store_packet.bits.uop
+    // i dont like the idea of changing the uop itself but i will reverse this when reconstructing the LSU
     io.vGenIO.req.bits.uop.mem_size := storeGen.io.store_packet.bits.mem_size  // For stores: use actual memory operation size
     io.vGenIO.req.bits.data := storeGen.io.store_packet.bits.data
     io.vGenIO.req.bits.last := storeGen.io.store_packet.bits.last

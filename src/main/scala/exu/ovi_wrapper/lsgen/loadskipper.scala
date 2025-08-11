@@ -92,7 +92,7 @@ extends Module with VecLSGenConstants {
     PriorityEncoder(current_mask_data),
     MASK_W.U - current_mask_off
   )
-  val vreg_constraint = ((VLEN_BYTES.U >> eew_enc) -1.U) - current_el_id
+  val vreg_constraint = (VLEN_BYTES.U >> eew_enc) - current_el_id
   val vl_constraint   = vl - current_ctr
 
   // skip_val is the biggest power of 2 value smaller than the smallest of skipping constraints

@@ -166,7 +166,7 @@ extends Module with VecLSGenConstants {
   bypass_packet.is_fake    := true.B   // fake store
   bypass_packet.misaligned := DontCare
   bypass_packet.last       := true.B   // assert end
-  bypass_packet.uop        := DontCare
+  bypass_packet.uop        := config_info.uop
   
   // BYPASS case (no output but assert last)
   when (state === State.BYPASS) {
