@@ -162,7 +162,7 @@ extends Module with VecLSGenConstants {
   bypass_packet.addr       := DontCare
   bypass_packet.data       := DontCare
   bypass_packet.mem_size   := 0.U      // this doesnt make a lot of sense cuz its in log domain but its just like a "default" value
-  bypass_packet.sb_id      := DontCare
+  bypass_packet.sb_id      := config_info.sb_id
   bypass_packet.is_fake    := true.B   // fake store
   bypass_packet.misaligned := DontCare
   bypass_packet.last       := true.B   // assert end

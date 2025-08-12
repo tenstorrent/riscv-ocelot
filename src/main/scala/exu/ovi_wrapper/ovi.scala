@@ -770,7 +770,7 @@ MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbR
   // ======== OSC3 LSGEN VPU OVERRIDE CODE START ========
 
   vpu.io.store_credit := vecDataBuffer.io.credit
-  vpu.io.mask_idx_credit := maskIdxBuffer.io.mask_idx_out.ready && maskIdxBuffer.io.mask_idx_out.valid
+  vpu.io.mask_idx_credit := maskIdxBuffer.io.credit
   
   // ======== OSC3 LSGEN VPU OVERRIDE CODE END ========
   

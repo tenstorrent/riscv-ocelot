@@ -143,7 +143,7 @@ extends Module with VecLSGenConstants {
 
   // ======== Outputs ========
 
-  val need_next_mask    = (is_mask && max_mask_met && !max_ctr_met)
+  val need_next_mask    = (is_mask && max_mask_met && !(max_ctr_met || vl_constraint_met))
   io.start.ready       := ((state === State.IDLE) && (!is_mask || io.mask.valid))
   io.mask.ready        := ((state === State.SKIPPING) && need_next_mask && (io.load_packet.ready)) ||
                           ((state === State.IDLE)     && (is_mask && io.start.valid))
@@ -303,5 +303,29 @@ extends Module with VecLSGenConstants {
   dontTouch(max_ctr_met)
   dontTouch(max_mask_met)
 
+  dontTouch(io.mask)
+  dontTouch(io.mask.mask_data)
+  dontTouch(io.mask.valid)
+  dontTouch(io.mask.ready)
+  dontTouch(io.start)
+  dontTouch(io.load_packet)
+  dontTouch(io.kill)
+  dontTouch(io.gen_active)
+  dontTouch(vreg_constraint)
+  dontTouch(vl_constraint)
+  dontTouch(skip_val)
+  dontTouch(skippable)
+  dontTouch(skip_enc)
+  dontTouch(vreg_constraint_met)
+  dontTouch(vl_constraint_met)
+  dontTouch(dmem_constraint)
+  dontTouch(packing_constraint)
+  dontTouch(dmem_constraint_met)
+  dontTouch(packing_constraint_met)
+  dontTouch(max_seg_id_met)
+  dontTouch(max_el_id_met)
+  dontTouch(max_v_group_met)
+  dontTouch(max_ctr_met)
+  dontTouch(max_mask_met)
 }
 

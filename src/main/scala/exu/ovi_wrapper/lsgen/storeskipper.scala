@@ -125,7 +125,7 @@ extends Module with VecLSGenConstants {
   // ======== Outputs ========
 
   // ready-valid signals
-  val need_next_mask      = (is_mask && max_mask_met && !max_ctr_met)
+  val need_next_mask      = (is_mask && max_mask_met && !(max_ctr_met || vl_constraint_met))
   val vdb_valid           = (io.vdb_data.valid_bytes =/= 0.U)
   io.start.ready         := ((state === State.IDLE)     && (!is_mask || io.mask.valid))
   io.mask.ready          := ((state === State.SKIPPING) && need_next_mask && (io.store_packet.ready) && (vdb_valid)) ||

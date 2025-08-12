@@ -154,7 +154,7 @@ extends Module with VecLSGenConstants {
   bypass_packet.el_id      := DontCare
   bypass_packet.el_off     := DontCare
   bypass_packet.el_count   := config_info.vl // should be 0 if bypassable
-  bypass_packet.sb_id      := DontCare
+  bypass_packet.sb_id      := config_info.sb_id
   bypass_packet.mask_data  := DontCare
   bypass_packet.mask_valid := DontCare
   bypass_packet.is_fake    := true.B         // fake load
@@ -243,6 +243,17 @@ extends Module with VecLSGenConstants {
   }
 
   // ======== Debug Signals ========
+
+  val seq_id = Wire(UInt(34.W))
+  seq_id := Cat(
+    io.load_packet.bits.sb_id(4, 0),                           // bits 33:29 (5 bits)
+    io.load_packet.bits.el_count(6, 0),                        // bits 28:22 (7 bits)  
+    io.load_packet.bits.el_off(5, 0),                          // bits 21:16 (6 bits)
+    Cat(0.U((11-EL_ID_W).W), io.load_packet.bits.el_id),       // bits 15:5  (11 bits total, padded)
+    io.load_packet.bits.v_reg(4, 0)                            // bits 4:0   (5 bits)
+  )
+
+  dontTouch(seq_id)
 
   switch (state) {
     is (State.IDLE) {
