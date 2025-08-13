@@ -143,12 +143,138 @@ module tt_vec_div_unit
       end
    end
 
-   // Empty implementation for now
-   // Keep all outputs benign until real computation units are integrated.
-   assign o_busy         = 1'b0;
-   assign o_result_valid = 1'b0;
-   assign o_result       = '0;
-   assign o_result_exc   = '0;
+   // Square root unit signals and instances
+   logic [VLEN/16-1:0][15:0] fp16_sqrt_in, fp16_sqrt_out;
+   logic [VLEN/16-1:0][4:0]  fp16_sqrt_exc;
+   logic [VLEN/32-1:0][31:0] fp32_sqrt_in, fp32_sqrt_out;
+   logic [VLEN/32-1:0][4:0]  fp32_sqrt_exc;
+   
+   // Input data preparation for square root units
+   generate
+      for (genvar i = 0; i < VLEN/16; i++) begin : gen_fp16_input
+         always_comb begin
+            if (is_sqrt_op && i_sew == 2'b01) begin // SEW=16
+               fp16_sqrt_in[i] = i_src1[(i+1)*16-1:i*16];
+            end else begin
+               fp16_sqrt_in[i] = '0;
+            end
+         end
+      end
+      
+      for (genvar i = 0; i < VLEN/32; i++) begin : gen_fp32_input
+         always_comb begin
+            if (is_sqrt_op && i_sew == 2'b10) begin // SEW=32
+               fp32_sqrt_in[i] = i_src1[(i+1)*32-1:i*32];
+            end else begin
+               fp32_sqrt_in[i] = '0;
+            end
+         end
+      end
+   endgenerate
+   
+   // Generate FP16 square root units (for SEW=16)
+   generate
+      for (genvar i = 0; i < VLEN/16; i++) begin : gen_fp16_sqrt
+         VecFP16rsqrt7 fp16_sqrt_inst (
+            .io_in            (fp16_sqrt_in[i]),
+            .io_roundingMode  (i_frm),
+            .io_out           (fp16_sqrt_out[i]),
+            .io_exceptionFlags(fp16_sqrt_exc[i])
+         );
+      end
+   endgenerate
+   
+   // Generate FP32 square root units (for SEW=32)
+   generate
+      for (genvar i = 0; i < VLEN/32; i++) begin : gen_fp32_sqrt
+         VecFP32rsqrt7 fp32_sqrt_inst (
+            .io_in            (fp32_sqrt_in[i]),
+            .io_roundingMode  (i_frm),
+            .io_out           (fp32_sqrt_out[i]),
+            .io_exceptionFlags(fp32_sqrt_exc[i])
+         );
+      end
+   endgenerate
+   
+   // Output result multiplexing - simple mux between FP16 and FP32 results
+   logic [VLEN-1:0] sqrt_result;
+   tt_briscv_pkg::csr_fp_exc sqrt_exc;
+   
+   always_comb begin
+      sqrt_result = '0;
+      sqrt_exc = '0;
+      
+      if (is_sqrt_op && i_sew == 2'b01) begin // SEW=16
+         // Pack FP16 results into VLEN
+         for (int i = 0; i < VLEN/16; i++) begin
+            sqrt_result[i*16 +: 16] = fp16_sqrt_out[i];
+         end
+         // Combine FP16 exceptions (OR all exception flags)
+         for (int i = 0; i < VLEN/16; i++) begin
+            sqrt_exc |= {fp16_sqrt_exc[i][4], 1'b0, fp16_sqrt_exc[i][3:0]};
+         end
+      end else if (is_sqrt_op && i_sew == 2'b10) begin // SEW=32
+         // Pack FP32 results into VLEN  
+         for (int i = 0; i < VLEN/32; i++) begin
+            sqrt_result[i*32 +: 32] = fp32_sqrt_out[i];
+         end
+         // Combine FP32 exceptions (OR all exception flags)
+         for (int i = 0; i < VLEN/32; i++) begin
+            sqrt_exc |= {fp32_sqrt_exc[i][4], 1'b0, fp32_sqrt_exc[i][3:0]};
+         end
+      end
+   end
+
+
+   logic [VLEN-1:0] compute_result, merged_result;
+   assign compute_result = is_sqrt_op ? sqrt_result : '0; // tying this to sqrt for now
+   
+   // Mask extraction and merging logic
+   logic [VLEN/8-1:0] active_mask;  // Mask for current register slice
+   
+   // Extract appropriate mask slice based on SEW and LMUL_CNT
+   always_comb begin
+      active_mask = '0;
+      
+      case (i_sew)
+         2'b00: begin // SEW=8, 1 mask bit per element
+            // Use all lmul_cnt bits for indexing
+            active_mask = i_vm0[i_lmul_cnt[2:0] * (VLEN/8) +: VLEN/8];
+         end
+         2'b01: begin // SEW=16, 1 mask bit per 2 bytes  
+            // Use upper lmul_cnt bits, replicate mask bits
+            active_mask = {(VLEN/16){i_vm0[i_lmul_cnt[2:1] * (VLEN/16) +: VLEN/16]}};
+         end
+         2'b10: begin // SEW=32, 1 mask bit per 4 bytes
+            // Use top lmul_cnt bit, replicate mask bits  
+            active_mask = {(VLEN/32){i_vm0[i_lmul_cnt[2] * (VLEN/32) +: VLEN/32]}};
+         end
+         2'b11: begin // SEW=64, 1 mask bit per 8 bytes
+            // Always use first slice, replicate mask bits
+            active_mask = {(VLEN/64){i_vm0[0 +: VLEN/64]}};
+         end
+      endcase
+   end
+   
+   // Merge compute_result with i_src3 based on active_mask
+   // mask=1: use compute_result, mask=0: use i_src3 (destination merge)
+   always_comb begin
+      merged_result = '0;
+      for (int i = 0; i < VLEN/8; i++) begin
+         if (active_mask[i]) begin
+            merged_result[i*8 +: 8] = compute_result[i*8 +: 8];  // Use computed result
+         end else begin
+            merged_result[i*8 +: 8] = i_src3[i*8 +: 8];         // Use destination (merge)
+         end
+      end
+   end
+
+   // Output assignments
+   // For now, only square root is implemented
+   assign o_busy         = 1'b0; // Combinational operation
+   assign o_result_valid = i_id_vdiv_ex0_rts & is_sqrt_op;
+   assign o_result       = merged_result;
+   assign o_result_exc   = is_sqrt_op ? sqrt_exc : '0;
    assign o_result_lqid  = i_ldqid;
 
 endmodule
