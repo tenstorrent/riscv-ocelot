@@ -122,7 +122,8 @@ extends Module with VecLSGenConstants {
   val max_el_id_met   = (current_el_id === ((VLEN_BYTES.U >> eew_enc) - 1.U))
   val max_v_group_met = (current_v_group_id === ((1.U << emul_enc) - 1.U))
   val max_ctr_met     = (current_ctr === (vl - 1.U)) && max_seg_id_met // last ever packet
-  val max_mask_met    = ((current_mask_off + skip_val) === MASK_W.U)
+  val next_mask_off   = current_mask_off + Mux(skippable, skip_val, Mux(max_seg_id_met, 1.U, 0.U))
+  val max_mask_met    = (next_mask_off === MASK_W.U)
 
   // ======== Advance SEG based on constraints ========
   val seg_inc_val = WireInit(0.U(SEG_W.W))
@@ -327,5 +328,6 @@ extends Module with VecLSGenConstants {
   dontTouch(max_v_group_met)
   dontTouch(max_ctr_met)
   dontTouch(max_mask_met)
+  dontTouch(next_mask_off)
 }
 

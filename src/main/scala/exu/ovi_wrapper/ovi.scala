@@ -581,6 +581,18 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
     gen_is_load := false.B  
   }
 
+  // Generate the sequence ID for the fake load return queue
+  val seq_id = Wire(UInt(34.W))
+  seq_id := Cat(
+    loadGen.io.load_packet.bits.sb_id(4, 0),                           // bits 33:29 (5 bits)
+    loadGen.io.load_packet.bits.el_count(6, 0),                        // bits 28:22 (7 bits)  
+    loadGen.io.load_packet.bits.el_off(5, 0),                          // bits 21:16 (6 bits)
+    Cat(0.U((11-log2Ceil(vpuVlen/8)).W), loadGen.io.load_packet.bits.el_id), // bits 15:5  (11 bits total, padded)
+    loadGen.io.load_packet.bits.v_reg(4, 0)                            // bits 4:0   (5 bits)
+  )
+  fakeLoadReturnQueue.io.enq.valid := gen_active && gen_is_load && loadGen.io.load_packet.valid && loadGen.io.load_packet.bits.is_fake
+  fakeLoadReturnQueue.io.enq.bits := seq_id
+
   // Override the original OVI→LSU outputs with generator outputs
   when (gen_active && gen_is_load && loadGen.io.load_packet.valid) {
     // Load packet → LSU req interface
