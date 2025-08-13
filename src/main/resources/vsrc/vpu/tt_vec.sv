@@ -72,13 +72,6 @@ module tt_vec #(parameter
               
               input [XLEN-1:0]                                    i_fprf_vex_p0  //fp to vrf moves; note this align with 0a, and read pre flop.                   
               );
-  assign o_vex_div_busy = 1'b0;
-  
-  // Division write back ports - tied to 0 for now
-  assign o_vex_mem_lqvld_div = 1'b0;
-  assign o_vex_mem_lqdata_div = '0;
-  assign o_vex_mem_lqexc_div = '0;
-  assign o_vex_mem_lqid_div = '0;
    /*AUTOWIRE*/
    // Beginning of automatic wires (for undeclared instantiated-module outputs)
    logic                sat_csr_2a;             // From idp of tt_vec_idp.v
@@ -982,6 +975,57 @@ module tt_vec #(parameter
       .o_result_ooo_exc         (fwrexc_2a)
 
    );
+
+    // Vector division wrapper (empty for now). Wires up decode and returns no result.
+    tt_vec_div_unit #(
+       .NUM_LANE(VLEN/64),
+       .VLEN    (VLEN)
+    )
+    vdiv
+    (
+       .i_clk           (i_clk),
+       .i_reset_n       (i_reset_n),
+
+       // Handshake and control from ID stage
+       .i_id_vdiv_ex0_rts (i_id_vex_rts & (i_id_vec_autogen.idivop | i_id_vec_autogen.fdivop)),
+       
+       // Operation type decode (from vec_autogen_s)
+       .i_idivop        (i_id_vec_autogen.idivop),
+       .i_fdivop        (i_id_vec_autogen.fdivop),
+       .i_ldqid         (i_id_vec_autogen.ldqid),
+
+       // Source operands - full VLEN width for flexible SEW handling  
+       .i_src1          (src1_mux_0a[VLEN-1:0]),    // vs2 source (dividend)
+       .i_src2          (src2_0a[VLEN-1:0]),        // vs1/scalar/imm source (divisor)
+       .i_src3          (src3_0a[VLEN-1:0]),        // vd source (for masked ops)
+
+       // Vector control signals
+       .i_vm0           (vm0_muxed_0a & vl_muxed_0a),
+       .i_sew           (i_csr.v_vsew[1:0]),
+       .i_lmul          (i_csr.v_lmul[2:0]),
+       .i_vl            (i_csr.v_vl[7:0]),
+
+       // Instruction decode signals
+       .i_funct7        (funct7_0a[6:0]),
+       .i_funct3        (funct3_0a[2:0]),
+       .i_vs1           (reg_p0[4:0]),
+       .i_vm            (i_id_ex_instrn[25]),
+
+       // Floating-point control (IEEE FP only, no fixed-point)
+       .i_frm           (i_csr.frm),
+
+       // Replay control
+       .i_lmul_cnt      (lmul_cnt_0a),
+
+       // Outputs towards MEM/LQ (division write port)
+       .o_result_valid  (o_vex_mem_lqvld_div),
+       .o_result        (o_vex_mem_lqdata_div),
+       .o_result_exc    (o_vex_mem_lqexc_div),
+       .o_result_lqid   (o_vex_mem_lqid_div),
+
+       // Global busy indicator for ID resource hazard checks
+       .o_busy          (o_vex_div_busy)
+    );
 
    
    //Note these inputs are 0a and outputs are 2a...
