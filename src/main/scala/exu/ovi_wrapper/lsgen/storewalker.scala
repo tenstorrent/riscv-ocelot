@@ -122,7 +122,7 @@ extends Module with VecLSGenConstants {
   io.vdb_data.read_all   := Mux(vdb_ready, (state === State.WALKING) && (max_ctr_met || (max_seg_id_met && use_seg_constraint)), false.B) // last packet
   io.gen_active          := (state === State.WALKING)
 
-  val addr_off = (current_seg_id << emul_enc).asSInt
+  val addr_off = (current_seg_id << eew_enc).asSInt
   
   // packet info
   io.store_packet.bits.addr     := (current_addr.asSInt + Mux(current_dir, -addr_off, addr_off)).asUInt

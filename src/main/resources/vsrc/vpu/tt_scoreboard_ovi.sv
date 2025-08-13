@@ -8,6 +8,7 @@ module tt_scoreboard_ovi(
   input  logic [4:0]  i_issue_sb_id,
   input  logic [31:0] i_issue_inst,
   input  logic [2:0]  i_issue_vsew,
+  input  logic [2:0]  i_issue_vlmul,
   input  logic [63:0] i_issue_scalar_opnd,
   input  logic [4:0]  i_vd,
   input  logic [63:0] i_rd,
@@ -45,8 +46,10 @@ module tt_scoreboard_ovi(
   output logic [4:0]  o_vd,
   output logic [2:0]  o_ldb_start,
   output logic [1:0]  o_data_size,
+  output logic [2:0]  o_emul,
   output logic [1:0]  o_index_size,
   output logic [2:0]  o_load_stride_eew,
+  output logic [2:0]  o_load_seg,
 
   // This is like a handshake between the load buffer and the scoreboard
   output logic        o_drain_load_buffer,
@@ -74,9 +77,11 @@ module tt_scoreboard_ovi(
     logic [63:0]    rd;
     logic [2:0]     lqid;
     logic [2:0]     ldb_start;
-    logic [1:0]     data_size;
+    logic [1:0]     data_size; // EEW
+    logic [1:0]     emul; // EMUL
     logic [1:0]     index_size;
-    logic [2:0]     load_stride_eew;
+    logic [2:0]     load_stride_eew; // stride enc
+    logic [2:0]     load_seg; // segment count
     logic           is_load;
     logic           drained;
     logic           got_sync_end;
@@ -110,6 +115,18 @@ module tt_scoreboard_ovi(
   logic [1:0]   issue_index_size;
   logic [1:0]   issue_data_size;
   logic signed [63:0]  issue_load_stride;
+
+  // from 0 to 3, 1 to 8 EMUL
+  logic [2:0] issue_emul;
+  logic [2:0] emul_normal;
+  logic [2:0] whole_vlmul;
+
+  // from 0 to 7-> 1 to 8 segments
+  logic issue_is_whole;
+  logic issue_is_maskls;
+  logic issue_is_seg;
+  logic [2:0] issue_load_seg;
+  
 
   // this is in bytes
   always_ff @(posedge clk) begin
@@ -191,8 +208,10 @@ module tt_scoreboard_ovi(
       if(i_issue_valid) begin
         scoreboard[i_issue_sb_id].vd              <= i_issue_inst[11:7];
         scoreboard[i_issue_sb_id].data_size       <= issue_data_size;
+        scoreboard[i_issue_sb_id].emul            <= issue_emul;
         scoreboard[i_issue_sb_id].index_size      <= issue_index_size;
         scoreboard[i_issue_sb_id].load_stride_eew <= issue_load_stride_eew;
+        scoreboard[i_issue_sb_id].load_seg        <= issue_load_seg;
       end
 
       if(ldb_alloc_valid && ldb_alloc_ack) begin
@@ -270,6 +289,11 @@ module tt_scoreboard_ovi(
                         i_issue_vsew == 3'b101 ? 2 : // 16-bit EEW
                         i_issue_vsew == 3'b110 ? 4 : 8; // 32-bit, 64-bit EEW
 
+    issue_is_whole  = (i_issue_inst[27:26] == 2'b00) && (i_issue_inst[24:20] == 5'b01000); // whole load/store
+    issue_is_maskls = (i_issue_inst[27:26] == 2'b00) && (i_issue_inst[24:20] == 5'b01011); // mask load/store
+
+    issue_is_seg    = !issue_is_whole && !issue_is_maskls && (i_issue_inst[31:29] != 3'b000); // Segmented detection: not whole/mask and nf > 0
+
     if(issue_is_unit_stride)
       issue_load_stride_eew = 0;
 
@@ -311,6 +335,25 @@ module tt_scoreboard_ovi(
 
     else
       issue_load_stride_eew = 0;
+
+    issue_load_seg = issue_is_seg ? (i_issue_inst[31:29]) : 3'b000;
+
+    // EMUL calculation based on ls_decode.scala logic
+    // Calculate normal EMUL:LMUL+EEW-SEW (log2 version of EMUL=LMUL*EEW/SEW)
+    emul_normal = i_issue_vlmul + issue_data_size - i_issue_vsew;
+    
+    // Whole register EMUL based on nf field
+    case (i_issue_inst[31:29]) // nf field
+      3'b000:  whole_vlmul = 3'b000; // 1 register  (log2(1) = 0)
+      3'b001:  whole_vlmul = 3'b001; // 2 registers (log2(2) = 1)
+      3'b011:  whole_vlmul = 3'b010; // 4 registers (log2(4) = 2)
+      3'b111:  whole_vlmul = 3'b011; // 8 registers (log2(8) = 3)
+      default: whole_vlmul = 3'b000;
+    endcase
+
+    issue_emul = issue_is_whole ? whole_vlmul :
+                 issue_is_indexldst ? i_issue_vlmul :
+                 emul_normal;
 
   end
 
@@ -363,7 +406,9 @@ module tt_scoreboard_ovi(
   assign o_vd              = scoreboard[i_load_sb_id].vd;
   assign o_ldb_start       = scoreboard[i_load_sb_id].ldb_start;
   assign o_data_size       = scoreboard[i_load_sb_id].data_size;
+  assign o_emul            = scoreboard[i_load_sb_id].emul;
   assign o_index_size      = scoreboard[i_load_sb_id].index_size;
   assign o_load_stride_eew = scoreboard[i_load_sb_id].load_stride_eew;
+  assign o_load_seg        = scoreboard[i_load_sb_id].load_seg;
 
 endmodule

@@ -244,13 +244,15 @@ module tt_vpu_ovi #(
   logic [63:0] scalar_opnd;
   logic [63:0] scalar_opnd_reg;
   logic [511:0] packed_load_data;
-  logic [511:0] shifted_load_data;
-  logic [63:0]  byte_en;
+  logic [511:0] shifted_load_data [7:0];  // Changed to 8×512-bit
+  logic [63:0]  byte_en           [7:0];  // Changed to 8×64-bit
   logic [4:0]   sb_vd;
   logic [2:0]   sb_ldb_start;
   logic [1:0]   sb_data_size;
+  logic [2:0]   sb_emul;
   logic [1:0]   sb_index_size;
   logic [2:0]   sb_load_stride_eew;
+  logic [2:0]   sb_load_seg;
   logic         sb_drain_load_buffer;
   logic [2:0]   sb_drain_lqid_start;
   logic [2:0]   sb_drain_ldb_start;
@@ -910,6 +912,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .i_issue_sb_id(issue_sb_id),
     .i_issue_inst(issue_inst),
     .i_issue_vsew(issue_vcsr[38:36]),
+    .i_issue_vlmul({issue_vcsr_lmulb2, issue_vcsr[35:34]}),
     .i_issue_scalar_opnd(issue_scalar_opnd),
     .i_vd(id_ex_instrn[11:7]),
     .i_rd(ocelot_instrn_commit_data[63:0]),
@@ -945,8 +948,10 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .o_vd(sb_vd),
     .o_ldb_start(sb_ldb_start),
     .o_data_size(sb_data_size),
+    .o_emul(sb_emul),
     .o_index_size(sb_index_size),
     .o_load_stride_eew(sb_load_stride_eew),
+    .o_load_seg(sb_load_seg),
 
     .o_drain_load_buffer(sb_drain_load_buffer),
     .i_draining_load_buffer(drain_load_buffer),
@@ -1048,8 +1053,11 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .load_valid(load_valid),
     .load_data(load_data),
     .load_seq_id(load_seq_id),
+    .sb_vd(sb_vd),
     .stride(sb_load_stride_eew),
+    .load_seg(sb_load_seg),
     .eew(sb_data_size), 
+    .emul(sb_emul),
 
     .packed_data(shifted_load_data),
     .byte_en(byte_en)
@@ -1090,14 +1098,26 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
   assign drain_complete_valid = drain_load_buffer;
   assign drain_complete_ldb_idx = load_buffer_rptr;
 
-  integer k;
+  logic [10:0] lrm_ldb_wr_idx;
+  logic [10:0] lrm_ldb_sh_idx;
+  // TODO: does this work for fractional emul?
+  assign lrm_ldb_wr_idx = (((v_reg - sb_vd) & ((5'b1 << sb_emul[1:0]) - 1'b1)) + sb_ldb_start); 
+
+  integer k1, k2;
   always @(posedge clk) begin
-    if(!reset_n)
-      for(k=0; k<8; k=k+1)
-        load_buffer[k] <= 0;
+    // reset
+    if(!reset_n) begin
+      for(k2=0; k2<8; k2=k2+1)
+        load_buffer[k2] <= 0;
+    end
+    // load_valid
     else if(load_valid) begin
-      for(k=0; k<VLEN; k=k+8)
-        load_buffer[(v_reg-sb_vd+sb_ldb_start)%8][k+:8] <= byte_en[k/8] ? shifted_load_data[k+:8] : load_buffer[(v_reg-sb_vd+sb_ldb_start)%8][k+:8];
+      for(k1=0; k1<8; k1=k1+1)      // segment output of lrm_model
+        for(k2=0; k2<VLEN; k2=k2+8) // element byte into ldb
+          if (byte_en[k1][k2/8]) begin
+            lrm_ldb_sh_idx = (k1<<sb_emul); // shift index (seg)
+            load_buffer[((lrm_ldb_wr_idx+lrm_ldb_sh_idx)%8)][k2+:8] <= shifted_load_data[k1][k2+:8];
+          end
     end
   end
 

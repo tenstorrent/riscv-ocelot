@@ -129,7 +129,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.valid := ((state === State.WALKING) && (!need_next_index || io.index.valid))
   io.gen_active        := (state === State.WALKING)
 
-  val addr_off = (current_seg_id << emul_enc).asSInt
+  val addr_off = (current_seg_id << eew_enc).asSInt
   
   // packet info
   io.load_packet.bits.addr     := (current_addr.asSInt + Mux(current_dir, -addr_off, addr_off)).asUInt

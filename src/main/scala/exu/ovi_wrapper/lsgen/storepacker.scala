@@ -80,9 +80,9 @@ extends Module with VecLSGenConstants {
 
   // elements until VL is reached in CTR
   val vl_constraint   = (
-    (vl << el_mask_off) |                               // EMUL_FIELD/EL_ID_FIELD: vl
-    (((1.U << (seg_mask_width)) - 1.U) << seg_mask_off) // SEG_ID_FIELD: last seg_id (all 1s)
-  ) - EEW_CTR                                           // take distance of value from current ctr
+    ((vl - 1.U) << el_mask_off) +                     // EMUL_FIELD/EL_ID_FIELD: vl
+    (((1.U << seg_mask_width) - 1.U) << seg_mask_off) // SEG_ID_FIELD: last seg_id (all 1s)
+  ) + 1.U - EEW_CTR                                   // take distance of value from current ctr
 
   // ======== Advance CTR based on constraints ========
   val ctr_inc_val = WireInit(0.U(CTR_WIDTH.W))

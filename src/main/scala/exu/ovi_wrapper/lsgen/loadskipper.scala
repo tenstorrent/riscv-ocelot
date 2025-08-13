@@ -151,7 +151,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.valid := ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid))
   io.gen_active        := (state === State.SKIPPING)
 
-  val addr_off = (current_seg_id << emul_enc).asSInt
+  val addr_off = (current_seg_id << eew_enc).asSInt
   
   // packet info
   io.load_packet.bits.addr     := (current_addr.asSInt + Mux(stride_dir, -addr_off, addr_off)).asUInt

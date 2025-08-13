@@ -161,10 +161,9 @@ extends Module with VecLSGenConstants {
 
   // elements until VL is reached in CTR
   val vl_constraint   = (
-    (vl << el_mask_off) |                               // EMUL_FIELD/EL_ID_FIELD: vl
-    (((1.U << (seg_mask_width)) - 1.U) << seg_mask_off) // SEG_ID_FIELD: last seg_id (all 1s)
-  ) - EEW_CTR                                           // take distance of value from current ctr
-
+    ((vl - 1.U) << el_mask_off) +                     // EMUL_FIELD/EL_ID_FIELD: vl
+    (((1.U << seg_mask_width) - 1.U) << seg_mask_off) // SEG_ID_FIELD: last seg_id (all 1s)
+  ) + 1.U - EEW_CTR                                   // take distance of value from current ctr
 
   // ======== Advance CTR based on constraints ========
   val ctr_inc_val = WireInit(0.U(CTR_WIDTH.W))
@@ -215,16 +214,48 @@ extends Module with VecLSGenConstants {
   io.load_packet.valid := (state === State.PACKING) && (!need_next_mask || io.mask.valid)
   io.gen_active        := (state === State.PACKING)
 
+  // ======== Counting elements ========
+  // the value is pretty much the increment amount with the stride field ripped out but with some exceptions to this rule
+  val el_count = Wire(UInt(7.W))
+
+  // when starting from a valid stride, preserve the seg_id (pretend like we're starting from the base then remove at end)
+  when (split_ctr(EEW_CTR).stride_id === 0.U) {
+    val inc_from_base_seg = ctr_inc_val + split_ctr(EEW_CTR).seg_id
+    dontTouch(inc_from_base_seg)
+    // if ending at a valid stride, just keep the extra seg_id
+    when (split_ctr(inc_from_base_seg).stride_id === 0.U) {
+      el_count := (((inc_from_base_seg & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width) | split_ctr(inc_from_base_seg).seg_id) - split_ctr(EEW_CTR).seg_id
+    // if ending at an invalid stride, pretend like we completed everything in the final segment 
+    }.otherwise {
+      el_count := (((inc_from_base_seg & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width) + (1.U << seg_mask_width)) - split_ctr(EEW_CTR).seg_id
+    }
+  // when starting from an invalid stride, start from the next valid stride
+  }.otherwise {
+    val inc_past_off = ctr_inc_val - el_off
+    dontTouch(inc_past_off)
+    // check if if that next valid stride is even a part of the packet
+    when (ctr_inc_val <= el_off) {
+      el_count := 0.U
+    // if ending at a valid stride, just keep the extra seg_id
+    }.elsewhen (split_ctr(inc_past_off).stride_id === 0.U) {
+      el_count := (((inc_past_off & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width) | split_ctr(inc_past_off).seg_id)
+    // if ending at an invalid stride, pretend like we completed everything in the final segment 
+    }.otherwise {
+      el_count := (((inc_past_off & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width) + (1.U << seg_mask_width))
+    }
+  }
+
   // some math to figure out how many elements to load (comments below this file for explanation)
-  val inc_past_off = ctr_inc_val - el_off
-  val el_count = PriorityMux(Seq(
-    (ctr_inc_val <= el_off)
-      -> (0.U),
-    (split_ctr(inc_past_off).stride_id =/= 0.U)
-      -> (((inc_past_off & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width) + (1.U << seg_mask_width)),
-    (split_ctr(inc_past_off).stride_id === 0.U)
-      -> (((inc_past_off & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width) | split_ctr(inc_past_off).seg_id)
-  ))
+  // val inc_past_off = ctr_inc_val - el_off
+  // val el_count = PriorityMux(Seq(
+  //   (ctr_inc_val <= el_off)
+  //     -> (0.U),
+  //   (split_ctr(inc_past_off).stride_id =/= 0.U)
+  //     -> (((inc_past_off & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width) + (1.U << seg_mask_width)),
+  //   (split_ctr(inc_past_off).stride_id === 0.U)
+  //     -> (((inc_past_off & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width) | split_ctr(inc_past_off).seg_id)
+  // ))
+
   val addr_off = (EEW_CTR << eew_enc).asSInt
 
   // packet info
@@ -336,6 +367,7 @@ extends Module with VecLSGenConstants {
   dontTouch(io.debug)
   dontTouch(seg_constraint)
   dontTouch(seg_constraint_met)
+  dontTouch(el_count)
   
 }
 
