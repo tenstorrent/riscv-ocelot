@@ -54,6 +54,8 @@ module tt_vec_div_unit
    input  logic [1:0]                     i_sew,       // element width: 00=8b, 01=16b, 10=32b, 11=64b
    input  logic [2:0]                     i_lmul,      // length multiplier
    input  logic [7:0]                     i_vl,        // vector length
+   input  logic                           i_vta,       // vector tail agnostic
+   input  logic                           i_vma,       // vector mask agnostic
    
    // Instruction decode signals
    input  logic [6:0]                     i_funct7,    // instruction-specific function
@@ -79,7 +81,7 @@ module tt_vec_div_unit
 
    // Internal operation decode
    logic is_integer_op, is_fp_op, is_single_operand;
-   logic is_div_op, is_rem_op, is_sqrt_op, is_rec_op;
+   logic is_div_op, is_rem_op, is_sqrt_op, is_sqrt7_op, is_rec_op;
    logic is_signed_op, is_vector_scalar;
    
    // Decode operation type from high-level flags and instruction fields
@@ -91,6 +93,7 @@ module tt_vec_div_unit
       is_div_op = 1'b0;
       is_rem_op = 1'b0;
       is_sqrt_op = 1'b0;
+      is_sqrt7_op = 1'b0;
       is_rec_op = 1'b0;
       is_signed_op = 1'b0;
       is_vector_scalar = 1'b0;
@@ -131,8 +134,8 @@ module tt_vec_div_unit
                is_sqrt_op = 1'b1;
                is_single_operand = 1'b1;
             end
-            7'b1000100: begin // vfsqrt7
-               is_sqrt_op = 1'b1;
+            7'b0100111: begin // vfrsqrt7
+               is_sqrt7_op = 1'b1;
                is_single_operand = 1'b1;
             end
             7'b1000101: begin // vfrec7
@@ -143,91 +146,112 @@ module tt_vec_div_unit
       end
    end
 
-   // Square root unit signals and instances
-   logic [VLEN/16-1:0][15:0] fp16_sqrt_in, fp16_sqrt_out;
-   logic [VLEN/16-1:0][4:0]  fp16_sqrt_exc;
-   logic [VLEN/32-1:0][31:0] fp32_sqrt_in, fp32_sqrt_out;
-   logic [VLEN/32-1:0][4:0]  fp32_sqrt_exc;
+   // Generalized SEW-based input data slicing
+   logic [VLEN/8-1:0][7:0]   src1_sew8;   // SEW=8  (VLEN/8 elements)
+   logic [VLEN/16-1:0][15:0] src1_sew16;  // SEW=16 (VLEN/16 elements)
+   logic [VLEN/32-1:0][31:0] src1_sew32;  // SEW=32 (VLEN/32 elements)
+   logic [VLEN/64-1:0][63:0] src1_sew64;  // SEW=64 (VLEN/64 elements)
    
-   // Input data preparation for square root units
+   logic [VLEN/8-1:0][7:0]   src2_sew8;   // SEW=8  (VLEN/8 elements)
+   logic [VLEN/16-1:0][15:0] src2_sew16;  // SEW=16 (VLEN/16 elements)
+   logic [VLEN/32-1:0][31:0] src2_sew32;  // SEW=32 (VLEN/32 elements)
+   logic [VLEN/64-1:0][63:0] src2_sew64;  // SEW=64 (VLEN/64 elements)
+   
+   // Generate input data slicing for all SEW values
    generate
-      for (genvar i = 0; i < VLEN/16; i++) begin : gen_fp16_input
-         always_comb begin
-            if (is_sqrt_op && i_sew == 2'b01) begin // SEW=16
-               fp16_sqrt_in[i] = i_src1[(i+1)*16-1:i*16];
-            end else begin
-               fp16_sqrt_in[i] = '0;
-            end
-         end
+      for (genvar i = 0; i < VLEN/8; i++) begin : gen_sew8
+         assign src1_sew8[i] = i_src1[i*8 +: 8];
+         assign src2_sew8[i] = i_src2[i*8 +: 8];
       end
-      
-      for (genvar i = 0; i < VLEN/32; i++) begin : gen_fp32_input
-         always_comb begin
-            if (is_sqrt_op && i_sew == 2'b10) begin // SEW=32
-               fp32_sqrt_in[i] = i_src1[(i+1)*32-1:i*32];
-            end else begin
-               fp32_sqrt_in[i] = '0;
-            end
-         end
+      for (genvar i = 0; i < VLEN/16; i++) begin : gen_sew16
+         assign src1_sew16[i] = i_src1[i*16 +: 16];
+         assign src2_sew16[i] = i_src2[i*16 +: 16];
+      end
+      for (genvar i = 0; i < VLEN/32; i++) begin : gen_sew32
+         assign src1_sew32[i] = i_src1[i*32 +: 32];
+         assign src2_sew32[i] = i_src2[i*32 +: 32];
+      end
+      for (genvar i = 0; i < VLEN/64; i++) begin : gen_sew64
+         assign src1_sew64[i] = i_src1[i*64 +: 64];
+         assign src2_sew64[i] = i_src2[i*64 +: 64];
       end
    endgenerate
+
+   // Square root unit signals and instances
+   logic [VLEN/16-1:0][15:0]  fp16_sqrt7_out;
+   logic [VLEN/16-1:0][4:0]   fp16_sqrt7_exc;
+   logic [VLEN/32-1:0][31:0] fp32_sqrt7_out;
+   logic [VLEN/32-1:0][4:0]  fp32_sqrt7_exc;
    
-   // Generate FP16 square root units (for SEW=16)
+   // Generate FP16 square root units (for SEW=16) - always connected
    generate
       for (genvar i = 0; i < VLEN/16; i++) begin : gen_fp16_sqrt
          VecFP16rsqrt7 fp16_sqrt_inst (
-            .io_in            (fp16_sqrt_in[i]),
+            .io_in            (src2_sew16[i]),
             .io_roundingMode  (i_frm),
-            .io_out           (fp16_sqrt_out[i]),
-            .io_exceptionFlags(fp16_sqrt_exc[i])
+            .io_out           (fp16_sqrt7_out[i]),
+            .io_exceptionFlags(fp16_sqrt7_exc[i])
          );
       end
    endgenerate
    
-   // Generate FP32 square root units (for SEW=32)
+   // Generate FP32 square root units (for SEW=32) - always connected
    generate
       for (genvar i = 0; i < VLEN/32; i++) begin : gen_fp32_sqrt
          VecFP32rsqrt7 fp32_sqrt_inst (
-            .io_in            (fp32_sqrt_in[i]),
+            .io_in            (src2_sew32[i]),
             .io_roundingMode  (i_frm),
-            .io_out           (fp32_sqrt_out[i]),
-            .io_exceptionFlags(fp32_sqrt_exc[i])
+            .io_out           (fp32_sqrt7_out[i]),
+            .io_exceptionFlags(fp32_sqrt7_exc[i])
          );
       end
    endgenerate
    
-   // Output result multiplexing - simple mux between FP16 and FP32 results
-   logic [VLEN-1:0] sqrt_result;
-   tt_briscv_pkg::csr_fp_exc sqrt_exc;
+   // Separate output result multiplexing for sqrt and sqrt7 operations
+   logic [VLEN-1:0] sqrt_result, sqrt7_result;
+   tt_briscv_pkg::csr_fp_exc sqrt_exc, sqrt7_exc;
    
+   // Full precision square root results (vfsqrt)
+
+   // 7-bit reciprocal square root results (vfrsqrt7)
    always_comb begin
-      sqrt_result = '0;
-      sqrt_exc = '0;
+      sqrt7_result = '0;
+      sqrt7_exc = '0;
       
-      if (is_sqrt_op && i_sew == 2'b01) begin // SEW=16
+      if (is_sqrt7_op && i_sew == 2'b01) begin // SEW=16
          // Pack FP16 results into VLEN
          for (int i = 0; i < VLEN/16; i++) begin
-            sqrt_result[i*16 +: 16] = fp16_sqrt_out[i];
+            sqrt7_result[i*16 +: 16] = fp16_sqrt7_out[i];
          end
          // Combine FP16 exceptions (OR all exception flags)
          for (int i = 0; i < VLEN/16; i++) begin
-            sqrt_exc |= {fp16_sqrt_exc[i][4], 1'b0, fp16_sqrt_exc[i][3:0]};
+            sqrt7_exc |= {fp16_sqrt7_exc[i][4], 1'b0, fp16_sqrt7_exc[i][3:0]};
          end
-      end else if (is_sqrt_op && i_sew == 2'b10) begin // SEW=32
+      end else if (is_sqrt7_op && i_sew == 2'b10) begin // SEW=32
          // Pack FP32 results into VLEN  
          for (int i = 0; i < VLEN/32; i++) begin
-            sqrt_result[i*32 +: 32] = fp32_sqrt_out[i];
+            sqrt7_result[i*32 +: 32] = fp32_sqrt7_out[i];
          end
          // Combine FP32 exceptions (OR all exception flags)
          for (int i = 0; i < VLEN/32; i++) begin
-            sqrt_exc |= {fp32_sqrt_exc[i][4], 1'b0, fp32_sqrt_exc[i][3:0]};
+            sqrt7_exc |= {fp32_sqrt7_exc[i][4], 1'b0, fp32_sqrt7_exc[i][3:0]};
          end
       end
    end
 
-
+   // Final result selection
    logic [VLEN-1:0] compute_result, merged_result;
-   assign compute_result = is_sqrt_op ? sqrt_result : '0; // tying this to sqrt for now
+   tt_briscv_pkg::csr_fp_exc compute_exc;
+   
+   always_comb begin
+      if (is_sqrt7_op) begin
+         compute_result = sqrt7_result;
+         compute_exc = sqrt7_exc;
+      end else begin
+         compute_result = '0;
+         compute_exc = '0;
+      end
+   end
    
    // Mask extraction and merging logic
    logic [VLEN/8-1:0] active_mask;  // Mask for current register slice
@@ -256,15 +280,63 @@ module tt_vec_div_unit
       endcase
    end
    
-   // Merge compute_result with i_src3 based on active_mask
-   // mask=1: use compute_result, mask=0: use i_src3 (destination merge)
+   // Vector length mask for tail agnostic behavior
+   logic [VLEN/8-1:0] vl_mask;
+   
+   always_comb begin
+      vl_mask = '0;
+      case (i_sew)
+         2'b00: begin // SEW=8, 1 element per byte
+            for (int i = 0; i < VLEN/8; i++) begin
+               vl_mask[i] = (i < i_vl);
+            end
+         end
+         2'b01: begin // SEW=16, 1 element per 2 bytes
+            for (int i = 0; i < VLEN/8; i++) begin
+               vl_mask[i] = ((i/2) < i_vl);
+            end
+         end
+         2'b10: begin // SEW=32, 1 element per 4 bytes
+            for (int i = 0; i < VLEN/8; i++) begin
+               vl_mask[i] = ((i/4) < i_vl);
+            end
+         end
+         2'b11: begin // SEW=64, 1 element per 8 bytes
+            for (int i = 0; i < VLEN/8; i++) begin
+               vl_mask[i] = ((i/8) < i_vl);
+            end
+         end
+      endcase
+   end
+
+   // Merge compute_result with i_src3 based on active_mask and agnostic policies
+   // Handle mask agnostic (vma) and tail agnostic (vta) behavior
    always_comb begin
       merged_result = '0;
-      for (int i = 0; i < VLEN/8; i++) begin
-         if (active_mask[i]) begin
-            merged_result[i*8 +: 8] = compute_result[i*8 +: 8];  // Use computed result
-         end else begin
-            merged_result[i*8 +: 8] = i_src3[i*8 +: 8];         // Use destination (merge)
+      if (i_vm) begin
+         // Unmasked operation (i_vm=1): handle tail agnostic
+         for (int i = 0; i < VLEN/8; i++) begin
+            if (vl_mask[i]) begin
+               merged_result[i*8 +: 8] = compute_result[i*8 +: 8];  // Active elements
+            end else begin
+               // Tail elements: vta=1 -> agnostic (can be anything), vta=0 -> undisturbed (keep old)
+               merged_result[i*8 +: 8] = i_vta ? 8'hFF : i_src3[i*8 +: 8];
+            end
+         end
+      end else begin
+         // Masked operation (i_vm=0): apply mask and handle agnostic policies
+         for (int i = 0; i < VLEN/8; i++) begin
+            if (vl_mask[i]) begin
+               if (active_mask[i]) begin
+                  merged_result[i*8 +: 8] = compute_result[i*8 +: 8];  // Active masked elements
+               end else begin
+                  // Masked-off elements: vma=1 -> agnostic (can be anything), vma=0 -> undisturbed (keep old)
+                  merged_result[i*8 +: 8] = i_vma ? 8'hFF : i_src3[i*8 +: 8];
+               end
+            end else begin
+               // Tail elements: vta=1 -> agnostic (can be anything), vta=0 -> undisturbed (keep old)
+               merged_result[i*8 +: 8] = i_vta ? 8'hFF : i_src3[i*8 +: 8];
+            end
          end
       end
    end
@@ -272,9 +344,9 @@ module tt_vec_div_unit
    // Output assignments
    // For now, only square root is implemented
    assign o_busy         = 1'b0; // Combinational operation
-   assign o_result_valid = i_id_vdiv_ex0_rts & is_sqrt_op;
+   assign o_result_valid = i_id_vdiv_ex0_rts & is_sqrt7_op;
    assign o_result       = merged_result;
-   assign o_result_exc   = is_sqrt_op ? sqrt_exc : '0;
+   assign o_result_exc   = is_sqrt7_op ? sqrt7_exc : '0;
    assign o_result_lqid  = i_ldqid;
 
 endmodule
