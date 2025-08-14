@@ -158,22 +158,23 @@ module tt_vec_div_unit
    logic [VLEN/64-1:0][63:0] src2_sew64;  // SEW=64 (VLEN/64 elements)
    
    // Generate input data slicing for all SEW values
+   // For .vx operations, src2 is a scalar that gets broadcast to all elements
    generate
       for (genvar i = 0; i < VLEN/8; i++) begin : gen_sew8
          assign src1_sew8[i] = i_src1[i*8 +: 8];
-         assign src2_sew8[i] = i_src2[i*8 +: 8];
+         assign src2_sew8[i] = is_vector_scalar ? i_src2[7:0] : i_src2[i*8 +: 8];
       end
       for (genvar i = 0; i < VLEN/16; i++) begin : gen_sew16
          assign src1_sew16[i] = i_src1[i*16 +: 16];
-         assign src2_sew16[i] = i_src2[i*16 +: 16];
+         assign src2_sew16[i] = is_vector_scalar ? i_src2[15:0] : i_src2[i*16 +: 16];
       end
       for (genvar i = 0; i < VLEN/32; i++) begin : gen_sew32
          assign src1_sew32[i] = i_src1[i*32 +: 32];
-         assign src2_sew32[i] = i_src2[i*32 +: 32];
+         assign src2_sew32[i] = is_vector_scalar ? i_src2[31:0] : i_src2[i*32 +: 32];
       end
       for (genvar i = 0; i < VLEN/64; i++) begin : gen_sew64
          assign src1_sew64[i] = i_src1[i*64 +: 64];
-         assign src2_sew64[i] = i_src2[i*64 +: 64];
+         assign src2_sew64[i] = is_vector_scalar ? i_src2[63:0] : i_src2[i*64 +: 64];
       end
    endgenerate
 
