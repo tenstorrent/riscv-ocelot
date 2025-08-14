@@ -1000,7 +1000,7 @@ module tt_vec #(parameter
        .i_src3          (src3_0a[VLEN-1:0]),        // vd source (for masked ops)
 
        // Vector control signals
-       .i_vm0           (vm0_muxed_0a & vl_muxed_0a),
+       .i_vm0           (vm0_0a),
        .i_sew           (i_csr.v_vsew[1:0]),
        .i_lmul          (i_csr.v_lmul[2:0]),
        .i_vl            (i_csr.v_vl[7:0]),

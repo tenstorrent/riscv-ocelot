@@ -50,7 +50,7 @@ module tt_vec_div_unit
    input  logic          [VLEN-1:0]       i_src3,      // vd source (for masked ops)
    
    // Vector control signals
-   input  logic          [VLEN/8-1:0]     i_vm0,       // mask register
+   input  logic          [VLEN-1:0]       i_vm0,       // mask register
    input  logic [1:0]                     i_sew,       // element width: 00=8b, 01=16b, 10=32b, 11=64b
    input  logic [2:0]                     i_lmul,      // length multiplier
    input  logic [7:0]                     i_vl,        // vector length
@@ -103,42 +103,42 @@ module tt_vec_div_unit
       is_fp_op = i_fdivop;
       is_vector_scalar = (i_funct3 == 3'b100) || (i_funct3 == 3'b101); // OPIVX or OPFVF
       
-      // Detailed operation decode based on funct7
+      // Detailed operation decode based on funct7[6:1] (ignore vm bit)
       if (i_idivop) begin
          // Integer division/remainder operations
-         case (i_funct7)
-            7'b1000000: begin // vdivu
+         case (i_funct7[6:1])
+            6'b100000: begin // vdivu
                is_div_op = 1'b1;
                is_signed_op = 1'b0;
             end
-            7'b1000001: begin // vdiv
+            6'b100001: begin // vdiv
                is_div_op = 1'b1;
                is_signed_op = 1'b1;
             end
-            7'b1000010: begin // vremu
+            6'b100010: begin // vremu
                is_rem_op = 1'b1;
                is_signed_op = 1'b0;
             end
-            7'b1000011: begin // vrem
+            6'b100011: begin // vrem
                is_rem_op = 1'b1;
                is_signed_op = 1'b1;
             end
          endcase
       end else if (i_fdivop) begin
          // Floating-point operations
-         case (i_funct7)
-            7'b1000000: begin // vfdiv
+         case (i_funct7[6:1])
+            6'b100000: begin // vfdiv
                is_div_op = 1'b1;
             end
-            7'b1000011: begin // vfsqrt
+            6'b100011: begin // vfsqrt
                is_sqrt_op = 1'b1;
                is_single_operand = 1'b1;
             end
-            7'b0100111: begin // vfrsqrt7
+            6'b010011: begin // vfrsqrt7 (autogen handles both masked/unmasked)
                is_sqrt7_op = 1'b1;
                is_single_operand = 1'b1;
             end
-            7'b1000101: begin // vfrec7
+            6'b100101: begin // vfrec7
                is_rec_op = 1'b1;
                is_single_operand = 1'b1;
             end
@@ -253,57 +253,88 @@ module tt_vec_div_unit
       end
    end
    
+   logic [2:0] log2_elements_per_reg; // log2(elements_per_reg) = log2(VLEN) - log2(SEW)
+   assign log2_elements_per_reg = $clog2(VLEN) - (3 + i_sew);
    // Mask extraction and merging logic
    logic [VLEN/8-1:0] active_mask;  // Mask for current register slice
+   logic [7:0] mask_base_offset;
+   assign mask_base_offset = i_lmul_cnt << log2_elements_per_reg;
    
    // Extract appropriate mask slice based on SEW and LMUL_CNT
    always_comb begin
       active_mask = '0;
       
+      // Calculate mask base offset using shift trick (same as VL calculation)
+      
+      // Generate mask per byte with nested loops
       case (i_sew)
-         2'b00: begin // SEW=8, 1 mask bit per element
-            // Use all lmul_cnt bits for indexing
-            active_mask = i_vm0[i_lmul_cnt[2:0] * (VLEN/8) +: VLEN/8];
+         2'b00: begin // SEW=8, 1 mask bit per byte
+            for (int i = 0; i < VLEN/8; i++) begin
+               active_mask[i] = i_vm0[mask_base_offset + i];
+            end
          end
-         2'b01: begin // SEW=16, 1 mask bit per 2 bytes  
-            // Use upper lmul_cnt bits, replicate mask bits
-            active_mask = {(VLEN/16){i_vm0[i_lmul_cnt[2:1] * (VLEN/16) +: VLEN/16]}};
+         2'b01: begin // SEW=16, 1 mask bit per 2 bytes
+            for (int i = 0; i < VLEN/16; i++) begin // VLEN/SEW elements
+               for (int j = 0; j < 2; j++) begin // SEW/8 bytes per element
+                  active_mask[i*2 + j] = i_vm0[mask_base_offset + i];
+               end
+            end
          end
          2'b10: begin // SEW=32, 1 mask bit per 4 bytes
-            // Use top lmul_cnt bit, replicate mask bits  
-            active_mask = {(VLEN/32){i_vm0[i_lmul_cnt[2] * (VLEN/32) +: VLEN/32]}};
+            for (int i = 0; i < VLEN/32; i++) begin // VLEN/SEW elements
+               for (int j = 0; j < 4; j++) begin // SEW/8 bytes per element
+                  active_mask[i*4 + j] = i_vm0[mask_base_offset + i];
+               end
+            end
          end
          2'b11: begin // SEW=64, 1 mask bit per 8 bytes
-            // Always use first slice, replicate mask bits
-            active_mask = {(VLEN/64){i_vm0[0 +: VLEN/64]}};
+            for (int i = 0; i < VLEN/64; i++) begin // VLEN/SEW elements
+               for (int j = 0; j < 8; j++) begin // SEW/8 bytes per element
+                  active_mask[i*8 + j] = i_vm0[mask_base_offset + i];
+               end
+            end
          end
       endcase
    end
    
    // Vector length mask for tail agnostic behavior
    logic [VLEN/8-1:0] vl_mask;
+   logic [7:0] effective_vl;  // VL for this LMUL iteration
    
    always_comb begin
+      // Calculate log2(elements_per_reg) = log2(VLEN) - i_sew
+      // log2(VLEN=256) = 8, i_sew: 00=3, 01=4, 10=5, 11=6 (log2 of SEW)
+      
+      // Calculate effective VL for this LMUL iteration using shifts
+      // effective_vl = vl - (elements_per_reg * lmul_cnt) 
+      //              = vl - (lmul_cnt << log2_elements_per_reg)
+      if (i_vl > (i_lmul_cnt << log2_elements_per_reg)) begin
+         effective_vl = i_vl - (i_lmul_cnt << log2_elements_per_reg);
+      end else begin
+         effective_vl = 8'b0;  // No active elements in this iteration
+      end
+      
+      // Generate VL mask based on effective VL
       vl_mask = '0;
       case (i_sew)
          2'b00: begin // SEW=8, 1 element per byte
             for (int i = 0; i < VLEN/8; i++) begin
-               vl_mask[i] = (i < i_vl);
+               vl_mask[i] = (i < effective_vl);
             end
          end
          2'b01: begin // SEW=16, 1 element per 2 bytes
             for (int i = 0; i < VLEN/8; i++) begin
-               vl_mask[i] = ((i/2) < i_vl);
+               vl_mask[i] = ((i/2) < effective_vl);
             end
          end
          2'b10: begin // SEW=32, 1 element per 4 bytes
             for (int i = 0; i < VLEN/8; i++) begin
-               vl_mask[i] = ((i/4) < i_vl);
+               vl_mask[i] = ((i/4) < effective_vl);
             end
          end
          2'b11: begin // SEW=64, 1 element per 8 bytes
             for (int i = 0; i < VLEN/8; i++) begin
-               vl_mask[i] = ((i/8) < i_vl);
+               vl_mask[i] = ((i/8) < effective_vl);
             end
          end
       endcase
