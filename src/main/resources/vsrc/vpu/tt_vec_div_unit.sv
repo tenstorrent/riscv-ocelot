@@ -237,8 +237,58 @@ module tt_vec_div_unit
       end
    endgenerate
    
-   // Separate output result multiplexing for sqrt, sqrt7, and rec7 operations
-   logic [VLEN-1:0] sqrt_result, sqrt7_result, rec7_result;
+   // Integer division state and control (sequential approach)
+   typedef enum logic [1:0] {
+      INT_IDLE = 0,    // No integer operation in progress
+      INT_BUSY = 1,    // Integer division in progress
+      INT_DONE = 2,    // Integer result ready
+      INT_RSVD = 3
+   } int_div_state_e;
+   
+   int_div_state_e int_div_state, int_div_state_nxt;
+   logic int_div_state_update;
+   
+   // Integer division context storage (preserved during multi-cycle operation)
+   logic [tt_briscv_pkg::LQ_DEPTH_LOG2-1:0] stored_ldqid;
+   logic [7:0] stored_vl;
+   logic [2:0] stored_lmul_cnt;
+   logic [1:0] stored_sew;
+   logic stored_vm, stored_vta, stored_vma;
+   logic [VLEN-1:0] stored_vm0;
+   logic [VLEN-1:0] stored_src3;
+   logic stored_is_div_op, stored_is_rem_op, stored_is_signed_op;
+   logic stored_context_valid;
+   
+   // Integer division unit interface
+   logic int_div_vld, int_div_ack, int_div_rts, int_div_rtr;
+   logic int_div_sgn, int_div_rem;
+   logic [63:0] int_div_rs1, int_div_rs2;  // Max SEW=64
+   logic [63:0] int_div_res;
+   
+   // Current element being processed for integer operations
+   logic [7:0] int_element_idx;
+   logic [7:0] int_elements_per_reg;
+   logic int_operation_complete;
+   
+   // Integer division unit instantiation
+   tt_int_div_r2 #(
+      .XLEN(64)  // Support up to SEW=64
+   ) int_div_unit (
+      .i_clk(i_clk),
+      .i_reset_n(i_reset_n),
+      .i_vld(int_div_vld),
+      .o_ack(int_div_ack),
+      .i_sgn(int_div_sgn),
+      .i_rem(int_div_rem),
+      .i_rs1(int_div_rs1),
+      .i_rs2(int_div_rs2),
+      .o_rts(int_div_rts),
+      .i_rtr(int_div_rtr),
+      .o_res(int_div_res)
+   );
+   
+   // Separate output result multiplexing for sqrt, sqrt7, rec7, and integer operations
+   logic [VLEN-1:0] sqrt_result, sqrt7_result, rec7_result, int_div_result;
    tt_briscv_pkg::csr_fp_exc sqrt_exc, sqrt7_exc, rec7_exc;
    
    // Full precision square root results (vfsqrt)
@@ -295,6 +345,163 @@ module tt_vec_div_unit
       end
    end
 
+   // Integer division state machine and control logic
+   always_ff @(posedge i_clk) begin
+      if (!i_reset_n) begin
+         int_div_state <= INT_IDLE;
+         stored_context_valid <= 1'b0;
+         int_element_idx <= '0;
+      end else if (int_div_state_update) begin
+         int_div_state <= int_div_state_nxt;
+         
+         // Store context when starting integer operation
+         if (int_div_state == INT_IDLE && int_div_state_nxt == INT_BUSY) begin
+            stored_ldqid <= i_ldqid;
+            stored_vl <= i_vl;
+            stored_lmul_cnt <= i_lmul_cnt;
+            stored_sew <= i_sew;
+            stored_vm <= i_vm;
+            stored_vta <= i_vta;
+            stored_vma <= i_vma;
+            stored_vm0 <= i_vm0;
+            stored_src3 <= i_src3;
+            stored_is_div_op <= is_div_op;
+            stored_is_rem_op <= is_rem_op;
+            stored_is_signed_op <= is_signed_op;
+            stored_context_valid <= 1'b1;
+            int_element_idx <= '0;
+         end
+         
+         // Update element index during processing
+         if (int_div_state == INT_BUSY && int_div_ack) begin
+            int_element_idx <= int_element_idx + 1;
+         end
+         
+         // Clear context when done
+         if (int_div_state == INT_DONE && int_div_state_nxt == INT_IDLE) begin
+            stored_context_valid <= 1'b0;
+         end
+      end
+   end
+   
+   // Integer division state machine
+   always_comb begin
+      int_div_state_update = 1'b0;
+      int_div_state_nxt = int_div_state;
+      
+      case (int_div_state)
+         INT_IDLE: begin
+            if (i_id_vdiv_ex0_rts && (is_div_op || is_rem_op)) begin
+               int_div_state_update = 1'b1;
+               int_div_state_nxt = INT_BUSY;
+            end
+         end
+         
+         INT_BUSY: begin
+            // Move to next element or completion
+            if (int_div_ack) begin
+               int_div_state_update = 1'b1;
+               if (int_operation_complete) begin
+                  int_div_state_nxt = INT_DONE;
+               end
+               // Stay in INT_BUSY for next element
+            end
+         end
+         
+         INT_DONE: begin
+            // Result is ready, immediately return to IDLE (blocking operation)
+            int_div_state_update = 1'b1;
+            int_div_state_nxt = INT_IDLE;
+         end
+         
+         default: begin
+            int_div_state_update = 1'b1;
+            int_div_state_nxt = INT_IDLE;
+         end
+      endcase
+   end
+   
+   // Calculate elements per register and completion status
+   always_comb begin
+      case (stored_context_valid ? stored_sew : i_sew)
+         2'b00: int_elements_per_reg = VLEN / 8;   // SEW=8
+         2'b01: int_elements_per_reg = VLEN / 16;  // SEW=16
+         2'b10: int_elements_per_reg = VLEN / 32;  // SEW=32
+         2'b11: int_elements_per_reg = VLEN / 64;  // SEW=64
+      endcase
+      
+      int_operation_complete = (int_element_idx >= (int_elements_per_reg - 1));
+   end
+   
+   // Integer division unit control and data preparation
+   always_comb begin
+      // Default values
+      int_div_vld = 1'b0;
+      int_div_sgn = 1'b0;
+      int_div_rem = 1'b0;
+      int_div_rs1 = '0;
+      int_div_rs2 = '0;
+      
+      if (int_div_state == INT_BUSY) begin
+         // Extract current element data based on SEW
+         case (stored_sew)
+            2'b00: begin // SEW=8
+               int_div_rs1 = {56'b0, src1_sew8[int_element_idx]};
+               int_div_rs2 = {56'b0, src2_sew8[int_element_idx]};
+            end
+            2'b01: begin // SEW=16
+               int_div_rs1 = {48'b0, src1_sew16[int_element_idx]};
+               int_div_rs2 = {48'b0, src2_sew16[int_element_idx]};
+            end
+            2'b10: begin // SEW=32
+               int_div_rs1 = {32'b0, src1_sew32[int_element_idx]};
+               int_div_rs2 = {32'b0, src2_sew32[int_element_idx]};
+            end
+            2'b11: begin // SEW=64
+               int_div_rs1 = src1_sew64[int_element_idx];
+               int_div_rs2 = src2_sew64[int_element_idx];
+            end
+         endcase
+         
+         // Control signals
+         int_div_sgn = stored_is_signed_op;
+         int_div_rem = stored_is_rem_op;
+         int_div_vld = !int_div_rts;  // Start next operation when previous is done
+      end
+   end
+   
+   // Always ready to accept results (blocking operation with dedicated writeback)
+   assign int_div_rtr = 1'b1;
+   
+   // Integer division result register - updated incrementally as each element completes
+   always_ff @(posedge i_clk) begin
+      if (!i_reset_n) begin
+         int_div_result <= '0;
+      end else begin
+         // Clear result when starting new operation
+         if (int_div_state == INT_IDLE && int_div_state_nxt == INT_BUSY) begin
+            int_div_result <= '0;
+         end
+         // Update result when each division completes
+         else if (int_div_state == INT_BUSY && int_div_rts && int_div_rtr) begin
+            case (stored_sew)
+               2'b00: begin // SEW=8
+                  int_div_result[int_element_idx*8 +: 8] <= int_div_res[7:0];
+               end
+               2'b01: begin // SEW=16
+                  int_div_result[int_element_idx*16 +: 16] <= int_div_res[15:0];
+               end
+               2'b10: begin // SEW=32
+                  int_div_result[int_element_idx*32 +: 32] <= int_div_res[31:0];
+               end
+               2'b11: begin // SEW=64
+                  int_div_result[int_element_idx*64 +: 64] <= int_div_res[63:0];
+               end
+            endcase
+         end
+      end
+   end
+
    // Final result selection
    logic [VLEN-1:0] compute_result, merged_result;
    tt_briscv_pkg::csr_fp_exc compute_exc;
@@ -306,6 +513,9 @@ module tt_vec_div_unit
       end else if (is_rec_op) begin
          compute_result = rec7_result;
          compute_exc = rec7_exc;
+      end else if (int_div_state == INT_DONE) begin
+         compute_result = int_div_result;
+         compute_exc = '0;  // Integer operations don't generate FP exceptions
       end else begin
          compute_result = '0;
          compute_exc = '0;
@@ -399,45 +609,59 @@ module tt_vec_div_unit
       endcase
    end
 
-   // Merge compute_result with i_src3 based on active_mask and agnostic policies
-   // Handle mask agnostic (vma) and tail agnostic (vta) behavior
+      logic use_stored_context;
+      logic sel_vm, sel_vta, sel_vma;
+      logic [VLEN-1:0] sel_src3;
+      
+      assign use_stored_context = (int_div_state == INT_DONE);
+      assign sel_vm = use_stored_context ? stored_vm : i_vm;
+      assign sel_vta = use_stored_context ? stored_vta : i_vta;
+      assign sel_vma = use_stored_context ? stored_vma : i_vma;
+      assign sel_src3 = use_stored_context ? stored_src3 : i_src3;
+   // Merge compute_result with src3 based on mask and agnostic policies
+   // Use stored context for integer operations (INT_DONE), current context for FP operations
    always_comb begin
       merged_result = '0;
-      if (i_vm) begin
-         // Unmasked operation (i_vm=1): handle tail agnostic
+      
+      // Select mask information based on operation state
+      
+      if (sel_vm) begin
+         // Unmasked operation (vm=1): handle tail agnostic
          for (int i = 0; i < VLEN/8; i++) begin
             if (vl_mask[i]) begin
                merged_result[i*8 +: 8] = compute_result[i*8 +: 8];  // Active elements
             end else begin
                // Tail elements: vta=1 -> agnostic (can be anything), vta=0 -> undisturbed (keep old)
-               merged_result[i*8 +: 8] = i_vta ? 8'hFF : i_src3[i*8 +: 8];
+               merged_result[i*8 +: 8] = sel_vta ? 8'hFF : sel_src3[i*8 +: 8];
             end
          end
       end else begin
-         // Masked operation (i_vm=0): apply mask and handle agnostic policies
+         // Masked operation (vm=0): apply mask and handle agnostic policies
          for (int i = 0; i < VLEN/8; i++) begin
             if (vl_mask[i]) begin
                if (active_mask[i]) begin
                   merged_result[i*8 +: 8] = compute_result[i*8 +: 8];  // Active masked elements
                end else begin
                   // Masked-off elements: vma=1 -> agnostic (can be anything), vma=0 -> undisturbed (keep old)
-                  merged_result[i*8 +: 8] = i_vma ? 8'hFF : i_src3[i*8 +: 8];
+                  merged_result[i*8 +: 8] = sel_vma ? 8'hFF : sel_src3[i*8 +: 8];
                end
             end else begin
                // Tail elements: vta=1 -> agnostic (can be anything), vta=0 -> undisturbed (keep old)
-               merged_result[i*8 +: 8] = i_vta ? 8'hFF : i_src3[i*8 +: 8];
+               merged_result[i*8 +: 8] = sel_vta ? 8'hFF : sel_src3[i*8 +: 8];
             end
          end
       end
    end
 
    // Output assignments
-   // For now, vfrsqrt7 and vfrec7 are implemented
-   assign o_busy         = 1'b0; // Combinational operation
-   assign o_result_valid = i_id_vdiv_ex0_rts & (is_sqrt7_op | is_rec_op);
+   // Supports vfrsqrt7, vfrec7 (combinational) and vdiv/vdivu/vrem/vremu (sequential multi-cycle)
+   assign o_busy         = (int_div_state != INT_IDLE) || 
+                          (int_div_state == INT_IDLE && (is_div_op || is_rem_op)); // Busy during integer operations
+   assign o_result_valid = (is_sqrt7_op | is_rec_op) ? (i_id_vdiv_ex0_rts & (is_sqrt7_op | is_rec_op)) :
+                          (int_div_state == INT_DONE);
    assign o_result       = merged_result;
    assign o_result_exc   = is_sqrt7_op ? sqrt7_exc : 
                           is_rec_op ? rec7_exc : '0;
-   assign o_result_lqid  = i_ldqid;
+   assign o_result_lqid  = stored_context_valid ? stored_ldqid : i_ldqid;
 
 endmodule
