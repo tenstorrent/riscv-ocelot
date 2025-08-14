@@ -1145,29 +1145,44 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
   logic         store_valid_nxt;
   logic [511:0] store_data_nxt;
 
-  tt_store_fsm #(
+  // ========= SHADOW CODE: Store Buffer (for testing/development) =========
+  
+  logic        store_buffer_ready;
+  logic        store_buffer_valid;
+  logic [511:0] store_buffer_data;
+  
+  tt_store_buffer #(
     .VLEN(VLEN),
-    .STORE_CREDITS(STORE_CREDITS)
-  ) store_fsm (
-    .i_clk(clk),
-    .i_reset_n(reset_n),
-    .i_uop_fire(id_ex_units_rts && ex_id_rtr && !id_mem_lqinfo.squash_vec_wr_flag),
-    .i_uop_first(id_ex_vecldst_autogen.ldst_iter_cnt == 0),
-    .i_uop_last(id_ex_last),
-    .i_uop_is_store(vecldst_autogen_store),
-    .i_uop_is_vsm(id_is_maskldst),
-    .i_uop_is_vsx(id_is_indexldst),
-    .i_uop_is_vsr(id_is_whole_memop),
-    .i_uop_index_size(index_size),
-    .i_uop_data_size(data_size),
-    .i_uop_vl(csr_ex0.v_vl),
-    .i_uop_nfield(id_ex_instrn[31:29]),
-    .i_store_data(vs3_rddata),
-    .i_store_credit(store_credit),
-    .o_store_valid(store_valid_nxt),
-    .o_store_data(store_data_nxt),
-    .o_stall(store_fsm_stall)
+    .CREDITS(STORE_CREDITS)
+  ) store_buffer (
+    .clock(clk),
+    .reset_n(reset_n),
+    
+    // Control signals (same as store FSM)
+    .enq_ready(store_buffer_ready),
+    .enq_valid(id_ex_units_rts && ex_id_rtr && !id_mem_lqinfo.squash_vec_wr_flag && vecldst_autogen_store),
+    .enq_first(id_ex_vecldst_autogen.ldst_iter_cnt == 0),
+    .enq_last(id_ex_last),
+    
+    // Raw inputs (what the buffer expects)
+    .enq_sb_id(id_sb_id),                  // Scoreboard ID
+    .enq_instrn(id_ex_instrn),             // Raw instruction
+    .enq_vtype_vl({3'b0, csr_ex0.v_vl}),   // VL from CSR (padded to 12 bits)
+    .enq_vtype_vsew(csr_ex0.v_vsew),       // SEW from CSR  
+    .enq_vtype_vlmul(csr_ex0.v_lmul),      // LMUL from CSR
+    .enq_data(vs3_rddata),                 // Store data from VRF
+    
+    // Outputs
+    .return_credit(store_credit),     // Input: credit availability
+    .store_valid(store_buffer_valid),
+    .store_data(store_buffer_data)
   );
+
+  assign store_valid_nxt = store_buffer_valid;
+  assign store_data_nxt  = store_buffer_data;
+  assign store_fsm_stall = !store_buffer_ready && (id_ex_units_rts && ex_id_rtr && !id_mem_lqinfo.squash_vec_wr_flag && vecldst_autogen_store);
+
+  // ========= SHADOW CODE END =========
 
 
   tt_mask_fsm #(

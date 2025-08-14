@@ -38,7 +38,7 @@ tt_reshape.sv \
 tt_rts_rtr_pipe_stage.sv \
 tt_scoreboard_ovi.sv \
 tt_skid_buffer.sv \
-tt_store_fsm.sv \
+tt_store_buffer.sv \
 tt_vec.sv \
 tt_vec_iadd.sv \
 tt_vec_idp.sv \
