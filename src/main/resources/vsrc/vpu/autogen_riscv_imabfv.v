@@ -8016,11 +8016,7 @@ always_comb begin
 	    16'b1010111100000001  :  v_fdivop[0] = 1'b1;
 	    // vfrdiv.vv - funct7=100001, funct3=001 (vm bit ignored)
 	    16'b1010111100001001  :  v_fdivop[0] = 1'b1;
-	    // vfsqrt.v  - funct7=100011, funct3=001, vs1=00000 (vm bit ignored)
-	    16'b1010111100011001  :  v_fdivop[0] = 1'b1;
-	    // vfrec7.v  - funct7=100101, funct3=001, vs1=00101 (vm bit ignored)
-	    16'b1010111100101001  :  v_fdivop[0] = 1'b1;
-	    // vfrsqrt7.v - funct7=0100111, funct3=001, vs1=00100 (vm bit ignored)
+	    // vfsqrt.v, vfrsqrt7.v, vfrec7.v - funct7[6:1]=010011, funct3=001 (differentiated by vs1, vm bit ignored)
 	    16'b1010111010011001  :  v_fdivop[0] = 1'b1;
 	    // vfdiv.vf  - funct7=100000, funct3=101 (vm bit ignored)
 	    16'b1010111100000101  :  v_fdivop[0] = 1'b1;

@@ -1004,13 +1004,13 @@ module tt_vec #(parameter
        .i_sew           (i_csr.v_vsew[1:0]),
        .i_lmul          (i_csr.v_lmul[2:0]),
        .i_vl            (i_csr.v_vl[7:0]),
+       .i_vs1           (i_id_ex_instrn[19:15]),
        .i_vta           (1'b0),  // TODO: Connect to vtype.vta when available (0=undisturbed, 1=agnostic)
        .i_vma           (1'b0),  // TODO: Connect to vtype.vma when available (0=undisturbed, 1=agnostic)
 
        // Instruction decode signals
        .i_funct7        (funct7_0a[6:0]),
        .i_funct3        (funct3_0a[2:0]),
-       .i_vs1           (reg_p0[4:0]),
        .i_vm            (i_id_ex_instrn[25]),
 
        // Floating-point control (IEEE FP only, no fixed-point)

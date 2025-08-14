@@ -130,17 +130,17 @@ module tt_vec_div_unit
             6'b100000: begin // vfdiv
                is_div_op = 1'b1;
             end
-            6'b100011: begin // vfsqrt
-               is_sqrt_op = 1'b1;
-               is_single_operand = 1'b1;
-            end
-            6'b010011: begin // vfrsqrt7 (autogen handles both masked/unmasked)
-               is_sqrt7_op = 1'b1;
-               is_single_operand = 1'b1;
-            end
-            6'b100101: begin // vfrec7
-               is_rec_op = 1'b1;
-               is_single_operand = 1'b1;
+            6'b010011: begin // vfsqrt, vfrsqrt7, vfrec7 (all share same funct7[6:1])
+               if (i_vs1 == 5'b00000) begin // vs1=00000 for vfsqrt
+                  is_sqrt_op = 1'b1;
+                  is_single_operand = 1'b1;
+               end else if (i_vs1 == 5'b00100) begin // vs1=00100 for vfrsqrt7
+                  is_sqrt7_op = 1'b1;
+                  is_single_operand = 1'b1;
+               end else if (i_vs1 == 5'b00101) begin // vs1=00101 for vfrec7
+                  is_rec_op = 1'b1;
+                  is_single_operand = 1'b1;
+               end
             end
          endcase
       end
@@ -207,9 +207,39 @@ module tt_vec_div_unit
       end
    endgenerate
    
-   // Separate output result multiplexing for sqrt and sqrt7 operations
-   logic [VLEN-1:0] sqrt_result, sqrt7_result;
-   tt_briscv_pkg::csr_fp_exc sqrt_exc, sqrt7_exc;
+   // Reciprocal unit signals and instances (vfrec7)
+   logic [VLEN/16-1:0][15:0]  fp16_rec7_out;
+   logic [VLEN/16-1:0][4:0]   fp16_rec7_exc;
+   logic [VLEN/32-1:0][31:0] fp32_rec7_out;
+   logic [VLEN/32-1:0][4:0]  fp32_rec7_exc;
+   
+   // Generate FP16 reciprocal units (for SEW=16) - always connected
+   generate
+      for (genvar i = 0; i < VLEN/16; i++) begin : gen_fp16_rec
+         VecFP16rec7 fp16_rec_inst (
+            .io_in            (src2_sew16[i]),
+            .io_roundingMode  (i_frm),
+            .io_out           (fp16_rec7_out[i]),
+            .io_exceptionFlags(fp16_rec7_exc[i])
+         );
+      end
+   endgenerate
+   
+   // Generate FP32 reciprocal units (for SEW=32) - always connected
+   generate
+      for (genvar i = 0; i < VLEN/32; i++) begin : gen_fp32_rec
+         VecFP32rec7 fp32_rec_inst (
+            .io_in            (src2_sew32[i]),
+            .io_roundingMode  (i_frm),
+            .io_out           (fp32_rec7_out[i]),
+            .io_exceptionFlags(fp32_rec7_exc[i])
+         );
+      end
+   endgenerate
+   
+   // Separate output result multiplexing for sqrt, sqrt7, and rec7 operations
+   logic [VLEN-1:0] sqrt_result, sqrt7_result, rec7_result;
+   tt_briscv_pkg::csr_fp_exc sqrt_exc, sqrt7_exc, rec7_exc;
    
    // Full precision square root results (vfsqrt)
 
@@ -239,6 +269,32 @@ module tt_vec_div_unit
       end
    end
 
+   // 7-bit reciprocal results (vfrec7)
+   always_comb begin
+      rec7_result = '0;
+      rec7_exc = '0;
+      
+      if (is_rec_op && i_sew == 2'b01) begin // SEW=16
+         // Pack FP16 results into VLEN
+         for (int i = 0; i < VLEN/16; i++) begin
+            rec7_result[i*16 +: 16] = fp16_rec7_out[i];
+         end
+         // Combine FP16 exceptions (OR all exception flags)
+         for (int i = 0; i < VLEN/16; i++) begin
+            rec7_exc |= {fp16_rec7_exc[i][4], 1'b0, fp16_rec7_exc[i][3:0]};
+         end
+      end else if (is_rec_op && i_sew == 2'b10) begin // SEW=32
+         // Pack FP32 results into VLEN  
+         for (int i = 0; i < VLEN/32; i++) begin
+            rec7_result[i*32 +: 32] = fp32_rec7_out[i];
+         end
+         // Combine FP32 exceptions (OR all exception flags)
+         for (int i = 0; i < VLEN/32; i++) begin
+            rec7_exc |= {fp32_rec7_exc[i][4], 1'b0, fp32_rec7_exc[i][3:0]};
+         end
+      end
+   end
+
    // Final result selection
    logic [VLEN-1:0] compute_result, merged_result;
    tt_briscv_pkg::csr_fp_exc compute_exc;
@@ -247,6 +303,9 @@ module tt_vec_div_unit
       if (is_sqrt7_op) begin
          compute_result = sqrt7_result;
          compute_exc = sqrt7_exc;
+      end else if (is_rec_op) begin
+         compute_result = rec7_result;
+         compute_exc = rec7_exc;
       end else begin
          compute_result = '0;
          compute_exc = '0;
@@ -373,11 +432,12 @@ module tt_vec_div_unit
    end
 
    // Output assignments
-   // For now, only square root is implemented
+   // For now, vfrsqrt7 and vfrec7 are implemented
    assign o_busy         = 1'b0; // Combinational operation
-   assign o_result_valid = i_id_vdiv_ex0_rts & is_sqrt7_op;
+   assign o_result_valid = i_id_vdiv_ex0_rts & (is_sqrt7_op | is_rec_op);
    assign o_result       = merged_result;
-   assign o_result_exc   = is_sqrt7_op ? sqrt7_exc : '0;
+   assign o_result_exc   = is_sqrt7_op ? sqrt7_exc : 
+                          is_rec_op ? rec7_exc : '0;
    assign o_result_lqid  = i_ldqid;
 
 endmodule
