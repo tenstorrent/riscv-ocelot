@@ -656,8 +656,7 @@ module tt_vec_div_unit
 
    // Output assignments
    // Supports vfrsqrt7, vfrec7 (combinational) and vdiv/vdivu/vrem/vremu (sequential multi-cycle)
-   assign o_busy         = (int_div_state != INT_IDLE) || 
-                          (int_div_state == INT_IDLE && (is_div_op || is_rem_op)); // Busy during integer operations
+   assign o_busy         = (int_div_state != INT_IDLE); // Busy when state machine is active
    assign o_result_valid = (is_sqrt7_op | is_rec_op) ? (i_id_vdiv_ex0_rts & (is_sqrt7_op | is_rec_op)) :
                           (int_div_state == INT_DONE);
    assign o_result       = merged_result;

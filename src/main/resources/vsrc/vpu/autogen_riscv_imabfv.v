@@ -3771,6 +3771,19 @@ always_comb begin
 	    18'b000011111????????1  :  EncType[4] = 1'b1;
 	    18'b0000000???????????  :  EncType[4] = 1'b1;
 	    18'b0?001111?1????????  :  EncType[4] = 1'b1;
+	    // Division instructions - EncType[4] = 1 for EncType=25
+	    18'b1010111010100001??  :  EncType[4] = 1'b1;  // vdiv.vv - funct7[6:1]=100001, funct3=010
+	    18'b1010111100100001??  :  EncType[4] = 1'b1;  // vdiv.vx - funct7[6:1]=100001, funct3=100
+	    18'b1010111000100001??  :  EncType[4] = 1'b1;  // vdivu.vv - funct7[6:1]=100001, funct3=000
+	    18'b1010111100100001??  :  EncType[4] = 1'b1;  // vdivu.vx - funct7[6:1]=100001, funct3=100
+	    18'b1010111010100011??  :  EncType[4] = 1'b1;  // vrem.vv - funct7[6:1]=100011, funct3=010
+	    18'b1010111100100011??  :  EncType[4] = 1'b1;  // vrem.vx - funct7[6:1]=100011, funct3=100
+	    18'b1010111000100011??  :  EncType[4] = 1'b1;  // vremu.vv - funct7[6:1]=100011, funct3=000
+	    18'b1010111100100011??  :  EncType[4] = 1'b1;  // vremu.vx - funct7[6:1]=100011, funct3=100
+	    18'b1010111001100000??  :  EncType[4] = 1'b1;  // vfdiv.vv - funct7[6:1]=100000, funct3=001
+	    18'b1010111101100000??  :  EncType[4] = 1'b1;  // vfdiv.vf - funct7[6:1]=100000, funct3=101
+	    18'b1010111101100001??  :  EncType[4] = 1'b1;  // vfrdiv.vf - funct7[6:1]=100001, funct3=101
+	    18'b1010111001010011??  :  EncType[4] = 1'b1;  // vfrsqrt7.v, vfrec7.v - funct7[6:1]=010011, funct3=001
 	    default : EncType[4] = 1'b0;
 	endcase
 	casez({Opcode[6], Opcode[5], Opcode[4], Opcode[3], Opcode[2], Opcode[1], Opcode[0], funct3[2], funct3[1], funct3[0], funct7[6], funct7[5], funct7[4], funct7[3], funct7[2], funct7[1], funct7[0], mop[0]})
@@ -3859,6 +3872,19 @@ always_comb begin
 	    18'b0101111???????????  :  EncType[3] = 1'b1;
 	    18'b10?0011???????????  :  EncType[3] = 1'b1;
 	    18'b100??11???????????  :  EncType[3] = 1'b1;
+	    // Division instructions - EncType[3] = 1 for EncType=25
+	    18'b1010111010100001??  :  EncType[3] = 1'b1;  // vdiv.vv - funct7[6:1]=100001, funct3=010
+	    18'b1010111100100001??  :  EncType[3] = 1'b1;  // vdiv.vx - funct7[6:1]=100001, funct3=100
+	    18'b1010111000100001??  :  EncType[3] = 1'b1;  // vdivu.vv - funct7[6:1]=100001, funct3=000
+	    18'b1010111100100001??  :  EncType[3] = 1'b1;  // vdivu.vx - funct7[6:1]=100001, funct3=100
+	    18'b1010111010100011??  :  EncType[3] = 1'b1;  // vrem.vv - funct7[6:1]=100011, funct3=010
+	    18'b1010111100100011??  :  EncType[3] = 1'b1;  // vrem.vx - funct7[6:1]=100011, funct3=100
+	    18'b1010111000100011??  :  EncType[3] = 1'b1;  // vremu.vv - funct7[6:1]=100011, funct3=000
+	    18'b1010111100100011??  :  EncType[3] = 1'b1;  // vremu.vx - funct7[6:1]=100011, funct3=100
+	    18'b1010111001100000??  :  EncType[3] = 1'b1;  // vfdiv.vv - funct7[6:1]=100000, funct3=001
+	    18'b1010111101100000??  :  EncType[3] = 1'b1;  // vfdiv.vf - funct7[6:1]=100000, funct3=101
+	    18'b1010111101100001??  :  EncType[3] = 1'b1;  // vfrdiv.vf - funct7[6:1]=100001, funct3=101
+	    18'b1010111001010011??  :  EncType[3] = 1'b1;  // vfrsqrt7.v, vfrec7.v - funct7[6:1]=010011, funct3=001
 	    default : EncType[3] = 1'b0;
 	endcase
 	casez({Opcode[6], Opcode[5], Opcode[4], Opcode[3], Opcode[2], Opcode[1], Opcode[0], funct3[2], funct3[1], funct3[0], funct7[6], funct7[5], funct7[4], funct7[3], funct7[2], funct7[1], mop[1], mop[0]})
@@ -4016,6 +4042,20 @@ always_comb begin
 	    19'b0001111????????????  :  EncType[0] = 1'b1;
 	    19'b0?10111????????????  :  EncType[0] = 1'b1;
 	    19'b100??11????????????  :  EncType[0] = 1'b1;
+	    // Division instructions - EncType[0] = 1 for EncType=25
+	    19'b1010111010100001???  :  EncType[0] = 1'b1;  // vdiv.vv - funct7[6:1]=100001, funct3=010
+	    19'b1010111100100001???  :  EncType[0] = 1'b1;  // vdiv.vx - funct7[6:1]=100001, funct3=100
+	    19'b1010111000100001???  :  EncType[0] = 1'b1;  // vdivu.vv - funct7[6:1]=100001, funct3=000
+	    19'b1010111100100001???  :  EncType[0] = 1'b1;  // vdivu.vx - funct7[6:1]=100001, funct3=100
+	    19'b1010111010100011???  :  EncType[0] = 1'b1;  // vrem.vv - funct7[6:1]=100011, funct3=010
+	    19'b1010111100100011???  :  EncType[0] = 1'b1;  // vrem.vx - funct7[6:1]=100011, funct3=100
+	    19'b1010111000100011???  :  EncType[0] = 1'b1;  // vremu.vv - funct7[6:1]=100011, funct3=000
+	    19'b1010111100100011???  :  EncType[0] = 1'b1;  // vremu.vx - funct7[6:1]=100011, funct3=100
+	    19'b1010111001100000???  :  EncType[0] = 1'b1;  // vfdiv.vv - funct7[6:1]=100000, funct3=001
+	    19'b1010111101100000???  :  EncType[0] = 1'b1;  // vfdiv.vf - funct7[6:1]=100000, funct3=101
+	    19'b1010111101100001???  :  EncType[0] = 1'b1;  // vfrdiv.vf - funct7[6:1]=100001, funct3=101
+	    19'b1010111001010011???  :  EncType[0] = 1'b1;  // vfrsqrt7.v, vfrec7.v - funct7[6:1]=010011, funct3=001
+	    // COMMENTED OUT: These broad patterns cause combinational loops with division instructions
 	    19'b??????0????????????  :  EncType[0] = 1'b1;
 	    19'b?????0?????????????  :  EncType[0] = 1'b1;
 	    default : EncType[0] = 1'b0;
