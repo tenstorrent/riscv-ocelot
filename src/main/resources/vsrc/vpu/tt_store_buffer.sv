@@ -147,7 +147,7 @@ module tt_store_buffer #(
   logic [3:0] group_id, seg_id;
   logic       enq_past_vl; // this is used to determine if the enq doesnt matter since we are past vl element
 
-  assign vl_group_id = (enq_vl  >> ($clog2(VLEN/8)-enq_eew));
+  assign vl_group_id = ((enq_vl - 12'h1) >> ($clog2(VLEN/8)-enq_eew));
   assign enq_past_vl = (group_id > vl_group_id) || (enq_vl == '0);
 
   // update group_id and seg_id during enq
@@ -166,11 +166,11 @@ module tt_store_buffer #(
         seg_id   <= '0;
       end
       // saturate increment group_id first (since decode does seg major)
-      else if (group_id != 3'(4'b1 << enq_emul)) begin
+      else if (group_id != (4'b1 << enq_emul)) begin
         group_id <= group_id + 1'b1;
       end
       // carry over group_id into seg_id
-      else if (seg_id != 3'(enq_seg_count - 1'b1)) begin
+      else if (seg_id != (enq_seg_count - 1'b1)) begin
         group_id <= '0;
         seg_id   <= seg_id + 1'b1;
       end
@@ -556,10 +556,12 @@ module store_buffer_dec #(
                      eew_normal;
                      
   // emul_enc (matching ls_decode.scala MuxLookup order)
-  assign o_emul_enc = isWhole  ? whole_vlmul :
+  logic [2:0] emul_enc;
+  assign emul_enc   = isWhole  ? whole_vlmul :
                       isIndex  ? emul_index :
                       isMaskLS ? emul_mask :
                       emul_normal;
+  assign o_emul_enc = emul_enc[2] ? '0 : emul_enc; // override negative lmul with 0 since store buffer take the ceil of regs required
                       
   // vl (matching ls_decode.scala MuxLookup order)  
   assign o_vl = isWhole  ? vl_whole :
