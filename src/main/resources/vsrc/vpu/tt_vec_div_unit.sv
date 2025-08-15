@@ -542,12 +542,25 @@ module tt_vec_div_unit
       end
    end
    
+   // Context selection for mask/VL calculations
+   logic use_stored_context;
+   logic [1:0] sel_sew;
+   logic [7:0] sel_vl;
+   logic [2:0] sel_lmul_cnt;
+   logic [VLEN-1:0] sel_vm0;
+   
+   assign use_stored_context = (int_div_state == INT_DONE);
+   assign sel_sew = use_stored_context ? stored_sew : i_sew;
+   assign sel_vl = use_stored_context ? stored_vl : i_vl;
+   assign sel_lmul_cnt = use_stored_context ? stored_lmul_cnt : i_lmul_cnt;
+   assign sel_vm0 = use_stored_context ? stored_vm0 : i_vm0;
+   
    logic [2:0] log2_elements_per_reg; // log2(elements_per_reg) = log2(VLEN) - log2(SEW)
-   assign log2_elements_per_reg = $clog2(VLEN) - (3 + i_sew);
+   assign log2_elements_per_reg = $clog2(VLEN) - (3 + sel_sew);
    // Mask extraction and merging logic
    logic [VLEN/8-1:0] active_mask;  // Mask for current register slice
    logic [7:0] mask_base_offset;
-   assign mask_base_offset = i_lmul_cnt << log2_elements_per_reg;
+   assign mask_base_offset = sel_lmul_cnt << log2_elements_per_reg;
    
    // Extract appropriate mask slice based on SEW and LMUL_CNT
    always_comb begin
@@ -556,30 +569,30 @@ module tt_vec_div_unit
       // Calculate mask base offset using shift trick (same as VL calculation)
       
       // Generate mask per byte with nested loops
-      case (i_sew)
+      case (sel_sew)
          2'b00: begin // SEW=8, 1 mask bit per byte
             for (int i = 0; i < VLEN/8; i++) begin
-               active_mask[i] = i_vm0[mask_base_offset + i];
+               active_mask[i] = sel_vm0[mask_base_offset + i];
             end
          end
          2'b01: begin // SEW=16, 1 mask bit per 2 bytes
             for (int i = 0; i < VLEN/16; i++) begin // VLEN/SEW elements
                for (int j = 0; j < 2; j++) begin // SEW/8 bytes per element
-                  active_mask[i*2 + j] = i_vm0[mask_base_offset + i];
+                  active_mask[i*2 + j] = sel_vm0[mask_base_offset + i];
                end
             end
          end
          2'b10: begin // SEW=32, 1 mask bit per 4 bytes
             for (int i = 0; i < VLEN/32; i++) begin // VLEN/SEW elements
                for (int j = 0; j < 4; j++) begin // SEW/8 bytes per element
-                  active_mask[i*4 + j] = i_vm0[mask_base_offset + i];
+                  active_mask[i*4 + j] = sel_vm0[mask_base_offset + i];
                end
             end
          end
          2'b11: begin // SEW=64, 1 mask bit per 8 bytes
             for (int i = 0; i < VLEN/64; i++) begin // VLEN/SEW elements
                for (int j = 0; j < 8; j++) begin // SEW/8 bytes per element
-                  active_mask[i*8 + j] = i_vm0[mask_base_offset + i];
+                  active_mask[i*8 + j] = sel_vm0[mask_base_offset + i];
                end
             end
          end
@@ -591,21 +604,21 @@ module tt_vec_div_unit
    logic [7:0] effective_vl;  // VL for this LMUL iteration
    
    always_comb begin
-      // Calculate log2(elements_per_reg) = log2(VLEN) - i_sew
-      // log2(VLEN=256) = 8, i_sew: 00=3, 01=4, 10=5, 11=6 (log2 of SEW)
+      // Calculate log2(elements_per_reg) = log2(VLEN) - sel_sew
+      // log2(VLEN=256) = 8, sel_sew: 00=3, 01=4, 10=5, 11=6 (log2 of SEW)
       
       // Calculate effective VL for this LMUL iteration using shifts
       // effective_vl = vl - (elements_per_reg * lmul_cnt) 
       //              = vl - (lmul_cnt << log2_elements_per_reg)
-      if (i_vl > (i_lmul_cnt << log2_elements_per_reg)) begin
-         effective_vl = i_vl - (i_lmul_cnt << log2_elements_per_reg);
+      if (sel_vl > (sel_lmul_cnt << log2_elements_per_reg)) begin
+         effective_vl = sel_vl - (sel_lmul_cnt << log2_elements_per_reg);
       end else begin
          effective_vl = 8'b0;  // No active elements in this iteration
       end
       
       // Generate VL mask based on effective VL
       vl_mask = '0;
-      case (i_sew)
+      case (sel_sew)
          2'b00: begin // SEW=8, 1 element per byte
             for (int i = 0; i < VLEN/8; i++) begin
                vl_mask[i] = (i < effective_vl);
@@ -629,11 +642,8 @@ module tt_vec_div_unit
       endcase
    end
 
-      logic use_stored_context;
       logic sel_vm, sel_vta, sel_vma;
       logic [VLEN-1:0] sel_src3;
-      
-      assign use_stored_context = (int_div_state == INT_DONE);
       assign sel_vm = use_stored_context ? stored_vm : i_vm;
       assign sel_vta = use_stored_context ? stored_vta : i_vta;
       assign sel_vma = use_stored_context ? stored_vma : i_vma;
