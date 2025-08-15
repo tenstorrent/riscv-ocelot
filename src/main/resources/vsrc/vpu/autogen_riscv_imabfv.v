@@ -3774,7 +3774,7 @@ always_comb begin
 	    // Division instructions - EncType[4] = 1 for EncType=25
 	    18'b1010111010100001??  :  EncType[4] = 1'b1;  // vdiv.vv - funct7[6:1]=100001, funct3=010
 	    18'b1010111100100001??  :  EncType[4] = 1'b1;  // vdiv.vx - funct7[6:1]=100001, funct3=100
-	    18'b1010111000100000??  :  EncType[4] = 1'b1;  // vdivu.vv - funct7[6:1]=100000, funct3=000
+	    18'b1010111010100000??  :  EncType[4] = 1'b1;  // vdivu.vv - funct7[6:1]=100000, funct3=010
 	    18'b1010111100100000??  :  EncType[4] = 1'b1;  // vdivu.vx - funct7[6:1]=100000, funct3=100
 	    18'b1010111010100011??  :  EncType[4] = 1'b1;  // vrem.vv - funct7[6:1]=100011, funct3=010
 	    18'b1010111100100011??  :  EncType[4] = 1'b1;  // vrem.vx - funct7[6:1]=100011, funct3=100
@@ -3875,7 +3875,7 @@ always_comb begin
 	    // Division instructions - EncType[3] = 1 for EncType=25
 	    18'b1010111010100001??  :  EncType[3] = 1'b1;  // vdiv.vv - funct7[6:1]=100001, funct3=010
 	    18'b1010111100100001??  :  EncType[3] = 1'b1;  // vdiv.vx - funct7[6:1]=100001, funct3=100
-	    18'b1010111000100000??  :  EncType[3] = 1'b1;  // vdivu.vv - funct7[6:1]=100000, funct3=000
+	    18'b1010111010100000??  :  EncType[3] = 1'b1;  // vdivu.vv - funct7[6:1]=100000, funct3=010
 	    18'b1010111100100000??  :  EncType[3] = 1'b1;  // vdivu.vx - funct7[6:1]=100000, funct3=100
 	    18'b1010111010100011??  :  EncType[3] = 1'b1;  // vrem.vv - funct7[6:1]=100011, funct3=010
 	    18'b1010111100100011??  :  EncType[3] = 1'b1;  // vrem.vx - funct7[6:1]=100011, funct3=100
@@ -4045,7 +4045,7 @@ always_comb begin
 	    // Division instructions - EncType[0] = 1 for EncType=25
 	    19'b1010111010100001???  :  EncType[0] = 1'b1;  // vdiv.vv - funct7[6:1]=100001, funct3=010
 	    19'b1010111100100001???  :  EncType[0] = 1'b1;  // vdiv.vx - funct7[6:1]=100001, funct3=100
-	    19'b1010111000100000???  :  EncType[0] = 1'b1;  // vdivu.vv - funct7[6:1]=100000, funct3=000
+	    19'b1010111010100000???  :  EncType[0] = 1'b1;  // vdivu.vv - funct7[6:1]=100000, funct3=010
 	    19'b1010111100100000???  :  EncType[0] = 1'b1;  // vdivu.vx - funct7[6:1]=100000, funct3=100
 	    19'b1010111010100011???  :  EncType[0] = 1'b1;  // vrem.vv - funct7[6:1]=100011, funct3=010
 	    19'b1010111100100011???  :  EncType[0] = 1'b1;  // vrem.vx - funct7[6:1]=100011, funct3=100
@@ -4113,7 +4113,7 @@ always_comb begin
 	    17'b100??11??????????  :  SrcA[1] = 1'b1;
 	    // Division instructions - SrcA[1] = 1 for .vv variants (vector src1)
 	    17'b1010111010100001?  :  SrcA[1] = 1'b1;  // vdiv.vv - vs1 used
-	    17'b1010111000100001?  :  SrcA[1] = 1'b1;  // vdivu.vv - vs1 used
+	    17'b1010111010100000?  :  SrcA[1] = 1'b1;  // vdivu.vv - vs1 used
 	    17'b1010111010100011?  :  SrcA[1] = 1'b1;  // vrem.vv - vs1 used
 	    17'b1010111000100011?  :  SrcA[1] = 1'b1;  // vremu.vv - vs1 used
 	    17'b1010111001100000?  :  SrcA[1] = 1'b1;  // vfdiv.vv - vs1 used
@@ -4201,7 +4201,7 @@ always_comb begin
 	    19'b100??11????????????  :  SrcB[1] = 1'b1;
 	    // Division instructions - SrcB[1] = 1 for .vv variants (vector src2)
 	    19'b1010111100001010???  :  SrcB[1] = 1'b1;  // vdiv.vv - vs2 used
-	    19'b1010111100001000???  :  SrcB[1] = 1'b1;  // vdivu.vv - vs2 used
+	    19'b1010111100000010???  :  SrcB[1] = 1'b1;  // vdivu.vv - vs2 used
 	    19'b1010111100011010???  :  SrcB[1] = 1'b1;  // vrem.vv - vs2 used
 	    19'b1010111100011000???  :  SrcB[1] = 1'b1;  // vremu.vv - vs2 used
 	    19'b1010111100000001???  :  SrcB[1] = 1'b1;  // vfdiv.vv - vs2 used
@@ -4367,7 +4367,7 @@ always_comb begin
 	    // Division instructions - Dest[1] = 1 for vector destination (vd used)
 	    17'b1010111010100001?  :  Dest[1] = 1'b1;  // vdiv.vv - vd used
 	    17'b1010111100100001?  :  Dest[1] = 1'b1;  // vdiv.vx - vd used
-	    17'b1010111000100001?  :  Dest[1] = 1'b1;  // vdivu.vv/vx - vd used
+	    17'b1010111010100000?  :  Dest[1] = 1'b1;  // vdivu.vv/vx - vd used
 	    17'b1010111010100011?  :  Dest[1] = 1'b1;  // vrem.vv - vd used
 	    17'b1010111100100011?  :  Dest[1] = 1'b1;  // vrem.vx - vd used
 	    17'b1010111000100011?  :  Dest[1] = 1'b1;  // vremu.vv/vx - vd used
@@ -4442,7 +4442,7 @@ always_comb begin
 	    // Division instructions - Dest[1] = 1 for vector destination (vd used)
 	    17'b1010111010100001?  :  Dest[0] = 1'b1;  // vdiv.vv - vd used
 	    17'b1010111100100001?  :  Dest[0] = 1'b1;  // vdiv.vx - vd used
-	    17'b1010111000100001?  :  Dest[0] = 1'b1;  // vdivu.vv/vx - vd used
+	    17'b1010111010100000?  :  Dest[0] = 1'b1;  // vdivu.vv/vx - vd used
 	    17'b1010111010100011?  :  Dest[0] = 1'b1;  // vrem.vv - vd used
 	    17'b1010111100100011?  :  Dest[0] = 1'b1;  // vrem.vx - vd used
 	    17'b1010111000100011?  :  Dest[0] = 1'b1;  // vremu.vv/vx - vd used
@@ -8065,8 +8065,8 @@ always_comb begin
 	case({Opcode[6], Opcode[5], Opcode[4], Opcode[3], Opcode[2], Opcode[1], Opcode[0], funct7[6], funct7[5], funct7[4], funct7[3], funct7[2], funct7[1], funct3[2], funct3[1], funct3[0]})
 	    // vdiv.vv  - funct7[6:1]=100001, funct3=010 (vm bit ignored)
 	    16'b1010111_100001_010  :  v_idivop[0] = 1'b1;
-	    // vdivu.vv - funct7[6:1]=100000, funct3=000 (vm bit ignored)
-	    16'b1010111_100000_000  :  v_idivop[0] = 1'b1;
+	    // vdivu.vv - funct7[6:1]=100000, funct3=010 (vm bit ignored)
+	    16'b1010111_100000_010  :  v_idivop[0] = 1'b1;
 	    // vrem.vv  - funct7[6:1]=100011, funct3=010 (vm bit ignored)
 	    16'b1010111_100011_010  :  v_idivop[0] = 1'b1;
 	    // vremu.vv - funct7[6:1]=100011, funct3=000 (vm bit ignored)
