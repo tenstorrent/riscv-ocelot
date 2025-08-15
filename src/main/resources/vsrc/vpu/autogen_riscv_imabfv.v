@@ -4439,6 +4439,17 @@ always_comb begin
 	    17'b00?0011??????????  :  Dest[0] = 1'b1;
 	    17'b?0101111110??????  :  Dest[0] = 1'b1;
 	    17'b110?111??????????  :  Dest[0] = 1'b1;
+	    // Division instructions - Dest[1] = 1 for vector destination (vd used)
+	    17'b1010111010100001?  :  Dest[0] = 1'b1;  // vdiv.vv - vd used
+	    17'b1010111100100001?  :  Dest[0] = 1'b1;  // vdiv.vx - vd used
+	    17'b1010111000100001?  :  Dest[0] = 1'b1;  // vdivu.vv/vx - vd used
+	    17'b1010111010100011?  :  Dest[0] = 1'b1;  // vrem.vv - vd used
+	    17'b1010111100100011?  :  Dest[0] = 1'b1;  // vrem.vx - vd used
+	    17'b1010111000100011?  :  Dest[0] = 1'b1;  // vremu.vv/vx - vd used
+	    17'b1010111001100000?  :  Dest[0] = 1'b1;  // vfdiv.vv - vd used
+	    17'b1010111101100000?  :  Dest[0] = 1'b1;  // vfdiv.vf - vd used
+	    17'b1010111101100001?  :  Dest[0] = 1'b1;  // vfrdiv.vf - vd used
+	    17'b1010111001010011?  :  Dest[0] = 1'b1;  // vfrsqrt7.v, vfrec7.v - vd used
 	    default : Dest[0] = 1'b0;
 	endcase
 end

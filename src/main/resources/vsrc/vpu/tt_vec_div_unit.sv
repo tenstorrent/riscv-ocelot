@@ -157,24 +157,49 @@ module tt_vec_div_unit
    logic [VLEN/32-1:0][31:0] src2_sew32;  // SEW=32 (VLEN/32 elements)
    logic [VLEN/64-1:0][63:0] src2_sew64;  // SEW=64 (VLEN/64 elements)
    
+   // Flopped input data for multi-cycle operations
+   logic [VLEN-1:0] src1_flopped, src2_flopped;
+   
+   // Flop input data when operation starts
+   always_ff @(posedge i_clk) begin
+      if (i_id_vdiv_ex0_rts && (is_div_op || is_rem_op || is_sqrt7_op || is_rec_op)) begin
+         src1_flopped <= i_src1;
+         src2_flopped <= i_src2;
+      end
+   end
+   // Integer division state and control (sequential approach)
+   typedef enum logic [1:0] {
+      INT_IDLE = 0,    // No integer operation in progress
+      INT_BUSY = 1,    // Integer division in progress
+      INT_DONE = 2,    // Integer result ready
+      INT_RSVD = 3
+   } int_div_state_e;
+   
+   int_div_state_e int_div_state, int_div_state_nxt;
+   
+   // Select between current input and flopped input based on operation type
+   logic [VLEN-1:0] src1_data, src2_data;
+   assign src1_data = (int_div_state != INT_IDLE) ? src1_flopped : i_src1;
+   assign src2_data = (int_div_state != INT_IDLE) ? src2_flopped : i_src2;
+   
    // Generate input data slicing for all SEW values
    // For .vx operations, src2 is a scalar that gets broadcast to all elements
    generate
       for (genvar i = 0; i < VLEN/8; i++) begin : gen_sew8
-         assign src1_sew8[i] = i_src1[i*8 +: 8];
-         assign src2_sew8[i] = is_vector_scalar ? i_src2[7:0] : i_src2[i*8 +: 8];
+         assign src1_sew8[i] = src1_data[i*8 +: 8];
+         assign src2_sew8[i] = is_vector_scalar ? src2_data[7:0] : src2_data[i*8 +: 8];
       end
       for (genvar i = 0; i < VLEN/16; i++) begin : gen_sew16
-         assign src1_sew16[i] = i_src1[i*16 +: 16];
-         assign src2_sew16[i] = is_vector_scalar ? i_src2[15:0] : i_src2[i*16 +: 16];
+         assign src1_sew16[i] = src1_data[i*16 +: 16];
+         assign src2_sew16[i] = is_vector_scalar ? src2_data[15:0] : src2_data[i*16 +: 16];
       end
       for (genvar i = 0; i < VLEN/32; i++) begin : gen_sew32
-         assign src1_sew32[i] = i_src1[i*32 +: 32];
-         assign src2_sew32[i] = is_vector_scalar ? i_src2[31:0] : i_src2[i*32 +: 32];
+         assign src1_sew32[i] = src1_data[i*32 +: 32];
+         assign src2_sew32[i] = is_vector_scalar ? src2_data[31:0] : src2_data[i*32 +: 32];
       end
       for (genvar i = 0; i < VLEN/64; i++) begin : gen_sew64
-         assign src1_sew64[i] = i_src1[i*64 +: 64];
-         assign src2_sew64[i] = is_vector_scalar ? i_src2[63:0] : i_src2[i*64 +: 64];
+         assign src1_sew64[i] = src1_data[i*64 +: 64];
+         assign src2_sew64[i] = is_vector_scalar ? src2_data[63:0] : src2_data[i*64 +: 64];
       end
    endgenerate
 
@@ -238,15 +263,6 @@ module tt_vec_div_unit
       end
    endgenerate
    
-   // Integer division state and control (sequential approach)
-   typedef enum logic [1:0] {
-      INT_IDLE = 0,    // No integer operation in progress
-      INT_BUSY = 1,    // Integer division in progress
-      INT_DONE = 2,    // Integer result ready
-      INT_RSVD = 3
-   } int_div_state_e;
-   
-   int_div_state_e int_div_state, int_div_state_nxt;
    logic int_div_state_update;
    
    // Integer division context storage (preserved during multi-cycle operation)
@@ -272,7 +288,7 @@ module tt_vec_div_unit
    logic int_operation_complete;
    
    // Integer division unit instantiation
-   tt_int_div_r2 #(
+   tt_int_div_simple #(
       .XLEN(64)  // Support up to SEW=64
    ) int_div_unit (
       .i_clk(i_clk),
@@ -281,8 +297,11 @@ module tt_vec_div_unit
       .o_ack(int_div_ack),
       .i_sgn(int_div_sgn),
       .i_rem(int_div_rem),
-      .i_rs1(int_div_rs1),
-      .i_rs2(int_div_rs2),
+      // IMPORTANT: Vector division is vs2/vs1, but tt_int_div_r2 expects dividend/divisor
+      // Vector: vd[i] = vs2[i] / vs1[i] → dividend=vs2, divisor=vs1
+      // So we swap: int_div_rs1=vs1(divisor) → i_rs2, int_div_rs2=vs2(dividend) → i_rs1
+      .i_rs1(int_div_rs2),  // vs2 (dividend) → i_rs1 (dividend)
+      .i_rs2(int_div_rs1),  // vs1 (divisor) → i_rs2 (divisor)
       .o_rts(int_div_rts),
       .i_rtr(int_div_rtr),
       .o_res(int_div_res)
