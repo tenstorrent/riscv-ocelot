@@ -4111,6 +4111,13 @@ always_comb begin
 	    17'b10?0011???00?0??0  :  SrcA[1] = 1'b1;
 	    17'b10?0011???000?0?0  :  SrcA[1] = 1'b1;
 	    17'b100??11??????????  :  SrcA[1] = 1'b1;
+	    // Division instructions - SrcA[1] = 1 for .vv variants (vector src1)
+	    17'b1010111010100001?  :  SrcA[1] = 1'b1;  // vdiv.vv - vs1 used
+	    17'b1010111000100001?  :  SrcA[1] = 1'b1;  // vdivu.vv - vs1 used
+	    17'b1010111010100011?  :  SrcA[1] = 1'b1;  // vrem.vv - vs1 used
+	    17'b1010111000100011?  :  SrcA[1] = 1'b1;  // vremu.vv - vs1 used
+	    17'b1010111001100000?  :  SrcA[1] = 1'b1;  // vfdiv.vv - vs1 used
+	    17'b1010111001010011?  :  SrcA[1] = 1'b1;  // vfrsqrt7.v, vfrec7.v - vs1 used
 	    default : SrcA[1] = 1'b0;
 	endcase
 	casez({Opcode[6], Opcode[5], Opcode[4], Opcode[3], Opcode[2], Opcode[1], Opcode[0], funct3[2], funct3[1], funct3[0], funct7[6], funct7[5], funct7[3], funct7[2], funct7[0]})
@@ -4192,6 +4199,12 @@ always_comb begin
 	    19'b0100111???????010??  :  SrcB[1] = 1'b1;
 	    19'b0?00111??????????1?  :  SrcB[1] = 1'b1;
 	    19'b100??11????????????  :  SrcB[1] = 1'b1;
+	    // Division instructions - SrcB[1] = 1 for .vv variants (vector src2)
+	    19'b1010111100001010???  :  SrcB[1] = 1'b1;  // vdiv.vv - vs2 used
+	    19'b1010111100001000???  :  SrcB[1] = 1'b1;  // vdivu.vv - vs2 used
+	    19'b1010111100011010???  :  SrcB[1] = 1'b1;  // vrem.vv - vs2 used
+	    19'b1010111100011000???  :  SrcB[1] = 1'b1;  // vremu.vv - vs2 used
+	    19'b1010111100000001???  :  SrcB[1] = 1'b1;  // vfdiv.vv - vs2 used
 	    default : SrcB[1] = 1'b0;
 	endcase
 	casez({Opcode[6], Opcode[5], Opcode[4], Opcode[3], Opcode[2], Opcode[1], Opcode[0], funct7[6], funct7[5], funct7[4], funct7[3], funct7[2], funct7[1], funct3[2], funct3[1], funct3[0], mop[1], mop[0], vm[0]})
@@ -4268,6 +4281,12 @@ always_comb begin
 	    10'b010011111?  :  SrcC[1] = 1'b1;
 	    10'b01001111?1  :  SrcC[1] = 1'b1;
 	    10'b100??11???  :  SrcC[1] = 1'b1;
+	    // Division instructions - SrcC[1] = 1 for destination merging (vs3 used)
+	    10'b1010111010  :  SrcC[1] = 1'b1;  // vdiv.vv - vs3 used for merging
+	    10'b1010111100  :  SrcC[1] = 1'b1;  // vdiv.vx - vs3 used for merging
+	    10'b1010111000  :  SrcC[1] = 1'b1;  // vdivu.vv/vx - vs3 used for merging
+	    10'b1010111001  :  SrcC[1] = 1'b1;  // vfdiv.vv, vfrsqrt7, vfrec7 - vs3 used for merging
+	    10'b1010111101  :  SrcC[1] = 1'b1;  // vfdiv.vf, vfrdiv.vf - vs3 used for merging
 	    default : SrcC[1] = 1'b0;
 	endcase
 	casez({Opcode[6], Opcode[5], Opcode[4], Opcode[3], Opcode[2], Opcode[1], Opcode[0], funct3[2], funct3[1], funct3[0]})
@@ -4345,6 +4364,17 @@ always_comb begin
 	    17'b10?0011???000?0?0  :  Dest[1] = 1'b1;
 	    17'b10?0011???00?0??0  :  Dest[1] = 1'b1;
 	    17'b100??11??????????  :  Dest[1] = 1'b1;
+	    // Division instructions - Dest[1] = 1 for vector destination (vd used)
+	    17'b1010111010100001?  :  Dest[1] = 1'b1;  // vdiv.vv - vd used
+	    17'b1010111100100001?  :  Dest[1] = 1'b1;  // vdiv.vx - vd used
+	    17'b1010111000100001?  :  Dest[1] = 1'b1;  // vdivu.vv/vx - vd used
+	    17'b1010111010100011?  :  Dest[1] = 1'b1;  // vrem.vv - vd used
+	    17'b1010111100100011?  :  Dest[1] = 1'b1;  // vrem.vx - vd used
+	    17'b1010111000100011?  :  Dest[1] = 1'b1;  // vremu.vv/vx - vd used
+	    17'b1010111001100000?  :  Dest[1] = 1'b1;  // vfdiv.vv - vd used
+	    17'b1010111101100000?  :  Dest[1] = 1'b1;  // vfdiv.vf - vd used
+	    17'b1010111101100001?  :  Dest[1] = 1'b1;  // vfrdiv.vf - vd used
+	    17'b1010111001010011?  :  Dest[1] = 1'b1;  // vfrsqrt7.v, vfrec7.v - vd used
 	    default : Dest[1] = 1'b0;
 	endcase
 	casez({Opcode[6], Opcode[5], Opcode[4], Opcode[3], Opcode[2], Opcode[1], Opcode[0], funct3[2], funct3[1], funct3[0], funct7[6], funct7[5], funct7[4], funct7[3], funct7[2], funct7[1], funct7[0]})
