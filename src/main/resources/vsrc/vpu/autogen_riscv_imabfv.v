@@ -4206,7 +4206,7 @@ always_comb begin
 	    19'b100??11????????????  :  SrcB[1] = 1'b1;
 	    // Division instructions - SrcB[1] = 1 for vector src2 (both .vv and .vx variants)
 	    19'b1010111100001010???  :  SrcB[1] = 1'b1;  // vdiv.vv - vs2 used
-	    19'b1010111100001?110??  :  SrcB[1] = 1'b1;  // vdiv.vx - vs2 used
+	    19'b1010111_1000011_110_??  :  SrcB[1] = 1'b1;  // vdiv.vx - vs2 used
 	    19'b1010111100000010???  :  SrcB[1] = 1'b1;  // vdivu.vv - vs2 used
 	    19'b1010111100000?100??  :  SrcB[1] = 1'b1;  // vdivu.vx - vs2 used
 	    19'b1010111100011010???  :  SrcB[1] = 1'b1;  // vrem.vv - vs2 used
@@ -4217,6 +4217,16 @@ always_comb begin
 	    default : SrcB[1] = 1'b0;
 	endcase
 	casez({Opcode[6], Opcode[5], Opcode[4], Opcode[3], Opcode[2], Opcode[1], Opcode[0], funct7[6], funct7[5], funct7[4], funct7[3], funct7[2], funct7[1], funct3[2], funct3[1], funct3[0], mop[1], mop[0], vm[0]})
+	    // Division instructions - SrcB[0] = 1 for vector src2 (both .vv and .vx variants) - HIGH PRIORITY
+	    19'b1010111100001010???  :  SrcB[0] = 1'b1;  // vdiv.vv - vs2 vector register
+	    19'b1010111_100001_110_???  :  SrcB[0] = 1'b1;  // vdiv.vx - vs2 vector register
+	    19'b1010111100000010???  :  SrcB[0] = 1'b1;  // vdivu.vv - vs2 vector register
+	    19'b1010111100000?100??  :  SrcB[0] = 1'b1;  // vdivu.vx - vs2 vector register
+	    19'b1010111100011010???  :  SrcB[0] = 1'b1;  // vrem.vv - vs2 vector register
+	    19'b1010111100011?100??  :  SrcB[0] = 1'b1;  // vrem.vx - vs2 vector register
+	    19'b1010111100010010???  :  SrcB[0] = 1'b1;  // vremu.vv - vs2 vector register
+	    19'b1010111100010?100??  :  SrcB[0] = 1'b1;  // vremu.vx - vs2 vector register
+	    19'b1010111100000001???  :  SrcB[0] = 1'b1;  // vfdiv.vv - vs2 vector register
 	    19'b010?1????????001???  :  SrcB[0] = 1'b1;
 	    19'b1010111??0111010???  :  SrcB[0] = 1'b1;
 	    19'b101011101?11101???0  :  SrcB[0] = 1'b1;

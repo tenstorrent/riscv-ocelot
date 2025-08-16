@@ -45,8 +45,8 @@ module tt_vec_div_unit
    input  logic [tt_briscv_pkg::LQ_DEPTH_LOG2-1:0] i_ldqid,     // Load queue ID for writeback
 
    // Source operands - full VLEN width for flexible SEW handling
-   input  logic          [VLEN-1:0]       i_src1,      // vs2 source (dividend)
-   input  logic          [VLEN-1:0]       i_src2,      // vs1/scalar/imm source (divisor)
+   input  logic          [VLEN-1:0]       i_src1,      // vs1/scalar/imm source (divisor)
+   input  logic          [VLEN-1:0]       i_src2,      // vs2 source (dividend)
    input  logic          [VLEN-1:0]       i_src3,      // vd source (for masked ops)
    
    // Scalar register file inputs for .vx operations
@@ -105,7 +105,8 @@ module tt_vec_div_unit
       // Use high-level operation flags for main categorization
       is_integer_op = i_idivop;
       is_fp_op = i_fdivop;
-      is_vector_scalar = (i_funct3 == 3'b100) || (i_funct3 == 3'b101); // OPIVX or OPFVF
+//      is_vector_scalar = (i_funct3 == 3'b100) || (i_funct3 == 3'b101); // OPIVX or OPFVF
+      is_vector_scalar = (i_funct3 == 3'b110); // OPIVX or OPFVF
       
       // Detailed operation decode based on funct7[6:1] (ignore vm bit)
       if (i_idivop) begin
@@ -189,32 +190,32 @@ module tt_vec_div_unit
    logic sel_is_vector_scalar, sel_idivop;
    
    // Generate input data slicing for all SEW values
-   // For .vx operations, src2 is a scalar from the appropriate register file
+   // For .vx operations, src1 is a scalar from the appropriate register file
    // Use selected signals to ensure consistency during multi-cycle operations
    generate
       for (genvar i = 0; i < VLEN/8; i++) begin : gen_sew8
-         assign src1_sew8[i] = src1_data[i*8 +: 8];
-         assign src2_sew8[i] = sel_is_vector_scalar ? 
+         assign src2_sew8[i] = src2_data[i*8 +: 8];
+         assign src1_sew8[i] = sel_is_vector_scalar ? 
                               (sel_idivop ? sel_rf_scalar[7:0] : sel_fprf_scalar[7:0]) : 
-                              src2_data[i*8 +: 8];
+                              src1_data[i*8 +: 8];
       end
       for (genvar i = 0; i < VLEN/16; i++) begin : gen_sew16
-         assign src1_sew16[i] = src1_data[i*16 +: 16];
-         assign src2_sew16[i] = sel_is_vector_scalar ? 
+         assign src2_sew16[i] = src2_data[i*16 +: 16];
+         assign src1_sew16[i] = sel_is_vector_scalar ? 
                                (sel_idivop ? sel_rf_scalar[15:0] : sel_fprf_scalar[15:0]) : 
-                               src2_data[i*16 +: 16];
+                               src1_data[i*16 +: 16];
       end
       for (genvar i = 0; i < VLEN/32; i++) begin : gen_sew32
-         assign src1_sew32[i] = src1_data[i*32 +: 32];
-         assign src2_sew32[i] = sel_is_vector_scalar ? 
+         assign src2_sew32[i] = src2_data[i*32 +: 32];
+         assign src1_sew32[i] = sel_is_vector_scalar ? 
                                (sel_idivop ? sel_rf_scalar[31:0] : sel_fprf_scalar[31:0]) : 
-                               src2_data[i*32 +: 32];
+                               src1_data[i*32 +: 32];
       end
       for (genvar i = 0; i < VLEN/64; i++) begin : gen_sew64
-         assign src1_sew64[i] = src1_data[i*64 +: 64];
-         assign src2_sew64[i] = sel_is_vector_scalar ? 
+         assign src2_sew64[i] = src2_data[i*64 +: 64];
+         assign src1_sew64[i] = sel_is_vector_scalar ? 
                                (sel_idivop ? sel_rf_scalar[63:0] : sel_fprf_scalar[63:0]) : 
-                               src2_data[i*64 +: 64];
+                               src1_data[i*64 +: 64];
       end
    endgenerate
 
