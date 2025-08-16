@@ -4210,7 +4210,7 @@ always_comb begin
 	    19'b1010111_100000_?_010_??  :  SrcB[1] = 1'b1;  // vdivu.vv - vs2 used
 	    19'b1010111_100000_?_110_??  :  SrcB[1] = 1'b1;  // vdivu.vx - vs2 used
 	    19'b1010111_100011_?_010_??  :  SrcB[1] = 1'b1;  // vrem.vv - vs2 used
-	    19'b1010111_100011_?_110??  :  SrcB[1] = 1'b1;  // vrem.vx - vs2 used
+	    19'b1010111_100011_?_110_??  :  SrcB[1] = 1'b1;  // vrem.vx - vs2 used
 	    19'b1010111_100010_?_010_??  :  SrcB[1] = 1'b1;  // vremu.vv - vs2 used
 	    19'b1010111_100010_?_110??  :  SrcB[1] = 1'b1;  // vremu.vx - vs2 used
 	    19'b1010111100000001???  :  SrcB[1] = 1'b1;  // vfdiv.vv - vs2 used
@@ -8108,7 +8108,7 @@ always_comb begin
 	    // vrem.vx  - funct7[6:1]=100011, funct3=100 (vm bit ignored)
 	    16'b1010111_100011_110  :  v_idivop[0] = 1'b1;
 	    // vremu.vx - funct7[6:1]=100011, funct3=100 (vm bit ignored)
-	    16'b1010111_100011_110  :  v_idivop[0] = 1'b1;
+	    16'b1010111_100010_110  :  v_idivop[0] = 1'b1;
 	    default : v_idivop[0] = 1'b0;
 	endcase
 end
