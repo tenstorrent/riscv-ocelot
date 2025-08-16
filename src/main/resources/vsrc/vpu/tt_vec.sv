@@ -998,6 +998,10 @@ module tt_vec #(parameter
        .i_src1          (src1_mux_0a[VLEN-1:0]),    // vs2 source (dividend)
        .i_src2          (src2_0a[VLEN-1:0]),        // vs1/scalar/imm source (divisor)
        .i_src3          (src3_0a[VLEN-1:0]),        // vd source (for masked ops)
+       
+       // Scalar register file inputs for .vx operations
+       .i_rf_scalar     (i_rf_vex_p0),              // Integer scalar (rs1) for integer .vx ops
+       .i_fprf_scalar   (i_fprf_vex_p0),            // FP scalar (rs1) for FP .vx ops
 
        // Vector control signals
        .i_vm0           (vm0_0a),

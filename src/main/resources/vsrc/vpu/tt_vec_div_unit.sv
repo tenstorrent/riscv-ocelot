@@ -49,6 +49,10 @@ module tt_vec_div_unit
    input  logic          [VLEN-1:0]       i_src2,      // vs1/scalar/imm source (divisor)
    input  logic          [VLEN-1:0]       i_src3,      // vd source (for masked ops)
    
+   // Scalar register file inputs for .vx operations
+   input  logic          [63:0]           i_rf_scalar,  // Integer scalar (rs1) for integer .vx ops  
+   input  logic          [63:0]           i_fprf_scalar, // FP scalar (rs1) for FP .vx ops
+   
    // Vector control signals
    input  logic          [VLEN-1:0]       i_vm0,       // mask register
    input  logic [1:0]                     i_sew,       // element width: 00=8b, 01=16b, 10=32b, 11=64b
@@ -181,25 +185,36 @@ module tt_vec_div_unit
    logic [VLEN-1:0] src1_data, src2_data;
    assign src1_data = (int_div_state != INT_IDLE) ? src1_flopped : i_src1;
    assign src2_data = (int_div_state != INT_IDLE) ? src2_flopped : i_src2;
+   logic [63:0] sel_rf_scalar, sel_fprf_scalar;
+   logic sel_is_vector_scalar, sel_idivop;
    
    // Generate input data slicing for all SEW values
-   // For .vx operations, src2 is a scalar that gets broadcast to all elements
+   // For .vx operations, src2 is a scalar from the appropriate register file
+   // Use selected signals to ensure consistency during multi-cycle operations
    generate
       for (genvar i = 0; i < VLEN/8; i++) begin : gen_sew8
          assign src1_sew8[i] = src1_data[i*8 +: 8];
-         assign src2_sew8[i] = is_vector_scalar ? src2_data[7:0] : src2_data[i*8 +: 8];
+         assign src2_sew8[i] = sel_is_vector_scalar ? 
+                              (sel_idivop ? sel_rf_scalar[7:0] : sel_fprf_scalar[7:0]) : 
+                              src2_data[i*8 +: 8];
       end
       for (genvar i = 0; i < VLEN/16; i++) begin : gen_sew16
          assign src1_sew16[i] = src1_data[i*16 +: 16];
-         assign src2_sew16[i] = is_vector_scalar ? src2_data[15:0] : src2_data[i*16 +: 16];
+         assign src2_sew16[i] = sel_is_vector_scalar ? 
+                               (sel_idivop ? sel_rf_scalar[15:0] : sel_fprf_scalar[15:0]) : 
+                               src2_data[i*16 +: 16];
       end
       for (genvar i = 0; i < VLEN/32; i++) begin : gen_sew32
          assign src1_sew32[i] = src1_data[i*32 +: 32];
-         assign src2_sew32[i] = is_vector_scalar ? src2_data[31:0] : src2_data[i*32 +: 32];
+         assign src2_sew32[i] = sel_is_vector_scalar ? 
+                               (sel_idivop ? sel_rf_scalar[31:0] : sel_fprf_scalar[31:0]) : 
+                               src2_data[i*32 +: 32];
       end
       for (genvar i = 0; i < VLEN/64; i++) begin : gen_sew64
          assign src1_sew64[i] = src1_data[i*64 +: 64];
-         assign src2_sew64[i] = is_vector_scalar ? src2_data[63:0] : src2_data[i*64 +: 64];
+         assign src2_sew64[i] = sel_is_vector_scalar ? 
+                               (sel_idivop ? sel_rf_scalar[63:0] : sel_fprf_scalar[63:0]) : 
+                               src2_data[i*64 +: 64];
       end
    endgenerate
 
@@ -275,6 +290,9 @@ module tt_vec_div_unit
    logic [VLEN-1:0] stored_src3;
    logic stored_is_div_op, stored_is_rem_op, stored_is_signed_op;
    logic stored_context_valid;
+   // Scalar input context for .vx operations
+   logic [63:0] stored_rf_scalar, stored_fprf_scalar;
+   logic stored_is_vector_scalar, stored_idivop;
    
    // Integer division unit interface
    logic int_div_vld, int_div_ack, int_div_rts, int_div_rtr;
@@ -388,6 +406,11 @@ module tt_vec_div_unit
             stored_is_div_op <= is_div_op;
             stored_is_rem_op <= is_rem_op;
             stored_is_signed_op <= is_signed_op;
+            // Store scalar input context for .vx operations
+            stored_rf_scalar <= i_rf_scalar;
+            stored_fprf_scalar <= i_fprf_scalar;
+            stored_is_vector_scalar <= is_vector_scalar;
+            stored_idivop <= i_idivop;
             stored_context_valid <= 1'b1;
             int_element_idx <= '0;
          end
@@ -549,11 +572,17 @@ module tt_vec_div_unit
    logic [2:0] sel_lmul_cnt;
    logic [VLEN-1:0] sel_vm0;
    
-   assign use_stored_context = (int_div_state == INT_DONE);
+   assign use_stored_context = (int_div_state != INT_IDLE);
    assign sel_sew = use_stored_context ? stored_sew : i_sew;
    assign sel_vl = use_stored_context ? stored_vl : i_vl;
    assign sel_lmul_cnt = use_stored_context ? stored_lmul_cnt : i_lmul_cnt;
    assign sel_vm0 = use_stored_context ? stored_vm0 : i_vm0;
+   
+   // Scalar input selection for .vx operations (use stored context during multi-cycle ops)
+   assign sel_rf_scalar = use_stored_context ? stored_rf_scalar : i_rf_scalar;
+   assign sel_fprf_scalar = use_stored_context ? stored_fprf_scalar : i_fprf_scalar;
+   assign sel_is_vector_scalar = use_stored_context ? stored_is_vector_scalar : is_vector_scalar;
+   assign sel_idivop = use_stored_context ? stored_idivop : i_idivop;
    
    logic [2:0] log2_elements_per_reg; // log2(elements_per_reg) = log2(VLEN) - log2(SEW)
    assign log2_elements_per_reg = $clog2(VLEN) - (3 + sel_sew);
