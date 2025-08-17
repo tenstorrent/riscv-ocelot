@@ -1,22 +1,25 @@
 // See LICENSE.TT for license details.
-module tt_mask_fsm #(parameter VLEN = 256,
-                     parameter MASK_CREDITS = 2)
-                    (input  logic                      i_clk,
-                     input  logic                      i_reset_n,
-                     input  logic                      i_is_masked_memop,
-                     input  logic                      i_is_indexed,
-                     input  logic [VLEN-1:0]           i_mask_data,
-                     input  logic [VLEN-1:0]           i_index_data,
-                     input  logic                      i_index_data_valid,
-                     input  logic                      i_last_index,
-                     input  logic                      i_memop_sync_start_next,
-                     input  logic [$clog2(VLEN+1)-1:0] i_vl,
-                     input  logic [1:0]                i_eew,
-                     input  logic                      i_mask_idx_credit,
-                     output logic                      o_draining_mask_idx,
-                     output logic [64:0]               o_mask_idx_item,
-                     output logic                      o_mask_idx_valid,
-                     output logic                      o_mask_idx_last_idx);
+module tt_mask_fsm #(
+  parameter VLEN = 256,
+  parameter MASK_CREDITS = 2
+) (
+  input  logic                      i_clk,
+  input  logic                      i_reset_n,
+  input  logic                      i_is_masked_memop,
+  input  logic                      i_is_indexed,
+  input  logic [VLEN-1:0]           i_mask_data,
+  input  logic [VLEN-1:0]           i_index_data,
+  input  logic                      i_index_data_valid,
+  input  logic                      i_last_index,
+  input  logic                      i_memop_sync_start_next,
+  input  logic [$clog2(VLEN+1)-1:0] i_vl,
+  input  logic [1:0]                i_eew,
+  input  logic                      i_mask_idx_credit,
+  output logic                      o_draining_mask_idx,
+  output logic [64:0]               o_mask_idx_item,
+  output logic                      o_mask_idx_valid,
+  output logic                      o_mask_idx_last_idx
+);
 
   // ----- For masked memops -----
   // if strided, send 1, 2, 3 or 4 transactions based on vl,
@@ -24,10 +27,10 @@ module tt_mask_fsm #(parameter VLEN = 256,
 
   // FSM to drive the mask interface
   typedef enum logic [1:0] {
-  IDLE = 2'b00,
-  WAIT = 2'b01, // Wait for ID finish cracking
-  SEND = 2'b10, // Send mask packets
-  RSVD = 2'b11
+    IDLE = 2'b00,
+    WAIT = 2'b01, // Wait for ID finish cracking
+    SEND = 2'b10, // Send mask packets
+    RSVD = 2'b11
   } mask_state_t;
   mask_state_t mask_fsm_state;
   mask_state_t mask_fsm_next_state;

@@ -118,12 +118,14 @@ extends BoomModule with VecLSGenConstants {
   // val isStoreMask  = isMaskLS && isStore
   // val isLoadMask   = isMaskLS && isLoad
 
+  val seg_count = Mux(isSeg, instNf +& 1.U, 1.U(SEG_W.W))
+
   // ========= Good Stride Detector ========
 
   val strideIs0   = (isStride && (rs2_data === 0.U))
-  val strideIs1   = (isStride && ((rs2_data === (1.U << (instWidth + 0.U))) || (rs2_data.asSInt === (-(1.U << (instWidth + 0.U)).asSInt)))) || (isUnit) || (isWhole) || (isMaskLS)
-  val strideIs2   = (isStride && ((rs2_data === (1.U << (instWidth + 1.U))) || (rs2_data.asSInt === (-(1.U << (instWidth + 1.U)).asSInt))))
-  val strideIs4   = (isStride && ((rs2_data === (1.U << (instWidth + 2.U))) || (rs2_data.asSInt === (-(1.U << (instWidth + 2.U)).asSInt))))
+  val strideIs1   = (isStride && ((rs2_data === (seg_count << (instWidth + 0.U))) || (rs2_data.asSInt === (-(seg_count << (instWidth + 0.U)).asSInt)))) || (isUnit) || (isWhole) || (isMaskLS)
+  val strideIs2   = (isStride && ((rs2_data === (seg_count << (instWidth + 1.U))) || (rs2_data.asSInt === (-(seg_count << (instWidth + 1.U)).asSInt))))
+  val strideIs4   = (isStride && ((rs2_data === (seg_count << (instWidth + 2.U))) || (rs2_data.asSInt === (-(seg_count << (instWidth + 2.U)).asSInt))))
   val strideIsNeg = rs2_data(63)
 
   // ========= Whole Load/Store Decoder ========
@@ -191,10 +193,10 @@ extends BoomModule with VecLSGenConstants {
   
   // Stride detection and outputs (for both loads and stores)
   io.out.dec_info.is_good_stride := strideIs1 || strideIs2 || strideIs4
-  io.out.dec_info.stride_dir     := Mux((isWhole || isUnit), false.B, strideIsNeg)    // 0: positive, 1: negative (force positive for whole and unit)
+  io.out.dec_info.stride_dir     := Mux((isWhole || isUnit), false.B, strideIsNeg)        // 0: positive, 1: negative (force positive for whole and unit)
   io.out.dec_info.stride         := MuxLookup(Cat(isUnit, isWhole), rs2_data.asSInt, Seq( // need to force the stride value in case of unit stride (rs2 data isnt the right value)
-    Cat(true.B, false.B)  -> (1.U << instWidth).zext.asSInt, // (chisel tries to find the effective width then extend casuing in negative so force zero extend)
-    Cat(false.B, true.B)  -> (1.U << instWidth).zext.asSInt,
+    Cat(true.B, false.B)  -> (seg_count << instWidth).zext.asSInt,    // for unit stride, force the stride to be the seg*eew
+    Cat(false.B, true.B)  -> (1.U << instWidth).zext.asSInt, // (chisel tries to find the effective width then extend casuing in negative so force zero extend)
     Cat(false.B, false.B) -> rs2_data.asSInt                 // in other cases, when stride is required, use the rs2 field
   ))
   io.out.dec_info.is_unit_stride := strideIs1
@@ -208,7 +210,7 @@ extends BoomModule with VecLSGenConstants {
   
   // Segment outputs (for both loads and stores)
   io.out.dec_info.is_good_seg := !isSeg || (((instNf + 1.U) & instNf) === 0.U) // either not segmented (seg=1) or segment (seg=nf+1) is power of 2
-  io.out.dec_info.seg_count   := Mux(isSeg, instNf + 1.U, 1.U)
+  io.out.dec_info.seg_count   := seg_count
   
   // seg_enc: log2 of segment count
   io.out.dec_info.seg_enc := PriorityEncoder(io.out.dec_info.seg_count)

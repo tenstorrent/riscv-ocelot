@@ -204,6 +204,8 @@ module tt_fifo #(parameter DEPTH = 4)
   logic [2:0] ldb_alloc_sew;
   logic [2:0] ldb_alloc_lmul;
   logic [2:0] ldb_alloc_emul;
+  logic       ldb_alloc_is_seg;
+  logic [2:0] ldb_alloc_max_seg_field; // simply the nf (unless wholeLS)
 
   assign ldb_alloc_nf    =  ls_candidate.issue_inst[31:29];
   assign ldb_alloc_mop   =  ls_candidate.issue_inst[27:26];
@@ -216,6 +218,13 @@ module tt_fifo #(parameter DEPTH = 4)
   assign ldb_alloc_sew   =  ls_candidate.issue_vcsr[38:36];
   assign ldb_alloc_lmul  = {ls_candidate.issue_vcsr_lmulb2,
                             ls_candidate.issue_vcsr[35:34]};
+  
+  // Segmented load detection: not whole, not mask, and nf > 0
+  assign ldb_alloc_is_seg = !((ldb_alloc_mop == 2'b00) && (ldb_alloc_lumop == 5'b01000)) &&  // not whole
+                            !((ldb_alloc_mop == 2'b00) && (ldb_alloc_lumop == 5'b01011)) &&  // not mask
+                             (ldb_alloc_nf != 3'b000);                                       // nf > 0
+  assign ldb_alloc_max_seg_field = ldb_alloc_is_seg ? ldb_alloc_nf : 3'b000;
+
   always_comb begin
      // Indexed Load: emul = lmul
      if (ldb_alloc_mop inside {2'b01, 2'b11}) begin
@@ -241,15 +250,42 @@ module tt_fifo #(parameter DEPTH = 4)
      end
   end
 
+  // Allocation size calculation: EMUL * (1 << max_seg_field) for segmented loads
+  logic [3:0] ldb_alloc_base_size;
+
+  // Calculate base EMUL size first
   always_comb begin
      case (ldb_alloc_emul) inside
         // Fractional
-        3'b1??:  ldb_alloc_size = 4'h1;
-        3'b000:  ldb_alloc_size = 4'h1;
-        3'b001:  ldb_alloc_size = 4'h2;
-        3'b010:  ldb_alloc_size = 4'h4;
-        3'b011:  ldb_alloc_size = 4'h8;
-        default: ldb_alloc_size = 4'h0;
+        3'b1??:  ldb_alloc_base_size = 4'h1;
+        3'b000:  ldb_alloc_base_size = 4'h1;
+        3'b001:  ldb_alloc_base_size = 4'h2;
+        3'b010:  ldb_alloc_base_size = 4'h4;
+        3'b011:  ldb_alloc_base_size = 4'h8;
+        default: ldb_alloc_base_size = 4'h0;
+     endcase
+  end
+  
+  // Clean shift-based multiplier using separate shift wires
+  logic [3:0] ldb_sh0, ldb_sh1, ldb_sh2, ldb_sh3;
+
+  assign ldb_sh0 = ldb_alloc_base_size;        // base << 0 = base * 1
+  assign ldb_sh1 = ldb_alloc_base_size << 1;   // base << 1 = base * 2  
+  assign ldb_sh2 = ldb_alloc_base_size << 2;   // base << 2 = base * 4
+  assign ldb_sh3 = ldb_alloc_base_size << 3;   // base << 3 = base * 8
+  
+  // Select appropriate combination of shifts based on nf field (segment count = nf + 1)
+  always_comb begin
+     case (ldb_alloc_max_seg_field)
+        3'b000:  ldb_alloc_size = ldb_sh0;           // nf=0: 1 segment = sh0
+        3'b001:  ldb_alloc_size = ldb_sh1;           // nf=1: 2 segments = sh1  
+        3'b010:  ldb_alloc_size = ldb_sh0 + ldb_sh1; // nf=2: 3 segments = sh0 + sh1
+        3'b011:  ldb_alloc_size = ldb_sh2;           // nf=3: 4 segments = sh2
+        3'b100:  ldb_alloc_size = ldb_sh0 + ldb_sh2; // nf=4: 5 segments = sh0 + sh2
+        3'b101:  ldb_alloc_size = ldb_sh1 + ldb_sh2; // nf=5: 6 segments = sh1 + sh2
+        3'b110:  ldb_alloc_size = ldb_sh3 - ldb_sh0; // nf=6: 7 segments = sh3 - sh0 (8 - 1)
+        3'b111:  ldb_alloc_size = ldb_sh3;           // nf=7: 8 segments = sh3
+        default: ldb_alloc_size = 4'h0;              // Should never happen
      endcase
   end
   assign ldb_alloc_sb_id  = ls_candidate.issue_sb_id;

@@ -3,7 +3,7 @@
 // this module expects decode to send reg values as segment major
 // eg for EMUL=2, SEG=2, V_REG=2: v2, v3, v4, v5 (NOT v2, v4, v3, v5)
 module tt_store_buffer #(
-  parameter VLEN = 256,
+   parameter VLEN = 256,
   parameter CREDITS = 1
 ) (
   // clock and reset
@@ -166,7 +166,7 @@ module tt_store_buffer #(
         seg_id   <= '0;
       end
       // saturate increment group_id first (since decode does seg major)
-      else if (group_id != (4'b1 << enq_emul)) begin
+      else if (group_id != ((4'b1 << enq_emul) - 1'b1)) begin
         group_id <= group_id + 1'b1;
       end
       // carry over group_id into seg_id
@@ -185,12 +185,14 @@ module tt_store_buffer #(
   // ========= DEQ "FSM" (only matters for segment mode) =========
 
   logic [11:0] element_ctr; // element counter
-  logic        max_element_id;
-  logic        deq_vl_reached; // this is used to determine if the deq has reached vl
+  logic [11:0] max_element_id;
+  logic        deq_max_el_id_reached; // "constraint" used to determine if the deq has to move to next register
+  logic        deq_vl_reached;        // "constraint" used to determine if the deq has reached vl
 
-  assign max_element_id = ((VLEN/8) >> buffer[rd_ptr].eew) - 1'b1;
-  assign element_id     = element_ctr & ((1'b1 << ($clog2(VLEN/8)-buffer[rd_ptr].eew)) - 1'b1);
-  assign deq_vl_reached = (element_ctr >= buffer[rd_ptr].vl);
+  assign max_element_id        = ((VLEN/8) >> buffer[rd_ptr].eew) - 1'b1;
+  assign element_id            = element_ctr & ((1'b1 << ($clog2(VLEN/8)-buffer[rd_ptr].eew)) - 1'b1);
+  assign deq_max_el_id_reached = (element_id >= max_element_id);
+  assign deq_vl_reached        = (element_ctr >= (buffer[rd_ptr].vl - 1'b1));
 
   // update element_ctr during deq
   always_ff @(posedge clock) begin
@@ -199,19 +201,19 @@ module tt_store_buffer #(
       element_ctr <= '0;
     end
     // increment element_ctr
-    else if (deq_fire) begin
+    else if (deq_fire && deq_is_segment && !buffer[rd_ptr].last) begin
       // reset is on last (since need the value ready at next "first")
-      if (buffer[rd_ptr].last) begin
+      if (deq_vl_reached) begin
         element_ctr <= '0;
       end else begin
-        element_ctr <= element_ctr + 1;
+        element_ctr <= element_ctr + 1'b1;
       end
     end
   end
 
   // invalidate all these entries (since there are entries of other segments where vl was reached)
   logic [2:0] deq_ptrs       [7:0];
-  logic       deq_ptrs_valid [7:0];
+  logic       deq_ptrs_valid [7:0]; // pointers of "related" entries (same vec group for segment, immediate for vreg)
 
   always_comb begin
     for (int idx = 0; idx < 8; idx += 1) begin
@@ -230,11 +232,10 @@ module tt_store_buffer #(
   // ========= ENQ/DEQ CONTROL =========
 
   // read the comments below to understand these signals
-  logic enq_trigger, deq_buffer_free, deq_not_segment, deq_segment_vl_reached;
-  assign enq_trigger            = enq_fire;
-  assign deq_buffer_free        = (buffer[rd_ptr].valid && buffer[rd_ptr].dont_send && |buffer_size);
-  assign deq_not_segment        = (deq_fire && !deq_is_segment);
-  assign deq_segment_vl_reached = (deq_fire && deq_is_segment && deq_vl_reached);
+  logic enq_trigger, deq_buffer_free, deq_trigger;
+  assign enq_trigger     = enq_fire;
+  assign deq_buffer_free = (buffer[rd_ptr].valid && buffer[rd_ptr].dont_send);
+  assign deq_trigger     = (deq_fire) && (!deq_is_segment || (deq_max_el_id_reached || deq_vl_reached));
 
   // --- buffer ---
 
@@ -264,20 +265,10 @@ module tt_store_buffer #(
       // deq case1 (free invalid buffer)
       if (deq_buffer_free) begin
         buffer[rd_ptr] <= '0; // valid = 0
-        rd_ptr         <= rd_ptr + 1;
+        rd_ptr <= rd_ptr + 1'b1;
       end
-      // deq case2 (not segment: simply advance)
-      else if (deq_not_segment) begin
-        for (int idx = 0; idx < 8; idx += 1) begin
-          if (deq_ptrs_valid[idx]) begin
-            buffer[deq_ptrs[idx]].dont_send <= 1'b1;
-          end
-        end
-        buffer[rd_ptr] <= '0; // valid = 0
-        rd_ptr <= rd_ptr + 1;
-      end
-      // deq case3 (segment: invalidate all entries where vl was reached)
-      else if (deq_segment_vl_reached) begin
+      // deq case2 (free buffer and invalidate unrequired entries)
+      else if (deq_trigger) begin
         for (int idx = 0; idx < 8; idx += 1) begin
           if (deq_ptrs_valid[idx]) begin
             buffer[deq_ptrs[idx]].dont_send <= 1'b1;
@@ -295,10 +286,10 @@ module tt_store_buffer #(
     if (!reset_n) begin
       buffer_size <= '0;
     end else begin
-      if (enq_trigger && !(deq_buffer_free || deq_not_segment || deq_segment_vl_reached)) begin
+      if (enq_trigger && !(deq_buffer_free || deq_trigger)) begin
         buffer_size <= buffer_size + 1'b1;
       end
-      else if (!enq_trigger && (deq_buffer_free || deq_not_segment || deq_segment_vl_reached)) begin
+      else if (!enq_trigger && (deq_buffer_free || deq_trigger)) begin
         buffer_size <= buffer_size - 1'b1;
       end
     end
@@ -393,7 +384,7 @@ module store_element_packer #(
     packed_data = '0;
     // mux bytes of data from the buffer into the packed data
     for (int seg = 0; seg < 8; seg++) begin
-      idx = 9'({seg[2:0], 3'h0}) << eew;
+      idx = 9'({seg[2:0], 3'h0} << eew[1:0]);
       case (eew)
         3'h0: begin // 8-bit elements
           packed_data[idx +: 8]  = buffer_data[segment_ptrs[seg]][element_bit_offset +: 8];

@@ -84,7 +84,7 @@ class VecDataBuffer(val R_WIDTH: Int, val W_WIDTH: Int, val DEPTH: Int) extends 
 
   io.credit := deq_fire
 
-  when (shift_fire) {
+  when (shift_fire || deq_fire) {
     buffer(rd_ptr) := buffer(rd_ptr) >> (io.data_out.read_bytes << 3.U)
     when (!deq_fire) {
       rd_idx := rd_idx + io.data_out.read_bytes

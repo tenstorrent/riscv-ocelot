@@ -77,7 +77,7 @@ extends Module with VecLSGenConstants {
     PriorityEncoder(current_mask_data),
     MASK_W.U - current_mask_off
   )
-  val vdb_constraint = io.vdb_data.valid_bytes >> eew_enc
+  val vdb_constraint = Mux(use_seg_constraint, 1.U, io.vdb_data.valid_bytes >> eew_enc) // you can only do 1 "read_all" at a time
   val vl_constraint  = vl - current_ctr
 
   // skip_val is the biggest power of 2 value smaller than the smallest of skipping constraints
@@ -135,7 +135,7 @@ extends Module with VecLSGenConstants {
   io.store_packet.valid  := ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid) && (vdb_valid))
   val vdb_ready           = ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid) && (io.store_packet.ready))
   io.vdb_data.read_bytes := Mux(vdb_ready, Mux(skippable, (seg_count << (skip_enc + eew_enc)), (1.U << (seg_inc_enc + eew_enc))), 0.U)
-  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.SKIPPING) && (vl_constraint_met || max_ctr_met || (max_seg_id_met && use_seg_constraint)), false.B) // last packet
+  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.SKIPPING) && (Mux(skippable, (vdb_constraint_met || vl_constraint_met), max_ctr_met || (max_seg_id_met && use_seg_constraint))), false.B) // last packet
   io.gen_active          := (state === State.SKIPPING)
 
   val addr_off = (current_seg_id << eew_enc).asSInt
