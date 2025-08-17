@@ -141,12 +141,12 @@ extends Module with VecLSGenConstants {
   val addr_off = (current_seg_id << eew_enc).asSInt
   
   // store packet
-  io.store_packet.bits.addr     := (current_addr.asSInt + Mux(stride_dir, -addr_off, addr_off)).asUInt
+  io.store_packet.bits.addr     := (current_addr.asSInt + addr_off).asUInt
   io.store_packet.bits.data     := io.vdb_data.data
   io.store_packet.bits.mem_size := Mux(skippable, 0.U, (seg_inc_enc + eew_enc))
   io.store_packet.bits.sb_id    := sb_id
   io.store_packet.bits.is_fake  := (seg_inc_val === 0.U) || (is_mask && skippable)
-  io.store_packet.bits.misaligned := false.B
+  io.store_packet.bits.misaligned := ((current_addr & ((1.U << eew_enc) - 1.U)) =/= 0.U)
   io.store_packet.bits.last     := (state === State.SKIPPING) && (vl_constraint_met || max_ctr_met)
   io.store_packet.bits.uop      := io.start.bits.uop
 
@@ -170,7 +170,7 @@ extends Module with VecLSGenConstants {
         // -- Init mem alignment --
         val high_off = (((1<<(ADDR_BREAK))-1).U - base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
         val low_off  = (base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from start of DMEM (low) to base_addr
-        dmem_off := Mux(stride_dir, high_off, low_off)
+        dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
         dmem_max := (DMEM_BYTES.U >> eew_enc)
       }
     }
@@ -211,7 +211,9 @@ extends Module with VecLSGenConstants {
         // -- DMEM offset increment --
         // recalc dmem_off for new element
         when (max_seg_id_met || skippable) {
-          dmem_off := (next_addr(DMEM_ENC-2, 0)) >> eew_enc
+          val high_off = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
+          val low_off  = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from start of DMEM (low) to next_addr
+          dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
         // wrap inc dmem_off
         }.elsewhen(dmem_constraint_met) {
           dmem_off := 0.U

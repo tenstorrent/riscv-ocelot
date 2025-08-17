@@ -287,4 +287,8 @@ extends Module with VecLSGenConstants {
     }
   }
 
+  when (io.store_packet.fire) {
+    assert(!io.store_packet.bits.misaligned, "StoreGen: misaligned store at addr = %x\n", io.store_packet.bits.addr)
+  }
+
 }

@@ -73,6 +73,7 @@ extends Module with VecLSGenConstants {
   val walkable   = !(config_info.is_mask && !config_info.is_index)
 
   // to force and not pack across segments to reduce hardware complexity (ckicken bit)
+  // this will also make segments pack in a positive unit stride manner
   val use_seg_constraint = (config_info.seg_count > 1.U)
 
   // ======== Load Generators ========
@@ -94,6 +95,7 @@ extends Module with VecLSGenConstants {
   val skipper = Module(new LoadSkipper(VLEN, DMEM_WIDTH))
   // start config
   skipper.io.start.bits  := config_info
+  skipper.io.use_seg_constraint := use_seg_constraint
   // mask config
   skipper.io.mask.valid     := io.mask_idx.valid
   skipper.io.mask.mask_data := io.mask_idx.data(MASK_W-1, 0) // data only
@@ -106,6 +108,7 @@ extends Module with VecLSGenConstants {
   val walker = Module(new LoadWalker(VLEN, DMEM_WIDTH))
   // start config
   walker.io.start.bits  := config_info
+  walker.io.use_seg_constraint := use_seg_constraint
   // index config
   walker.io.index.valid       := io.mask_idx.valid
   walker.io.index.index_value := io.mask_idx.data(MASK_W-1, 0).asSInt // idx val
@@ -281,6 +284,10 @@ extends Module with VecLSGenConstants {
       assert(skipper.io.gen_active === false.B, "skipper should not be active in WALKING")
       assert(walker.io.gen_active === true.B, "walker should be active in WALKING")
     }
+  }
+
+  when (io.load_packet.fire) {
+    assert(!io.load_packet.bits.misaligned, "LoadGen: misaligned load at addr = %x\n", io.load_packet.bits.addr)
   }
 
 }

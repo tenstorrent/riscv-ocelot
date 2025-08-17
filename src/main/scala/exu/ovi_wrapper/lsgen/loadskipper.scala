@@ -29,6 +29,7 @@ extends Module with VecLSGenConstants {
   val io = IO(new Bundle {
     // config signals
     val start = Flipped(DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH))) // expects latched config info (DO NOT CHANGE DURING FSM)
+    val use_seg_constraint = Input(Bool())
     // mask interface (for masked loads)
     val mask = new Bundle {
       val ready = Output(Bool())
@@ -73,7 +74,8 @@ extends Module with VecLSGenConstants {
   val seg_count  = io.start.bits.seg_count
   val is_mask    = io.start.bits.is_mask
   val base_addr  = io.start.bits.base_addr
-
+  val use_seg_constraint = io.use_seg_constraint
+  
   // ======== Walking state ========
 
   val current_seg_id   = RegInit(0.U(SEG_W.W))                 // current segment index
@@ -152,9 +154,9 @@ extends Module with VecLSGenConstants {
   io.gen_active        := (state === State.SKIPPING)
 
   val addr_off = (current_seg_id << eew_enc).asSInt
-  
+
   // packet info
-  io.load_packet.bits.addr     := (current_addr.asSInt + Mux(stride_dir, -addr_off, addr_off)).asUInt
+  io.load_packet.bits.addr     := (current_addr.asSInt + addr_off).asUInt
   io.load_packet.bits.v_reg    := base_v_reg + (current_seg_id << emul_enc) + current_v_group_id
   io.load_packet.bits.el_id    := current_el_id
   io.load_packet.bits.el_off   := dmem_off
@@ -166,7 +168,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.misaligned := ((current_addr & ((1.U << eew_enc) - 1.U)) =/= 0.U)
   io.load_packet.bits.last     := (state === State.SKIPPING) && (vl_constraint_met || max_ctr_met)
   io.load_packet.bits.uop      := io.start.bits.uop
-  io.load_packet.bits.dir      := stride_dir
+  io.load_packet.bits.dir      := stride_dir && !use_seg_constraint
 
   // ======== State Machine ========
 
@@ -188,7 +190,7 @@ extends Module with VecLSGenConstants {
         // -- Initialize DMEM info --
         val high_off = (((1<<(ADDR_BREAK))-1).U - base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
         val low_off  = (base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from start of DMEM (low) to base_addr
-        dmem_off := Mux(stride_dir, high_off, low_off)
+        dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
         dmem_max := (DMEM_BYTES.U >> eew_enc)
       }
     }
@@ -238,7 +240,9 @@ extends Module with VecLSGenConstants {
         // -- DMEM offset increment --
         // recalc dmem_off for new element
         when (max_seg_id_met || skippable) {
-          dmem_off := (next_addr(DMEM_ENC-2, 0)) >> eew_enc
+          val high_off = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
+          val low_off  = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from start of DMEM (low) to next_addr
+          dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
         // wrap inc dmem_off
         }.elsewhen(dmem_constraint_met) {
           dmem_off := 0.U

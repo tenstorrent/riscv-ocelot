@@ -245,21 +245,15 @@ extends Module with VecLSGenConstants {
     }
   }
 
-  // some math to figure out how many elements to load (comments below this file for explanation)
-  // val inc_past_off = ctr_inc_val - el_off
-  // val el_count = PriorityMux(Seq(
-  //   (ctr_inc_val <= el_off)
-  //     -> (0.U),
-  //   (split_ctr(inc_past_off).stride_id =/= 0.U)
-  //     -> (((inc_past_off & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width) + (1.U << seg_mask_width)),
-  //   (split_ctr(inc_past_off).stride_id === 0.U)
-  //     -> (((inc_past_off & ~((1.U << el_mask_off) - 1.U)) >> stride_mask_width) | split_ctr(inc_past_off).seg_id)
-  // ))
 
-  val addr_off = (EEW_CTR << eew_enc).asSInt
+  val addr_off = (Mux(
+    stride_dir,
+    (-(EEW_CTR & ~((1.U<<seg_mask_width)-1.U)) + split_ctr(EEW_CTR).seg_id) << eew_enc, // negate everything except the seg_id
+    (EEW_CTR) << eew_enc
+  )).asSInt
 
   // packet info
-  io.load_packet.bits.addr   := (base_addr.asSInt + Mux(stride_dir, -addr_off, addr_off)).asUInt // base + (EEW_CTR * EEW)
+  io.load_packet.bits.addr   := (base_addr.asSInt + addr_off).asUInt // base + (EEW_CTR * EEW)
   io.load_packet.bits.v_reg  := base_v_reg + (split_ctr(ctr_past_off).seg_id << emul_enc) + split_ctr(ctr_past_off).v_group_id // base + [(seg_id * total_groups) + group_id]
   io.load_packet.bits.el_id  := split_ctr(ctr_past_off).el_id
   io.load_packet.bits.el_off := el_off + dmem_off // offset to valid strided element + offset to align dmem (remember this exists since address is forcefully aligned later)
@@ -271,7 +265,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.misaligned := ((base_addr & ((1.U << eew_enc) - 1.U)) =/= 0.U)
   io.load_packet.bits.last   := (state === State.PACKING) && (vl_constraint_met)
   io.load_packet.bits.uop    := io.start.bits.uop
-  io.load_packet.bits.dir    := stride_dir
+  io.load_packet.bits.dir    := stride_dir && !use_seg_constraint
 
   // ======== State Machine ========
 
@@ -289,7 +283,7 @@ extends Module with VecLSGenConstants {
         // -- Initialize mem alignment info --
         val high_off = (((1<<(ADDR_BREAK))-1).U - base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
         val low_off  = (base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from start of DMEM (low) to base_addr
-        dmem_off := Mux(stride_dir, high_off, low_off)
+        dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
         dmem_max := (DMEM_BYTES.U >> eew_enc)
       }
     }

@@ -297,6 +297,10 @@ module tt_scoreboard_ovi(
     if(issue_is_unit_stride)
       issue_load_stride_eew = 0;
 
+    // the segments always increment by 1 so trick the lrm
+    else if (issue_is_seg)
+      issue_load_stride_eew = 0;
+
     else if((issue_data_size == 0 && issue_load_stride == 64'd1) ||
             (issue_data_size == 1 && issue_load_stride == 64'd2) || 
             (issue_data_size == 2 && issue_load_stride == 64'd4) || 
