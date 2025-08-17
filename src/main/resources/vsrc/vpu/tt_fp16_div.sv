@@ -27,7 +27,7 @@ module tt_fp16_div (
     localparam SIG_WIDTH = 11;  // 10 + 1 implicit bit
     
     // Convert IEEE FP16 to recoded format
-    logic [15:0] a_recoded, b_recoded;  // 16 bits for recoded FP16
+    logic [16:0] a_recoded, b_recoded;  // 17 bits for recoded FP16
     
     fNToRecFN #(
         .expWidth(EXP_WIDTH),
@@ -48,7 +48,7 @@ module tt_fp16_div (
     // HardFloat division unit (recoded format)
     logic div_outValid;
     logic div_sqrtOpOut;
-    logic [15:0] div_result_recoded;
+    logic [16:0] div_result_recoded;
     logic [4:0] div_exceptionFlags;
     
     divSqrtRecFN_small #(
