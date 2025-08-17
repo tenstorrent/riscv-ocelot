@@ -103,6 +103,7 @@ extends Module with VecLSGenConstants {
   val vdb_constraint_met  = (ctr_inc_val === vdb_constraint)
   val vl_constraint_met   = (ctr_inc_val === vl_constraint)
   val seg_constraint_met  = (ctr_inc_val === seg_constraint) && use_seg_constraint
+  val max_dmem_off_met    = ((dmem_off + ctr_inc_val) === dmem_max)
 
   // ======== Outputs ========
 
@@ -156,7 +157,7 @@ extends Module with VecLSGenConstants {
         EEW_CTR := EEW_CTR + ctr_inc_val
 
         // -- Wrap increment dmem_off --
-        when (dmem_constraint_met) {
+        when (max_dmem_off_met) {
           dmem_off := 0.U
         }.otherwise {
           dmem_off := dmem_off + ctr_inc_val

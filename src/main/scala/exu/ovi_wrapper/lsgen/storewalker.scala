@@ -103,10 +103,11 @@ extends Module with VecLSGenConstants {
 
   // ======== Max Constraints ========
 
-  val max_seg_id_met  = (seg_inc_val === packing_constraint)
-  val max_el_id_met   = (current_el_id === ((VLEN_BYTES.U >> eew_enc) - 1.U))
-  val max_v_group_met = (current_v_group_id === ((1.U << emul_enc) - 1.U))
-  val max_ctr_met     = ((current_ctr === (vl - 1.U)) || (is_index && current_last_index)) && max_seg_id_met // last ever packet
+  val max_seg_id_met   = (seg_inc_val === packing_constraint)
+  val max_el_id_met    = (current_el_id === ((VLEN_BYTES.U >> eew_enc) - 1.U))
+  val max_v_group_met  = (current_v_group_id === ((1.U << emul_enc) - 1.U))
+  val max_ctr_met      = ((current_ctr === (vl - 1.U)) || (is_index && current_last_index)) && max_seg_id_met // last ever packet
+  val max_dmem_off_met = ((dmem_off + seg_inc_val) === dmem_max)
 
   // ======== Outputs ========
 
@@ -208,7 +209,7 @@ extends Module with VecLSGenConstants {
           val low_off   = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc
           dmem_off := Mux(next_direction && !use_seg_constraint, high_off, low_off)
         // wrap inc dmem_off
-        }.elsewhen(dmem_constraint_met) {
+        }.elsewhen(max_dmem_off_met) {
           dmem_off := 0.U
         // inc dmem_off for next segment
         }.otherwise{

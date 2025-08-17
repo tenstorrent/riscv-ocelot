@@ -116,12 +116,13 @@ extends Module with VecLSGenConstants {
 
   // ======== Max Constraints ========
 
-  val max_seg_id_met  = (seg_inc_val === packing_constraint)
-  val max_el_id_met   = (current_el_id === ((VLEN_BYTES.U >> eew_enc) - 1.U))
-  val max_v_group_met = (current_v_group_id === ((1.U << emul_enc) - 1.U))
-  val max_ctr_met     = (current_ctr === (vl - 1.U)) && max_seg_id_met // last ever packet
-  val next_mask_off   = current_mask_off + Mux(skippable, skip_val, Mux(max_seg_id_met, 1.U, 0.U))
-  val max_mask_met    = (next_mask_off === MASK_W.U)
+  val max_seg_id_met   = (seg_inc_val === packing_constraint)
+  val max_el_id_met    = (current_el_id === ((VLEN_BYTES.U >> eew_enc) - 1.U))
+  val max_v_group_met  = (current_v_group_id === ((1.U << emul_enc) - 1.U))
+  val max_ctr_met      = (current_ctr === (vl - 1.U)) && max_seg_id_met // last ever packet
+  val next_mask_off    = current_mask_off + Mux(skippable, skip_val, Mux(max_seg_id_met, 1.U, 0.U))
+  val max_mask_met     = (next_mask_off === MASK_W.U)
+  val max_dmem_off_met = ((dmem_off + seg_inc_val) === dmem_max)
 
 
   // ======== Outputs ========
@@ -215,7 +216,7 @@ extends Module with VecLSGenConstants {
           val low_off  = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from start of DMEM (low) to next_addr
           dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
         // wrap inc dmem_off
-        }.elsewhen(dmem_constraint_met) {
+        }.elsewhen(max_dmem_off_met) {
           dmem_off := 0.U
         // inc dmem_off for next segment
         }.otherwise{
