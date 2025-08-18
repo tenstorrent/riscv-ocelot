@@ -1160,7 +1160,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     
     // Control signals (same as store FSM)
     .enq_ready(store_buffer_ready),
-    .enq_valid(id_ex_units_rts && ex_id_rtr && !id_mem_lqinfo.squash_vec_wr_flag && vecldst_autogen_store),
+    .enq_valid(id_ex_units_rts && !id_mem_lqinfo.squash_vec_wr_flag && vecldst_autogen_store),
     .enq_first(id_ex_vecldst_autogen.ldst_iter_cnt == 0),
     .enq_last(id_ex_last),
     
@@ -1180,7 +1180,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
 
   assign store_valid_nxt = store_buffer_valid;
   assign store_data_nxt  = store_buffer_data;
-  assign store_fsm_stall = !store_buffer_ready && (id_ex_units_rts && ex_id_rtr && !id_mem_lqinfo.squash_vec_wr_flag && vecldst_autogen_store);
+  assign store_fsm_stall = !store_buffer_ready && (id_ex_units_rts && !id_mem_lqinfo.squash_vec_wr_flag && vecldst_autogen_store);
 
   // ========= SHADOW CODE END =========
 
