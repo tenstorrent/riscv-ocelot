@@ -136,7 +136,7 @@ extends Module with VecLSGenConstants {
   io.store_packet.valid  := ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid) && (vdb_valid))
   val vdb_ready           = ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid) && (io.store_packet.ready))
   io.vdb_data.read_bytes := Mux(vdb_ready, Mux(skippable, (seg_count << (skip_enc + eew_enc)), (1.U << (seg_inc_enc + eew_enc))), 0.U)
-  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.SKIPPING) && (Mux(skippable, (vdb_constraint_met || vl_constraint_met), max_ctr_met || (max_seg_id_met && use_seg_constraint))), false.B) // last packet
+  io.vdb_data.read_all   := Mux(vdb_ready, (state === State.SKIPPING) && (Mux(skippable, (use_seg_constraint || vl_constraint_met), max_ctr_met || (max_seg_id_met && use_seg_constraint))), false.B) // last packet
   io.gen_active          := (state === State.SKIPPING)
 
   val addr_off = (current_seg_id << eew_enc).asSInt

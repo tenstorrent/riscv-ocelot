@@ -118,9 +118,9 @@ extends Module with VecLSGenConstants {
 
   val addr_off = (Mux(
     stride_dir,
-    (-(EEW_CTR & ~((1.U<<seg_mask_width)-1.U)) + (EEW_CTR & ((1.U<<seg_mask_width)-1.U))) << eew_enc, // negate everything except the seg_id
-    (EEW_CTR) << eew_enc
-  )).asSInt
+    -(((EEW_CTR & ~((1.U<<seg_mask_width)-1.U)) - (EEW_CTR & ((1.U<<seg_mask_width)-1.U))) << eew_enc).asSInt, // negate everything except the seg_id (have to double negate because of type issues)
+    ((EEW_CTR) << eew_enc).asSInt
+  ))
   
   // store packet
   io.store_packet.bits.addr     := (base_addr.asSInt + addr_off).asUInt
