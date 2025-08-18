@@ -106,7 +106,7 @@ module tt_vec_div_unit
       is_integer_op = i_idivop;
       is_fp_op = i_fdivop;
 //      is_vector_scalar = (i_funct3 == 3'b100) || (i_funct3 == 3'b101); // OPIVX or OPFVF
-      is_vector_scalar = (i_funct3 == 3'b110); // OPIVX or OPFVF
+      is_vector_scalar = (i_funct3 == 3'b110) || (i_funct3 == 3'b101); // OPIVX or OPFVF
       
       // Detailed operation decode based on funct7[6:1] (ignore vm bit)
       if (i_idivop) begin
