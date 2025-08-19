@@ -111,11 +111,6 @@ module tt_id #(
    input  logic [4:0]                       i_if_sb_id,
    output logic [4:0]                       o_id_sb_id,
 
-   input logic                              i_if_committable,
-   output logic                             o_id_committable,
-   input logic                              i_if_poisoned,
-   output logic                             o_id_poisoned,
-
    input tt_briscv_pkg::inst_state_e        i_if_state,
    output tt_briscv_pkg::inst_state_e       o_id_state
 );
@@ -367,12 +362,12 @@ if (INCL_VEC == 1) begin
       vecldst_autogen_replay <= '0;
     end
    else if (id_replay) begin			// Already in Replay mode
+     id_state_replay <= o_id_state; // state transition can not wait for stalls (update every cycle)
      if (id_rts & ~raw_hazard_stall) begin
 	// Repeate these - keep same value
         // instrn_id_replay <= instrn_id_replay;
         // id_ex_pc_replay <= id_ex_pc_replay;
         // id_replay_type <= id_replay_type;
-        id_state_replay <= o_id_state;
         vec_autogen_replay <= vec_autogen_incr;
         vecldst_autogen_replay <= vecldst_autogen_incr;
      end
