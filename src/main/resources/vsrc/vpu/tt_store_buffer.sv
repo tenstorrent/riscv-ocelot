@@ -36,6 +36,7 @@ module tt_store_buffer #(
   logic [2:0]   enq_emul;        // Decoded from instruction  
   logic [3:0]   enq_seg_count;   // Decoded from instruction
   logic [11:0]  enq_vl;          // Decoded/adjusted VL
+  logic [2:0]   enq_idx_mul;     // Decoded/adjusted idx_mul (this is to sequencially ignore widening index width from decode replay logic)
   logic [4:0]   enq_base_v_reg;  // Decoded base register (not required)
   
   store_buffer_dec #(
@@ -48,6 +49,7 @@ module tt_store_buffer #(
     .o_eew_enc(enq_eew),
     .o_emul_enc(enq_emul),
     .o_seg_count(enq_seg_count),
+    .o_idx_mul(enq_idx_mul),
     .o_vl(enq_vl),
     .o_base_v_reg(enq_base_v_reg)
   );
@@ -56,7 +58,7 @@ module tt_store_buffer #(
 
   typedef struct packed {
     logic            valid;
-    logic            dont_send;
+    logic            dont_send; // think of this like a poison bit (should not be considered for DEQ but should be present for order tracking)
     logic [4:0]      sb_id;
     logic [2:0]      eew;
     logic [2:0]      emul;
@@ -144,16 +146,19 @@ module tt_store_buffer #(
   // ========= ENQ "FSM" =========
 
   logic [3:0] vl_group_id; // the group_id with the last element
-  logic [3:0] group_id, seg_id;
+  logic [3:0] group_id, seg_id, idx_id;
   logic       enq_past_vl; // this is used to determine if the enq doesnt matter since we are past vl element
+  logic       ignore_idx_replay; // this is to avoid decoder replay for widening indexes
 
   assign vl_group_id = ((enq_vl - 12'h1) >> ($clog2(VLEN/8)-enq_eew));
   assign enq_past_vl = (group_id > vl_group_id) || (enq_vl == '0);
+  assign ignore_idx_replay = (idx_id != '0);
 
   // update group_id and seg_id during enq
   always_ff @(posedge clock) begin
     // reset
     if (!reset_n) begin
+      idx_id   <= '0;
       group_id <= '0;
       seg_id   <= '0;
     end
@@ -162,15 +167,22 @@ module tt_store_buffer #(
       // reset group_id and seg_id
       // reset at last since we need the register values during first element
       if (enq_last) begin
+        idx_id   <= '0;
         group_id <= '0;
         seg_id   <= '0;
       end
-      // saturate increment group_id first (since decode does seg major)
+      // saturate increment idx_id first (decode replays this part first if present)
+      else if (idx_id != ((4'b1 << enq_idx_mul) - 1'b1)) begin
+        idx_id <= idx_id + 1'b1;
+      end
+      // saturate increment group_id next (since decode does seg major)
       else if (group_id != ((4'b1 << enq_emul) - 1'b1)) begin
+        idx_id <= '0;
         group_id <= group_id + 1'b1;
       end
-      // carry over group_id into seg_id
+      // carry over group_id into seg_id finally
       else if (seg_id != (enq_seg_count - 1'b1)) begin
+        idx_id <= '0;
         group_id <= '0;
         seg_id   <= seg_id + 1'b1;
       end
@@ -233,7 +245,7 @@ module tt_store_buffer #(
 
   // read the comments below to understand these signals
   logic enq_trigger, deq_buffer_free, deq_trigger;
-  assign enq_trigger     = enq_fire;
+  assign enq_trigger     = (enq_fire) && (!ignore_idx_replay);
   assign deq_buffer_free = (buffer[rd_ptr].valid && buffer[rd_ptr].dont_send);
   assign deq_trigger     = (deq_fire) && (!deq_is_segment || (deq_max_el_id_reached || deq_vl_reached));
 
@@ -456,6 +468,7 @@ module store_buffer_dec #(
   output logic [2:0]             o_eew_enc,        // Encoded Effective Element Width
   output logic [2:0]             o_emul_enc,       // Encoded Effective LMUL
   output logic [3:0]             o_seg_count,      // Segment count (nf+1)
+  output logic [2:0]             o_idx_mul,        // Index width multiplier (for indexed stores)
   output logic [11:0]            o_vl,             // Vector Length (adjusted for mask)
   output logic [4:0]             o_base_v_reg      // Base vector register (vs3)
 );
@@ -561,6 +574,9 @@ module store_buffer_dec #(
   
   // Segment outputs (matching ls_decode.scala)
   assign o_seg_count = seg_count;
+
+  // idx_mul
+  assign o_idx_mul = isIndex && (instWidth > i_vtype_vsew) ? (instWidth - i_vtype_vsew) : 3'b000;
 
 endmodule
 

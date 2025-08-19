@@ -1145,10 +1145,10 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
   logic         store_valid_nxt;
   logic [511:0] store_data_nxt;
 
-  // ========= SHADOW CODE: Store Buffer (for testing/development) =========
+  // ========= Store Buffer =========
   
-  logic        store_buffer_ready;
-  logic        store_buffer_valid;
+  logic         store_buffer_ready;
+  logic         store_buffer_valid;
   logic [511:0] store_buffer_data;
   
   tt_store_buffer #(
@@ -1180,9 +1180,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
 
   assign store_valid_nxt = store_buffer_valid;
   assign store_data_nxt  = store_buffer_data;
-  assign store_fsm_stall = !store_buffer_ready && (id_ex_units_rts && !id_mem_lqinfo.squash_vec_wr_flag && vecldst_autogen_store);
-
-  // ========= SHADOW CODE END =========
+  assign store_fsm_stall = !store_buffer_ready; // cant add other inst properties like "is_store" since replay (which drives those qualities) is driven by the stall through rtr
 
 
   tt_mask_fsm #(
