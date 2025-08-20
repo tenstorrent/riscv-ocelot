@@ -87,6 +87,7 @@ module tt_vec_div_unit
    logic is_integer_op, is_fp_op, is_single_operand;
    logic is_div_op, is_rem_op, is_sqrt_op, is_sqrt7_op, is_rec_op;
    logic is_signed_op, is_vector_scalar;
+   logic is_reverse_div_op;
    
    // Decode operation type from high-level flags and instruction fields
    always_comb begin
@@ -101,7 +102,7 @@ module tt_vec_div_unit
       is_rec_op = 1'b0;
       is_signed_op = 1'b0;
       is_vector_scalar = 1'b0;
-      
+      is_reverse_div_op = 1'b0;
       // Use high-level operation flags for main categorization
       is_integer_op = i_idivop;
       is_fp_op = i_fdivop;
@@ -134,6 +135,10 @@ module tt_vec_div_unit
          case (i_funct7[6:1])
             6'b100000: begin // vfdiv
                is_div_op = 1'b1;
+            end
+            6'b100001: begin // vfrdiv
+               is_div_op = 1'b1;
+               is_reverse_div_op = 1'b1;
             end
             6'b010011: begin // vfsqrt, vfrsqrt7, vfrec7 (all share same funct7[6:1])
                if (i_vs1 == 5'b00000) begin // vs1=00000 for vfsqrt
@@ -296,6 +301,7 @@ module tt_vec_div_unit
    logic stored_is_vector_scalar, stored_idivop;
    // FP division context
    logic stored_is_fdiv_op;  // Tracks if operation is FP division
+   logic stored_is_reverse_div_op;  // Tracks if operation is reverse division
    
    // Integer division unit interface
    logic int_div_vld, int_div_ack, int_div_rts, int_div_rtr;
@@ -462,6 +468,7 @@ module tt_vec_div_unit
             stored_idivop <= i_idivop;
             // Store FP division context
             stored_is_fdiv_op <= is_fp_op && is_div_op;
+            stored_is_reverse_div_op <= is_reverse_div_op;
             stored_context_valid <= 1'b1;
             int_element_idx <= '0;
          end
@@ -592,13 +599,27 @@ module tt_vec_div_unit
          // Extract current element data based on SEW
          case (stored_sew)
             2'b01: begin // SEW=16 (FP16)
-               fp16_div_a = src2_sew16[int_element_idx];  // Dividend (vs2)
-               fp16_div_b = src1_sew16[int_element_idx];  // Divisor (vs1 or scalar)
+               if (stored_is_reverse_div_op) begin
+                  // Reverse division: vs1/scalar / vs2
+                  fp16_div_a = src1_sew16[int_element_idx];  // Dividend (vs1 or scalar)
+                  fp16_div_b = src2_sew16[int_element_idx];  // Divisor (vs2)
+               end else begin
+                  // Normal division: vs2 / vs1/scalar
+                  fp16_div_a = src2_sew16[int_element_idx];  // Dividend (vs2)
+                  fp16_div_b = src1_sew16[int_element_idx];  // Divisor (vs1 or scalar)
+               end
                fp16_div_vld = !fp16_div_rts;  // Start next operation when previous is done
             end
             2'b10: begin // SEW=32 (FP32)
-               fp32_div_a = src2_sew32[int_element_idx];  // Dividend (vs2)
-               fp32_div_b = src1_sew32[int_element_idx];  // Divisor (vs1 or scalar)
+               if (stored_is_reverse_div_op) begin
+                  // Reverse division: vs1/scalar / vs2
+                  fp32_div_a = src1_sew32[int_element_idx];  // Dividend (vs1 or scalar)
+                  fp32_div_b = src2_sew32[int_element_idx];  // Divisor (vs2)
+               end else begin
+                  // Normal division: vs2 / vs1/scalar
+                  fp32_div_a = src2_sew32[int_element_idx];  // Dividend (vs2)
+                  fp32_div_b = src1_sew32[int_element_idx];  // Divisor (vs1 or scalar)
+               end
                fp32_div_vld = !fp32_div_rts;  // Start next operation when previous is done
             end
          endcase
