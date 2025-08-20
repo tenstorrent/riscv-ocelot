@@ -1,5 +1,5 @@
 // See LICENSE.TT for license details.
-// 32-bit IEEE 754 Floating-Point Division Unit
+// 32-bit IEEE 754 Floating-Point Division/Square Root Unit  
 // Uses Berkeley HardFloat for internal computation
 
 module tt_fp32_div (
@@ -7,24 +7,30 @@ module tt_fp32_div (
     input  logic        i_reset_n,
     
     // Handshake interface
-    input  logic        i_vld,
+    input  logic        i_vld_div,  // Valid signal for division
+    input  logic        i_vld_sqrt, // Valid signal for square root
     output logic        o_ack,
     output logic        o_rts,
     input  logic        i_rtr,
     
     // Operands (IEEE FP32 format)
-    input  logic [31:0] i_a,        // Dividend (vs2)
-    input  logic [31:0] i_b,        // Divisor (vs1)
+    input  logic [31:0] i_a,        // Dividend/Radicand (vs2)
+    input  logic [31:0] i_b,        // Divisor (vs1, ignored for sqrt)  
     input  logic [2:0]  i_rm,       // Rounding mode
     
     // Results (IEEE FP32 format)
-    output logic [31:0] o_result,   // Division result
+    output logic [31:0] o_result,   // Division/Square root result
     output logic [4:0]  o_exc       // Exception flags
 );
 
     // HardFloat parameters for FP32
     localparam EXP_WIDTH = 8;
     localparam SIG_WIDTH = 24;  // 23 + 1 implicit bit
+    
+    // Operation control logic
+    logic i_vld_combined, sqrt_op;
+    assign i_vld_combined = i_vld_div | i_vld_sqrt;
+    assign sqrt_op = i_vld_sqrt;  // sqrt operation when i_vld_sqrt is active
     
     // Convert IEEE FP32 to recoded format
     logic [32:0] a_recoded, b_recoded;  // 33 bits for recoded FP32
@@ -62,8 +68,8 @@ module tt_fp32_div (
         
         // Input handshake
         .inReady(o_ack),
-        .inValid(i_vld),
-        .sqrtOp(1'b0),              // Division operation
+        .inValid(i_vld_combined),
+        .sqrtOp(sqrt_op),           // sqrt_op = 1 for sqrt, 0 for division
         .a(a_recoded),              // Dividend (recoded)
         .b(b_recoded),              // Divisor (recoded)
         .roundingMode(i_rm),

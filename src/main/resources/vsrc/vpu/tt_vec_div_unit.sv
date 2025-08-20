@@ -302,6 +302,7 @@ module tt_vec_div_unit
    // FP division context
    logic stored_is_fdiv_op;  // Tracks if operation is FP division
    logic stored_is_reverse_div_op;  // Tracks if operation is reverse division
+   logic stored_is_sqrt_op;  // Tracks if operation is square root
    
    // Integer division unit interface
    logic int_div_vld, int_div_ack, int_div_rts, int_div_rtr;
@@ -309,14 +310,14 @@ module tt_vec_div_unit
    logic [63:0] int_div_rs1, int_div_rs2;  // Max SEW=64
    logic [63:0] int_div_res;
 
-   // FP16 division unit interface
-   logic fp16_div_vld, fp16_div_ack, fp16_div_rts, fp16_div_rtr;
+   // FP16 division/sqrt unit interface
+   logic fp16_div_vld, fp16_sqrt_vld, fp16_div_ack, fp16_div_rts, fp16_div_rtr;
    logic [15:0] fp16_div_a, fp16_div_b;  // IEEE FP16 inputs
    logic [15:0] fp16_div_result;         // IEEE FP16 output
    logic [4:0] fp16_div_exc;             // Exception flags
 
-   // FP32 division unit interface  
-   logic fp32_div_vld, fp32_div_ack, fp32_div_rts, fp32_div_rtr;
+   // FP32 division/sqrt unit interface  
+   logic fp32_div_vld, fp32_sqrt_vld, fp32_div_ack, fp32_div_rts, fp32_div_rtr;
    logic [31:0] fp32_div_a, fp32_div_b;  // IEEE FP32 inputs
    logic [31:0] fp32_div_result;         // IEEE FP32 output
    logic [4:0] fp32_div_exc;             // Exception flags
@@ -350,11 +351,12 @@ module tt_vec_div_unit
       .o_res(int_div_res)
    );
 
-   // FP16 division unit instantiation
+   // FP16 division/sqrt unit instantiation
    tt_fp16_div fp16_div_unit (
       .i_clk(i_clk),
       .i_reset_n(i_reset_n),
-      .i_vld(fp16_div_vld),
+      .i_vld_div(fp16_div_vld),
+      .i_vld_sqrt(fp16_sqrt_vld),
       .o_ack(fp16_div_ack),
       .i_a(fp16_div_a),
       .i_b(fp16_div_b),
@@ -365,11 +367,12 @@ module tt_vec_div_unit
       .o_exc(fp16_div_exc)
    );
 
-   // FP32 division unit instantiation  
+   // FP32 division/sqrt unit instantiation  
    tt_fp32_div fp32_div_unit (
       .i_clk(i_clk),
       .i_reset_n(i_reset_n),
-      .i_vld(fp32_div_vld),
+      .i_vld_div(fp32_div_vld),
+      .i_vld_sqrt(fp32_sqrt_vld),
       .o_ack(fp32_div_ack),
       .i_a(fp32_div_a),
       .i_b(fp32_div_b),
@@ -469,13 +472,14 @@ module tt_vec_div_unit
             // Store FP division context
             stored_is_fdiv_op <= is_fp_op && is_div_op;
             stored_is_reverse_div_op <= is_reverse_div_op;
+            stored_is_sqrt_op <= is_sqrt_op;
             stored_context_valid <= 1'b1;
             int_element_idx <= '0;
          end
          
          // Update element index during processing
          if (int_div_state == INT_BUSY) begin
-            if ((int_div_ack && !stored_is_fdiv_op) || ((fp16_div_rts || fp32_div_rts) && stored_is_fdiv_op)) begin
+            if ((int_div_ack && !stored_is_fdiv_op && !stored_is_sqrt_op) || ((fp16_div_rts || fp32_div_rts) && (stored_is_fdiv_op || stored_is_sqrt_op))) begin
                int_element_idx <= int_element_idx + 1;
             end
          end
@@ -494,8 +498,8 @@ module tt_vec_div_unit
       
       case (int_div_state)
          INT_IDLE: begin
-            // Accept both integer and FP division operations
-            if (i_id_vdiv_ex0_rts && ((i_idivop && (is_div_op || is_rem_op)) || (i_fdivop && is_div_op))) begin
+            // Accept integer division/remainder, FP division, and FP sqrt operations
+            if (i_id_vdiv_ex0_rts && ((i_idivop && (is_div_op || is_rem_op)) || (i_fdivop && (is_div_op || is_sqrt_op)))) begin
                int_div_state_update = 1'b1;
                int_div_state_nxt = INT_BUSY;
             end
@@ -510,8 +514,8 @@ module tt_vec_div_unit
                end
                // Stay in INT_BUSY for next element
             end
-            // Handle FP division completion
-            else if ((fp16_div_rts || fp32_div_rts) && stored_is_fdiv_op) begin
+            // Handle FP division/sqrt completion
+            else if ((fp16_div_rts || fp32_div_rts) && (stored_is_fdiv_op || stored_is_sqrt_op)) begin
                int_div_state_update = 1'b1;
                if (int_operation_complete) begin
                   int_div_state_nxt = INT_DONE;
@@ -585,42 +589,56 @@ module tt_vec_div_unit
    // Always ready to accept results (blocking operation with dedicated writeback)
    assign int_div_rtr = 1'b1;
 
-   // FP division unit control and data preparation
+   // FP division/sqrt unit control and data preparation
    always_comb begin
       // Default values
       fp16_div_vld = 1'b0;
+      fp16_sqrt_vld = 1'b0;
       fp16_div_a = '0;
       fp16_div_b = '0;
       fp32_div_vld = 1'b0;
+      fp32_sqrt_vld = 1'b0;
       fp32_div_a = '0;
       fp32_div_b = '0;
       
-      if (int_div_state == INT_BUSY && stored_is_fdiv_op) begin
+      if (int_div_state == INT_BUSY && (stored_is_fdiv_op || stored_is_sqrt_op)) begin
          // Extract current element data based on SEW
          case (stored_sew)
             2'b01: begin // SEW=16 (FP16)
-               if (stored_is_reverse_div_op) begin
+               if (stored_is_sqrt_op) begin
+                  // Square root: sqrt(vs2)
+                  fp16_div_a = src2_sew16[int_element_idx];  // Radicand (vs2)
+                  fp16_div_b = '0;  // Not used for sqrt
+                  fp16_sqrt_vld = !fp16_div_rts;  // Start sqrt operation
+               end else if (stored_is_reverse_div_op) begin
                   // Reverse division: vs1/scalar / vs2
                   fp16_div_a = src1_sew16[int_element_idx];  // Dividend (vs1 or scalar)
                   fp16_div_b = src2_sew16[int_element_idx];  // Divisor (vs2)
+                  fp16_div_vld = !fp16_div_rts;  // Start div operation
                end else begin
                   // Normal division: vs2 / vs1/scalar
                   fp16_div_a = src2_sew16[int_element_idx];  // Dividend (vs2)
                   fp16_div_b = src1_sew16[int_element_idx];  // Divisor (vs1 or scalar)
+                  fp16_div_vld = !fp16_div_rts;  // Start div operation
                end
-               fp16_div_vld = !fp16_div_rts;  // Start next operation when previous is done
             end
             2'b10: begin // SEW=32 (FP32)
-               if (stored_is_reverse_div_op) begin
+               if (stored_is_sqrt_op) begin
+                  // Square root: sqrt(vs2)
+                  fp32_div_a = src2_sew32[int_element_idx];  // Radicand (vs2)
+                  fp32_div_b = '0;  // Not used for sqrt
+                  fp32_sqrt_vld = !fp32_div_rts;  // Start sqrt operation
+               end else if (stored_is_reverse_div_op) begin
                   // Reverse division: vs1/scalar / vs2
                   fp32_div_a = src1_sew32[int_element_idx];  // Dividend (vs1 or scalar)
                   fp32_div_b = src2_sew32[int_element_idx];  // Divisor (vs2)
+                  fp32_div_vld = !fp32_div_rts;  // Start div operation
                end else begin
                   // Normal division: vs2 / vs1/scalar
                   fp32_div_a = src2_sew32[int_element_idx];  // Dividend (vs2)
                   fp32_div_b = src1_sew32[int_element_idx];  // Divisor (vs1 or scalar)
+                  fp32_div_vld = !fp32_div_rts;  // Start div operation
                end
-               fp32_div_vld = !fp32_div_rts;  // Start next operation when previous is done
             end
          endcase
       end
@@ -694,9 +712,9 @@ module tt_vec_div_unit
       end else if (is_rec_op) begin
          compute_result = rec7_result;
          compute_exc = rec7_exc;
-      end else if (int_div_state == INT_DONE && stored_is_fdiv_op) begin
+      end else if (int_div_state == INT_DONE && (stored_is_fdiv_op || stored_is_sqrt_op)) begin
          compute_result = fp_div_result;
-         compute_exc = fp_div_exc;  // FP division exceptions
+         compute_exc = fp_div_exc;  // FP division/sqrt exceptions
       end else if (int_div_state == INT_DONE) begin
          compute_result = int_div_result;
          compute_exc = '0;  // Integer operations don't generate FP exceptions
