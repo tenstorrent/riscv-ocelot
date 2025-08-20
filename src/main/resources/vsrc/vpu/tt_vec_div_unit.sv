@@ -172,7 +172,7 @@ module tt_vec_div_unit
    
    // Flop input data when operation starts
    always_ff @(posedge i_clk) begin
-      if (i_id_vdiv_ex0_rts && (is_div_op || is_rem_op || is_sqrt7_op || is_rec_op)) begin
+      if (i_id_vdiv_ex0_rts && (is_div_op || is_rem_op || is_sqrt7_op || is_rec_op || is_sqrt_op)) begin
          src1_flopped <= i_src1;
          src2_flopped <= i_src2;
       end
@@ -689,12 +689,12 @@ module tt_vec_div_unit
             fp_div_exc <= '0;
          end
          // Update FP16 result when each division completes
-         else if (int_div_state == INT_BUSY && stored_is_fdiv_op && stored_sew == 2'b01 && fp16_div_rts && fp16_div_rtr) begin
+         else if (int_div_state == INT_BUSY && (stored_is_fdiv_op | stored_is_sqrt_op) && stored_sew == 2'b01 && fp16_div_rts && fp16_div_rtr) begin
             fp_div_result[int_element_idx*16 +: 16] <= fp16_div_result;
             fp_div_exc |= fp16_div_exc;  // Accumulate exceptions
          end
          // Update FP32 result when each division completes
-         else if (int_div_state == INT_BUSY && stored_is_fdiv_op && stored_sew == 2'b10 && fp32_div_rts && fp32_div_rtr) begin
+         else if (int_div_state == INT_BUSY && (stored_is_fdiv_op | stored_is_sqrt_op) && stored_sew == 2'b10 && fp32_div_rts && fp32_div_rtr) begin
             fp_div_result[int_element_idx*32 +: 32] <= fp32_div_result;
             fp_div_exc |= fp32_div_exc;  // Accumulate exceptions
          end
