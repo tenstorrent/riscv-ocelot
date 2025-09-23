@@ -32,7 +32,8 @@ trait VecLSGenConstants {
   val SEG_ENC_W    = 3
   val MASK_W       = 64
   val MASK_W_SIZE  = log2Ceil(MASK_W)
-  val EL_ID_W      = log2Ceil(VLEN/8) // should be 11 in OVI (add padding)
+  val EL_ID_W      = log2Ceil(VLEN/8)   // should be 11 in OVI (add padding)
+  val VSTART_W     = log2Ceil(8*VLEN/8) // should be 13 in OVI (add padding)
 }
 
 class ConfigInfo(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
@@ -40,6 +41,7 @@ extends Bundle with VecLSGenConstants {
   val sb_id      = UInt(5.W)
   val base_v_reg = UInt(5.W)
   val vl         = UInt(9.W)
+  val vstart     = UInt(VSTART_W.W)
   val eew_enc    = UInt(EEW_ENC_W.W)
   val emul_enc   = UInt(EMUL_ENC_W.W)
   val stride     = SInt(64.W)
@@ -84,11 +86,12 @@ extends BoomModule with VecLSGenConstants {
 
   // ========= Config and Register Values ========
 
-  val rs1_data    = io.in.req.req.rs1_data
-  val rs2_data    = io.in.req.req.rs2_data
-  val vtype_vl    = io.in.req.vconfig.vl
-  val vtype_vlmul = io.in.req.vconfig.vtype.vlmul_mag
-  val vtype_vsew  = io.in.req.vconfig.vtype.vsew
+  val rs1_data     = io.in.req.req.rs1_data
+  val rs2_data     = io.in.req.req.rs2_data
+  val vtype_vl     = io.in.req.vconfig.vl
+  val vtype_vstart = 0.U // io.in.req.vconfig.vstart <= doesnt exist
+  val vtype_vlmul  = io.in.req.vconfig.vtype.vlmul_mag
+  val vtype_vsew   = io.in.req.vconfig.vtype.vsew
 
   // ========= Instruction Fields ========
 
@@ -174,6 +177,8 @@ extends BoomModule with VecLSGenConstants {
     Cat(false.B, true.B)  -> ((vtype_vl + 7.U) >> 3),  // Mask: ceil(vl/8)
     Cat(false.B, false.B) -> vtype_vl        // Normal: vl CSR value
   ))
+
+  io.out.dec_info.vstart := vtype_vstart
   
   // eew_enc (Encoded Effective Element Width)
   io.out.dec_info.eew_enc := MuxLookup(Cat(isMaskLS, isIndex), instWidth, Seq(

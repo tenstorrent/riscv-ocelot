@@ -20,6 +20,7 @@ module tt_store_buffer #(
   input  logic [11:0]            enq_vtype_vl,     // from vconfig.vl CSR
   input  logic [2:0]             enq_vtype_vsew,   // from vconfig.vtype.vsew CSR  
   input  logic [2:0]             enq_vtype_vlmul,  // from vconfig.vtype.vlmul_mag CSR
+  input  logic [11:0]            enq_vstart,       // from vconfig.vstart CSR
   input  logic [VLEN-1:0]        enq_data,
 
   // To OVI (uses credit system)
@@ -38,7 +39,8 @@ module tt_store_buffer #(
   logic [11:0]  enq_vl;          // Decoded/adjusted VL
   logic [2:0]   enq_idx_mul;     // Decoded/adjusted idx_mul (this is to sequencially ignore widening index width from decode replay logic)
   logic [4:0]   enq_base_v_reg;  // Decoded base register (not required)
-  
+  logic [2:0]  enq_start_vgroup_id; // Decoded vstart group id
+
   store_buffer_dec #(
     .VLEN(VLEN)
   ) internal_decode (
@@ -46,11 +48,13 @@ module tt_store_buffer #(
     .i_vtype_vl(enq_vtype_vl),
     .i_vtype_vsew(enq_vtype_vsew), 
     .i_vtype_vlmul(enq_vtype_vlmul),
+    .i_vstart(enq_vstart),
     .o_eew_enc(enq_eew),
     .o_emul_enc(enq_emul),
     .o_seg_count(enq_seg_count),
     .o_idx_mul(enq_idx_mul),
     .o_vl(enq_vl),
+    .o_start_vgroup_id(enq_start_vgroup_id),
     .o_base_v_reg(enq_base_v_reg)
   );
 
@@ -152,7 +156,7 @@ module tt_store_buffer #(
 
   assign vl_group_id = ((enq_vl - 12'h1) >> ($clog2(VLEN/8)-enq_eew));
   assign enq_past_vl = (group_id > vl_group_id) || (enq_vl == '0);
-  assign ignore_idx_replay = (idx_id != '0);
+  assign ignore_idx_replay = (idx_id != '0) || (group_id < enq_start_vgroup_id);
 
   // update group_id and seg_id during enq
   always_ff @(posedge clock) begin
@@ -463,13 +467,15 @@ module store_buffer_dec #(
   input  logic [11:0]            i_vtype_vl,       // from vconfig.vl CSR
   input  logic [2:0]             i_vtype_vsew,     // from vconfig.vtype.vsew CSR  
   input  logic [2:0]             i_vtype_vlmul,    // from vconfig.vtype.vlmul_mag CSR
-  
+  input  logic [11:0]            i_vstart,         // from vconfig.vstart CSR
+
   // Decoded outputs (matching ls_decode.scala naming)
   output logic [2:0]             o_eew_enc,        // Encoded Effective Element Width
   output logic [2:0]             o_emul_enc,       // Encoded Effective LMUL
   output logic [3:0]             o_seg_count,      // Segment count (nf+1)
   output logic [2:0]             o_idx_mul,        // Index width multiplier (for indexed stores)
   output logic [11:0]            o_vl,             // Vector Length (adjusted for mask)
+  output logic [2:0]             o_start_vgroup_id,// Vstart group id
   output logic [4:0]             o_base_v_reg      // Base vector register (vs3)
 );
 
@@ -577,6 +583,16 @@ module store_buffer_dec #(
 
   // idx_mul
   assign o_idx_mul = isIndex && (instWidth > i_vtype_vsew) ? (instWidth - i_vtype_vsew) : 3'b000;
+
+  // start_vgroup_id
+  always_comb begin
+    case (o_eew_enc)
+      3'd0: o_start_vgroup_id = {'0, i_vstart[7:5]};
+      3'd1: o_start_vgroup_id = {'0, i_vstart[6:4]};
+      3'd2: o_start_vgroup_id = {'0, i_vstart[5:3]};
+      3'd3: o_start_vgroup_id = {'0, i_vstart[4:2]};
+    endcase
+  end
 
 endmodule
 

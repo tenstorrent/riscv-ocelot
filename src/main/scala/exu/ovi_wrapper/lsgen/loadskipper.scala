@@ -58,7 +58,7 @@ extends Module with VecLSGenConstants {
   // ======== Definitions ========
 
   object State extends ChiselEnum {
-    val IDLE, SKIPPING = Value
+    val IDLE, VSTART_HANDLING, SKIPPING = Value
   }
 
   // ======== Config info ========
@@ -67,6 +67,7 @@ extends Module with VecLSGenConstants {
   val sb_id      = io.start.bits.sb_id
   val base_v_reg = io.start.bits.base_v_reg
   val vl         = io.start.bits.vl
+  val vstart     = io.start.bits.vstart
   val eew_enc    = io.start.bits.eew_enc
   val emul_enc   = io.start.bits.emul_enc
   val stride     = io.start.bits.stride
@@ -151,7 +152,7 @@ extends Module with VecLSGenConstants {
   io.mask.ready        := ((state === State.SKIPPING) && need_next_mask && (io.load_packet.ready)) ||
                           ((state === State.IDLE)     && (is_mask && io.start.valid))
   io.load_packet.valid := ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid))
-  io.gen_active        := (state === State.SKIPPING)
+  io.gen_active        := (state === State.SKIPPING) || (state === State.VSTART_HANDLING)
 
   val addr_off = (current_seg_id << eew_enc).asSInt
 
@@ -170,20 +171,40 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.uop      := io.start.bits.uop
   io.load_packet.bits.dir      := stride_dir && !use_seg_constraint
 
+  // ======== Vstart Handling Constraints ========
+  // handling vstart for the skipper has to be done across multiple cycles
+  // since the address has to be shifted appropriately instead of multiplying
+
+  // split vstart into it's el_id and v_group_id components
+  val el_mask_width = (log2Ceil(VLEN_BYTES).U - eew_enc)
+  val vstart_el_id      = vstart & ((1.U << el_mask_width) - 1.U)
+  val vstart_v_group_id = vstart >> el_mask_width
+
+  // calculate jump to vstart
+  val vstart_dist     = (vstart - current_ctr) // distance to vstart
+  val vstart_last_inc = ((vstart_dist & (vstart_dist - 1.U)) === 0.U) // if the distance is 1-hot, then only 1 jump away from vstart
+  val vstart_skip_enc = PriorityEncoder(vstart_dist) // jump by power of 2
+
   // ======== State Machine ========
 
   switch(state) {
+    // IDLE STATE
     is(State.IDLE) {
       when(io.start.fire) {
+
         // -- state config --
-        state := State.SKIPPING
+        state := Mux(
+          vstart === 0.U,
+          State.SKIPPING,
+          State.VSTART_HANDLING
+        )
 
         // -- Initialize counters --
-        current_el_id   := 0.U
-        current_seg_id  := 0.U
-        current_v_group_id := 0.U
-        current_addr    := base_addr
-        current_ctr     := 0.U
+        current_el_id     := vstart_el_id
+        current_seg_id    := 0.U
+        current_v_group_id := vstart_v_group_id
+        current_addr      := base_addr
+        current_ctr       := 0.U
         current_mask_data := io.mask.mask_data
         current_mask_off  := 0.U
 
@@ -194,7 +215,31 @@ extends Module with VecLSGenConstants {
         dmem_max := (DMEM_BYTES.U >> eew_enc)
       }
     }
+    // VSTART HANDLING STATE
+    is(State.VSTART_HANDLING) {
+      when (io.kill) {
+        state := State.IDLE
+      }.otherwise {
 
+        // -- Next Address calculation --
+        val next_addr = (current_addr.asSInt + (stride << vstart_skip_enc)).asUInt
+
+        // -- Increment address and counter --
+        current_addr := next_addr
+        current_ctr  := current_ctr + (1.U << vstart_skip_enc)
+
+        // -- State transition --
+        when (vstart_last_inc) {
+          // next state
+          state := State.SKIPPING
+          // realign dmem offset to the new address
+          val high_off = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+          val low_off  = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+          dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
+        }
+      }
+    }
+    // SKIPPING STATE
     is(State.SKIPPING) {
       when (io.kill) {
         state := State.IDLE

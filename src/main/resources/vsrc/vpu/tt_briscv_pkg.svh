@@ -75,6 +75,7 @@ localparam ADDRWIDTH=40;
       logic [2:0] v_lmul;
       logic [1:0] v_vxrm;
       logic [$clog2(VLEN+1)-1:0] v_vl;
+      logic [$clog2(VLEN+1)-1:0] v_vstart;
       logic [2:0] frm;
    } csr_t;
 

@@ -42,7 +42,7 @@ extends Module with VecLSGenConstants {
   // ======== Definitions ========
 
   object State extends ChiselEnum {
-    val IDLE, SKIPPING = Value
+    val IDLE, VSTART_HANDLING, SKIPPING = Value
   }
 
   // ======== Config info ========
@@ -50,6 +50,7 @@ extends Module with VecLSGenConstants {
   val state      = RegInit(State.IDLE)
   val sb_id      = io.start.bits.sb_id
   val vl         = io.start.bits.vl
+  val vstart     = io.start.bits.vstart
   val eew_enc    = io.start.bits.eew_enc
   val emul_enc   = io.start.bits.emul_enc
   val stride     = io.start.bits.stride
@@ -124,6 +125,21 @@ extends Module with VecLSGenConstants {
   val max_mask_met     = (next_mask_off === MASK_W.U)
   val max_dmem_off_met = ((dmem_off + seg_inc_val) === dmem_max)
 
+  // ======== Vstart Handling Constraints ========
+  // vdb is always aligned to vreg, so readout of bytes below vstart happens in handling state
+  // shift address for vstart across multiple cycles
+  val vstart_readout_done_q = RegInit(false.B)
+  val vstart_addr_done_q    = RegInit(false.B)
+
+  // split vstart into it's el_id and v_group_id components
+  val el_mask_width = (log2Ceil(VLEN_BYTES).U - eew_enc)
+  val vstart_el_id      = vstart & ((1.U << el_mask_width) - 1.U)
+  val vstart_v_group_id = vstart >> el_mask_width
+
+  // calculate jump to vstart
+  val vstart_dist     = (vstart - current_ctr) // distance to vstart
+  val vstart_last_inc = ((vstart_dist & (vstart_dist - 1.U)) === 0.U) // if the distance is 1-hot, then only 1 jump away from vstart
+  val vstart_skip_enc = PriorityEncoder(vstart_dist) // jump by power of 2
 
   // ======== Outputs ========
 
@@ -134,10 +150,13 @@ extends Module with VecLSGenConstants {
   io.mask.ready          := ((state === State.SKIPPING) && need_next_mask && (io.store_packet.ready) && (vdb_valid)) ||
                             ((state === State.IDLE)     && (is_mask && io.start.valid))
   io.store_packet.valid  := ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid) && (vdb_valid))
-  val vdb_ready           = ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid) && (io.store_packet.ready))
-  io.vdb_data.read_bytes := Mux(vdb_ready, Mux(skippable, (seg_count << (skip_enc + eew_enc)), (1.U << (seg_inc_enc + eew_enc))), 0.U)
+  val vdb_ready           = ((state === State.SKIPPING) && (!need_next_mask || io.mask.valid) && (io.store_packet.ready)) ||
+                            ((state === State.VSTART_HANDLING) && !(vstart_readout_done_q))
+  io.vdb_data.read_bytes := Mux(vdb_ready, Mux(state === State.SKIPPING,
+                              Mux(skippable, (seg_count << (skip_enc + eew_enc)), (1.U << (seg_inc_enc + eew_enc))),
+                              (vstart_el_id << eew_enc) ), 0.U)
   io.vdb_data.read_all   := Mux(vdb_ready, (state === State.SKIPPING) && (Mux(skippable, (use_seg_constraint || vl_constraint_met), max_ctr_met || (max_seg_id_met && use_seg_constraint))), false.B) // last packet
-  io.gen_active          := (state === State.SKIPPING)
+  io.gen_active          := (state === State.SKIPPING) || (state === State.VSTART_HANDLING)
 
   val addr_off = (current_seg_id << eew_enc).asSInt
   
@@ -154,19 +173,29 @@ extends Module with VecLSGenConstants {
   // ======== State Machine ========
 
   switch (state) {
+    // IDLE STATE
     is (State.IDLE) {
       when (io.start.fire) {
+
         // -- state config --
-        state := State.SKIPPING
+        val goto_handling = (vstart =/= 0.U)
+        state := Mux(
+          goto_handling,
+          State.VSTART_HANDLING,
+          State.SKIPPING
+        )
 
         // -- Initialize counters --
-        current_el_id   := 0.U
+        current_el_id   := vstart_el_id
         current_seg_id  := 0.U
-        current_v_group_id := 0.U
+        current_v_group_id := vstart_v_group_id
         current_addr    := base_addr
-        current_ctr     := 0.U
+        current_ctr     := Mux(goto_handling, 0.U, vstart)
         current_mask_data := io.mask.mask_data
         current_mask_off  := 0.U
+
+        vstart_readout_done_q := false.B
+        vstart_addr_done_q    := false.B
 
         // -- Init mem alignment --
         val high_off = (((1<<(ADDR_BREAK))-1).U - base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
@@ -175,7 +204,42 @@ extends Module with VecLSGenConstants {
         dmem_max := (DMEM_BYTES.U >> eew_enc)
       }
     }
+    // VSTART HANDLING STATE
+    is (State.VSTART_HANDLING) {
+      when (io.kill) {
+        state := State.IDLE
+      } .otherwise {
 
+        // -- Next values calculation --
+        // vstart controls
+        val vstart_readout_done = vstart_readout_done_q || (vdb_ready && vdb_valid)
+        val vstart_addr_done    = vstart_addr_done_q || vstart_last_inc
+        // address calculation
+        val next_addr = (current_addr.asSInt + (stride << vstart_skip_enc)).asUInt
+
+        // -- Readout state (if not done) --
+        when (!vstart_readout_done_q) {
+          vstart_readout_done_q := vstart_readout_done
+        }
+        // -- Increment address and counter (if not done) --
+        when (!vstart_addr_done_q) {
+          vstart_addr_done_q := vstart_addr_done
+          current_addr := next_addr
+          current_ctr  := current_ctr + (1.U << vstart_skip_enc)
+        }
+
+        // -- State transition --
+        when (vstart_readout_done && vstart_addr_done) {
+          // next state
+          state := State.SKIPPING
+          // realign dmem offset to the new address
+          val high_off = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+          val low_off  = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+          dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
+        }
+      }
+    }
+    // SKIPPING STATE
     is (State.SKIPPING) {
       when (io.kill) {
         state := State.IDLE

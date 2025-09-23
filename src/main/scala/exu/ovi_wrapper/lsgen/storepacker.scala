@@ -36,7 +36,7 @@ extends Module with VecLSGenConstants {
   // ======== Definitions ========
   
   object State extends ChiselEnum {
-    val IDLE, PACKING = Value
+    val IDLE, VSTART_HANDLING, PACKING = Value
   }
 
   // ======== Config info ========
@@ -44,6 +44,7 @@ extends Module with VecLSGenConstants {
   val state      = RegInit(State.IDLE)
   val sb_id      = io.start.bits.sb_id
   val vl         = io.start.bits.vl
+  val vstart     = io.start.bits.vstart
   val eew_enc    = io.start.bits.eew_enc
   val emul_enc   = io.start.bits.emul_enc
   val stride_dir = io.start.bits.stride_dir
@@ -105,16 +106,26 @@ extends Module with VecLSGenConstants {
   val seg_constraint_met  = (ctr_inc_val === seg_constraint) && use_seg_constraint
   val max_dmem_off_met    = ((dmem_off + ctr_inc_val) === dmem_max)
 
+  // ======== Vstart Handling Constraints ========
+  // vdb is always aligned to vreg, so readout of bytes below vstart happens in handling state
+  val vstart_readout_done_q = RegInit(false.B)
+
+  val vstart_EEW_CTR = (vstart << el_mask_off)
+  val vstart_el_id   = (vstart & ((1.U << el_mask_width) - 1.U))
+
   // ======== Outputs ========
 
   // ready-valid signals
   val vdb_valid           = (io.vdb_data.valid_bytes =/= 0.U)
   io.start.ready         := (state === State.IDLE)
   io.store_packet.valid  := (state === State.PACKING) && vdb_valid
-  val vdb_ready           = (state === State.PACKING) && (io.store_packet.ready)
-  io.vdb_data.read_bytes := Mux(vdb_ready, (1.U << (ctr_inc_enc + eew_enc)), 0.U)
+  val vdb_ready           = ((state === State.PACKING) && (io.store_packet.ready)) ||
+                            ((state === State.VSTART_HANDLING) && !(vstart_readout_done_q))
+  io.vdb_data.read_bytes := Mux(vdb_ready, Mux((state === State.PACKING),
+                              (1.U << (ctr_inc_enc + eew_enc)), // normal increment case
+                              (vstart_el_id << eew_enc)), 0.U)  // vstart handling case
   io.vdb_data.read_all   := Mux(vdb_ready, (state === State.PACKING) && (vl_constraint_met || (use_seg_constraint && seg_constraint_met)), false.B) // last packet
-  io.gen_active          := (state === State.PACKING)
+  io.gen_active          := (state === State.PACKING) || (state === State.VSTART_HANDLING)
 
   val addr_off = (Mux(
     stride_dir,
@@ -135,11 +146,18 @@ extends Module with VecLSGenConstants {
   // ======== State Machine ========
 
   switch (state) {
+    // IDLE STATE
     is (State.IDLE) {
       when (io.start.fire) {
+
         // -- CTR reset --
-        state := State.PACKING
-        EEW_CTR := 0.U
+        val goto_handling = (vstart =/= 0.U)
+        state := Mux(
+          goto_handling,
+          State.VSTART_HANDLING,
+          State.PACKING
+        )
+        EEW_CTR := vstart_EEW_CTR
 
         // -- Init mem alignment --
         val high_off = (((1<<(ADDR_BREAK))-1).U - base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
@@ -148,6 +166,37 @@ extends Module with VecLSGenConstants {
         dmem_max := (DMEM_BYTES.U >> eew_enc)
       }
     }
+    // VSTART HANDLING STATE
+    is (State.VSTART_HANDLING) {
+      when (io.kill) {
+        state := State.IDLE
+      } .otherwise {
+
+        // -- Next values calculation --
+        val vstart_readout_done = vstart_readout_done_q || (vdb_ready && vdb_valid)
+        val next_addr = (base_addr.asSInt + (Mux(
+          stride_dir,
+          -((vstart_EEW_CTR) << eew_enc).asSInt,
+          ((vstart_EEW_CTR) << eew_enc).asSInt
+        ))).asUInt
+
+        // -- Readout state (if not done) --
+        when (!vstart_readout_done_q) {
+          vstart_readout_done_q := vstart_readout_done
+        }
+
+        // -- State transition --
+        when (vstart_readout_done) { // vdb.fire
+          // next state
+          state := State.PACKING
+          // realign dmem offset to the new address
+          val high_off = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+          val low_off  = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+          dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
+        }
+      }
+    }
+    // PACKING STATE
     is (State.PACKING) {
       when (io.kill) {
         state := State.IDLE

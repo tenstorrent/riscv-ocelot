@@ -67,7 +67,7 @@ extends Module with VecLSGenConstants {
   val config_info = Mux((state === State.IDLE), io.start.bits, start_q)
 
   // control signals
-  val bypassable = (config_info.vl === 0.U)
+  val bypassable = (config_info.vl === 0.U) || (config_info.vstart >= config_info.vl)
   val packable   = (config_info.is_good_stride && config_info.is_good_seg)
   val skipable   = (config_info.is_mask && !config_info.is_index)
   val walkable   = !(config_info.is_mask && !config_info.is_index)

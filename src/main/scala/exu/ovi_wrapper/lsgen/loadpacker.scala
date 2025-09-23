@@ -99,6 +99,7 @@ extends Module with VecLSGenConstants {
   val sb_id      = io.start.bits.sb_id
   val base_v_reg = io.start.bits.base_v_reg
   val vl         = io.start.bits.vl
+  val vstart     = io.start.bits.vstart
   val eew_enc    = io.start.bits.eew_enc
   val emul_enc   = io.start.bits.emul_enc
   val stride_enc = io.start.bits.stride_enc
@@ -267,26 +268,39 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.uop    := io.start.bits.uop
   io.load_packet.bits.dir    := stride_dir && !use_seg_constraint
 
+  // ======== Vstart Handling ========
+  // need to re-align dmem offset to the new address after vstart
+  val vstart_EEW_CTR = (vstart << el_mask_off)
+
+  val vstart_addr = (base_addr.asSInt + (Mux(
+    stride_dir,
+    -((vstart_EEW_CTR) << eew_enc).asSInt,
+    ((vstart_EEW_CTR) << eew_enc).asSInt
+  ))).asUInt
+
   // ======== State Machine ========
 
   switch(state) {
+    // IDLE STATE
     is(State.IDLE) {
       when(io.start.fire) {
+
         // -- CTR config --
         state   := State.PACKING
-        EEW_CTR := 0.U
+        EEW_CTR := vstart_EEW_CTR
 
         // -- Initialize mask info --
         current_mask_off := 0.U
         current_mask_data := io.mask.mask_data
 
         // -- Initialize mem alignment info --
-        val high_off = (((1<<(ADDR_BREAK))-1).U - base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
-        val low_off  = (base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from start of DMEM (low) to base_addr
+        val high_off = (((1<<(ADDR_BREAK))-1).U - vstart_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
+        val low_off  = (vstart_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from start of DMEM (low) to base_addr
         dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
         dmem_max := (DMEM_BYTES.U >> eew_enc)
       }
     }
+    // PACKING STATE
     is (State.PACKING) {
       when (io.kill) {
         state := State.IDLE
@@ -318,7 +332,6 @@ extends Module with VecLSGenConstants {
         }
 
       }
-      
     }
   }
 

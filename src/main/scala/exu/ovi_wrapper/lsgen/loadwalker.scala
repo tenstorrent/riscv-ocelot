@@ -60,7 +60,7 @@ extends Module with VecLSGenConstants {
   // ======== Definitions ========
 
   object State extends ChiselEnum {
-    val IDLE, WALKING = Value
+    val IDLE, VSTART_HANDLING, WALKING = Value
   }
 
   // ======== Config info ========
@@ -69,6 +69,7 @@ extends Module with VecLSGenConstants {
   val sb_id      = io.start.bits.sb_id
   val base_v_reg = io.start.bits.base_v_reg
   val vl         = io.start.bits.vl
+  val vstart     = io.start.bits.vstart
   val eew_enc    = io.start.bits.eew_enc
   val emul_enc   = io.start.bits.emul_enc
   val stride     = io.start.bits.stride
@@ -129,7 +130,7 @@ extends Module with VecLSGenConstants {
   io.index.ready       := ((state === State.WALKING) && need_next_index && (io.load_packet.ready)) ||
                           ((state === State.IDLE)    && (is_index && io.start.valid))
   io.load_packet.valid := ((state === State.WALKING) && (!need_next_index || io.index.valid))
-  io.gen_active        := (state === State.WALKING)
+  io.gen_active        := (state === State.WALKING) || (state === State.VSTART_HANDLING)
 
   val addr_off = (current_seg_id << eew_enc).asSInt
   
@@ -148,10 +149,24 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.uop      := io.start.bits.uop
   io.load_packet.bits.dir      := current_dir && !use_seg_constraint
 
+  // ======== Vstart Handling Constraints ========
+  // handling vstart for the walker has to be done across multiple cycles
+  // only in the case of strided (not index) since VPU should not send the idx/mask below vstart
+
+  // split vstart into it's el_id and v_group_id components
+  val el_mask_width = (log2Ceil(VLEN).U - eew_enc)
+  val vstart_el_id      = vstart & ((1.U << el_mask_width) - 1.U)
+  val vstart_v_group_id = vstart >> el_mask_width
+
+  // calculate jump to vstart
+  val vstart_dist     = (vstart - current_ctr) // distance to vstart
+  val vstart_last_inc = ((vstart_dist & (vstart_dist - 1.U)) === 0.U) // if the distance is 1-hot, then only 1 jump away from vstart
+  val vstart_skip_enc = PriorityEncoder(vstart_dist) // jump by power of 2
+
   // ======== State Machine ========
 
   switch(state) {
-    
+    // IDLE STATE
     is(State.IDLE) {
       when(io.start.fire) {
         
@@ -160,17 +175,22 @@ extends Module with VecLSGenConstants {
         val next_direction = Mux(is_index, io.index.index_value, stride)(63)
         
         // -- Input config --
-        state := State.WALKING
+        val goto_handling = (vstart =/= 0.U) && !is_index // only strided need handling
+        state := Mux(
+          goto_handling,
+          State.VSTART_HANDLING,
+          State.WALKING
+        )
 
         // -- Initialize counters --
-        current_el_id   := 0.U
-        current_seg_id  := 0.U
-        current_v_group_id := 0.U
-        current_addr    := next_addr
-        current_ctr     := 0.U
+        current_el_id      := vstart_el_id
+        current_seg_id     := 0.U
+        current_v_group_id := vstart_v_group_id
+        current_addr       := next_addr
+        current_ctr        := 0.U
         current_mask_bit   := io.index.mask_bit
         current_last_index := io.index.last_index
-        current_dir     := next_direction && !use_seg_constraint
+        current_dir        := next_direction && !use_seg_constraint
 
         // -- Initialize DMEM info --
         val high_off  = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
@@ -179,7 +199,32 @@ extends Module with VecLSGenConstants {
         dmem_max := (DMEM_BYTES.U >> eew_enc)
       }
     }
+    // VSTART HANDLING STATE
+    is(State.VSTART_HANDLING) {
+      when (io.kill) {
+        state := State.IDLE
+      }.otherwise {
 
+        // -- Next Address calculation --
+        val next_addr = (current_addr.asSInt + (stride << vstart_skip_enc)).asUInt
+        val next_direction = stride(63)
+
+        // -- Increment address and counter --
+        current_addr := next_addr
+        current_ctr  := current_ctr + (1.U << vstart_skip_enc)
+
+        // -- State transition --
+        when (vstart_last_inc) {
+          // next state
+          state := State.WALKING
+          // realign dmem offset to the new address
+          val high_off = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+          val low_off  = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+          dmem_off := Mux(next_direction && !use_seg_constraint, high_off, low_off)
+        }
+      }
+    }
+    // WALKING STATE
     is(State.WALKING) {
       when (io.kill) {
         state := State.IDLE

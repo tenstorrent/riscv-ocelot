@@ -331,6 +331,7 @@ module tt_vpu_ovi #(
   assign csr_de0.v_vsew  = read_issue_vcsr[38:36];
   assign csr_de0.v_lmul  = {read_issue_vcsr_lmulb2, read_issue_vcsr[35:34]};
   assign csr_de0.v_vxrm  = read_issue_vcsr[30:29];
+  assign csr_de0.v_vstart= read_issue_vcsr[$clog2(VLEN+1)-1:0]; // [13:0]
   assign csr_de0.frm     = read_issue_vcsr[33:31];
 
   // ID -> LQ (ROB) signals
@@ -1135,6 +1136,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .enq_vtype_vl({3'b0, csr_ex0.v_vl}),   // VL from CSR (padded to 12 bits)
     .enq_vtype_vsew(csr_ex0.v_vsew),       // SEW from CSR  
     .enq_vtype_vlmul(csr_ex0.v_lmul),      // LMUL from CSR
+    .enq_vstart({3'b0, csr_ex0.v_vstart}),        // VSTART from CSR
     .enq_data(vs3_rddata),                 // Store data from VRF
     
     // Outputs
@@ -1163,6 +1165,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .i_last_index(id_ex_last),
     .o_draining_mask_idx(mask_fsm_stall),
     .i_vl(csr_ex0.v_vl),
+    .i_vstart(csr_ex0.v_vstart),
     .i_eew(index_size),
     .i_mask_idx_credit(mask_idx_credit),
     .o_mask_idx_item(mask_idx_item),
