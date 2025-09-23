@@ -27,6 +27,7 @@ module tt_id #(
    // IF interface
    input  [31:0]                            i_if_instrn,
    input  [31:0]                            i_if_pc,
+   input  [63:0]                            i_if_scalar_opnd,
    input                                    i_if_instrn_rts,
    output wire                              o_id_instrn_rtr,
    output logic                             o_id_replay,
@@ -42,6 +43,9 @@ module tt_id #(
    output wire                              o_id_ex_units_rts,
    input                                    tt_briscv_pkg::csr_t i_csr,
    output                                   tt_briscv_pkg::csr_t o_csr,
+   output wire [63:0]                       o_id_rf_vex_p0,
+   output wire [63:0]                       o_id_rf_vex_p1,
+   output wire [63:0]                       o_id_fprf_vex_p0,
    output logic                             o_id_ex_last,
 
    // VEC Interface
@@ -171,6 +175,7 @@ logic [4:0]  id_sb_id_replay;
 tt_briscv_pkg::inst_state_e id_state_replay;
 logic [31:0] id_ex_pc_replay;
 tt_briscv_pkg::csr_t id_csr_replay;
+logic [63:0] id_scalar_opnd_replay;
 logic [$clog2(VLEN):0] id_replay_cnt_start;
 logic  [5:0] lmul_replay_cnt;
 logic  [2:0] id_replay_type_start;
@@ -215,9 +220,12 @@ end
 
 `define HIGH_PERF_FETCH
 `ifdef HIGH_PERF_FETCH
-  assign instrn_id        =  id_replay ? instrn_id_replay      : i_if_instrn;
-  assign o_id_ex_pc       =  id_replay ? id_ex_pc_replay       : i_if_pc;
-  assign o_csr            =  id_replay ? id_csr_replay         : i_csr;
+  assign instrn_id        =  id_replay  ? instrn_id_replay      : i_if_instrn;
+  assign o_id_ex_pc       =  id_replay  ? id_ex_pc_replay       : i_if_pc;
+  assign o_csr            =  id_replay  ? id_csr_replay         : i_csr;
+  assign o_id_rf_vex_p0   =  id_replay  ? id_scalar_opnd_replay : i_if_scalar_opnd;
+  assign o_id_rf_vex_p1   =  id_replay  ? id_scalar_opnd_replay : i_if_scalar_opnd;
+  assign o_id_fprf_vex_p0 =  id_replay  ? id_scalar_opnd_replay : i_if_scalar_opnd;
  
   assign id_rts          = (i_if_instrn_rts | id_replay)
                             //reduction ops don't consume another lq entry so under replay its fine to ignore full conditions.
@@ -360,6 +368,7 @@ if (INCL_VEC == 1) begin
       id_replay_type <= `BRISCV_REPLAY_TYPE_NONE;
       vec_autogen_replay <= '0;
       vecldst_autogen_replay <= '0;
+      id_scalar_opnd_replay <= '0;
     end
    else if (id_replay) begin			// Already in Replay mode
      id_state_replay <= o_id_state; // state transition can not wait for stalls (update every cycle)
@@ -378,6 +387,7 @@ if (INCL_VEC == 1) begin
       id_state_replay <= o_id_state;
       id_ex_pc_replay <= o_id_ex_pc;
       id_csr_replay <= o_csr;
+      id_scalar_opnd_replay <= i_if_scalar_opnd;
       vec_autogen_replay <= vec_autogen_incr;
       vecldst_autogen_replay <= vecldst_autogen_incr;
       id_replay_type <= id_replay_type_start;

@@ -191,13 +191,9 @@ module tt_vpu_ovi #(
   logic [LQ_DEPTH_LOG2-1:0] vex_mem_lqid_3c;
   tt_briscv_pkg::csr_fp_exc vex_mem_lqexc_3c;
 
-  logic [63:0]  rf_vex_p0_reg;
-  logic [63:0]  rf_vex_p1_reg;
-  logic [63:0]  fprf_vex_p0_reg;
-
-  logic [63:0]  rf_vex_p0_sel;
-  logic [63:0]  rf_vex_p1_sel;
-  logic [63:0]  fprf_vex_p0_sel;
+  logic [63:0]  rf_vex_p0;
+  logic [63:0]  rf_vex_p1;
+  logic [63:0]  fprf_vex_p0;
 
  // stall the ID stage when there is a load/store 
   logic mask_fsm_stall;
@@ -220,11 +216,6 @@ module tt_vpu_ovi #(
   logic       ocelot_sat_csr;
   logic       ocelot_instrn_commit_valid;
 
-  // Hack to keep the vector CSRs constant for ocelot
-  logic [39:0] vcsr_reg;
-  logic        vcsr_lmulb2_reg;
-  logic [39:0] vcsr;
-  logic        vcsr_lmulb2;
   logic       vecldst_autogen_store;
   logic       vecldst_autogen_load;
 
@@ -335,30 +326,12 @@ module tt_vpu_ovi #(
 
   assign issue_credit = read_valid && ocelot_read_req;
 
-  always_ff @(posedge clk) begin
-    if(!reset_n) begin
-      rf_vex_p0_reg   <= '0;
-      rf_vex_p1_reg   <= '0;
-      fprf_vex_p0_reg <= '0;
-    end
-    else if (read_valid &&
-        ocelot_read_req   ) begin
-        rf_vex_p0_reg   <= read_issue_scalar_opnd;
-        rf_vex_p1_reg   <= read_issue_scalar_opnd;
-        fprf_vex_p0_reg <= read_issue_scalar_opnd;
-    end
-  end
-
-  assign rf_vex_p0_sel   = (read_valid && ocelot_read_req) ? read_issue_scalar_opnd   : rf_vex_p0_reg;
-  assign rf_vex_p1_sel   = (read_valid && ocelot_read_req) ? read_issue_scalar_opnd   : rf_vex_p1_reg;
-  assign fprf_vex_p0_sel = (read_valid && ocelot_read_req) ? read_issue_scalar_opnd : fprf_vex_p0_reg;
-
   tt_briscv_pkg::csr_t csr_de0, csr_ex0;
-  assign csr_de0.v_vl    = vcsr[$clog2(VLEN+1)-1+14:14];
-  assign csr_de0.v_vsew  = vcsr[38:36];
-  assign csr_de0.v_lmul  = {vcsr_lmulb2, vcsr[35:34]};
-  assign csr_de0.v_vxrm  = vcsr[30:29];
-  assign csr_de0.frm     = vcsr[33:31];
+  assign csr_de0.v_vl    = read_issue_vcsr[$clog2(VLEN+1)-1+14:14];
+  assign csr_de0.v_vsew  = read_issue_vcsr[38:36];
+  assign csr_de0.v_lmul  = {read_issue_vcsr_lmulb2, read_issue_vcsr[35:34]};
+  assign csr_de0.v_vxrm  = read_issue_vcsr[30:29];
+  assign csr_de0.frm     = read_issue_vcsr[33:31];
 
   // ID -> LQ (ROB) signals
   logic [2:0] id_mem_state;
@@ -383,10 +356,14 @@ module tt_vpu_ovi #(
     .dispatch_kill                         (dispatch_kill),
 
     .i_csr                                 (csr_de0),             
-    .o_csr                                 (csr_ex0),             
+    .o_csr                                 (csr_ex0),  
+    .o_id_rf_vex_p0                        (rf_vex_p0),
+    .o_id_rf_vex_p1                        (rf_vex_p1),
+    .o_id_fprf_vex_p0                      (fprf_vex_p0),
 
     .i_if_instrn                           (read_issue_inst),       
     .i_if_pc                               ('0),           
+    .i_if_scalar_opnd                      (read_issue_scalar_opnd),
     .i_if_instrn_rts                       (read_valid),    
     .o_id_instrn_rtr                       (ocelot_read_req),    
 
@@ -528,8 +505,8 @@ module tt_vpu_ovi #(
     .i_id_ex_vecldst_autogen(id_ex_vecldst_autogen),
     
     // From RF
-    .i_rf_p0_reg         (rf_vex_p0_reg),
-    .i_rf_p1_reg         (rf_vex_p1_reg),
+    .i_rf_p0_reg         (rf_vex_p0),
+    .i_rf_p1_reg         (rf_vex_p1),
     .i_fp_rf_p3_reg      ('0),
     
     // From VRF
@@ -638,8 +615,8 @@ module tt_vpu_ovi #(
     .o_ignore_dstincr      (ignore_dstincr),        
     .o_ignore_srcincr      (ignore_srcincr),        
     // RegFile Interface
-    .i_rf_vex_p0           (rf_vex_p0_sel),       
-    .i_fprf_vex_p0         (fprf_vex_p0_sel),
+    .i_rf_vex_p0           (rf_vex_p0),       
+    .i_fprf_vex_p0         (fprf_vex_p0),
     .i_vrf_p0_rddata       (vrf_p0_rddata),  
     .i_vrf_p1_rddata       (vrf_p1_rddata),  
     .i_vrf_p2_rddata       (vrf_p2_rddata),  
@@ -971,18 +948,6 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .o_debug_commit_data(sb_debug_commit_data),
     .o_debug_commit_mask(sb_debug_commit_mask)
   );
-
-  assign vcsr        = ocelot_read_req && read_valid ? read_issue_vcsr : vcsr_reg;
-  assign vcsr_lmulb2 = ocelot_read_req && read_valid ? read_issue_vcsr_lmulb2 : vcsr_lmulb2_reg;
-
-  always_ff@(posedge clk) begin
-    if(!reset_n)
-      {vcsr_reg, vcsr_lmulb2_reg} <= 0;
-    else if(read_valid && ocelot_read_req) begin
-      vcsr_reg <= read_issue_vcsr;
-      vcsr_lmulb2_reg <= read_issue_vcsr_lmulb2;
-    end
-  end
 
   assign v_reg = load_seq_id[4:0];
   assign el_id = load_seq_id[15:5];
