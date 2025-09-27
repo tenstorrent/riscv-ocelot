@@ -503,10 +503,10 @@ module store_buffer_dec #(
   // EEW calculation (matching ls_decode.scala logic)
   wire [2:0] eew_mask   = 3'b000;           // Mask: fixed at 8 bits (encoded as 0) 
   wire [2:0] eew_index  = i_vtype_vsew;     // Indexed: config sew value
-  wire [2:0] eew_normal = instWidth;        // Others: data width from instruction
+  wire [2:0] eew_normal = 3'(instWidth);    // Others: data width from instruction
   
   // EMUL calculation (matching ls_decode.scala logic)
-  wire [2:0] emul_normal = i_vtype_vlmul + instWidth - i_vtype_vsew;  // EMUL = LMUL * (EEW/SEW)
+  wire [2:0] emul_normal = i_vtype_vlmul + eew_normal - i_vtype_vsew; // EMUL = LMUL * (EEW/SEW)
   wire [2:0] emul_mask   = 3'b000;                                    // Masked: EMUL = 0 (fixed)
   wire [2:0] emul_index  = i_vtype_vlmul;                             // Indexed: LMUL from vtype CSR
   
@@ -582,7 +582,11 @@ module store_buffer_dec #(
   assign o_seg_count = seg_count;
 
   // idx_mul
-  assign o_idx_mul = isIndex && (instWidth > i_vtype_vsew) ? (instWidth - i_vtype_vsew) : 3'b000;
+  wire [2:0] idx_inst_emul = i_vtype_vlmul[2] ? '0 : i_vtype_vlmul; // idxst adjusted (positive) emul
+  wire [2:0] idx_signed_offset_emul = i_vtype_vlmul + 3'(instWidth) - i_vtype_vsew; // idxst offset emul
+  wire [2:0] idx_offset_emul = idx_signed_offset_emul[2] ? '0 : idx_signed_offset_emul; // idxst adjusted (positive) offset emul
+  // widening of offset to instruction emul (for extra replay logic in id)
+  assign o_idx_mul = (isIndex && (idx_offset_emul > idx_inst_emul)) ? idx_offset_emul - idx_inst_emul : '0;
 
   // start_vgroup_id
   always_comb begin

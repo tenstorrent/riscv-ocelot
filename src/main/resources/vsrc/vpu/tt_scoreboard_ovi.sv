@@ -78,7 +78,7 @@ module tt_scoreboard_ovi(
     logic [2:0]     lqid;
     logic [2:0]     ldb_start;
     logic [1:0]     data_size; // EEW
-    logic [1:0]     emul; // EMUL
+    logic [1:0]     emul; // EMUL (effective positive value)
     logic [1:0]     index_size;
     logic [2:0]     load_stride_eew; // stride enc
     logic [2:0]     load_seg; // segment count
@@ -208,7 +208,7 @@ module tt_scoreboard_ovi(
       if(i_issue_valid) begin
         scoreboard[i_issue_sb_id].vd              <= i_issue_inst[11:7];
         scoreboard[i_issue_sb_id].data_size       <= issue_data_size;
-        scoreboard[i_issue_sb_id].emul            <= issue_emul;
+        scoreboard[i_issue_sb_id].emul            <= issue_emul[2] ? 2'b00 : issue_emul[1:0]; // effective positive value
         scoreboard[i_issue_sb_id].index_size      <= issue_index_size;
         scoreboard[i_issue_sb_id].load_stride_eew <= issue_load_stride_eew;
         scoreboard[i_issue_sb_id].load_seg        <= issue_load_seg;
@@ -410,7 +410,7 @@ module tt_scoreboard_ovi(
   assign o_vd              = scoreboard[i_load_sb_id].vd;
   assign o_ldb_start       = scoreboard[i_load_sb_id].ldb_start;
   assign o_data_size       = scoreboard[i_load_sb_id].data_size;
-  assign o_emul            = scoreboard[i_load_sb_id].emul;
+  assign o_emul            = {1'b0, scoreboard[i_load_sb_id].emul};
   assign o_index_size      = scoreboard[i_load_sb_id].index_size;
   assign o_load_stride_eew = scoreboard[i_load_sb_id].load_stride_eew;
   assign o_load_seg        = scoreboard[i_load_sb_id].load_seg;

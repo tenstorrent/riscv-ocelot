@@ -63,15 +63,15 @@ module tt_vpu_ovi #(
   localparam INCL_FP = 1;
   localparam STORE_CREDITS = 4;
 
-  localparam                                          FLEN    = 32;
-  localparam                                          FP_RF_RD_PORTS  = 4;
-  localparam                                          FP_RF_WR_PORTS  = 2;
-  localparam                                          FP_RF_ADDR_WIDTH    = 5;
-  localparam                                          EXP_WIDTH   = 8;
-  localparam                                          MAN_WIDTH   = 23;
-  localparam                                          RS1_IDX = 0;
-  localparam                                          RS2_IDX = 1;
-  localparam                                          RS3_IDX = 2;
+  localparam FLEN    = 32;
+  localparam FP_RF_RD_PORTS  = 4;
+  localparam FP_RF_WR_PORTS  = 2;
+  localparam FP_RF_ADDR_WIDTH    = 5;
+  localparam EXP_WIDTH   = 8;
+  localparam MAN_WIDTH   = 23;
+  localparam RS1_IDX = 0;
+  localparam RS2_IDX = 1;
+  localparam RS3_IDX = 2;
 
   tt_briscv_pkg::arr_lq_info_s  lq_broadside_info;
   logic [LQ_DEPTH-1:0][31:0]    lq_broadside_data;
@@ -449,25 +449,39 @@ module tt_vpu_ovi #(
   assign vecldst_autogen_store = id_ex_vecldst_autogen.store;
   assign vecldst_autogen_load = id_ex_vecldst_autogen.load;
 
-  logic squash_id_ex_rts;
-  always_comb begin
-     squash_id_ex_rts = 1'b0;
+  // logic squash_id_ex_rts;
+  // always_comb begin
+  //    squash_id_ex_rts = 1'b0;
 
-     if (id_is_indexldst) begin
-        case ({id_ex_instrn[14:12], csr_ex0.v_vsew[1:0]})
-           // index : data = 2
-           5'b101_00,
-           5'b110_01,
-           5'b111_10: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[0] != 1'b0;
-           // index : data = 4
-           5'b110_00,
-           5'b111_01: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[1:0] != 2'b00;
-           // index : data = 4
-           5'b111_00: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[2:0] != 3'b000;
-           default  : squash_id_ex_rts = 1'b0;
-        endcase
-     end
-  end
+  //    if (id_is_indexldst) begin
+  //       case ({id_ex_instrn[14:12], csr_ex0.v_vsew[1:0]})
+  //          // index : data = 2
+  //          5'b101_00,
+  //          5'b110_01,
+  //          5'b111_10: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[0] != 1'b0;
+  //          // index : data = 4
+  //          5'b110_00,
+  //          5'b111_01: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[1:0] != 2'b00;
+  //          // index : data = 4
+  //          5'b111_00: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[2:0] != 3'b000;
+  //          default  : squash_id_ex_rts = 1'b0;
+  //       endcase
+  //    end
+  // end
+
+  logic idxldst_squash_id_ex_rts;
+  tt_idxldst_fsm idxldst_fsm (
+    .i_clk(clk),
+    .i_reset_n(reset_n),
+    .i_is_indexldst(id_is_indexldst),
+    .i_id_ex_rts(id_ex_rts),
+    .i_ex_rtr(ex_id_rtr),
+    .i_last_uop(id_ex_last),
+    .i_instrn(id_ex_instrn),
+    .i_vtype_vsew(csr_ex0.v_vsew),
+    .i_vtype_vlmul(csr_ex0.v_lmul),
+    .o_squash_id_ex_rts(squash_id_ex_rts)
+  );
  
   tt_ex #(
     .INCL_VEC(INCL_VEC),
@@ -926,7 +940,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .o_vd(sb_vd),
     .o_ldb_start(sb_ldb_start),
     .o_data_size(sb_data_size),
-    .o_emul(sb_emul),
+    .o_emul(sb_emul), // effective positive value for load purposes
     .o_index_size(sb_index_size),
     .o_load_stride_eew(sb_load_stride_eew),
     .o_load_seg(sb_load_seg),
@@ -964,7 +978,10 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
                 id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
     index_size =  id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
                   id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
-                  id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW      
+                  id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW   
+    // index_size =  id_ex_instrn[13:12] == 2'b00 ? 2'd0 : // 8-bit EEW
+    //               id_ex_instrn[13:12] == 2'b01 ? 2'd1 : // 16-bit EEW
+    //               id_ex_instrn[13:12] == 2'b10 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW      
     load_stride = !id_is_indexldst ? scalar_opnd : 
                 csr_ex0.v_vsew == 3'b000 ? 1 : // 8-bit EEW
                 csr_ex0.v_vsew == 3'b101 ? 2 : // 16-bit EEW
@@ -1066,7 +1083,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
 
   logic [10:0] lrm_ldb_wr_idx;
   logic [10:0] lrm_ldb_sh_idx;
-  // TODO: does this work for fractional emul?
+  // should work for fractional emul (effective positive calculated in scoreboard)
   assign lrm_ldb_wr_idx = (((v_reg - sb_vd) & ((5'b1 << sb_emul[1:0]) - 1'b1)) + sb_ldb_start); 
 
   integer k1, k2;

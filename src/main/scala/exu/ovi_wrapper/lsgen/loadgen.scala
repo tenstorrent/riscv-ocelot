@@ -28,6 +28,7 @@ extends Bundle with VecLSGenConstants {
   val misaligned = Bool()
   val last       = Bool()
   val dir        = Bool() // for padding of return data
+  val is_fof     = Bool()
   val uop        = new MicroOp()
 }
 
@@ -165,6 +166,7 @@ extends Module with VecLSGenConstants {
   bypass_packet.last       := true.B         // assert end
   bypass_packet.uop        := config_info.uop
   bypass_packet.dir        := DontCare
+  bypass_packet.is_fof     := config_info.is_fof 
 
   // BYPASS case (no output but assert last and el_count = 0)
   when (state === State.BYPASS) {

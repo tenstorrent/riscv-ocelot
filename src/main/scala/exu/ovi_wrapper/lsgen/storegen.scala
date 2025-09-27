@@ -70,7 +70,7 @@ extends Module with VecLSGenConstants {
 
   // control signals
   val bypassable = (config_info.vl === 0.U) || (config_info.vstart >= config_info.vl)
-  val packable   = (config_info.is_unit_stride && config_info.is_good_seg && !config_info.is_mask)
+  val packable   = (config_info.stride_is_1 && config_info.is_good_seg && !config_info.is_mask)
   val skipable   = (config_info.is_mask  && !config_info.is_index)
   val walkable   = (!config_info.is_mask ||  config_info.is_index)
 

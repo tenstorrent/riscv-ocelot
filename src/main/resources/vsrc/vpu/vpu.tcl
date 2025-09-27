@@ -53,6 +53,7 @@ tt_vfp_lane.sv \
 tt_vfp_red.sv \
 tt_vfp_unit.sv \
 tt_vpu_ovi.sv \
+tt_idxldst_fsm.sv \
 tt_vpu_ovi_assert.sv
 set top tt_vpu_ovi
 elaborate -top $top -bbox_mul 256

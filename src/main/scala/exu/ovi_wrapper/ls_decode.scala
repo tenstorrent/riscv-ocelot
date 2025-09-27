@@ -48,12 +48,13 @@ extends Bundle with VecLSGenConstants {
   val stride_enc = UInt(STRIDE_ENC_W.W)
   val stride_dir = Bool()
   val is_good_stride = Bool()
-  val is_unit_stride = Bool() // stride is 1 (for storegen)
+  val stride_is_1 = Bool() // stride is 1 (for storegen)
   val seg_count  = UInt(SEG_W.W)
   val seg_enc    = UInt(SEG_ENC_W.W)
   val is_good_seg = Bool()
   val is_mask    = Bool()
   val is_index   = Bool()
+  val is_fof     = Bool()
   val base_addr  = UInt(64.W)
   val uop        = new MicroOp()
 }
@@ -90,7 +91,9 @@ extends BoomModule with VecLSGenConstants {
   val rs2_data     = io.in.req.req.rs2_data
   val vtype_vl     = io.in.req.vconfig.vl
   val vtype_vstart = 0.U // io.in.req.vconfig.vstart <= doesnt exist
-  val vtype_vlmul  = io.in.req.vconfig.vtype.vlmul_mag
+  val vtype_vlmul  = Mux(io.in.req.vconfig.vtype.vlmul_sign, // dealing with fractional LMUL
+                         -io.in.req.vconfig.vtype.vlmul_mag(1,0).asTypeOf(UInt(3.W)),
+                          io.in.req.vconfig.vtype.vlmul_mag(1,0).asTypeOf(UInt(3.W)))
   val vtype_vsew   = io.in.req.vconfig.vtype.vsew
 
   // ========= Instruction Fields ========
@@ -116,6 +119,7 @@ extends BoomModule with VecLSGenConstants {
   val isUnit   = instMop === 0.U
   val isStride = instMop === 2.U
   val isSeg    = !isWhole && !isMaskLS && (instNf =/= 0.U)  // Segmented: not whole/mask and nf > 0
+  val isFoF    = instMop === 0.U && instUMop === 16.U && instOP === 7.U // fault-only-first-unit load
   // val isWholeStore = isWhole && isStore
   // val isWholeLoad  = isWhole && isLoad
   // val isStoreMask  = isMaskLS && isStore
@@ -189,11 +193,13 @@ extends BoomModule with VecLSGenConstants {
   
   // emul_enc (Effective LMUL) - calculated based on instruction type  
   val emul_normal = vtype_vlmul + instWidth - vtype_vsew  // EMUL = LMUL * (EEW / SEW) in log domain
+  val eff_emul_normal = Mux(emul_normal(2), 0.U, emul_normal(1, 0)) // effective positive value
+  val eff_vtype_vlmul = Mux(vtype_vlmul(2), 0.U, vtype_vlmul(1, 0)) // effective positive value
   io.out.dec_info.emul_enc := MuxLookup(Cat(isWhole, isIndex, isMaskLS), vtype_vlmul, Seq(
     Cat(true.B, false.B, false.B)  -> whole_vlmul,     // Whole:   NF derived
-    Cat(false.B, true.B, false.B)  -> vtype_vlmul,     // Indexed: LMUL from vtype CSR
+    Cat(false.B, true.B, false.B)  -> eff_vtype_vlmul, // Indexed: LMUL from vtype CSR
     Cat(false.B, false.B, true.B)  -> 0.U,             // Masked:  EMUL = 0 (fixed)
-    Cat(false.B, false.B, false.B) -> emul_normal      // Others:  EMUL = LMUL * (EEW / SEW)
+    Cat(false.B, false.B, false.B) -> eff_emul_normal  // Others:  EMUL = LMUL * (EEW / SEW)
   ))
   
   // Stride detection and outputs (for both loads and stores)
@@ -204,7 +210,7 @@ extends BoomModule with VecLSGenConstants {
     Cat(false.B, true.B)  -> (1.U << instWidth).zext.asSInt, // (chisel tries to find the effective width then extend casuing in negative so force zero extend)
     Cat(false.B, false.B) -> rs2_data.asSInt                 // in other cases, when stride is required, use the rs2 field
   ))
-  io.out.dec_info.is_unit_stride := strideIs1
+  io.out.dec_info.stride_is_1 := strideIs1
 
   // stride_enc: log2 of stride magnitude for good strides
   io.out.dec_info.stride_enc := MuxLookup(Cat(strideIs4, strideIs2, strideIs1), 0.U, Seq(
@@ -223,6 +229,9 @@ extends BoomModule with VecLSGenConstants {
   // Operation type flags (for both loads and stores)
   io.out.dec_info.is_mask  := Mux((isWhole || isMaskLS), false.B, instMaskEnable) // this is for masked LS (use the mask buffer) NOT mask-type LS
   io.out.dec_info.is_index := isIndex
+
+  // fault-only-first (this variant is only for unit loads)
+  io.out.dec_info.is_fof := isFoF
   
   // base_addr (Base Memory Address) - from rs1 (for both loads and stores)
   io.out.dec_info.base_addr := rs1_data

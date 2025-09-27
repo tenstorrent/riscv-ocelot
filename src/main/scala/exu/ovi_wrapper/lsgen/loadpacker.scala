@@ -267,6 +267,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.last   := (state === State.PACKING) && (vl_constraint_met)
   io.load_packet.bits.uop    := io.start.bits.uop
   io.load_packet.bits.dir    := stride_dir && !use_seg_constraint
+  io.load_packet.bits.is_fof := io.start.bits.is_fof
 
   // ======== Vstart Handling ========
   // need to re-align dmem offset to the new address after vstart

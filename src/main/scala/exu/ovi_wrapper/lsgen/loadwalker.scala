@@ -148,6 +148,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.last     := (state === State.WALKING) && (max_ctr_met)
   io.load_packet.bits.uop      := io.start.bits.uop
   io.load_packet.bits.dir      := current_dir && !use_seg_constraint
+  io.load_packet.bits.is_fof   := io.start.bits.is_fof
 
   // ======== Vstart Handling Constraints ========
   // handling vstart for the walker has to be done across multiple cycles
