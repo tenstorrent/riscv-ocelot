@@ -1,6 +1,6 @@
 // See LICENSE.TT for license details.
 `include "briscv_defines.h"
-`include "tt_briscv_pkg.vh"
+`include "tt_briscv_pkg.svh"
 
 // Vector division-related instruction wrapper.
 // Supports: vdiv, vdivu, vrem, vremu, vfdiv, vfrdiv, vfsqrt, vfsqrt7, vfrec7
