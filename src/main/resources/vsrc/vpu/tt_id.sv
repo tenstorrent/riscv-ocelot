@@ -59,6 +59,7 @@ module tt_id #(
    input                                    i_ignore_lmul,
    input                                    i_ignore_dstincr,
    input                                    i_ignore_srcincr,
+   input 				     i_div_resource_busy,     // Division resource busy from VEC unit
    // VEC decode signals
    output                                   o_v_vm,
    output                                   tt_briscv_pkg::vec_autogen_s o_vec_autogen,
@@ -732,6 +733,8 @@ autogen_v_reductop    autogen_v_reductop(opcode, funct7, funct3,  addrp0, vec_au
 autogen_v_iterate     autogen_v_iterate (opcode, funct7, funct3,  addrp0, vec_autogen.iterate);
 autogen_v_onecycle_iterate     autogen_v_onecycle_iterate (opcode, funct7, funct3,  addrp0, vec_autogen.onecycle_iterate);   
 autogen_v_mask_only   autogen_v_mask_only(opcode, funct7, funct3, addrp0, vec_autogen.mask_only);
+autogen_v_idivop      autogen_v_idivop(opcode, funct7, funct3, vec_autogen.idivop);
+autogen_v_fdivop      autogen_v_fdivop(opcode, funct7, funct3, vec_autogen.fdivop);
 autogen_v_rf_store_rd_en autogen_v_rf_store_rd_en (opcode, funct3,    vec_autogen.rf_store_rd_en);  
 autogen_v_ldst_iterations autogen_v_ldst_iterations (opcode, funct3, v_vsew, v_lmul, mop, nf, addrp1, vecldst_autogen.ldst_iterations);
 autogen_v_ldst_dest_incr autogen_v_ldst_dest_incr (opcode, funct3, v_vsew, v_lmul, mop, nf, addrp1, vec_autogen.addrp2_incr);
@@ -1007,6 +1010,13 @@ assign vec_rs1_hazard_stall =  valid_vec_instrn & (lq_hit_cnt_vex_r0 > '0);
 assign vec_fs1_hazard_stall =  valid_vec_instrn & (lq_hit_cnt_vex_f0 > '0); 
 assign vec_mask_hazard_stall  = valid_vec_instrn & (lq_hit_cnt_vex_mask > '0) & ~id_replay;
 
+// Division resource hazard detection
+logic div_resource_busy;     // From VEC unit: any divider busy  
+logic div_hazard_stall;
+wire is_div_instrn = vec_autogen.idivop | vec_autogen.fdivop;
+assign div_resource_busy = i_div_resource_busy;
+assign div_hazard_stall = is_div_instrn & div_resource_busy;
+
 wire rs1_hazard_stall = vec_vs1_hazard_stall  | vec_rs1_hazard_stall | vec_fs1_hazard_stall;
 wire rs2_hazard_stall = vec_vs2_hazard_stall;
 wire rs3_hazard_stall = vec_vs3_hazard_stall;
@@ -1015,7 +1025,8 @@ assign raw_hazard_stall_fwd = rs1_hazard_stall | rs2_hazard_stall | rs3_hazard_s
 assign raw_hazard_stall_vex = vec_vs1_hazard_stall  | vec_rs1_hazard_stall | vec_fs1_hazard_stall |
                               vec_vs2_hazard_stall  |
                               vec_vs3_hazard_stall  |
-                              vec_mask_hazard_stall;
+                              vec_mask_hazard_stall |
+                              div_hazard_stall;
 assign raw_hazard_stall     = (valid_vec_instrn && !vec_ldst_vld && !vsetOp_to_ex) ? raw_hazard_stall_vex : raw_hazard_stall_fwd;
 
   

@@ -141,6 +141,10 @@ localparam ADDRWIDTH=40;
       logic [7:0] addrp0_incr;
       logic [7:0] addrp1_reset; // For Iterating through segment-indexed LdSt ops 
       logic 	  mask_only;
+      
+      // Division operation flags
+      logic       idivop;        // Integer division (vdiv, vdivu, vrem, vremu)
+      logic       fdivop;        // Floating-point division (vfdiv, vfrdiv, vfsqrt)
 
    } vec_autogen_s;
 

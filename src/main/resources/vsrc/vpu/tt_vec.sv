@@ -53,6 +53,7 @@ module tt_vec #(
 
   //To ID
   output                                          o_vex_id_rtr,
+              output logic                                    o_vex_div_busy,
   output logic [4:0]                              o_iterate_addrp0,
   output logic [4:0]                              o_iterate_addrp1,
   output logic [4:0]                              o_iterate_addrp2,
@@ -60,12 +61,17 @@ module tt_vec #(
   output logic                                    o_ignore_lmul,
   output logic                                    o_ignore_dstincr,
   output logic                                    o_ignore_srcincr, //This should be set for instructions that are processing mask bits.(eg: vmand.mm, viota vid ,vmsof...)
+              
+  //Division write back path
+  output logic                                    o_vex_mem_lqvld_div,
+  output logic [VLEN-1:0]                         o_vex_mem_lqdata_div,
+  output tt_briscv_pkg::csr_fp_exc                o_vex_mem_lqexc_div,
+  output logic [tt_briscv_pkg::LQ_DEPTH_LOG2-1:0] o_vex_mem_lqid_div,
   //From Int RF
   input [XLEN-1:0]                                    i_rf_vex_p0, //int to vrf moves; note this align with 0a, and read pre flop.
 
   input [XLEN-1:0]                                    i_fprf_vex_p0  //fp to vrf moves; note this align with 0a, and read pre flop.                   
 );
-
    /*AUTOWIRE*/
    // Beginning of automatic wires (for undeclared instantiated-module outputs)
    logic                sat_csr_2a;             // From idp of tt_vec_idp.v
@@ -976,7 +982,64 @@ module tt_vec #(
     .o_result_ooo_data_valid  (fwren_2a),
     .o_result_ooo_data        (fwrdata_2a),
     .o_result_ooo_exc         (fwrexc_2a)
-  );
+   );
+
+    // Vector division wrapper (empty for now). Wires up decode and returns no result.
+    tt_vec_div_unit #(
+       .NUM_LANE(VLEN/64),
+       .VLEN    (VLEN)
+    )
+    vdiv
+    (
+       .i_clk           (i_clk),
+       .i_reset_n       (i_reset_n),
+
+       // Handshake and control from ID stage
+       .i_id_vdiv_ex0_rts (i_id_vex_rts & (i_id_vec_autogen.idivop | i_id_vec_autogen.fdivop)),
+       
+       // Operation type decode (from vec_autogen_s)
+       .i_idivop        (i_id_vec_autogen.idivop),
+       .i_fdivop        (i_id_vec_autogen.fdivop),
+       .i_ldqid         (i_id_vec_autogen.ldqid),
+
+       // Source operands - full VLEN width for flexible SEW handling  
+       .i_src1          (src1_mux_0a[VLEN-1:0]),    // vs2 source (dividend)
+       .i_src2          (src2_0a[VLEN-1:0]),        // vs1/scalar/imm source (divisor)
+       .i_src3          (src3_0a[VLEN-1:0]),        // vd source (for masked ops)
+       
+       // Scalar register file inputs for .vx operations
+       .i_rf_scalar     (i_rf_vex_p0),              // Integer scalar (rs1) for integer .vx ops
+       .i_fprf_scalar   (i_fprf_vex_p0),            // FP scalar (rs1) for FP .vx ops
+
+       // Vector control signals
+       .i_vm0           (vm0_0a),
+       .i_sew           (i_csr.v_vsew[1:0]),
+       .i_lmul          (i_csr.v_lmul[2:0]),
+       .i_vl            (i_csr.v_vl[7:0]),
+       .i_vs1           (i_id_ex_instrn[19:15]),
+       .i_vta           (1'b0),  // TODO: Connect to vtype.vta when available (0=undisturbed, 1=agnostic)
+       .i_vma           (1'b0),  // TODO: Connect to vtype.vma when available (0=undisturbed, 1=agnostic)
+
+       // Instruction decode signals
+       .i_funct7        (funct7_0a[6:0]),
+       .i_funct3        (funct3_0a[2:0]),
+       .i_vm            (i_id_ex_instrn[25]),
+
+       // Floating-point control (IEEE FP only, no fixed-point)
+       .i_frm           (i_csr.frm),
+
+       // Replay control
+       .i_lmul_cnt      (lmul_cnt_0a),
+
+       // Outputs towards MEM/LQ (division write port)
+       .o_result_valid  (o_vex_mem_lqvld_div),
+       .o_result        (o_vex_mem_lqdata_div),
+       .o_result_exc    (o_vex_mem_lqexc_div),
+       .o_result_lqid   (o_vex_mem_lqid_div),
+
+       // Global busy indicator for ID resource hazard checks
+       .o_busy          (o_vex_div_busy)
+   );
 
    
    //Note these inputs are 0a and outputs are 2a...

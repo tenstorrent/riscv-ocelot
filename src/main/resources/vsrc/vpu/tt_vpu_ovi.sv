@@ -191,6 +191,12 @@ module tt_vpu_ovi #(
   logic [LQ_DEPTH_LOG2-1:0] vex_mem_lqid_3c;
   tt_briscv_pkg::csr_fp_exc vex_mem_lqexc_3c;
 
+  // VEX Division --> MEM signals
+  logic                     vex_mem_lqvld_div;
+  logic [VLEN-1:0]          vex_mem_lqdata_div;
+  logic [LQ_DEPTH_LOG2-1:0] vex_mem_lqid_div;
+  tt_briscv_pkg::csr_fp_exc vex_mem_lqexc_div;
+
   logic [63:0]  rf_vex_p0;
   logic [63:0]  rf_vex_p1;
   logic [63:0]  fprf_vex_p0;
@@ -337,6 +343,7 @@ module tt_vpu_ovi #(
   // ID -> LQ (ROB) signals
   logic [2:0] id_mem_state;
 
+  logic vex_div_busy;
   tt_id #(
     .LQ_DEPTH(LQ_DEPTH),
     .LQ_DEPTH_LOG2(LQ_DEPTH_LOG2), 
@@ -380,6 +387,7 @@ module tt_vpu_ovi #(
     .o_v_vm                                (v_vm              ),    
 
     // EX Interface
+    .i_div_resource_busy                   (vex_div_busy),
     .o_id_ex_rts                           (id_ex_rts),             
     .i_ex_rtr                              (ex_id_rtr         ),    
     .o_id_ex_pc                            (id_ex_pc),        
@@ -596,6 +604,7 @@ module tt_vpu_ovi #(
     .i_id_vec_autogen      (id_vec_autogen),        
     .o_sat_csr             (ocelot_sat_csr),
     // ID Interface
+    .o_vex_div_busy        (vex_div_busy),
     .i_id_vex_rts          (id_vex_rts),            
     .o_vex_id_rtr          (vex_id_rtr),            
     .i_id_ex_vecldst       (id_ex_vecldst),         
@@ -629,6 +638,11 @@ module tt_vpu_ovi #(
     .o_vex_mem_lqdata_3c   (vex_mem_lqdata_3c), 
     .o_vex_mem_lqexc_3c    (vex_mem_lqexc_3c),      
     .o_vex_mem_lqid_3c     (vex_mem_lqid_3c), 
+    // Division connections
+    .o_vex_mem_lqvld_div   (vex_mem_lqvld_div),      
+    .o_vex_mem_lqdata_div  (vex_mem_lqdata_div), 
+    .o_vex_mem_lqexc_div   (vex_mem_lqexc_div),      
+    .o_vex_mem_lqid_div    (vex_mem_lqid_div), 
     .i_mem_vrf_wr          (mem_vrf_wr),            
     .i_mem_vrf_wraddr      (mem_vrf_wraddr),   
     .i_mem_vrf_wrdata      (mem_vrf_wrdata), 
@@ -717,6 +731,12 @@ tt_lq #(
   .i_vex_mem_lqdata_3c(vex_mem_lqdata_3c),
   .i_vex_mem_lqexc_3c(vex_mem_lqexc_3c),
   .i_vex_mem_lqid_3c(vex_mem_lqid_3c),
+
+   // Division connections
+   .i_vex_mem_lqvld_div(vex_mem_lqvld_div),
+   .i_vex_mem_lqdata_div(vex_mem_lqdata_div),
+   .i_vex_mem_lqexc_div(vex_mem_lqexc_div),
+   .i_vex_mem_lqid_div(vex_mem_lqid_div),
 
   // Load return data
   .i_data_vld_0(drain_load_buffer),

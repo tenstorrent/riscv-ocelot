@@ -844,6 +844,14 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   addResource("/vsrc/vpu/tt_vec_idp.sv")
   addResource("/vsrc/vpu/tt_vec_imul.sv")
   addResource("/vsrc/vpu/tt_vec_mul_dp.sv")
+  addResource("/vsrc/vpu/tt_vec_div_unit.sv")
+  addResource("/vsrc/vpu/VecFP16rsqrt7.sv")
+  addResource("/vsrc/vpu/VecFP32rsqrt7.sv")
+  addResource("/vsrc/vpu/VecFP32rec7.sv")
+  addResource("/vsrc/vpu/VecFP16rec7.sv")
+  addResource("/vsrc/vpu/tt_int_div_simple.sv")
+  addResource("/vsrc/vpu/tt_fp16_div.sv")
+  addResource("/vsrc/vpu/tt_fp32_div.sv")
   addResource("/vsrc/vpu/tt_vec_regfile.sv")
   addResource("/vsrc/vpu/tt_vfp_unit.sv")
   addResource("/vsrc/vpu/tt_vfp_ex_unit.sv")
@@ -887,6 +895,7 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   addResource("/vsrc/HardFloat/source/recFNToFN.v")
   addResource("/vsrc/HardFloat/source/recFNToIN.v")
   addResource("/vsrc/HardFloat/source/recFNToRecFN.v")
+  addResource("/vsrc/HardFloat/source/divSqrtRecFN_small.v")
 }
 
 // M is dmem bandwidth, N is mask interface width (66), Depth is mask buffer width (4), VLEN is 256 for now

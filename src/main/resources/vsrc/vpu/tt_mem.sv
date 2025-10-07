@@ -59,6 +59,12 @@ module tt_mem #( parameter
    input tt_briscv_pkg::csr_fp_exc      i_vex_mem_lqexc_3c,
    input logic [LQ_DEPTH_LOG2-1:0] 	i_vex_mem_lqid_3c,
    
+   // VEX Division --> MEM signals
+   input logic 				i_vex_mem_lqvld_div,
+   input logic [VLEN-1:0] 			i_vex_mem_lqdata_div,
+   input tt_briscv_pkg::csr_fp_exc      i_vex_mem_lqexc_div,
+   input logic [LQ_DEPTH_LOG2-1:0] 	i_vex_mem_lqid_div,
+   
    // From EX
    input tt_briscv_pkg::mem_skidbuf_s   i_ex_mem_payload,
    input 				i_ex_mem_vld,
@@ -400,6 +406,12 @@ tt_lq #(.LQ_DEPTH(LQ_DEPTH),
    .i_vex_mem_lqdata_3c(i_vex_mem_lqdata_3c),
    .i_vex_mem_lqexc_3c(i_vex_mem_lqexc_3c),
    .i_vex_mem_lqid_3c(i_vex_mem_lqid_3c),
+
+   // Division connections
+   .i_vex_mem_lqvld_div(i_vex_mem_lqvld_div),
+   .i_vex_mem_lqdata_div(i_vex_mem_lqdata_div),
+   .i_vex_mem_lqexc_div(i_vex_mem_lqexc_div),
+   .i_vex_mem_lqid_div(i_vex_mem_lqid_div),
 
    // Load return data
    .i_data_vld_0(i_data_vld_0),
