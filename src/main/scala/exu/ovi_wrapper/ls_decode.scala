@@ -90,7 +90,7 @@ extends BoomModule with VecLSGenConstants {
   val rs1_data     = io.in.req.req.rs1_data
   val rs2_data     = io.in.req.req.rs2_data
   val vtype_vl     = io.in.req.vconfig.vl
-  val vtype_vstart = 0.U // io.in.req.vconfig.vstart <= doesnt exist
+  val vtype_vstart = io.in.req.vstart
   val vtype_vlmul  = Mux(io.in.req.vconfig.vtype.vlmul_sign, // dealing with fractional LMUL
                          -io.in.req.vconfig.vtype.vlmul_mag(1,0).asTypeOf(UInt(3.W)),
                           io.in.req.vconfig.vtype.vlmul_mag(1,0).asTypeOf(UInt(3.W)))

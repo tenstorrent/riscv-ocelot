@@ -448,28 +448,8 @@ module tt_vpu_ovi #(
   // EX
   assign vecldst_autogen_store = id_ex_vecldst_autogen.store;
   assign vecldst_autogen_load = id_ex_vecldst_autogen.load;
-
-  // logic squash_id_ex_rts;
-  // always_comb begin
-  //    squash_id_ex_rts = 1'b0;
-
-  //    if (id_is_indexldst) begin
-  //       case ({id_ex_instrn[14:12], csr_ex0.v_vsew[1:0]})
-  //          // index : data = 2
-  //          5'b101_00,
-  //          5'b110_01,
-  //          5'b111_10: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[0] != 1'b0;
-  //          // index : data = 4
-  //          5'b110_00,
-  //          5'b111_01: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[1:0] != 2'b00;
-  //          // index : data = 4
-  //          5'b111_00: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[2:0] != 3'b000;
-  //          default  : squash_id_ex_rts = 1'b0;
-  //       endcase
-  //    end
-  // end
-
-  logic idxldst_squash_id_ex_rts;
+  
+  logic squash_id_ex_rts;
   tt_idxldst_fsm idxldst_fsm (
     .i_clk(clk),
     .i_reset_n(reset_n),

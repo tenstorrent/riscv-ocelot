@@ -39,7 +39,7 @@ module tt_store_buffer #(
   logic [11:0]  enq_vl;          // Decoded/adjusted VL
   logic [2:0]   enq_idx_mul;     // Decoded/adjusted idx_mul (this is to sequencially ignore widening index width from decode replay logic)
   logic [4:0]   enq_base_v_reg;  // Decoded base register (not required)
-  logic [2:0]  enq_start_vgroup_id; // Decoded vstart group id
+  logic [2:0]   enq_start_vgroup_id; // Decoded vstart group id
 
   store_buffer_dec #(
     .VLEN(VLEN)
@@ -70,6 +70,7 @@ module tt_store_buffer #(
     logic [11:0]     vl;
     logic [VLEN-1:0] data;
     logic            last;
+    logic [11:0]     vstart; // vstart (for segment)
   } store_buffer_entry_t;
   store_buffer_entry_t buffer [7:0];
 
@@ -200,11 +201,13 @@ module tt_store_buffer #(
 
   // ========= DEQ "FSM" (only matters for segment mode) =========
 
-  logic [11:0] element_ctr; // element counter
+  logic [11:0] element_ctr_q; // element counter
+  logic [11:0] element_ctr;   // in the case of segment mode, dont start sending at the el_id of vstart
   logic [11:0] max_element_id;
   logic        deq_max_el_id_reached; // "constraint" used to determine if the deq has to move to next register
   logic        deq_vl_reached;        // "constraint" used to determine if the deq has reached vl
 
+  assign element_ctr           = (element_ctr_q == '0) ? buffer[rd_ptr].vstart : element_ctr_q;
   assign max_element_id        = ((VLEN/8) >> buffer[rd_ptr].eew) - 1'b1;
   assign element_id            = element_ctr & ((1'b1 << ($clog2(VLEN/8)-buffer[rd_ptr].eew)) - 1'b1);
   assign deq_max_el_id_reached = (element_id >= max_element_id);
@@ -214,15 +217,15 @@ module tt_store_buffer #(
   always_ff @(posedge clock) begin
     // reset element_ctr
     if (!reset_n) begin
-      element_ctr <= '0;
+      element_ctr_q <= '0;
     end
     // increment element_ctr
     else if (deq_fire && deq_is_segment && !buffer[rd_ptr].last) begin
       // reset is on last (since need the value ready at next "first")
       if (deq_vl_reached) begin
-        element_ctr <= '0;
+        element_ctr_q <= '0;
       end else begin
-        element_ctr <= element_ctr + 1'b1;
+        element_ctr_q <= element_ctr + 1'b1;
       end
     end
   end
@@ -276,6 +279,7 @@ module tt_store_buffer #(
         buffer[wr_ptr].vl    <= enq_vl;
         buffer[wr_ptr].data  <= enq_data;
         buffer[wr_ptr].last  <= enq_last;
+        buffer[wr_ptr].vstart <= enq_vstart;
         wr_ptr               <= wr_ptr + 1;
       end
       // deq case1 (free invalid buffer)

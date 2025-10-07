@@ -167,9 +167,11 @@ class OviWrapperCoreIO(implicit p: Parameters) extends BoomBundle
 
   val set_vtype = Output(Valid(new VType))
   val set_vl    = Output(Valid(UInt(log2Up(maxVLMax + 1).W)))
+  val reset_vstart = Output(Bool())
 
   val vconfig = Input(new VConfig())
   val vxrm    = Input(UInt(2.W))
+  val vstart  = Input(UInt(log2Ceil(vLen+1).W))
   val vGenIO  = Flipped(new boom.lsu.VGenIO)
   val debug_wb_vec_valid = Output(Bool())
   val debug_wb_vec_wdata = Output(UInt((vLen * 8).W))
@@ -203,12 +205,18 @@ class OviWrapperWrapper(implicit p: Parameters) extends BoomModule // Yeah...
   req_queue.io.brupdate     := io.brupdate
   req_queue.io.exception    := io.core.exception
 
+  val req_queue_uopc_is_vec    = ((req_queue.io.deq.bits.uop.uopc === uopVEC)      )
+  val req_queue_uopc_is_config = ((req_queue.io.deq.bits.uop.uopc === uopVSETVL)  ||
+                                  (req_queue.io.deq.bits.uop.uopc === uopVSETVLI) ||
+                                  (req_queue.io.deq.bits.uop.uopc === uopVSETIVLI) )
+
   ////////////////////////////////////////////////////////////////
 
   val vec_config_unit = Module(new VecConfigUnit())
 
-  io.core.set_vtype := vec_config_unit.io.set_vtype
-  io.core.set_vl    := vec_config_unit.io.set_vl
+  io.core.set_vtype    := vec_config_unit.io.set_vtype
+  io.core.set_vl       := vec_config_unit.io.set_vl
+  io.core.reset_vstart := false.B // default value
 
   ////////////////////////////////////////////////////////////////
 
@@ -217,6 +225,7 @@ class OviWrapperWrapper(implicit p: Parameters) extends BoomModule // Yeah...
   ovi_wrapper.io.vconfig <> io.core.vconfig
   ovi_wrapper.io.vxrm    <> io.core.vxrm
   ovi_wrapper.io.fcsr_rm <> io.fcsr_rm
+  ovi_wrapper.io.vstart  <> io.core.vstart
 
   ovi_wrapper.io.vGenIO <> io.core.vGenIO
 
@@ -235,10 +244,9 @@ class OviWrapperWrapper(implicit p: Parameters) extends BoomModule // Yeah...
   vec_config_unit.io.req.noenq()
   ovi_wrapper.io.req.noenq()
 
-  val uopc = req_queue.io.deq.bits.uop.uopc
-  when(uopc === uopVEC) {
-    ovi_wrapper.io.req     <> req_queue.io.deq
-  }.elsewhen((uopc === uopVSETVL || uopc === uopVSETVLI || uopc === uopVSETIVLI) && !ovi_wrapper.io.resp.valid) {
+  when(req_queue_uopc_is_vec) {
+    ovi_wrapper.io.req   <> req_queue.io.deq
+  }.elsewhen(req_queue_uopc_is_config && !ovi_wrapper.io.resp.valid) {
     vec_config_unit.io.req <> req_queue.io.deq
   }
 
@@ -248,6 +256,15 @@ class OviWrapperWrapper(implicit p: Parameters) extends BoomModule // Yeah...
   }.otherwise {
     io.resp <> vec_config_unit.io.resp
     ovi_wrapper.io.resp.nodeq()
+  }
+
+  // force reset vstart for next vec instruction
+  when (
+    (req_queue_uopc_is_vec) &&
+    (req_queue.io.deq.fire) &&
+    (io.core.vstart =/= 0.U)
+  ) {
+    io.core.reset_vstart := true.B
   }
 
   ////////////////////////////////////////////////////////////////

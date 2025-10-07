@@ -108,10 +108,15 @@ extends Module with VecLSGenConstants {
 
   // ======== Vstart Handling Constraints ========
   // vdb is always aligned to vreg, so readout of bytes below vstart happens in handling state
+  // dmem_bytes is the max number of bytes that can be read out for a cycle
   val vstart_readout_done_q = RegInit(false.B)
 
   val vstart_EEW_CTR = (vstart << el_mask_off)
   val vstart_el_id   = (vstart & ((1.U << el_mask_width) - 1.U))
+
+  val vstart_el_dist      = (vstart_el_id - ((EEW_CTR >> el_mask_off) & ((1.U << el_mask_width) - 1.U)))
+  val vstart_last_readout = (vstart_el_dist <= (io.vdb_data.valid_bytes >> eew_enc))
+  val vstart_el_id_inc    = Mux(vstart_last_readout, vstart_el_dist, (io.vdb_data.valid_bytes >> eew_enc))
 
   // ======== Outputs ========
 
@@ -123,14 +128,14 @@ extends Module with VecLSGenConstants {
                             ((state === State.VSTART_HANDLING) && !(vstart_readout_done_q))
   io.vdb_data.read_bytes := Mux(vdb_ready, Mux((state === State.PACKING),
                               (1.U << (ctr_inc_enc + eew_enc)), // normal increment case
-                              (vstart_el_id << eew_enc)), 0.U)  // vstart handling case
+                              (vstart_el_id_inc << eew_enc)), 0.U)  // vstart handling case
   io.vdb_data.read_all   := Mux(vdb_ready, (state === State.PACKING) && (vl_constraint_met || (use_seg_constraint && seg_constraint_met)), false.B) // last packet
   io.gen_active          := (state === State.PACKING) || (state === State.VSTART_HANDLING)
 
   val addr_off = (Mux(
     stride_dir,
     -(((EEW_CTR & ~((1.U<<seg_mask_width)-1.U)) - (EEW_CTR & ((1.U<<seg_mask_width)-1.U))) << eew_enc).asSInt, // negate everything except the seg_id (have to double negate because of type issues)
-    ((EEW_CTR) << eew_enc).asSInt
+     ((EEW_CTR) << eew_enc).asSInt
   ))
   
   // store packet
@@ -151,13 +156,18 @@ extends Module with VecLSGenConstants {
       when (io.start.fire) {
 
         // -- CTR reset --
-        val goto_handling = (vstart =/= 0.U)
         state := Mux(
-          goto_handling,
+          (vstart =/= 0.U),
           State.VSTART_HANDLING,
           State.PACKING
         )
-        EEW_CTR := vstart_EEW_CTR
+        EEW_CTR := Mux(
+          use_seg_constraint,
+          vstart_EEW_CTR,
+          (vstart_EEW_CTR & ~(((1.U<<el_mask_width)-1.U)<<el_mask_off)) // will be adjusted in vstart handling
+        )
+
+        vstart_readout_done_q := use_seg_constraint // readout not required for segment mode (bypass)
 
         // -- Init mem alignment --
         val high_off = (((1<<(ADDR_BREAK))-1).U - base_addr(ADDR_BREAK-1, 0)) >> eew_enc // EEWs from end of DMEM (high) to base_addr
@@ -173,16 +183,20 @@ extends Module with VecLSGenConstants {
       } .otherwise {
 
         // -- Next values calculation --
-        val vstart_readout_done = vstart_readout_done_q || (vdb_ready && vdb_valid)
+        val vdb_fire = (vdb_ready && vdb_valid)
+        val vstart_readout_done = vstart_readout_done_q || (vstart_last_readout && vdb_fire)
         val next_addr = (base_addr.asSInt + (Mux(
           stride_dir,
           -((vstart_EEW_CTR) << eew_enc).asSInt,
-          ((vstart_EEW_CTR) << eew_enc).asSInt
+           ((vstart_EEW_CTR) << eew_enc).asSInt
         ))).asUInt
 
         // -- Readout state (if not done) --
         when (!vstart_readout_done_q) {
           vstart_readout_done_q := vstart_readout_done
+          val next_EEW_CTR = (EEW_CTR & ~(((1.U<<el_mask_width)-1.U)<<el_mask_off)) |
+                            ((EEW_CTR &  (((1.U<<el_mask_width)-1.U)<<el_mask_off)) + (vstart_el_id_inc<<el_mask_off))
+          EEW_CTR := Mux(vdb_fire, next_EEW_CTR, EEW_CTR)
         }
 
         // -- State transition --

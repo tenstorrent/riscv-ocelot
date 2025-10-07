@@ -161,7 +161,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.v_reg    := base_v_reg + (current_seg_id << emul_enc) + current_v_group_id
   io.load_packet.bits.el_id    := current_el_id
   io.load_packet.bits.el_off   := dmem_off
-  io.load_packet.bits.el_count := Mux(skippable, (seg_inc_val << skip_enc), seg_inc_val)
+  io.load_packet.bits.el_count := Mux(skippable, (seg_count << skip_enc), seg_inc_val)
   io.load_packet.bits.sb_id    := sb_id
   io.load_packet.bits.mask_data  := Mux(skippable, 0.U, current_mask_data)
   io.load_packet.bits.mask_valid := is_mask
@@ -195,9 +195,9 @@ extends Module with VecLSGenConstants {
 
         // -- state config --
         state := Mux(
-          vstart === 0.U,
-          State.SKIPPING,
-          State.VSTART_HANDLING
+          (vstart =/= 0.U),
+          State.VSTART_HANDLING,
+          State.SKIPPING
         )
 
         // -- Initialize counters --

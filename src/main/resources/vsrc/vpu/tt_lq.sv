@@ -448,6 +448,7 @@ assign o_lq_fwddata  = ({32{lq_rf_fwd_en[2]}} & lq_fifo_load_write_data_2[31:0])
                        ({32{lq_rf_fwd_en[0]}} & lq_fifo_load_write_data_0[31:0]);
    
 // Generate the per port write data enable and write data
+// vstart handling for ports 0, 1, 2 (not other ports)
 assign lq_fifo_write_data_en[0]    = i_vex_mem_lqvld_1c;
 assign lq_fifo_write_data_addr[0]  = i_vex_mem_lqid_1c;
 assign lq_fifo_write_data_value[0] = LQ_DATA_WIDTH'({i_vex_mem_lqexc_1c, i_vex_mem_lqdata_1c});   

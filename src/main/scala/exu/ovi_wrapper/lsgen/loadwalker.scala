@@ -176,9 +176,8 @@ extends Module with VecLSGenConstants {
         val next_direction = Mux(is_index, io.index.index_value, stride)(63)
         
         // -- Input config --
-        val goto_handling = (vstart =/= 0.U) && !is_index // only strided need handling
         state := Mux(
-          goto_handling,
+          ((vstart =/= 0.U) && !is_index),
           State.VSTART_HANDLING,
           State.WALKING
         )

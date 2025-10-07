@@ -3,90 +3,96 @@
 `include "tt_briscv_pkg.svh"
 //`define BRISCV_LOG
 
-module tt_ex #(parameter INCL_VEC=0, VLEN=128, ADDRWIDTH=40, ST_DATA_WIDTH_BITS=128, LQ_DEPTH_LOG2=tt_briscv_pkg::LQ_DEPTH_LOG2)
-(
-   input 			    i_clk ,
-   input 			    i_reset_n,
+module tt_ex #(
+  parameter INCL_VEC=0, 
+  parameter VLEN=128, 
+  parameter ADDRWIDTH=40, 
+  parameter ST_DATA_WIDTH_BITS=128, 
+  parameter LQ_DEPTH_LOG2=tt_briscv_pkg::LQ_DEPTH_LOG2
+) (
+   input                                 i_clk,
+   input                                 i_reset_n,
 
-   input [36:0] 		    i_if_ex_deco ,
-   input 			    i_if_ex_predicted ,
-   input 			    i_if_ex_nextinstr ,
+   input        [36:0]                   i_if_ex_deco,
+   input                                 i_if_ex_predicted,
+   input                                 i_if_ex_nextinstr,
 
-   input tt_briscv_pkg::csr_t       i_csr,
+   input        tt_briscv_pkg::csr_t     i_csr,
+
    // From ID
-   input [LQ_DEPTH_LOG2-1:0] 	    i_id_ex_lqid,
-   input [4:0] 			    i_id_type ,
-   input 			    i_id_rf_wr_flag ,
-   input [ 4:0] 		    i_id_rf_wraddr ,
-   input 			    i_id_fp_rf_wr_flag ,
-   input [ 4:0] 		    i_id_fp_rf_wraddr ,
-   input [31:0] 		    i_id_immed_op ,
-   input 			    i_id_ex_rts ,
-   input 			    i_id_ex_vecldst,
-   input [ 4:0] 		    i_id_ex_Zb_instr ,
-   input 			    i_id_ex_units_rts ,
-   input [31:0] 		    i_id_ex_pc ,
-   input [31:0] 		    i_id_ex_instrn ,
-   input 			    tt_briscv_pkg::vecldst_autogen_s i_id_ex_vecldst_autogen, //Decode signal bundle
-   input 			    i_id_ex_instdisp ,
-   input          i_id_ex_last,
+   input        [LQ_DEPTH_LOG2-1:0]      i_id_ex_lqid,
+   input        [4:0]                    i_id_type,
+   input                                 i_id_rf_wr_flag,
+   input        [4:0]                    i_id_rf_wraddr,
+   input                                 i_id_fp_rf_wr_flag,
+   input        [4:0]                    i_id_fp_rf_wraddr,
+   input        [31:0]                   i_id_immed_op,
+   input                                 i_id_ex_rts,
+   input                                 i_id_ex_vecldst,
+   input        [4:0]                    i_id_ex_Zb_instr,
+   input                                 i_id_ex_units_rts,
+   input        [31:0]                   i_id_ex_pc,
+   input        [31:0]                   i_id_ex_instrn,
+   input        tt_briscv_pkg::vecldst_autogen_s i_id_ex_vecldst_autogen, // Decode signal bundle
+   input                                 i_id_ex_instdisp,
+   input                                 i_id_ex_last,
 
    // From RF
-   input [63:0] 		    i_rf_p0_reg ,
-   input [63:0] 		    i_rf_p1_reg ,
-   input [31:0] 		    i_fp_rf_p3_reg,
- 
+   input        [63:0]                   i_rf_p0_reg,
+   input        [63:0]                   i_rf_p1_reg,
+   input        [31:0]                   i_fp_rf_p3_reg,
+
    // From VRF
-   input [VLEN-1:0] 		    i_vmask_rddata, // ID stage signals
-   input [VLEN-1:0] 		    i_vs2_rddata, // ID stage signals
-   input [VLEN-1:0] 		    i_vs3_rddata, // ID stage signals
+   input        [VLEN-1:0]               i_vmask_rddata, // ID stage signals
+   input        [VLEN-1:0]               i_vs2_rddata,   // ID stage signals
+   input        [VLEN-1:0]               i_vs3_rddata,   // ID stage signals
 
    // From MEM
-   //input               i_mem_ex_skidbuffull,
-   input 			    i_mem_ex_rtr ,
+   //input                              i_mem_ex_skidbuffull,
+   input                                 i_mem_ex_rtr,
 
    // To ID and IF
-   output wire 			    o_ex_bp_fifo_pop ,
-   output wire 			    o_ex_is_some_branch ,
-   output 			    o_ex_branch_taken ,
-   output 			    o_ex_id_rtr ,
-   output logic     o_ex_last,
+   output wire                           o_ex_bp_fifo_pop,
+   output wire                           o_ex_is_some_branch,
+   output                                o_ex_branch_taken,
+   output                                o_ex_id_rtr,
+   output logic                          o_ex_last,
 
-   output logic 		    o_ex_dst_vld_1c, // forwarding control to ID
-   output logic [LQ_DEPTH_LOG2-1:0] o_ex_dst_lqid_1c, // forwarding control to ID
-   output logic [31:0] 		    o_ex_fwd_data_1c, // forwarding control to ID
+   output logic                          o_ex_dst_vld_1c, // forwarding control to ID
+   output logic [LQ_DEPTH_LOG2-1:0]      o_ex_dst_lqid_1c, // forwarding control to ID
+   output logic [31:0]                   o_ex_fwd_data_1c, // forwarding control to ID
 
-   output logic 		    o_ex_dst_vld_2c, // forwarding control to ID
-   output logic [LQ_DEPTH_LOG2-1:0] o_ex_dst_lqid_2c, // forwarding control to ID
-   output logic [31:0] 		    o_ex_fwd_data_2c, // forwarding control to ID
+   output logic                          o_ex_dst_vld_2c, // forwarding control to ID
+   output logic [LQ_DEPTH_LOG2-1:0]      o_ex_dst_lqid_2c, // forwarding control to ID
+   output logic [31:0]                   o_ex_fwd_data_2c, // forwarding control to ID
 
-   output 			    o_ex_bp_mispredict ,
-   output 			    o_ex_bp_mispredict_not_br,
-   output [31:0] 		    o_ex_bp_pc ,
+   output                                o_ex_bp_mispredict,
+   output                                o_ex_bp_mispredict_not_br,
+   output        [31:0]                  o_ex_bp_pc,
 
    // Exception flag update from FP
-   input 			    tt_briscv_pkg::csr_fp_exc i_exc_fp_ex_update,
+   input        tt_briscv_pkg::csr_fp_exc i_exc_fp_ex_update,
 
    // Exception flag update from VFP
-   input                            tt_briscv_pkg::csr_fp_exc i_exc_vfp_update,
+   input        tt_briscv_pkg::csr_fp_exc i_exc_vfp_update,
 
-   input 			    i_sat_csr,
+   input                                 i_sat_csr,
 
    // EX --> MEM LQ signals
-   output logic 		    o_ex_mem_lqvld_1c,
-   output logic [31:0] 		    o_ex_mem_lqdata_1c,
-   output logic [LQ_DEPTH_LOG2-1:0] o_ex_mem_lqid_1c,
-   
-   output logic 		    o_ex_mem_lqvld_2c,
-   output logic [31:0] 		    o_ex_mem_lqdata_2c,
-   output logic [LQ_DEPTH_LOG2-1:0] o_ex_mem_lqid_2c,
-   
-   // To MEM
-   output 			    tt_briscv_pkg::mem_skidbuf_s o_ex_mem_payload,
-   output wire 			    o_ex_mem_vld ,
+   output logic                          o_ex_mem_lqvld_1c,
+   output logic [31:0]                   o_ex_mem_lqdata_1c,
+   output logic [LQ_DEPTH_LOG2-1:0]      o_ex_mem_lqid_1c,
 
-   // Unique indentifier for debug
-   input [31:0] 		    i_reset_pc
+   output logic                          o_ex_mem_lqvld_2c,
+   output logic [31:0]                   o_ex_mem_lqdata_2c,
+   output logic [LQ_DEPTH_LOG2-1:0]      o_ex_mem_lqid_2c,
+
+   // To MEM
+   output      tt_briscv_pkg::mem_skidbuf_s o_ex_mem_payload,
+   output wire                           o_ex_mem_vld,
+
+   // Unique identifier for debug
+   input        [31:0]                   i_reset_pc
 );
 
 tt_briscv_pkg::vecldst_autogen_s ex_vecldst_autogen;
@@ -96,6 +102,7 @@ tt_briscv_pkg::mem_skidbuf_s ex_mem_payload, ex_mem_payload_q;
    
 // V-LD/ST misc signals
 logic [VLEN/8-1:0] ex_vecldst_iter_mask;
+logic [VLEN/8-1:0] ex_vecldst_vstart_mask;
 logic [$clog2(VLEN/8+1)-1:0] ex_vecldst_elem_per_iter;
 logic [$clog2(VLEN/8+1)-1:0] ex_vecldst_base_elem_done;  //Number of elements done till this iteration
 logic [$clog2(VLEN/8+1)-1:0] ex_vecldst_data_num_elem, ex_vecldst_idx_num_elem;
@@ -254,16 +261,31 @@ always_comb begin
    ex_mem_payload_fn.mem_store_data =  ex_mem_payload.mem_store ? ex_vecldst_store_val_fn : ex_vs3_reg;
 end   
    
-assign ex_vecldst_vl        = i_csr.v_vl;
-assign ex_vecldst_vl_div8   = ex_vecldst_vl >> 3;
-assign ex_vecldst_mask_num_elem = (ex_vecldst_vl == '0) ? 'h1 : ((ex_vecldst_vl[2:0] == 3'b0) ? ex_vecldst_vl_div8 : (ex_vecldst_vl_div8 + 1'b1));
+// I think that in this code, ldst_mask refers to vlm/vsm (not vl/vs v3 x6 v2 v0.t)
+assign ex_vecldst_vl = i_csr.v_vl;
+assign ex_vecldst_mask_num_elem = (ex_vecldst_vl == '0) ? 'h1 : ((ex_vecldst_vl + 'd7) >> 'd3); // the granularity that vl is considered in for vlm/vsm is different (so take the logceil for evl calc)
+
 assign ex_vecldst_nf        = 4'(ex_instrn[31:29] + 1'b1);
 assign ex_vecldst_num_lmul_iter = 4'h1 << (ex_vecldst_data_emul[2] ? (ex_vecldst_idx_emul[2] ? 2'h0 : ex_vecldst_idx_emul[1:0]) :
-				                                     (ex_vecldst_idx_emul[2] ? ex_vecldst_data_emul[1:0] : 
-                                                                                      ((ex_vecldst_idx_emul > ex_vecldst_data_emul) ? ex_vecldst_idx_emul[1:0] : ex_vecldst_data_emul[1:0])));
+				                                  (ex_vecldst_idx_emul[2] ? ex_vecldst_data_emul[1:0] : 
+                                          ((ex_vecldst_idx_emul > ex_vecldst_data_emul) ? ex_vecldst_idx_emul[1:0] : ex_vecldst_data_emul[1:0])));
 assign ex_vecldst_id_iter   = ex_vecldst_autogen.ldst_iter_cnt[5:0]; 
-assign ex_vecldst_id_iter_mask = ex_vecldst_autogen.ldst_mask ? ((ex_vecldst_vl == '0) ? {VLEN/8{1'b1}} : ({VLEN/8{1'b1}} << ex_vecldst_mask_num_elem)) : 
-                                     (({VLEN{1'b1}} << ex_vecldst_vl) >> ($clog2(VLEN))'(ex_vecldst_id_lmul_iter*ex_vecldst_elem_per_iter)) & {VLEN/8{~ex_vecldst_autogen.ldst_whole_register}};  // 1 mean masked. Decode will send all lmul iterations irrespective of vlen
+
+always_comb begin // 1 mean masked. Decode will send all lmul iterations irrespective of vlen
+  if (ex_vecldst_autogen.ldst_mask) begin
+    if (ex_vecldst_vl == '0) begin
+      ex_vecldst_id_iter_mask = {VLEN/8{1'b1}};
+    end else begin
+      ex_vecldst_id_iter_mask = ({VLEN/8{1'b1}} << ex_vecldst_mask_num_elem);
+    end
+  end else begin
+    ex_vecldst_id_iter_mask = (({VLEN{1'b1}} << ex_vecldst_vl) >> ($clog2(VLEN))'(ex_vecldst_id_lmul_iter*ex_vecldst_elem_per_iter)) & {VLEN/8{~ex_vecldst_autogen.ldst_whole_register}};
+  end
+end
+
+// vstart masking
+assign ex_vecldst_vstart_mask = ~(({VLEN{1'b1}} << i_csr.v_vstart) >> ($clog2(VLEN))'(ex_vecldst_id_lmul_iter*ex_vecldst_elem_per_iter));
+
 assign ex_vecldst_id_lmul_iter = 3'(ex_vecldst_id_iter%ex_vecldst_num_lmul_iter);   
 assign ex_vecldst_id_seg_iter  = 3'(ex_vecldst_id_iter/ex_vecldst_num_lmul_iter);   
    
@@ -287,7 +309,7 @@ assign ex_vecldst_base_elem_done = (ex_vecldst_id_lmul_iter*ex_vecldst_elem_per_
 					     
 assign ex_vecldst_store_val = (ex_vs3_reg >> ((ex_vs3_base + {ex_vecldst_elem_count,3'b0}) << ex_vecldst_data_eew));
 // Extract the mask bits for the iteration
-assign ex_vecldst_iter_mask = ({VLEN/8{~ex_instrn[25]}} & (~ex_vmask_reg >> ($clog2(VLEN))'(ex_vecldst_id_lmul_iter*ex_vecldst_elem_per_iter))) | ex_vecldst_id_iter_mask;
+assign ex_vecldst_iter_mask = ({VLEN/8{~ex_instrn[25]}} & (~ex_vmask_reg >> ($clog2(VLEN))'(ex_vecldst_id_lmul_iter*ex_vecldst_elem_per_iter))) | ex_vecldst_id_iter_mask | ex_vecldst_vstart_mask;
    
 assign ex_vecldst_elem_mask = ex_vecldst_iter_mask[ex_vecldst_elem_count];
 
@@ -396,11 +418,19 @@ assign ex_mem_payload.vecldst_idx = (ex_vecldst_elem_count + ex_vs3_base[$clog2(
 assign ex_mem_payload.vecldst_idx_last = '0;   
 
 // This is byte mask   
-for (genvar i=0; i<VLEN/8; i++) begin
-  assign ex_mem_payload.vecldst_byte_mask[i] = ex_type_vecldst & (ex_vecldst_data_eew[1:0] == 2'h3 ? ex_vecldst_iter_mask[i/8] :
-                                                                  ex_vecldst_data_eew[1:0] == 2'h2 ? ex_vecldst_iter_mask[i/4] :
-                                                                  ex_vecldst_data_eew[1:0] == 2'h1 ? ex_vecldst_iter_mask[i/2] :
-                                                                                                     ex_vecldst_iter_mask[i  ]  );
+always_comb begin
+  if (!ex_type_vecldst) begin
+    ex_mem_payload.vecldst_byte_mask = '0;
+  end else begin
+    for (int i = 0; i < VLEN/8; i++) begin
+      unique case (ex_vecldst_data_eew[1:0])
+        2'h0: ex_mem_payload.vecldst_byte_mask[i] = ex_vecldst_iter_mask[i/1];
+        2'h1: ex_mem_payload.vecldst_byte_mask[i] = ex_vecldst_iter_mask[i/2];
+        2'h2: ex_mem_payload.vecldst_byte_mask[i] = ex_vecldst_iter_mask[i/4];
+        2'h3: ex_mem_payload.vecldst_byte_mask[i] = ex_vecldst_iter_mask[i/8];
+      endcase
+    end
+  end
 end
     
 assign ex_mem_payload.mem_store_data = ex_store_val_fn;

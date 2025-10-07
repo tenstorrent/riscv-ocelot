@@ -22,6 +22,7 @@ class EnhancedFuncUnitReq(xLen: Int, vLen: Int)(implicit p: Parameters) extends 
   val vconfig = new VConfig()
   val vxrm = UInt(2.W)
   val fcsr_rm = UInt(3.W)
+  val vstart = UInt(log2Ceil(vLen+1).W)
   val req = new FuncUnitReq(xLen)
 }
 
@@ -34,6 +35,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
     val vconfig = Input(new VConfig())
     val vxrm    = Input(UInt(2.W))
     val fcsr_rm = Input(UInt(3.W))
+    val vstart = Input(UInt(log2Ceil(vLen+1).W))
 
     val vGenIO = Flipped(new boom.lsu.VGenIO)
 
@@ -174,6 +176,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
     vLSIQueue.io.enq.bits.vconfig := io.vconfig
     vLSIQueue.io.enq.bits.vxrm    := io.vxrm
     vLSIQueue.io.enq.bits.fcsr_rm := io.fcsr_rm
+    vLSIQueue.io.enq.bits.vstart  := io.vstart
 
     sbIdQueue.io.enq.enq(next_sb_id)
   }.otherwise {
@@ -761,7 +764,7 @@ MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbR
     io.fcsr_rm, // frm
     io.vxrm, // vxrm
     Cat(0.U((15-log2Ceil(vLen+1)).W), io.vconfig.vl), // vl
-    0.U(14.W) // vstart
+    Cat(0.U((14-log2Ceil(vLen+1)).W), io.vstart), // vstart
   )
   vpu.io.issue_vcsr_lmulb2 := io.vconfig.vtype.vlmul_sign
   vpu.io.dispatch_sb_id := dispatch_sb_id
