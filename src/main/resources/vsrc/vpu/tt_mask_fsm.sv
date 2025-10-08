@@ -62,12 +62,12 @@ module tt_mask_fsm #(
       is_indexed <= 0;
       eew <= 0;
     end
-    else if(i_is_indexed && i_memop_sync_start_next) begin
-      is_indexed <= 1;
+    else if(i_memop_sync_start_next) begin
+      is_indexed <= i_is_indexed;
       eew <= i_eew;
     end
-    else if(num_transactions_next == 0)
-      is_indexed <= 0;
+    // else if(num_transactions_next == 0)
+    //   is_indexed <= 0;
   end
 
   always_comb begin
