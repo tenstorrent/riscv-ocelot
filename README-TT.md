@@ -5,22 +5,22 @@ The added Risc-V Vector (RVV) Unit is based on ratified [Vector Extension 1.0 sp
 
 ![](docs/figures/rvv/Bobcat_Design_Overview_Simplified.png)
 
-The original RVV (RISC-V Vector) unit operates as an in-order pipeline and lacks support for register renaming. It also does not support speculative execution or flushing capabilities. To facilitate integration with the out-of-order Boom core, we have adopted the [Open Vector Interface](https://github.com/semidynamics/OpenVectorInterface), complemented by several microarchitectural (uArch) units that ensure functionality and performance optimization:
+The original RVV (RISC-V Vector) unit operates as an in-order pipeline and lacks support for register renaming. To facilitate integration with the out-of-order Boom core, we have adopted the [Open Vector Interface](https://github.com/semidynamics/OpenVectorInterface) with some extensions, complemented by several microarchitectural (uArch) units that ensure functionality and performance optimization:
 
 - **In-order Vector Issue Queue**: Functioning similarly to other issue queues, it monitors write-back signals from INT/FP/MEM units, activating vector instructions with dependencies on INT/FP registers.
 
-- **Request Queue**: This queue manages vector instructions that have resolved their INT/FP register dependencies. It employs a Point of No Return (PNR) mechanism to halt the process if the oldest vector instruction is speculative.
+- **Request Queue**: This queue manages vector instructions that have resolved their INT/FP register dependencies. It employs a Point of No Return (PNR) mechanism and supports speculative execution where instructions complete but results are discarded if speculation fails.
 
 - **Detached Vector Load/Store Unit**: In alignment with the OVI specifications, the core must generate vector load/store requests. Leveraging this requirement, we have created a fully detached unit to enhance performance, enabling unit-stride and strided loads to be executed out-of-order.
 
 - **Augmented Load/Store Unit**: Modifications to the existing Load/Store Unit (LSU) have been made to handle dependencies between scalar and vector Load/Store requests effectively.
 
-## Limitation & Known issues
-1. Doesn't support division, reciprocal, and square root instructions, including
-`vdiv, vdivu, vfsqrt, vfsqrt7, vfrec7, vfdiv, vfrdiv, vremu, vrem`
-2. The integer unit only supports rounding mode of vxrm==0 (round-to-nearest-up)
-3. Doesn't support exceptions on vector instruction.
-4. Doesn't support segment load/store (not supported by OVI v1.05)
+## OVI Extensions
+- **Segment Load/Store Operations**: The OVI specification does not explicitly define behavior for segment load/store operations. This implementation extends OVI by supporting segment operations with a conservative packing strategy - segments are packed within fields but not across element boundaries.
+
+## Limitations & Known Issues
+1. The integer unit only supports rounding mode of vxrm==0 (round-to-nearest-up)
+2. No vector exception support - vector instructions do not generate precise exceptions
 
 ## Enabling Vector Unit
 Vector Unit can be enabled by adding the following line in config-mixins.
@@ -45,7 +45,7 @@ make -C sims/vcs run-binary-debug-hex CONFIG=SmallBobcatConfig BINARY=$CHIPYARD/
 ```
 ## Slides
 [Bobcat Final Presentation](docs/Bobcat_Final_Presentation.pdf)
-
+[Bobtail Final Presentation](docs/Bobtail-Final-Presentation.pdf)
 
 ## Micro-Architecture
 ### Vector Pipeline
