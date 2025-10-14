@@ -329,7 +329,8 @@ module tt_vec_div_unit
 
    // FP division result storage (accumulates results per element)
    logic [VLEN-1:0] fp_div_result;
-   tt_briscv_pkg::csr_fp_exc fp_div_exc;
+   logic [VLEN-1:0] fp_div_exc;
+//   tt_briscv_pkg::csr_fp_exc fp_div_exc;
    
    // Integer division unit instantiation
    tt_int_div_simple #(
@@ -385,7 +386,8 @@ module tt_vec_div_unit
    
    // Separate output result multiplexing for sqrt, sqrt7, rec7, and integer operations
    logic [VLEN-1:0] sqrt_result, sqrt7_result, rec7_result, int_div_result;
-   tt_briscv_pkg::csr_fp_exc sqrt_exc, sqrt7_exc, rec7_exc;
+   logic [VLEN-1:0] sqrt_exc, sqrt7_exc, rec7_exc;
+//   tt_briscv_pkg::csr_fp_exc sqrt_exc, sqrt7_exc, rec7_exc;
    
    // Full precision square root results (vfsqrt)
 
@@ -398,20 +400,26 @@ module tt_vec_div_unit
          // Pack FP16 results into VLEN
          for (int i = 0; i < VLEN/16; i++) begin
             sqrt7_result[i*16 +: 16] = fp16_sqrt7_out[i];
+            sqrt7_exc[i*16 +: 5] = fp16_sqrt7_exc[i];
          end
+/*
          // Combine FP16 exceptions (OR all exception flags)
          for (int i = 0; i < VLEN/16; i++) begin
-            sqrt7_exc |= {fp16_sqrt7_exc[i][4], 1'b0, fp16_sqrt7_exc[i][3:0]};
+            sqrt7_exc |= {fp16_sqrt7_exc[i][4], fp16_sqrt7_exc[i][3:0]};
          end
+*/
       end else if (is_sqrt7_op && i_sew == 2'b10) begin // SEW=32
          // Pack FP32 results into VLEN  
          for (int i = 0; i < VLEN/32; i++) begin
             sqrt7_result[i*32 +: 32] = fp32_sqrt7_out[i];
+            sqrt7_exc[i*32 +: 5] = fp32_sqrt7_exc[i];
          end
+/*
          // Combine FP32 exceptions (OR all exception flags)
          for (int i = 0; i < VLEN/32; i++) begin
-            sqrt7_exc |= {fp32_sqrt7_exc[i][4], 1'b0, fp32_sqrt7_exc[i][3:0]};
+            sqrt7_exc |= {fp32_sqrt7_exc[i][4], fp32_sqrt7_exc[i][3:0]};
          end
+*/
       end
    end
 
@@ -424,20 +432,27 @@ module tt_vec_div_unit
          // Pack FP16 results into VLEN
          for (int i = 0; i < VLEN/16; i++) begin
             rec7_result[i*16 +: 16] = fp16_rec7_out[i];
+            rec7_exc[i*16 +: 5] = fp16_rec7_exc[i];
          end
+/*
          // Combine FP16 exceptions (OR all exception flags)
          for (int i = 0; i < VLEN/16; i++) begin
-            rec7_exc |= {fp16_rec7_exc[i][4], 1'b0, fp16_rec7_exc[i][3:0]};
+            rec7_exc |= {fp16_rec7_exc[i][4], fp16_rec7_exc[i][3:0]};
          end
+         end
+*/
       end else if (is_rec_op && i_sew == 2'b10) begin // SEW=32
          // Pack FP32 results into VLEN  
          for (int i = 0; i < VLEN/32; i++) begin
             rec7_result[i*32 +: 32] = fp32_rec7_out[i];
+            rec7_exc[i*32 +: 5] = fp32_rec7_exc[i];
          end
+/*
          // Combine FP32 exceptions (OR all exception flags)
          for (int i = 0; i < VLEN/32; i++) begin
-            rec7_exc |= {fp32_rec7_exc[i][4], 1'b0, fp32_rec7_exc[i][3:0]};
+            rec7_exc |= {fp32_rec7_exc[i][4], fp32_rec7_exc[i][3:0]};
          end
+*/
       end
    end
 
@@ -691,19 +706,20 @@ module tt_vec_div_unit
          // Update FP16 result when each division completes
          else if (int_div_state == INT_BUSY && (stored_is_fdiv_op | stored_is_sqrt_op) && stored_sew == 2'b01 && fp16_div_rts && fp16_div_rtr) begin
             fp_div_result[int_element_idx*16 +: 16] <= fp16_div_result;
-            fp_div_exc |= fp16_div_exc;  // Accumulate exceptions
+            fp_div_exc[int_element_idx*16 +: 5] <= fp16_div_exc;  // Accumulate exceptions
          end
          // Update FP32 result when each division completes
          else if (int_div_state == INT_BUSY && (stored_is_fdiv_op | stored_is_sqrt_op) && stored_sew == 2'b10 && fp32_div_rts && fp32_div_rtr) begin
             fp_div_result[int_element_idx*32 +: 32] <= fp32_div_result;
-            fp_div_exc |= fp32_div_exc;  // Accumulate exceptions
+            fp_div_exc[int_element_idx*32 +: 5] <= fp32_div_exc;  // Accumulate exceptions
          end
       end
    end
 
    // Final result selection
    logic [VLEN-1:0] compute_result, merged_result;
-   tt_briscv_pkg::csr_fp_exc compute_exc;
+   logic [VLEN-1:0] compute_exc, merged_exc;
+//   tt_briscv_pkg::csr_fp_exc compute_exc;
    
    always_comb begin
       if (is_sqrt7_op) begin
@@ -840,7 +856,7 @@ module tt_vec_div_unit
    // Use stored context for integer operations (INT_DONE), current context for FP operations
    always_comb begin
       merged_result = '0;
-      
+      merged_exc = '0;
       // Select mask information based on operation state
       
       if (sel_vm) begin
@@ -848,6 +864,7 @@ module tt_vec_div_unit
          for (int i = 0; i < VLEN/8; i++) begin
             if (vl_mask[i]) begin
                merged_result[i*8 +: 8] = compute_result[i*8 +: 8];  // Active elements
+               merged_exc[i*8 +: 5] = compute_exc[i*8 +: 5];  // Active elements
             end else begin
                // Tail elements: vta=1 -> agnostic (can be anything), vta=0 -> undisturbed (keep old)
                merged_result[i*8 +: 8] = sel_vta ? 8'hFF : sel_src3[i*8 +: 8];
@@ -859,13 +876,14 @@ module tt_vec_div_unit
             if (vl_mask[i]) begin
                if (active_mask[i]) begin
                   merged_result[i*8 +: 8] = compute_result[i*8 +: 8];  // Active masked elements
+                  merged_exc[i*8 +: 5] = compute_exc[i*8 +: 5];  // Active masked elements
                end else begin
                   // Masked-off elements: vma=1 -> agnostic (can be anything), vma=0 -> undisturbed (keep old)
                   merged_result[i*8 +: 8] = sel_vma ? 8'hFF : sel_src3[i*8 +: 8];
                end
             end else begin
                // Tail elements: vta=1 -> agnostic (can be anything), vta=0 -> undisturbed (keep old)
-               merged_result[i*8 +: 8] = sel_vta ? 8'hFF : sel_src3[i*8 +: 8];
+               merged_result[i*8 +: 8] = sel_vta ? 8'hFF : sel_src3[i*8 +: 8];   
             end
          end
       end
@@ -877,8 +895,15 @@ module tt_vec_div_unit
    assign o_result_valid = (is_sqrt7_op | is_rec_op) ? (i_id_vdiv_ex0_rts & (is_sqrt7_op | is_rec_op)) :
                           (int_div_state == INT_DONE);
    assign o_result       = merged_result;
-   assign o_result_exc   = is_sqrt7_op ? sqrt7_exc : 
-                          is_rec_op ? rec7_exc : '0;
+//   assign o_result_exc   = compute_exc;
    assign o_result_lqid  = stored_context_valid ? stored_ldqid : i_ldqid;
+
+   // Final exception reduction - OR all bits in merged_exc
+   always_comb begin
+      o_result_exc = '0;
+      for (int i = 0; i < VLEN/8; i++) begin
+         o_result_exc[4:0] |= merged_exc[i*8 +: 5];
+      end
+   end
 
 endmodule
