@@ -186,6 +186,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 
   // can only dequeue vLSIQueue when it is not in the middle of handling vector load store and
   // 1. memSyncStart 2. pop out outStanding 3. previously tried
+/*
   vLSIQueue.io.deq.ready := !inMiddle && (outStandingReq =/= 0.U || MemSyncStart || tryDeqVLSIQ)
   sbIdQueue.io.deq.ready := vLSIQueue.io.deq.ready
 
@@ -209,7 +210,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 
   // a new set has dequeued from vLSIQueue
   val newVGenConfig = vLSIQueue.io.deq.fire
-
+*/
   // ===============  OSC3 LSGEN DEQ CODE START ===============
 
   class DecoderInputBundle extends Bundle {
@@ -356,7 +357,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 
   // ===============  OSC3 LSGEN INSTANTIATION CODE END ===============
 
-
+/*
   val vAGen = Module (new VAgen (lsuDmemWidth, 66, vAGenDepth, vpuVlen, oviWidth))
 
   vAGen.io.configValid := false.B 
@@ -456,7 +457,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   val isIndex =                         instMop === 1.U || instMop === 3.U
   val isUnit =                                             instMop === 0.U 
 
-
+*/
   
     // val strideDetector = Module (new StrideDetector())
     // strideDetector.io.mem_size := Mux(isIndex, vLSIQueue.io.deq.bits.vconfig.vtype.vsew,
@@ -471,6 +472,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 
 
   // start of a new round of vector load store
+  /*
   when (newVGenConfig && !vGenEnable) {
     vGenEnable := true.B 
     vGenHold.req.uop := vLSIQueue.io.deq.bits.req.uop
@@ -537,14 +539,14 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
       vAGen.io.isIndex := true.B
     }
   }
-
+*/
 /*
    Fake load response for masked-off elements
 */
 
   val fakeLoadReturnQueue = Module(new Queue(UInt(34.W), fakeLoadDepth))
-  fakeLoadReturnQueue.io.enq.valid := s0l1 && (vAGen.io.popForce || vAGen.io.popForceLast)
-  fakeLoadReturnQueue.io.enq.bits := Cat(sbIdHold, vAGen.io.elemCount, vAGen.io.elemOffset, 0.U((11 - log2Ceil(byteVreg + 1)).W), vIdGen.io.outID, vIdGen.io.outVD)
+  //fakeLoadReturnQueue.io.enq.valid := s0l1 && (vAGen.io.popForce || vAGen.io.popForceLast)
+  //fakeLoadReturnQueue.io.enq.bits := Cat(sbIdHold, vAGen.io.elemCount, vAGen.io.elemOffset, 0.U((11 - log2Ceil(byteVreg + 1)).W), vIdGen.io.outID, vIdGen.io.outVD)
   fakeLoadReturnQueue.io.deq.ready := false.B 
 
 
@@ -554,7 +556,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   /*
      Output to LSU
   */ 
-
+/*
   io.vGenIO.req.valid := vGenEnable && ((!s0l1 && ((!vlIsZero && vDBcount =/= 0.U) || vlIsZero)) || s0l1) && vAGen.io.canPop
   io.vGenIO.req.bits.uop := vGenHold.req.uop
   io.vGenIO.req.bits.uop.mem_size := Mux(s0l1, addrBreak.U, vAGen.io.memSizeOut)
@@ -571,7 +573,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
   io.vGenIO.reqHelp.bits.isMask := vAGen.io.isMaskOut
   io.vGenIO.reqHelp.bits.Mask := vAGen.io.currentMaskOut
   io.vGenIO.reqHelp.bits.isFake := vAGen.io.isFake
-
+*/
   // ======== OSC3 LSGEN LSU OVERRIDE CODE START ========
 
   // Latch the load/store type when decoder fires to know which generator to use
@@ -662,7 +664,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
 /*
    FSM for V-helper
 */
-
+/*
   when ((io.vGenIO.req.valid && io.vGenIO.req.ready) || vAGen.io.popForce) {                                                         
     vdb.io.pop := io.vGenIO.req.bits.uop.uses_stq && !vlIsZero
     vAGen.io.pop := true.B 
@@ -673,7 +675,7 @@ val vIdGen = Module (new VIdGen(byteVreg, byteDmem))
       canStartAnother := true.B 
     }
   }
-
+*/
 
 
 /*
@@ -779,8 +781,8 @@ MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbR
    vpu.io.load_data := MemLoadData
    vpu.io.load_mask_valid := MemReturnMaskValid
    vpu.io.load_mask := MemReturnMask
-   vpu.io.store_credit := MemStoreCredit
-   vpu.io.mask_idx_credit := vAGen.io.release
+//   vpu.io.store_credit := MemStoreCredit
+//   vpu.io.mask_idx_credit := vAGen.io.release
 
   // ======== OSC3 LSGEN VPU OVERRIDE CODE START ========
 
@@ -897,7 +899,7 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   addResource("/vsrc/HardFloat/source/recFNToRecFN.v")
   addResource("/vsrc/HardFloat/source/divSqrtRecFN_small.v")
 }
-
+/*
 // M is dmem bandwidth, N is mask interface width (66), Depth is mask buffer width (4), VLEN is 256 for now
 class VAgen(val M: Int, val N: Int, val Depth: Int, val VLEN: Int, val OVILEN: Int)(implicit p: Parameters) extends Module {
     val k = log2Ceil(M/8+1)
@@ -1859,5 +1861,5 @@ class MaskSkipper(val VLEN: Int, val VDBLEN: Int) extends Module {
     }
 
 }
-
+*/
 
