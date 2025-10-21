@@ -3,7 +3,7 @@
 ## Overview
 The added Risc-V Vector (RVV) Unit is based on ratified [Vector Extension 1.0 specification](https://github.com/riscv/riscv-v-spec/releases/tag/v1.0)
 
-![](docs/figures/proj_bobtail/Bobtail_architecture.png)
+![](docs/figures/proj_bobtail/Bobtail_architecture.svg)
 
 The original RVV (RISC-V Vector) unit operates as an in-order pipeline and lacks support for register renaming. To facilitate integration with the out-of-order Boom core, we have adopted the [Open Vector Interface](https://github.com/semidynamics/OpenVectorInterface) with some extensions, complemented by several microarchitectural (uArch) units that ensure functionality and performance optimization:
 
