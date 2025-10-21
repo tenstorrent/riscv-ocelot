@@ -19,7 +19,7 @@ autogen_riscv_imabfv.v \
 lrm_assertions.sv \
 lrm_model.sv \
 tt_ascii_instrn_decode.sv \
-tt_briscv_pkg.vh \
+tt_briscv_pkg.svh \
 tt_cam_buffer.sv \
 tt_compare.sv \
 tt_decoded_mux.sv \
@@ -38,7 +38,7 @@ tt_reshape.sv \
 tt_rts_rtr_pipe_stage.sv \
 tt_scoreboard_ovi.sv \
 tt_skid_buffer.sv \
-tt_store_fsm.sv \
+tt_store_buffer.sv \
 tt_vec.sv \
 tt_vec_iadd.sv \
 tt_vec_idp.sv \
@@ -53,6 +53,7 @@ tt_vfp_lane.sv \
 tt_vfp_red.sv \
 tt_vfp_unit.sv \
 tt_vpu_ovi.sv \
+tt_idxldst_fsm.sv \
 tt_vpu_ovi_assert.sv
 set top tt_vpu_ovi
 elaborate -top $top -bbox_mul 256

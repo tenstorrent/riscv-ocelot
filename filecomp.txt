@@ -63,15 +63,15 @@ module tt_vpu_ovi #(
   localparam INCL_FP = 1;
   localparam STORE_CREDITS = 4;
 
-  localparam FLEN    = 32;
-  localparam FP_RF_RD_PORTS  = 4;
-  localparam FP_RF_WR_PORTS  = 2;
-  localparam FP_RF_ADDR_WIDTH    = 5;
-  localparam EXP_WIDTH   = 8;
-  localparam MAN_WIDTH   = 23;
-  localparam RS1_IDX = 0;
-  localparam RS2_IDX = 1;
-  localparam RS3_IDX = 2;
+  localparam                                          FLEN    = 32;
+  localparam                                          FP_RF_RD_PORTS  = 4;
+  localparam                                          FP_RF_WR_PORTS  = 2;
+  localparam                                          FP_RF_ADDR_WIDTH    = 5;
+  localparam                                          EXP_WIDTH   = 8;
+  localparam                                          MAN_WIDTH   = 23;
+  localparam                                          RS1_IDX = 0;
+  localparam                                          RS2_IDX = 1;
+  localparam                                          RS3_IDX = 2;
 
   tt_briscv_pkg::arr_lq_info_s  lq_broadside_info;
   logic [LQ_DEPTH-1:0][31:0]    lq_broadside_data;
@@ -191,15 +191,13 @@ module tt_vpu_ovi #(
   logic [LQ_DEPTH_LOG2-1:0] vex_mem_lqid_3c;
   tt_briscv_pkg::csr_fp_exc vex_mem_lqexc_3c;
 
-  // VEX Division --> MEM signals
-  logic                     vex_mem_lqvld_div;
-  logic [VLEN-1:0]          vex_mem_lqdata_div;
-  logic [LQ_DEPTH_LOG2-1:0] vex_mem_lqid_div;
-  tt_briscv_pkg::csr_fp_exc vex_mem_lqexc_div;
+  logic [63:0]  rf_vex_p0_reg;
+  logic [63:0]  rf_vex_p1_reg;
+  logic [63:0]  fprf_vex_p0_reg;
 
-  logic [63:0]  rf_vex_p0;
-  logic [63:0]  rf_vex_p1;
-  logic [63:0]  fprf_vex_p0;
+  logic [63:0]  rf_vex_p0_sel;
+  logic [63:0]  rf_vex_p1_sel;
+  logic [63:0]  fprf_vex_p0_sel;
 
  // stall the ID stage when there is a load/store 
   logic mask_fsm_stall;
@@ -212,7 +210,8 @@ module tt_vpu_ovi #(
   logic [63:0] read_issue_scalar_opnd;
   logic [39:0] read_issue_vcsr;
   logic        read_issue_vcsr_lmulb2;
-  logic [2:0]  read_issue_state;
+  logic        read_issue_committable;
+  logic        read_issue_poisoned;
 
   logic [VLEN*8-1:0] ocelot_instrn_commit_data;
   logic [7:0] ocelot_instrn_commit_mask;
@@ -222,6 +221,11 @@ module tt_vpu_ovi #(
   logic       ocelot_sat_csr;
   logic       ocelot_instrn_commit_valid;
 
+  // Hack to keep the vector CSRs constant for ocelot
+  logic [39:0] vcsr_reg;
+  logic        vcsr_lmulb2_reg;
+  logic [39:0] vcsr;
+  logic        vcsr_lmulb2;
   logic       vecldst_autogen_store;
   logic       vecldst_autogen_load;
 
@@ -241,15 +245,13 @@ module tt_vpu_ovi #(
   logic [63:0] scalar_opnd;
   logic [63:0] scalar_opnd_reg;
   logic [511:0] packed_load_data;
-  logic [511:0] shifted_load_data [7:0];  // Changed to 8×512-bit
-  logic [63:0]  byte_en           [7:0];  // Changed to 8×64-bit
+  logic [511:0] shifted_load_data;
+  logic [63:0]  byte_en;
   logic [4:0]   sb_vd;
   logic [2:0]   sb_ldb_start;
   logic [1:0]   sb_data_size;
-  logic [2:0]   sb_emul;
   logic [1:0]   sb_index_size;
   logic [2:0]   sb_load_stride_eew;
-  logic [2:0]   sb_load_seg;
   logic         sb_drain_load_buffer;
   logic [2:0]   sb_drain_lqid_start;
   logic [2:0]   sb_drain_ldb_start;
@@ -327,23 +329,37 @@ module tt_vpu_ovi #(
     .read_issue_vcsr(read_issue_vcsr),
     .read_issue_vcsr_lmulb2(read_issue_vcsr_lmulb2),
 
-    .read_issue_state(read_issue_state)
+    .read_issue_committable(read_issue_committable),
+    .read_issue_poisoned(read_issue_poisoned)
   );
 
   assign issue_credit = read_valid && ocelot_read_req;
 
+  always_ff @(posedge clk) begin
+    if(!reset_n) begin
+      rf_vex_p0_reg   <= '0;
+      rf_vex_p1_reg   <= '0;
+      fprf_vex_p0_reg <= '0;
+    end
+    else if (read_valid &&
+        ocelot_read_req   ) begin
+        rf_vex_p0_reg   <= read_issue_scalar_opnd;
+        rf_vex_p1_reg   <= read_issue_scalar_opnd;
+        fprf_vex_p0_reg <= read_issue_scalar_opnd;
+    end
+  end
+
+  assign rf_vex_p0_sel   = (read_valid && ocelot_read_req) ? read_issue_scalar_opnd   : rf_vex_p0_reg;
+  assign rf_vex_p1_sel   = (read_valid && ocelot_read_req) ? read_issue_scalar_opnd   : rf_vex_p1_reg;
+  assign fprf_vex_p0_sel = (read_valid && ocelot_read_req) ? read_issue_scalar_opnd : fprf_vex_p0_reg;
+
   tt_briscv_pkg::csr_t csr_de0, csr_ex0;
-  assign csr_de0.v_vl    = read_issue_vcsr[$clog2(VLEN+1)-1+14:14];
-  assign csr_de0.v_vsew  = read_issue_vcsr[38:36];
-  assign csr_de0.v_lmul  = {read_issue_vcsr_lmulb2, read_issue_vcsr[35:34]};
-  assign csr_de0.v_vxrm  = read_issue_vcsr[30:29];
-  assign csr_de0.v_vstart= read_issue_vcsr[$clog2(VLEN+1)-1:0]; // [13:0]
-  assign csr_de0.frm     = read_issue_vcsr[33:31];
+  assign csr_de0.v_vl    = vcsr[$clog2(VLEN+1)-1+14:14];
+  assign csr_de0.v_vsew  = vcsr[38:36];
+  assign csr_de0.v_lmul  = {vcsr_lmulb2, vcsr[35:34]};
+  assign csr_de0.v_vxrm  = vcsr[30:29];
+  assign csr_de0.frm     = vcsr[33:31];
 
-  // ID -> LQ (ROB) signals
-  logic [2:0] id_mem_state;
-
-  logic vex_div_busy;
   tt_id #(
     .LQ_DEPTH(LQ_DEPTH),
     .LQ_DEPTH_LOG2(LQ_DEPTH_LOG2), 
@@ -355,23 +371,19 @@ module tt_vpu_ovi #(
     .INCL_VEC(INCL_VEC),
     .INCL_FP(INCL_FP)
   ) id (
-    .i_clk                                 (clk),    
+    .i_clk                                 (clk             ),    
     .i_reset_n                             (reset_n), 
 
     // Dispatch signals
-    .dispatch_sb_id                        (dispatch_sb_id),
-    .dispatch_next_senior                  (dispatch_next_senior),
-    .dispatch_kill                         (dispatch_kill),
+    .dispatch_sb_id(dispatch_sb_id),
+    .dispatch_next_senior(dispatch_next_senior),
+    .dispatch_kill(dispatch_kill),
 
     .i_csr                                 (csr_de0),             
-    .o_csr                                 (csr_ex0),  
-    .o_id_rf_vex_p0                        (rf_vex_p0),
-    .o_id_rf_vex_p1                        (rf_vex_p1),
-    .o_id_fprf_vex_p0                      (fprf_vex_p0),
+    .o_csr                                 (csr_ex0),             
 
     .i_if_instrn                           (read_issue_inst),       
     .i_if_pc                               ('0),           
-    .i_if_scalar_opnd                      (read_issue_scalar_opnd),
     .i_if_instrn_rts                       (read_valid),    
     .o_id_instrn_rtr                       (ocelot_read_req),    
 
@@ -387,7 +399,6 @@ module tt_vpu_ovi #(
     .o_v_vm                                (v_vm              ),    
 
     // EX Interface
-    .i_div_resource_busy                   (vex_div_busy),
     .o_id_ex_rts                           (id_ex_rts),             
     .i_ex_rtr                              (ex_id_rtr         ),    
     .o_id_ex_pc                            (id_ex_pc),        
@@ -442,34 +453,42 @@ module tt_vpu_ovi #(
     .i_mem_id_lqnxtid                      (mem_id_lqnxtid[LQ_DEPTH_LOG2-1:0]),
 
     .o_is_whole_memop                      (id_is_whole_memop),
-    .o_is_masked_memop                     (id_is_masked_memop),
+    .o_is_masked_memop                      (id_is_masked_memop),
     .o_is_indexldst                        (id_is_indexldst),
     .o_is_maskldst                         (id_is_maskldst),
     .i_if_sb_id                            (read_issue_sb_id),
     .o_id_sb_id                            (id_sb_id),
 
-    .i_if_state                            (read_issue_state),
-    .o_id_state                            (id_mem_state)
+    .i_if_committable                      (read_issue_committable),
+    .o_id_committable                      (),
+    .i_if_poisoned                         (read_issue_poisoned),
+    .o_id_poisoned                         (),
   );
 
   //////////
   // EX
   assign vecldst_autogen_store = id_ex_vecldst_autogen.store;
   assign vecldst_autogen_load = id_ex_vecldst_autogen.load;
-  
+
   logic squash_id_ex_rts;
-  tt_idxldst_fsm idxldst_fsm (
-    .i_clk(clk),
-    .i_reset_n(reset_n),
-    .i_is_indexldst(id_is_indexldst),
-    .i_id_ex_rts(id_ex_rts),
-    .i_ex_rtr(ex_id_rtr),
-    .i_last_uop(id_ex_last),
-    .i_instrn(id_ex_instrn),
-    .i_vtype_vsew(csr_ex0.v_vsew),
-    .i_vtype_vlmul(csr_ex0.v_lmul),
-    .o_squash_id_ex_rts(squash_id_ex_rts)
-  );
+  always_comb begin
+     squash_id_ex_rts = 1'b0;
+
+     if (id_is_indexldst) begin
+        case ({id_ex_instrn[14:12], csr_ex0.v_vsew[1:0]})
+           // index : data = 2
+           5'b101_00,
+           5'b110_01,
+           5'b111_10: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[0] != 1'b0;
+           // index : data = 4
+           5'b110_00,
+           5'b111_01: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[1:0] != 2'b00;
+           // index : data = 4
+           5'b111_00: squash_id_ex_rts = id_ex_rts && id_ex_vecldst_autogen.ldst_iter_cnt[2:0] != 3'b000;
+           default  : squash_id_ex_rts = 1'b0;
+        endcase
+     end
+  end
  
   tt_ex #(
     .INCL_VEC(INCL_VEC),
@@ -508,8 +527,8 @@ module tt_vpu_ovi #(
     .i_id_ex_vecldst_autogen(id_ex_vecldst_autogen),
     
     // From RF
-    .i_rf_p0_reg         (rf_vex_p0),
-    .i_rf_p1_reg         (rf_vex_p1),
+    .i_rf_p0_reg         (rf_vex_p0_reg),
+    .i_rf_p1_reg         (rf_vex_p1_reg),
     .i_fp_rf_p3_reg      ('0),
     
     // From VRF
@@ -604,7 +623,6 @@ module tt_vpu_ovi #(
     .i_id_vec_autogen      (id_vec_autogen),        
     .o_sat_csr             (ocelot_sat_csr),
     // ID Interface
-    .o_vex_div_busy        (vex_div_busy),
     .i_id_vex_rts          (id_vex_rts),            
     .o_vex_id_rtr          (vex_id_rtr),            
     .i_id_ex_vecldst       (id_ex_vecldst),         
@@ -619,8 +637,8 @@ module tt_vpu_ovi #(
     .o_ignore_dstincr      (ignore_dstincr),        
     .o_ignore_srcincr      (ignore_srcincr),        
     // RegFile Interface
-    .i_rf_vex_p0           (rf_vex_p0),       
-    .i_fprf_vex_p0         (fprf_vex_p0),
+    .i_rf_vex_p0           (rf_vex_p0_sel),       
+    .i_fprf_vex_p0         (fprf_vex_p0_sel),
     .i_vrf_p0_rddata       (vrf_p0_rddata),  
     .i_vrf_p1_rddata       (vrf_p1_rddata),  
     .i_vrf_p2_rddata       (vrf_p2_rddata),  
@@ -638,11 +656,6 @@ module tt_vpu_ovi #(
     .o_vex_mem_lqdata_3c   (vex_mem_lqdata_3c), 
     .o_vex_mem_lqexc_3c    (vex_mem_lqexc_3c),      
     .o_vex_mem_lqid_3c     (vex_mem_lqid_3c), 
-    // Division connections
-    .o_vex_mem_lqvld_div   (vex_mem_lqvld_div),      
-    .o_vex_mem_lqdata_div  (vex_mem_lqdata_div), 
-    .o_vex_mem_lqexc_div   (vex_mem_lqexc_div),      
-    .o_vex_mem_lqid_div    (vex_mem_lqid_div), 
     .i_mem_vrf_wr          (mem_vrf_wr),            
     .i_mem_vrf_wraddr      (mem_vrf_wraddr),   
     .i_mem_vrf_wrdata      (mem_vrf_wrdata), 
@@ -675,10 +688,6 @@ tt_lq #(
   .i_clk            (clk                    ),
   .i_reset_n        (reset_n                ),
 
-  .dispatch_sb_id(dispatch_sb_id),
-  .dispatch_next_senior(dispatch_next_senior),
-  .dispatch_kill(dispatch_kill),
-
   .i_bypass_disable (1'b0),
 
   .i_vecld_elem_sent(ex_mem_payload.vecldst_vld & 
@@ -691,7 +700,6 @@ tt_lq #(
   .o_mem_id_lqnxtid(mem_id_lqnxtid),
   .i_id_mem_lqalloc(id_mem_lqalloc),
   .i_id_mem_lqinfo(id_mem_lqinfo),
-  .i_id_mem_state(id_mem_state),
 
   // Skid buffer signals
   .i_skidbuf_lqvld_1c(ex_mem_lqvld_1c),
@@ -732,12 +740,6 @@ tt_lq #(
   .i_vex_mem_lqexc_3c(vex_mem_lqexc_3c),
   .i_vex_mem_lqid_3c(vex_mem_lqid_3c),
 
-   // Division connections
-   .i_vex_mem_lqvld_div(vex_mem_lqvld_div),
-   .i_vex_mem_lqdata_div(vex_mem_lqdata_div),
-   .i_vex_mem_lqexc_div(vex_mem_lqexc_div),
-   .i_vex_mem_lqid_div(vex_mem_lqid_div),
-
   // Load return data
   .i_data_vld_0(drain_load_buffer),
   .i_data_vld_cancel_0('0),
@@ -762,7 +764,7 @@ tt_lq #(
   .o_lq_mem_load(),
 
   // LQ Read signals
-  .i_lq_rden(lq_rden || lq_poison_rden),
+  .i_lq_rden(lq_rden),
   .o_lq_rdid(lq_rdid),
   .o_lq_rdinfo(lq_rdinfo),
   .o_lq_rdmemaddr(),
@@ -838,7 +840,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
         lq_rd_ptr        <= '0;
         mem_id_lqnxtid_r <= '0;
     end else begin
-        if (lq_rden || lq_poison_rden) begin
+        if (lq_rden) begin
           lq_rd_ptr <= lq_rd_ptr + 1;
         end
 
@@ -904,7 +906,6 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .i_issue_sb_id(issue_sb_id),
     .i_issue_inst(issue_inst),
     .i_issue_vsew(issue_vcsr[38:36]),
-    .i_issue_vlmul({issue_vcsr_lmulb2, issue_vcsr[35:34]}),
     .i_issue_scalar_opnd(issue_scalar_opnd),
     .i_vd(id_ex_instrn[11:7]),
     .i_rd(ocelot_instrn_commit_data[63:0]),
@@ -940,10 +941,8 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .o_vd(sb_vd),
     .o_ldb_start(sb_ldb_start),
     .o_data_size(sb_data_size),
-    .o_emul(sb_emul), // effective positive value for load purposes
     .o_index_size(sb_index_size),
     .o_load_stride_eew(sb_load_stride_eew),
-    .o_load_seg(sb_load_seg),
 
     .o_drain_load_buffer(sb_drain_load_buffer),
     .i_draining_load_buffer(drain_load_buffer),
@@ -964,6 +963,18 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .o_debug_commit_mask(sb_debug_commit_mask)
   );
 
+  assign vcsr        = ocelot_read_req && read_valid ? read_issue_vcsr : vcsr_reg;
+  assign vcsr_lmulb2 = ocelot_read_req && read_valid ? read_issue_vcsr_lmulb2 : vcsr_lmulb2_reg;
+
+  always_ff@(posedge clk) begin
+    if(!reset_n)
+      {vcsr_reg, vcsr_lmulb2_reg} <= 0;
+    else if(read_valid && ocelot_read_req) begin
+      vcsr_reg <= read_issue_vcsr;
+      vcsr_lmulb2_reg <= read_issue_vcsr_lmulb2;
+    end
+  end
+
   assign v_reg = load_seq_id[4:0];
   assign el_id = load_seq_id[15:5];
   assign el_off = load_seq_id[21:16];
@@ -978,10 +989,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
                 id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW
     index_size =  id_ex_instrn[14:12] == 3'b000 ? 2'd0 : // 8-bit EEW
                   id_ex_instrn[14:12] == 3'b101 ? 2'd1 : // 16-bit EEW
-                  id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW   
-    // index_size =  id_ex_instrn[13:12] == 2'b00 ? 2'd0 : // 8-bit EEW
-    //               id_ex_instrn[13:12] == 2'b01 ? 2'd1 : // 16-bit EEW
-    //               id_ex_instrn[13:12] == 2'b10 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW      
+                  id_ex_instrn[14:12] == 3'b110 ? 2'd2 : 2'd3; // 32-bit, 64-bit EEW      
     load_stride = !id_is_indexldst ? scalar_opnd : 
                 csr_ex0.v_vsew == 3'b000 ? 1 : // 8-bit EEW
                 csr_ex0.v_vsew == 3'b101 ? 2 : // 16-bit EEW
@@ -1036,11 +1044,8 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .load_valid(load_valid),
     .load_data(load_data),
     .load_seq_id(load_seq_id),
-    .sb_vd(sb_vd),
     .stride(sb_load_stride_eew),
-    .load_seg(sb_load_seg),
     .eew(sb_data_size), 
-    .emul(sb_emul),
 
     .packed_data(shifted_load_data),
     .byte_en(byte_en)
@@ -1081,26 +1086,14 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
   assign drain_complete_valid = drain_load_buffer;
   assign drain_complete_ldb_idx = load_buffer_rptr;
 
-  logic [10:0] lrm_ldb_wr_idx;
-  logic [10:0] lrm_ldb_sh_idx;
-  // should work for fractional emul (effective positive calculated in scoreboard)
-  assign lrm_ldb_wr_idx = (((v_reg - sb_vd) & ((5'b1 << sb_emul[1:0]) - 1'b1)) + sb_ldb_start); 
-
-  integer k1, k2;
+  integer k;
   always @(posedge clk) begin
-    // reset
-    if(!reset_n) begin
-      for(k2=0; k2<8; k2=k2+1)
-        load_buffer[k2] <= 0;
-    end
-    // load_valid
+    if(!reset_n)
+      for(k=0; k<8; k=k+1)
+        load_buffer[k] <= 0;
     else if(load_valid) begin
-      for(k1=0; k1<8; k1=k1+1)      // segment output of lrm_model
-        for(k2=0; k2<VLEN; k2=k2+8) // element byte into ldb
-          if (byte_en[k1][k2/8]) begin
-            lrm_ldb_sh_idx = (k1<<sb_emul); // shift index (seg)
-            load_buffer[((lrm_ldb_wr_idx+lrm_ldb_sh_idx)%8)][k2+:8] <= shifted_load_data[k1][k2+:8];
-          end
+      for(k=0; k<VLEN; k=k+8)
+        load_buffer[(v_reg-sb_vd+sb_ldb_start)%8][k+:8] <= byte_en[k/8] ? shifted_load_data[k+:8] : load_buffer[(v_reg-sb_vd+sb_ldb_start)%8][k+:8];
     end
   end
 
@@ -1128,48 +1121,34 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
   logic         store_valid_nxt;
   logic [511:0] store_data_nxt;
 
-  // ========= Store Buffer =========
-  
-  logic         store_buffer_ready;
-  logic         store_buffer_valid;
-  logic [511:0] store_buffer_data;
-  
-  tt_store_buffer #(
+  tt_store_fsm #(
     .VLEN(VLEN),
-    .CREDITS(STORE_CREDITS)
-  ) store_buffer (
-    .clock(clk),
-    .reset_n(reset_n),
-    
-    // Control signals (same as store FSM)
-    .enq_ready(store_buffer_ready),
-    .enq_valid(id_ex_units_rts && !id_mem_lqinfo.squash_vec_wr_flag && vecldst_autogen_store),
-    .enq_first(id_ex_vecldst_autogen.ldst_iter_cnt == 0),
-    .enq_last(id_ex_last),
-    
-    // Raw inputs (what the buffer expects)
-    .enq_sb_id(id_sb_id),                  // Scoreboard ID
-    .enq_instrn(id_ex_instrn),             // Raw instruction
-    .enq_vtype_vl({3'b0, csr_ex0.v_vl}),   // VL from CSR (padded to 12 bits)
-    .enq_vtype_vsew(csr_ex0.v_vsew),       // SEW from CSR  
-    .enq_vtype_vlmul(csr_ex0.v_lmul),      // LMUL from CSR
-    .enq_vstart({3'b0, csr_ex0.v_vstart}),        // VSTART from CSR
-    .enq_data(vs3_rddata),                 // Store data from VRF
-    
-    // Outputs
-    .return_credit(store_credit),     // Input: credit availability
-    .store_valid(store_buffer_valid),
-    .store_data(store_buffer_data)
+    .STORE_CREDITS(STORE_CREDITS)
+  ) store_fsm (
+    .i_clk(clk),
+    .i_reset_n(reset_n),
+    .i_uop_fire(id_ex_units_rts && ex_id_rtr && !id_mem_lqinfo.squash_vec_wr_flag),
+    .i_uop_first(id_ex_vecldst_autogen.ldst_iter_cnt == 0),
+    .i_uop_last(id_ex_last),
+    .i_uop_is_store(vecldst_autogen_store),
+    .i_uop_is_vsm(id_is_maskldst),
+    .i_uop_is_vsx(id_is_indexldst),
+    .i_uop_is_vsr(id_is_whole_memop),
+    .i_uop_index_size(index_size),
+    .i_uop_data_size(data_size),
+    .i_uop_vl(csr_ex0.v_vl),
+    .i_uop_nfield(id_ex_instrn[31:29]),
+    .i_store_data(vs3_rddata),
+    .i_store_credit(store_credit),
+    .o_store_valid(store_valid_nxt),
+    .o_store_data(store_data_nxt),
+    .o_stall(store_fsm_stall)
   );
-
-  assign store_valid_nxt = store_buffer_valid;
-  assign store_data_nxt  = store_buffer_data;
-  assign store_fsm_stall = !store_buffer_ready; // cant add other inst properties like "is_store" since replay (which drives those qualities) is driven by the stall through rtr
 
 
   tt_mask_fsm #(
     .VLEN(VLEN),
-    .MASK_CREDITS(2)
+    .MASK_CREDITS(2)'
   ) mask_fsm (
     .i_clk(clk),
     .i_reset_n(reset_n),
@@ -1182,7 +1161,6 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .i_last_index(id_ex_last),
     .o_draining_mask_idx(mask_fsm_stall),
     .i_vl(csr_ex0.v_vl),
-    .i_vstart(csr_ex0.v_vstart),
     .i_eew(index_size),
     .i_mask_idx_credit(mask_idx_credit),
     .o_mask_idx_item(mask_idx_item),

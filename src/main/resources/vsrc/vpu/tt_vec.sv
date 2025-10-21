@@ -1,71 +1,77 @@
 // See LICENSE.TT for license details.
 `include "autogen_defines.h"
 `include "briscv_defines.h"
-`include "tt_briscv_pkg.vh"
-module tt_vec #(parameter
-   VLEN=256,
-   XLEN=64
-)
-(
-              input                                           i_clk,
-              input                                           i_reset_n,
+`include "tt_briscv_pkg.svh"
+module tt_vec #(
+  parameter
+    VLEN=256,
+    XLEN=64
+) (
+  input                                           i_clk,
+  input                                           i_reset_n,
 
-              input                                           tt_briscv_pkg::csr_t i_csr,
-              input                                           i_v_vm, //Instr [bit 25]  
-                    
-              input                                           tt_briscv_pkg::vec_autogen_s i_id_vec_autogen, //Decode signal bundle
+  input                                           tt_briscv_pkg::csr_t i_csr,
+  input                                           i_v_vm, //Instr [bit 25]  
+        
+  input                                           tt_briscv_pkg::vec_autogen_s i_id_vec_autogen, //Decode signal bundle
 
-              //From Mem; used to both write in the RF and also to bypass the write.
-              input                                           i_mem_vrf_wr,
-              input [4:0]                                     i_mem_vrf_wraddr,
-              input [VLEN-1:0]                                i_mem_vrf_wrdata,
-              input                                           i_mem_ex_rtr ,
-              
-              // From VRF
-              input [VLEN-1:0]                                i_vrf_p0_rddata,
-              input [VLEN-1:0]                                i_vrf_p1_rddata,
-              input [VLEN-1:0]                                i_vrf_p2_rddata,
-              input [VLEN-1:0]                                i_vrf_vm0_rddata,
-         
-              output logic                                    o_vex_mem_lqvld_1c,
-              output logic [VLEN-1:0]                         o_vex_mem_lqdata_1c,
-              output logic [tt_briscv_pkg::LQ_DEPTH_LOG2-1:0] o_vex_mem_lqid_1c,
-              output tt_briscv_pkg::csr_fp_exc                o_vex_mem_lqexc_1c,
-              
-              output logic                                    o_vex_mem_lqvld_2c,
-              output logic [VLEN-1:0]                         o_vex_mem_lqdata_2c,
-              output logic [tt_briscv_pkg::LQ_DEPTH_LOG2-1:0] o_vex_mem_lqid_2c,
-              output tt_briscv_pkg::csr_fp_exc                o_vex_mem_lqexc_2c,
-              
-              output logic                                    o_vex_mem_lqvld_3c,
-              output logic [VLEN-1:0]                         o_vex_mem_lqdata_3c,
-              output logic [tt_briscv_pkg::LQ_DEPTH_LOG2-1:0] o_vex_mem_lqid_3c,
-              output tt_briscv_pkg::csr_fp_exc                o_vex_mem_lqexc_3c,
+  //From Mem; used to both write in the RF and also to bypass the write.
+  input                                           i_mem_vrf_wr,
+  input [4:0]                                     i_mem_vrf_wraddr,
+  input [VLEN-1:0]                                i_mem_vrf_wrdata,
+  input                                           i_mem_ex_rtr ,
 
-              output logic                                    o_sat_csr,
+  // From VRF
+  input [VLEN-1:0]                                i_vrf_p0_rddata,
+  input [VLEN-1:0]                                i_vrf_p1_rddata,
+  input [VLEN-1:0]                                i_vrf_p2_rddata,
+  input [VLEN-1:0]                                i_vrf_vm0_rddata,
 
-              //From ID
-              input                                           i_id_vex_rts ,
-              input                                           i_id_ex_vecldst,
-              input [31:0]                                    i_id_ex_instrn ,
-              input                                           i_id_replay,
-              input [4:0]                                     i_id_type, 
-              
-              //To ID
-              output                                          o_vex_id_rtr,
-              output logic [4:0]                              o_iterate_addrp0,
-              output logic [4:0]                              o_iterate_addrp1,
-              output logic [4:0]                              o_iterate_addrp2,
-              output logic                                    o_vex_id_incr_addrp2,
-              output logic                                    o_ignore_lmul,
-              output logic                                    o_ignore_dstincr,
-              output logic                                    o_ignore_srcincr, //This should be set for instructions that are processing mask bits.(eg: vmand.mm, viota vid ,vmsof...)
-              //From Int RF
-              input [XLEN-1:0]                                    i_rf_vex_p0, //int to vrf moves; note this align with 0a, and read pre flop.
-              
-              input [XLEN-1:0]                                    i_fprf_vex_p0  //fp to vrf moves; note this align with 0a, and read pre flop.                   
-              );
+  output logic                                    o_vex_mem_lqvld_1c,
+  output logic [VLEN-1:0]                         o_vex_mem_lqdata_1c,
+  output logic [tt_briscv_pkg::LQ_DEPTH_LOG2-1:0] o_vex_mem_lqid_1c,
+  output tt_briscv_pkg::csr_fp_exc                o_vex_mem_lqexc_1c,
 
+  output logic                                    o_vex_mem_lqvld_2c,
+  output logic [VLEN-1:0]                         o_vex_mem_lqdata_2c,
+  output logic [tt_briscv_pkg::LQ_DEPTH_LOG2-1:0] o_vex_mem_lqid_2c,
+  output tt_briscv_pkg::csr_fp_exc                o_vex_mem_lqexc_2c,
+
+  output logic                                    o_vex_mem_lqvld_3c,
+  output logic [VLEN-1:0]                         o_vex_mem_lqdata_3c,
+  output logic [tt_briscv_pkg::LQ_DEPTH_LOG2-1:0] o_vex_mem_lqid_3c,
+  output tt_briscv_pkg::csr_fp_exc                o_vex_mem_lqexc_3c,
+
+  output logic                                    o_sat_csr,
+
+  //From ID
+  input                                           i_id_vex_rts ,
+  input                                           i_id_ex_vecldst,
+  input [31:0]                                    i_id_ex_instrn ,
+  input                                           i_id_replay,
+  input [4:0]                                     i_id_type, 
+
+  //To ID
+  output                                          o_vex_id_rtr,
+              output logic                                    o_vex_div_busy,
+  output logic [4:0]                              o_iterate_addrp0,
+  output logic [4:0]                              o_iterate_addrp1,
+  output logic [4:0]                              o_iterate_addrp2,
+  output logic                                    o_vex_id_incr_addrp2,
+  output logic                                    o_ignore_lmul,
+  output logic                                    o_ignore_dstincr,
+  output logic                                    o_ignore_srcincr, //This should be set for instructions that are processing mask bits.(eg: vmand.mm, viota vid ,vmsof...)
+              
+  //Division write back path
+  output logic                                    o_vex_mem_lqvld_div,
+  output logic [VLEN-1:0]                         o_vex_mem_lqdata_div,
+  output tt_briscv_pkg::csr_fp_exc                o_vex_mem_lqexc_div,
+  output logic [tt_briscv_pkg::LQ_DEPTH_LOG2-1:0] o_vex_mem_lqid_div,
+  //From Int RF
+  input [XLEN-1:0]                                    i_rf_vex_p0, //int to vrf moves; note this align with 0a, and read pre flop.
+
+  input [XLEN-1:0]                                    i_fprf_vex_p0  //fp to vrf moves; note this align with 0a, and read pre flop.                   
+);
    /*AUTOWIRE*/
    // Beginning of automatic wires (for undeclared instantiated-module outputs)
    logic                sat_csr_2a;             // From idp of tt_vec_idp.v
@@ -135,6 +141,7 @@ module tt_vec #(parameter
    logic [VLEN-1:0]     instrn_dec_0a,instrn_dec_1a;
    logic                vex_post_rts_1a,vex_post_rts_2a,vex_post_rts_3a;
    logic [VLEN/8-1:0]   vm0_muxed_0a,vm0_muxed_1a,vm0_sized_0a;
+   logic [VLEN/8-1:0]   vstart_muxed_0a;
    logic [VLEN/8-1:0]   vl_muxed_0a,vl_muxed_1a;
    logic [VLEN/8-1:0]   vl_sized_0a;
    logic [VLEN/8-1:0]   compress_mask_0a;
@@ -395,28 +402,33 @@ module tt_vec #(parameter
    assign usgn_itov_src_0a   [XLEN-1:0] = sel_imm_0a ? {{XLEN-5{     1'b0}},reg_p0[4:0]} : xorf_mv_data_0a;//i_rf_vex_p0;
    assign scalar_imm_slide_0a[XLEN-1:0] = vgatherall_0a ? inc_addrp1_0a[XLEN-1:0] : usgn_itov_src_0a[XLEN-1:0];
    logic mem_pipe_rtr_1a; assign mem_pipe_rtr_1a =  1'b1;  //MM Nov 5 2021: Remove implicit wire.
-   tt_rts_rtr_pipe_stage #(.WIDTH(1), .NORTR(1)) ex_invalid_instruction_flop
-  (
-  .i_clk     (i_clk           ),
-  .i_reset_n (i_reset_n       ),
-  .i_rts     (i_id_vex_rts    ), // input side handshake
-  .o_rtr     (rtr_to_id_1a    ),
-  .o_rts     (vex_rts_1a      ),
-  .i_rtr     (mem_pipe_rtr_1a ), // if EX is ready to accept next instruction and no raw hazard requiring a stall was detected
-  .i_data    (1'b0), 
-  .o_data    (vex_invalid_instrn_1a )
+  tt_rts_rtr_pipe_stage #(
+    .WIDTH(1),
+    .NORTR(1)
+  ) ex_invalid_instruction_flop (
+    .i_clk     (i_clk           ),
+    .i_reset_n (i_reset_n       ),
+    .i_rts     (i_id_vex_rts    ), // input side handshake
+    .o_rtr     (rtr_to_id_1a    ),
+    .o_rts     (vex_rts_1a      ),
+    .i_rtr     (mem_pipe_rtr_1a ), // if EX is ready to accept next instruction and no raw hazard requiring a stall was detected
+    .i_data    (1'b0), 
+    .o_data    (vex_invalid_instrn_1a )
   );
-   tt_rts_rtr_pipe_stage #(.WIDTH(32),.NORTS_DROPPED(1)) ex_instrn_flops
-(
-   .i_clk     (i_clk           ),
-   .i_reset_n (i_reset_n       ),
-   .i_rts     (i_id_vex_rts    ), // input side handshake
-   .o_rtr     (                ), // input side handshake
-   .i_rtr     (mem_pipe_rtr_1a ), // if EX is ready to accept next instruction and no raw hazard requiring a stall was detected
-   .o_rts     (                ), // output side handshake
-   .i_data    (i_id_ex_instrn  ),
-   .o_data    (pvex_instrn_1a  ) 
-);
+   
+  tt_rts_rtr_pipe_stage #(
+    .WIDTH(32),
+    .NORTS_DROPPED(1)
+  ) ex_instrn_flops (
+    .i_clk     (i_clk           ),
+    .i_reset_n (i_reset_n       ),
+    .i_rts     (i_id_vex_rts    ), // input side handshake
+    .o_rtr     (                ), // input side handshake
+    .i_rtr     (mem_pipe_rtr_1a ), // if EX is ready to accept next instruction and no raw hazard requiring a stall was detected
+    .o_rts     (                ), // output side handshake
+    .i_data    (i_id_ex_instrn  ),
+    .o_data    (pvex_instrn_1a  ) 
+  );
   
    assign o_vex_id_rtr      = rtr_to_id_1a & (!hazard_stall_1a);
 
@@ -480,14 +492,16 @@ module tt_vec #(parameter
      endcase
 
    //This is the true number of active elements, these are not based on size. Ex: Max of 128 is possible for SEW=8,  and Max of 32 is possible for SEW=32
-   wire [2*VLEN-1:0] vl_mask_dbl_0a   = {{VLEN{1'b0}},{VLEN{1'b1}}} << i_csr.v_vl; //<< vmvgrp_evl_0a[2:0]));//* ( ((i_csr.v_vsew[1:0] == 2'b10) * 4) + ((i_csr.v_vsew[1:0] == 2'b01) * 2) + (i_csr.v_vsew[1:0] == 2'b00)));
-   wire [  VLEN-1:0] vl_mask_0a       = vl_mask_dbl_0a[2*VLEN-1:VLEN];
-   wire        sel_fs_mv_0a      = vmv_x_s | vmv_s_x  | vmv_s_f | vmv_f_s;
-   wire [VLEN/8-1:0] vmv_s_x_mask_0a   = (i_csr.v_vsew[1:0] == 2'h0) ? {{VLEN/8-1{1'b0}},{1{vmv_s_x | vmv_s_f}}} :
-                                         (i_csr.v_vsew[1:0] == 2'h1) ? {{VLEN/8-2{1'b0}},{2{vmv_s_x | vmv_s_f}}} :
-                                         (i_csr.v_vsew[1:0] == 2'h2) ? {{VLEN/8-4{1'b0}},{4{vmv_s_x | vmv_s_f}}} :
-                                                                              {{VLEN/8-8{1'b0}},{8{vmv_s_x | vmv_s_f}}};
-   wire [VLEN/8:0] nrw_mask_0a       = '1;
+   wire [2*VLEN-1:0] vl_mask_dbl_0a     = {{VLEN{1'b0}},{VLEN{1'b1}}} << i_csr.v_vl; //<< vmvgrp_evl_0a[2:0]));//* ( ((i_csr.v_vsew[1:0] == 2'b10) * 4) + ((i_csr.v_vsew[1:0] == 2'b01) * 2) + (i_csr.v_vsew[1:0] == 2'b00)));
+   wire [  VLEN-1:0] vl_mask_0a         = vl_mask_dbl_0a[2*VLEN-1:VLEN];
+   wire [2*VLEN-1:0] vstart_mask_dbl_0a = {{VLEN{1'b0}},{VLEN{1'b1}}} << i_csr.v_vstart;
+   wire [  VLEN-1:0] vstart_mask_0a     = vstart_mask_dbl_0a[2*VLEN-1:VLEN];
+   wire              sel_fs_mv_0a     = vmv_x_s | vmv_s_x  | vmv_s_f | vmv_f_s;
+   wire [VLEN/8-1:0] vmv_s_x_mask_0a  = (i_csr.v_vsew[1:0] == 2'h0) ? {{VLEN/8-1{1'b0}},{1{vmv_s_x | vmv_s_f}}} :
+                                        (i_csr.v_vsew[1:0] == 2'h1) ? {{VLEN/8-2{1'b0}},{2{vmv_s_x | vmv_s_f}}} :
+                                        (i_csr.v_vsew[1:0] == 2'h2) ? {{VLEN/8-4{1'b0}},{4{vmv_s_x | vmv_s_f}}} :
+                                                                      {{VLEN/8-8{1'b0}},{8{vmv_s_x | vmv_s_f}}} ;
+   wire [VLEN/8:0] nrw_mask_0a        = '1;
 //;{16{~i_csr.v_lmul[2] | vmvgrp_0a}} | (16'hffff >> (4'b1000 + {1'b0,i_csr.v_lmul[1:0]!=2'b11,2'b00} + {2'b00,i_csr.v_lmul[1:0]==2'b01,1'b0})); 
   
    assign dstwr_bytemask_0a = sel_fs_mv_0a ?  vmv_s_x_mask_0a | {{VLEN/16{1'b0}}, {VLEN/16{vmv_x_s | vmv_f_s}}}
@@ -496,15 +510,16 @@ module tt_vec #(parameter
                                                                  :  (vm0_sized_0a | {VLEN/8{i_v_vm | vmerge_0a | i_id_vec_autogen.usemask}}) & (vl_sized_0a | {VLEN/8{compress_0a}}) & nrw_mask_0a);
 
    wire  [$clog2(VLEN/8+1)-1:0] lmul_amt_multiple_0a = {$clog2(VLEN/8+1){~i_csr.v_lmul[2]}} & (i_csr.v_vsew[1:0]==2'b11 ? VLEN/64 :
-                                                                                                      i_csr.v_vsew[1:0]==2'b10 ? VLEN/32 :
-                                                                                                      i_csr.v_vsew[1:0]==2'b01 ? VLEN/16 :
-                                                                                                                                        VLEN/8   );
+                                                                                               i_csr.v_vsew[1:0]==2'b10 ? VLEN/32 :
+                                                                                               i_csr.v_vsew[1:0]==2'b01 ? VLEN/16 :
+                                                                                                                          VLEN/8   );
    //assign lmul_cnt_change_0a = two_cycle_iterate_0a ? lmul_cnt_1a[2:0] : lmul_cnt_0a[2:0];
-   assign vl_muxed_0a  =  (vl_mask_0a[VLEN-1:0] >> (($clog2(VLEN+1))'(lmul_amt_multiple_0a) * lmul_cnt_0a[2:0])) | {VLEN/8{vmvgrp_0a}};    //spyglass disable STARC05-2.10.3.2b_sa
-   assign vm0_muxed_0a =  (vm0_0a    [VLEN-1:0] >> (($clog2(VLEN+1))'(lmul_amt_multiple_0a) * lmul_cnt_0a[2:0])) | {VLEN/8{i_v_vm}};       //spyglass disable STARC05-2.10.3.2b_sa
+   assign vl_muxed_0a     = ((vl_mask_0a    [VLEN-1:0] >> (($clog2(VLEN+1))'(lmul_amt_multiple_0a) * lmul_cnt_0a[2:0])) | {VLEN/8{vmvgrp_0a}}) & ~vstart_muxed_0a;//spyglass disable STARC05-2.10.3.2b_sa
+   assign vm0_muxed_0a    = ((vm0_0a        [VLEN-1:0] >> (($clog2(VLEN+1))'(lmul_amt_multiple_0a) * lmul_cnt_0a[2:0])) | {VLEN/8{i_v_vm}});       //spyglass disable STARC05-2.10.3.2b_sa
+   assign vstart_muxed_0a = ((vstart_mask_0a[VLEN-1:0] >> (($clog2(VLEN+1))'(lmul_amt_multiple_0a) * lmul_cnt_0a[2:0])));
    assign compress_mask_selects_0a[VLEN-1:0] = src1_0a[VLEN-1:0] & vl_mask_0a[VLEN-1:0];
+
    //In each cycle, narrow ops only need half as many mask bits.
-  
    always_comb
      for(int i=0;i<VLEN/8;i++) 
        case(i_csr.v_vsew[1:0] + wdeop_0a) 
@@ -944,30 +959,86 @@ module tt_vec #(parameter
        //.o_vfp_exc_update         (o_vfp_exc_update)
        //          
        // );
-   tt_vfp_unit #(.NUM_LANE(VLEN/64))
-   vfp
-   (
-      .i_clk                    (i_clk), 
-      .i_reset_n                (i_reset_n),
-      .i_id_vfp_ex0_rts         (i_id_vex_rts & i_id_vec_autogen.vfp_rf_rd_op_valid  & ~i_id_vec_autogen.out_from_vec_int), // set for valid vfp instructions that are executed in fp side.
-      .i_id_vfp_autogen         (i_id_vec_autogen),
-      .i_lmul_cnt               (lmul_cnt_0a),
-      .i_rddata                 ({src3_0a[VLEN-1:0],src2_0a[VLEN-1:0],src1_mux_0a[VLEN-1:0]}),
-      .i_vm0                    (vm0_muxed_0a & vl_muxed_0a),
-      .i_sew                    (i_csr.v_vsew[1:0]),
-      .i_xrm                    (i_csr.v_vxrm),
-      .i_frm                    (i_csr.frm),
-      .i_funct6                 (funct7_0a[6:1]),
-      .i_vs1                    (reg_p0[4:0]),
-                
-      .o_result_valid           (fwren_1a),
-      .o_result                 (fwrdata_1a),
-      .o_result_exc             (fwrexc_1a),
-      .o_result_hole_valid      (vfp_hole_vld_1a),
-      .o_result_ooo_data_valid  (fwren_2a),
-      .o_result_ooo_data        (fwrdata_2a),
-      .o_result_ooo_exc         (fwrexc_2a)
+  tt_vfp_unit #(
+    .NUM_LANE(VLEN/64)
+  ) vfp (
+    .i_clk                    (i_clk), 
+    .i_reset_n                (i_reset_n),
+    .i_id_vfp_ex0_rts         (i_id_vex_rts & i_id_vec_autogen.vfp_rf_rd_op_valid  & ~i_id_vec_autogen.out_from_vec_int), // set for valid vfp instructions that are executed in fp side.
+    .i_id_vfp_autogen         (i_id_vec_autogen),
+    .i_lmul_cnt               (lmul_cnt_0a),
+    .i_rddata                 ({src3_0a[VLEN-1:0],src2_0a[VLEN-1:0],src1_mux_0a[VLEN-1:0]}),
+    .i_vm0                    (vm0_muxed_0a & vl_muxed_0a),
+    .i_sew                    (i_csr.v_vsew[1:0]),
+    .i_xrm                    (i_csr.v_vxrm),
+    .i_frm                    (i_csr.frm),
+    .i_funct6                 (funct7_0a[6:1]),
+    .i_vs1                    (reg_p0[4:0]),
+              
+    .o_result_valid           (fwren_1a),
+    .o_result                 (fwrdata_1a),
+    .o_result_exc             (fwrexc_1a),
+    .o_result_hole_valid      (vfp_hole_vld_1a),
+    .o_result_ooo_data_valid  (fwren_2a),
+    .o_result_ooo_data        (fwrdata_2a),
+    .o_result_ooo_exc         (fwrexc_2a)
+   );
 
+    // Vector division wrapper (empty for now). Wires up decode and returns no result.
+    tt_vec_div_unit #(
+       .NUM_LANE(VLEN/64),
+       .VLEN    (VLEN)
+    )
+    vdiv
+    (
+       .i_clk           (i_clk),
+       .i_reset_n       (i_reset_n),
+
+       // Handshake and control from ID stage
+       .i_id_vdiv_ex0_rts (i_id_vex_rts & (i_id_vec_autogen.idivop | i_id_vec_autogen.fdivop)),
+       
+       // Operation type decode (from vec_autogen_s)
+       .i_idivop        (i_id_vec_autogen.idivop),
+       .i_fdivop        (i_id_vec_autogen.fdivop),
+       .i_ldqid         (i_id_vec_autogen.ldqid),
+
+       // Source operands - full VLEN width for flexible SEW handling  
+       .i_src1          (src1_mux_0a[VLEN-1:0]),    // vs2 source (dividend)
+       .i_src2          (src2_0a[VLEN-1:0]),        // vs1/scalar/imm source (divisor)
+       .i_src3          (src3_0a[VLEN-1:0]),        // vd source (for masked ops)
+       
+       // Scalar register file inputs for .vx operations
+       .i_rf_scalar     (i_rf_vex_p0),              // Integer scalar (rs1) for integer .vx ops
+       .i_fprf_scalar   (i_fprf_vex_p0),            // FP scalar (rs1) for FP .vx ops
+
+       // Vector control signals
+       .i_vm0           (vm0_0a),
+       .i_sew           (i_csr.v_vsew[1:0]),
+       .i_lmul          (i_csr.v_lmul[2:0]),
+       .i_vl            (i_csr.v_vl[7:0]),
+       .i_vs1           (i_id_ex_instrn[19:15]),
+       .i_vta           (1'b0),  // TODO: Connect to vtype.vta when available (0=undisturbed, 1=agnostic)
+       .i_vma           (1'b0),  // TODO: Connect to vtype.vma when available (0=undisturbed, 1=agnostic)
+
+       // Instruction decode signals
+       .i_funct7        (funct7_0a[6:0]),
+       .i_funct3        (funct3_0a[2:0]),
+       .i_vm            (i_id_ex_instrn[25]),
+
+       // Floating-point control (IEEE FP only, no fixed-point)
+       .i_frm           (i_csr.frm),
+
+       // Replay control
+       .i_lmul_cnt      (lmul_cnt_0a),
+
+       // Outputs towards MEM/LQ (division write port)
+       .o_result_valid  (o_vex_mem_lqvld_div),
+       .o_result        (o_vex_mem_lqdata_div),
+       .o_result_exc    (o_vex_mem_lqexc_div),
+       .o_result_lqid   (o_vex_mem_lqid_div),
+
+       // Global busy indicator for ID resource hazard checks
+       .o_busy          (o_vex_div_busy)
    );
 
    
@@ -983,99 +1054,101 @@ module tt_vec #(parameter
      
     .i_id_replay_0a           (i_id_replay),
     )*/
-   tt_vec_idp #(.VLEN(VLEN),
-                .XLEN(XLEN) )
-   idp(//Inputs
-                  .i_vxrm_0a            (i_csr.v_vxrm),                   
-                  .i_issgn_src1_0a      (i_id_vec_autogen.issgn_src1),   
-                  .i_issgn_src2_0a      (i_id_vec_autogen.issgn_src2),   
-                  
-                  .i_adden_0a           (iadden_0a),             
-                  .i_vsew_0a            (i_csr.v_vsew[1:0]),
-                  .i_lmul_0a            (i_csr.v_lmul[2:0]),              
-                  .i_addorsub_0a        (i_id_vec_autogen.addorsub),  
-                  .i_src1hw_0a          (i_id_vec_autogen.src1hw),
-                  .i_inversesub_0a      (i_id_vec_autogen.inversesub),   
-                  .i_mask_0a            (vm0_muxed_0a & vl_muxed_0a),
-                  .i_usemask_0a         (i_id_vec_autogen.usemask),              
-                  .i_wrmask_0a          (i_id_vec_autogen.wrmask),               
-                  .i_mulh_0a            (i_id_vec_autogen.mulh),                 
-                  .i_mulen_0a           (mulen_0a),              
-                  .i_macc_0a            (imul_accen_0a),                 
-                  .i_rnden_0a           (rnden_0a),              
-                  .i_cmpmul_0a          (i_id_vec_autogen.cmpmul),       
-                  .i_mulsum_1a          (mulsum_1a),
-                  .i_lmul_cnt_0a        (lmul_cnt_0a),      
-                  .i_nrwop_0a           (nrwop_lmul_0a),                 
-                  // Outputs
-     
-                  .o_sized_src1_0a      (imulsrc1_0a),
-                  .o_sized_src2_0a      (imulsrc2_0a),
-                  //.o_mulissgn_0a      (imulissgn_0a),
-                  .o_data_vld_2a        (idata_vld_2a),
-                  .o_data_2a            (idata_2a[VLEN-1:0]),
-                  .o_data_vld_1a        (idata_vld_1a),
-                  .o_data_1a            (idata_1a[VLEN-1:0]),
-                  .i_ixv_tov_mv_0a      (ixv_tov_mv_0a),        
-                  .i_src1_0a            (src1_mux_0a[VLEN-1:0]),    
-                  .i_reset_n            (i_reset_n),             
-                  /*AUTOINST*/
-                  // Outputs
-                  .o_v_tox_mv_1a        (v_tox_mv_1a),           // Templated
-                  .o_sat_csr_2a         (sat_csr_2a),            // Templated
-                  .o_slide_dwn_1a       (slide_dwn_1a),          // Templated
-                  .o_slide_shft_amt_1a  (slide_shft_amt_1a[63:0]), // Templated
-                  // Inputs
-                  .i_clk                (i_clk),                 // Templated
-                  .i_vex_en_0a          (vex_en_0a),             // Templated
-                  .i_vex_en_1a          (vex_en_1a),             // Templated
-                  .i_src2_0a            (src2_0a[VLEN-1:0]),        // Templated
-                  .i_src3_0a            (src3_0a[VLEN-1:0]),        // Templated
-                  .i_avg_0a             (avg_0a),                // Templated
-                  .i_reductop_0a        (reductop_0a),           // Templated
-                  .i_inc_iterate_0a     (inc_iterate_0a),        // Templated
-                  .i_wdeop_0a           (wdeop_0a),              // Templated
-                  .i_vm0_sized_0a       (vm0_sized_0a),    // Templated
-                  .i_vmerge_0a          (vmerge_0a),             // Templated
-                  .i_iterate_0a         (iterate_0a),            // Templated
-                  .i_iterate_1a         (iterate_1a),            // Templated
-                  .i_iterate_cnt_1a     (tot_iterate_cnt_1a), // Templated
-                  .i_vl_cnt_1a          (vl_cnt_1a),        // Templated
-                  .i_iterate_cnt_0a     (tot_iterate_cnt_0a), // Templated
-                  .i_vs1_gather_indx_1a (vs1_gather_indx_1a), // Templated
-                  .i_reduct_wdeop_1a    (reduct_wdeop_1a),       // Templated
-                  .i_vmvgrp_0a          (vmvgrp_0a),             // Templated
-                  .i_v_tox_mv_0a        (v_tox_mv_0a),           // Templated
-                  .i_vex_per_0a         (vex_per_0a),            // Templated
-                  .i_vex_shft_0a        (vex_shft_0a),           // Templated
-                  .i_vex_bitwise_0a     (vex_bitwise_0a),        // Templated
-                  .i_vex_vmaskbit_0a    (vex_vmaskbit_0a),       // Templated
-                  .i_id_replay_0a       (i_id_replay),           // Templated
-                  .i_mask_only_instrn_1a(mask_only_instrn_1a),   // Templated
-                  .i_vex_instrn_1a      (vex_instrn_1a[31:0]),   // Templated
-                  .i_reductop_data_0a   (reductop_data_0a[63:0]), // Templated
-                  .i_scalar_imm_slide_1a(scalar_imm_slide_1a[63:0]), // Templated
-                  .i_v_vm_1a            (v_vm_1a),               // Templated
-		  .i_v_vm_0a		(i_v_vm),		 // Templated
-                  .i_sat_instrn_0a      (sat_instrn_0a));        // Templated
+
+  tt_vec_idp #(
+    .VLEN(VLEN),
+    .XLEN(XLEN)
+  ) idp (//Inputs
+    .i_vxrm_0a            (i_csr.v_vxrm),                   
+    .i_issgn_src1_0a      (i_id_vec_autogen.issgn_src1),   
+    .i_issgn_src2_0a      (i_id_vec_autogen.issgn_src2),   
+
+    .i_adden_0a           (iadden_0a),             
+    .i_vsew_0a            (i_csr.v_vsew[1:0]),
+    .i_lmul_0a            (i_csr.v_lmul[2:0]),              
+    .i_addorsub_0a        (i_id_vec_autogen.addorsub),  
+    .i_src1hw_0a          (i_id_vec_autogen.src1hw),
+    .i_inversesub_0a      (i_id_vec_autogen.inversesub),   
+    .i_mask_0a            (vm0_muxed_0a & vl_muxed_0a),
+    .i_usemask_0a         (i_id_vec_autogen.usemask),              
+    .i_wrmask_0a          (i_id_vec_autogen.wrmask),               
+    .i_mulh_0a            (i_id_vec_autogen.mulh),                 
+    .i_mulen_0a           (mulen_0a),              
+    .i_macc_0a            (imul_accen_0a),                 
+    .i_rnden_0a           (rnden_0a),              
+    .i_cmpmul_0a          (i_id_vec_autogen.cmpmul),       
+    .i_mulsum_1a          (mulsum_1a),
+    .i_lmul_cnt_0a        (lmul_cnt_0a),      
+    .i_nrwop_0a           (nrwop_lmul_0a),                 
+    // Outputs
+
+    .o_sized_src1_0a      (imulsrc1_0a),
+    .o_sized_src2_0a      (imulsrc2_0a),
+    //.o_mulissgn_0a      (imulissgn_0a),
+    .o_data_vld_2a        (idata_vld_2a),
+    .o_data_2a            (idata_2a[VLEN-1:0]),
+    .o_data_vld_1a        (idata_vld_1a),
+    .o_data_1a            (idata_1a[VLEN-1:0]),
+    .i_ixv_tov_mv_0a      (ixv_tov_mv_0a),        
+    .i_src1_0a            (src1_mux_0a[VLEN-1:0]),    
+    .i_reset_n            (i_reset_n),             
+    /*AUTOINST*/
+    // Outputs
+    .o_v_tox_mv_1a        (v_tox_mv_1a),           // Templated
+    .o_sat_csr_2a         (sat_csr_2a),            // Templated
+    .o_slide_dwn_1a       (slide_dwn_1a),          // Templated
+    .o_slide_shft_amt_1a  (slide_shft_amt_1a[63:0]), // Templated
+    // Inputs
+    .i_clk                (i_clk),                 // Templated
+    .i_vex_en_0a          (vex_en_0a),             // Templated
+    .i_vex_en_1a          (vex_en_1a),             // Templated
+    .i_src2_0a            (src2_0a[VLEN-1:0]),        // Templated
+    .i_src3_0a            (src3_0a[VLEN-1:0]),        // Templated
+    .i_avg_0a             (avg_0a),                // Templated
+    .i_reductop_0a        (reductop_0a),           // Templated
+    .i_inc_iterate_0a     (inc_iterate_0a),        // Templated
+    .i_wdeop_0a           (wdeop_0a),              // Templated
+    .i_vm0_sized_0a       (vm0_sized_0a),    // Templated
+    .i_vmerge_0a          (vmerge_0a),             // Templated
+    .i_iterate_0a         (iterate_0a),            // Templated
+    .i_iterate_1a         (iterate_1a),            // Templated
+    .i_iterate_cnt_1a     (tot_iterate_cnt_1a), // Templated
+    .i_vl_cnt_1a          (vl_cnt_1a),        // Templated
+    .i_iterate_cnt_0a     (tot_iterate_cnt_0a), // Templated
+    .i_vs1_gather_indx_1a (vs1_gather_indx_1a), // Templated
+    .i_reduct_wdeop_1a    (reduct_wdeop_1a),       // Templated
+    .i_vmvgrp_0a          (vmvgrp_0a),             // Templated
+    .i_v_tox_mv_0a        (v_tox_mv_0a),           // Templated
+    .i_vex_per_0a         (vex_per_0a),            // Templated
+    .i_vex_shft_0a        (vex_shft_0a),           // Templated
+    .i_vex_bitwise_0a     (vex_bitwise_0a),        // Templated
+    .i_vex_vmaskbit_0a    (vex_vmaskbit_0a),       // Templated
+    .i_id_replay_0a       (i_id_replay),           // Templated
+    .i_mask_only_instrn_1a(mask_only_instrn_1a),   // Templated
+    .i_vex_instrn_1a      (vex_instrn_1a[31:0]),   // Templated
+    .i_reductop_data_0a   (reductop_data_0a[63:0]), // Templated
+    .i_scalar_imm_slide_1a(scalar_imm_slide_1a[63:0]), // Templated
+    .i_v_vm_1a            (v_vm_1a),               // Templated
+    .i_v_vm_0a		(i_v_vm),		 // Templated
+    .i_sat_instrn_0a      (sat_instrn_0a)
+  );        // Templated
    
                  
 
-   tt_vec_mul_dp #(.VLEN(VLEN))
-   mul_dp
-                 (
-                  
-                  .o_sum_1a             (mulsum_1a),
-                  .i_sized_src2_0a      (mulsrc2_0a),
-                  .i_sized_src1_0a      (mulsrc1_0a),
-                  
-                  .i_issgn_0a           (i_id_vec_autogen.issgn_src1),
-                  .i_issgnsrc2_0a       (i_id_vec_autogen.issgn_src2),
-                  .i_mulen_0a           (mulen_0a | fmulen_0a),
-                  .i_clk                (i_clk)
-                  
-                  /*AUTOINST*/);
-   
+  tt_vec_mul_dp #(
+    .VLEN(VLEN)
+  ) mul_dp (
+    .o_sum_1a             (mulsum_1a),
+    .i_sized_src2_0a      (mulsrc2_0a),
+    .i_sized_src1_0a      (mulsrc1_0a),
+    
+    .i_issgn_0a           (i_id_vec_autogen.issgn_src1),
+    .i_issgnsrc2_0a       (i_id_vec_autogen.issgn_src2),
+    .i_mulen_0a           (mulen_0a | fmulen_0a),
+    .i_clk                (i_clk)
+
+    /*AUTOINST*/
+  );
 
 endmodule // tt_vec
 // Local Variables:

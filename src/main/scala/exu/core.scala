@@ -291,6 +291,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   if (usingVector) {
     vec_exe_unit.io.ovi.vconfig := csr.io.vector.get.vconfig
     vec_exe_unit.io.ovi.vxrm := csr.io.vector.get.vxrm
+    vec_exe_unit.io.ovi.vstart := csr.io.vector.get.vstart
     io.lsu.VGen <> vec_exe_unit.io.ovi.vGenIO 
   }
 
@@ -1114,11 +1115,22 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   csr.io.gva := DontCare
 
   if (usingVector) {
+    // CSR updates
     csr.io.vector.get.set_vs_dirty := DontCare
+    csr.io.vector.get.set_vxsat := exe_units.vec_exe_unit.io.ovi.set_vxsat
+    // config updates
     csr.io.vector.get.set_vtype := exe_units.vec_exe_unit.io.ovi.set_vtype
     csr.io.vector.get.set_vl := exe_units.vec_exe_unit.io.ovi.set_vl
-    csr.io.vector.get.set_vstart := DontCare
-    csr.io.vector.get.set_vxsat := exe_units.vec_exe_unit.io.ovi.set_vxsat
+    // vstart update
+    // reset vstart after VPU issue with non-zero vstart
+    when (exe_units.vec_exe_unit.io.ovi.reset_vstart) {
+      csr.io.vector.get.set_vstart.valid := true.B
+      csr.io.vector.get.set_vstart.bits  := 0.U
+    } .otherwise {
+      csr.io.vector.get.set_vstart.valid := false.B
+      csr.io.vector.get.set_vstart.bits  := DontCare
+    }
+    // csr.io.vector.get.set_vstart := DontCare
   }
 
 // TODO can we add this back in, but handle reset properly and save us
@@ -1653,7 +1665,7 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   if (usingVector) {
     exe_units.vec_exe_unit.io.ovi.rob_pnr_idx := rob.io.rob_pnr_idx
     exe_units.vec_exe_unit.io.ovi.rob_head_idx := rob.io.rob_head_idx
-    exe_units.vec_exe_unit.io.ovi.exception := csr.io.exception && csr.io.status.xs.orR
+    exe_units.vec_exe_unit.io.ovi.exception := csr.io.exception && csr.io.status.xs.orR 
   }
 
   io.rocc := DontCare

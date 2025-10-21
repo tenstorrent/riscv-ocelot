@@ -33,6 +33,15 @@ class OviReqQueue(val num_entries: Int)(implicit p: Parameters)
 
   ////////////////////////////////////////////////////////////////
 
+  // these are the type of instructions that send a memop sync start
+  // in the VPU. so i will send just these non-speculatively..
+  val deq_is_load_store = (
+    (io.deq.bits.uop.inst(6,0) === 7.U) ||
+    (io.deq.bits.uop.inst(6,0) === 39.U)
+  )
+  // for some reason same-cycle kills dont work on VPU
+  val kill_on_deq = (is_killed(io.deq.bits.uop))
+
   io.count := PopCount(entries_valid)
 
   // Allow enqueue when not full
@@ -41,7 +50,9 @@ class OviReqQueue(val num_entries: Int)(implicit p: Parameters)
   // Allow dequeue when not empty and past PNR
   io.deq.valid := entries_valid.asUInt =/= 0.U && (
     IsOlder(io.deq.bits.uop.rob_idx, io.rob_pnr_idx, io.rob_head_idx)
-    || io.deq.bits.uop.rob_idx === io.rob_pnr_idx
+    || (io.deq.bits.uop.rob_idx === io.rob_pnr_idx)
+    || (!kill_on_deq && (
+      !deq_is_load_store)) // <= allow non-load/store to bypass PNR
   )
 
   ////////////////////////////////////////////////////////////////
@@ -156,9 +167,11 @@ class OviWrapperCoreIO(implicit p: Parameters) extends BoomBundle
 
   val set_vtype = Output(Valid(new VType))
   val set_vl    = Output(Valid(UInt(log2Up(maxVLMax + 1).W)))
+  val reset_vstart = Output(Bool())
 
   val vconfig = Input(new VConfig())
   val vxrm    = Input(UInt(2.W))
+  val vstart  = Input(UInt(log2Ceil(vLen+1).W))
   val vGenIO  = Flipped(new boom.lsu.VGenIO)
   val debug_wb_vec_valid = Output(Bool())
   val debug_wb_vec_wdata = Output(UInt((vLen * 8).W))
@@ -192,12 +205,18 @@ class OviWrapperWrapper(implicit p: Parameters) extends BoomModule // Yeah...
   req_queue.io.brupdate     := io.brupdate
   req_queue.io.exception    := io.core.exception
 
+  val req_queue_uopc_is_vec    = ((req_queue.io.deq.bits.uop.uopc === uopVEC)      )
+  val req_queue_uopc_is_config = ((req_queue.io.deq.bits.uop.uopc === uopVSETVL)  ||
+                                  (req_queue.io.deq.bits.uop.uopc === uopVSETVLI) ||
+                                  (req_queue.io.deq.bits.uop.uopc === uopVSETIVLI) )
+
   ////////////////////////////////////////////////////////////////
 
   val vec_config_unit = Module(new VecConfigUnit())
 
-  io.core.set_vtype := vec_config_unit.io.set_vtype
-  io.core.set_vl    := vec_config_unit.io.set_vl
+  io.core.set_vtype    := vec_config_unit.io.set_vtype
+  io.core.set_vl       := vec_config_unit.io.set_vl
+  io.core.reset_vstart := false.B // default value
 
   ////////////////////////////////////////////////////////////////
 
@@ -206,8 +225,14 @@ class OviWrapperWrapper(implicit p: Parameters) extends BoomModule // Yeah...
   ovi_wrapper.io.vconfig <> io.core.vconfig
   ovi_wrapper.io.vxrm    <> io.core.vxrm
   ovi_wrapper.io.fcsr_rm <> io.fcsr_rm
+  ovi_wrapper.io.vstart  <> io.core.vstart
 
   ovi_wrapper.io.vGenIO <> io.core.vGenIO
+
+  ovi_wrapper.io.core.rob_pnr_idx  := io.core.rob_pnr_idx
+  ovi_wrapper.io.core.rob_head_idx := io.core.rob_head_idx
+  ovi_wrapper.io.core.brupdate     := io.brupdate
+  ovi_wrapper.io.core.exception    := io.core.exception
 
   ovi_wrapper.io.debug_wb_vec_valid <> io.core.debug_wb_vec_valid
   ovi_wrapper.io.debug_wb_vec_wdata <> io.core.debug_wb_vec_wdata
@@ -219,10 +244,9 @@ class OviWrapperWrapper(implicit p: Parameters) extends BoomModule // Yeah...
   vec_config_unit.io.req.noenq()
   ovi_wrapper.io.req.noenq()
 
-  val uopc = req_queue.io.deq.bits.uop.uopc
-  when(uopc === uopVEC) {
-    ovi_wrapper.io.req     <> req_queue.io.deq
-  }.elsewhen((uopc === uopVSETVL || uopc === uopVSETVLI || uopc === uopVSETIVLI) && !ovi_wrapper.io.resp.valid) {
+  when(req_queue_uopc_is_vec) {
+    ovi_wrapper.io.req   <> req_queue.io.deq
+  }.elsewhen(req_queue_uopc_is_config && !ovi_wrapper.io.resp.valid) {
     vec_config_unit.io.req <> req_queue.io.deq
   }
 
@@ -232,6 +256,15 @@ class OviWrapperWrapper(implicit p: Parameters) extends BoomModule // Yeah...
   }.otherwise {
     io.resp <> vec_config_unit.io.resp
     ovi_wrapper.io.resp.nodeq()
+  }
+
+  // force reset vstart for next vec instruction
+  when (
+    (req_queue_uopc_is_vec) &&
+    (req_queue.io.deq.fire) &&
+    (io.core.vstart =/= 0.U)
+  ) {
+    io.core.reset_vstart := true.B
   }
 
   ////////////////////////////////////////////////////////////////

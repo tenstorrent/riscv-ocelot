@@ -59,6 +59,7 @@ module tt_vpu_ovi_assert
   
       if(dispatch_kill) begin
         dispatch_sb_ids[dispatch_sb_id] <= 0;
+        issue_sb_ids[dispatch_sb_id] <= 0; // kill so you can issue again
       end
   
       if(completed_valid) begin

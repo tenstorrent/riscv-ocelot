@@ -1,5 +1,7 @@
 // See LICENSE.TT for license details.
-`include "tt_briscv_pkg.vh"
+`include "tt_briscv_pkg.svh"
+
+import tt_briscv_pkg::*;
 
 module tt_fifo #(parameter DEPTH = 4)
 (
@@ -34,8 +36,11 @@ module tt_fifo #(parameter DEPTH = 4)
   output logic [4:0]  read_issue_sb_id,
   output logic [63:0] read_issue_scalar_opnd,
   output logic [39:0] read_issue_vcsr,
-  output logic        read_issue_vcsr_lmulb2
+  output logic        read_issue_vcsr_lmulb2,
+  output tt_briscv_pkg::inst_state_e read_issue_state
 );
+
+  // === internal signals and definitions ===
 
   typedef struct packed {
     logic [31:0] issue_inst;
@@ -43,10 +48,9 @@ module tt_fifo #(parameter DEPTH = 4)
     logic [63:0] issue_scalar_opnd;
     logic [39:0] issue_vcsr;
     logic        issue_vcsr_lmulb2;
-    logic        next_senior;
     logic        pending_mem_sync;
     logic        ldb_allocated;
-    logic        valid;
+    tt_briscv_pkg::inst_state_e state;
   } fifo_entry;
 
   fifo_entry fifo [DEPTH-1:0];
@@ -57,123 +61,139 @@ module tt_fifo #(parameter DEPTH = 4)
   logic [PTR_SIZE:0] ls_ptr; // pointing to the oldest entry that needs to send memop_sync_start
   // keeps track of the next instruction to be dispatched
   // either going to kill or make it next_senior
-  logic [$clog2(DEPTH)-1:0] dispatch_ptr;
   logic queue_full;
   logic queue_empty;
-  // This 1-bit register saves the last dispatch command
-  // 0: next_senior, 1: kill
-  logic last_dispatch_was_kill;
 
-  assign queue_full = (wr_ptr[PTR_SIZE] != rd_ptr[PTR_SIZE]) && (wr_ptr[PTR_SIZE-1:0] == rd_ptr[PTR_SIZE-1:0]);
+  // === logic ===
+
+  assign queue_full  = (wr_ptr[PTR_SIZE] != rd_ptr[PTR_SIZE]) && (wr_ptr[PTR_SIZE-1:0] == rd_ptr[PTR_SIZE-1:0]);
   assign queue_empty = (wr_ptr[PTR_SIZE] == rd_ptr[PTR_SIZE]) && (wr_ptr[PTR_SIZE-1:0] == rd_ptr[PTR_SIZE-1:0]);
 
+  // fifo update
+  always_ff @(posedge clk) begin
+    // Reset logic
+    if (!reset_n) begin
+      for (int i = 0; i < DEPTH; i = i + 1) begin
+        fifo[i].issue_inst        <= '0;
+        fifo[i].issue_sb_id       <= '0;
+        fifo[i].issue_scalar_opnd <= '0;
+        fifo[i].issue_vcsr        <= '0;
+        fifo[i].issue_vcsr_lmulb2 <= '0;
+        fifo[i].pending_mem_sync  <= '0;
+        fifo[i].ldb_allocated     <= '0;
+        fifo[i].state             <= INVALID;
+      end
+    end
+    
+    // Regular operation
+    else begin
+
+      // update committable/poison status
+      for (int i = 0; i < DEPTH; i += 1) begin
+        if ((fifo[i].state == DISPATCH) && (fifo[i].issue_sb_id == dispatch_sb_id)) begin
+          if (dispatch_next_senior)
+            fifo[i].state <= SENIOR;
+          if (dispatch_kill)
+            fifo[i].state <= KILL;
+        end
+      end
+
+      // write new entry
+      if (!queue_full && issue_valid) begin
+        fifo[wr_ptr[PTR_SIZE-1:0]].issue_inst        <= issue_inst;
+        fifo[wr_ptr[PTR_SIZE-1:0]].issue_sb_id       <= issue_sb_id;
+        fifo[wr_ptr[PTR_SIZE-1:0]].issue_scalar_opnd <= issue_scalar_opnd;
+        fifo[wr_ptr[PTR_SIZE-1:0]].issue_vcsr        <= issue_vcsr;
+        fifo[wr_ptr[PTR_SIZE-1:0]].issue_vcsr_lmulb2 <= issue_vcsr_lmulb2;
+        fifo[wr_ptr[PTR_SIZE-1:0]].pending_mem_sync  <= issue_inst[6:0] inside {7'h7, 7'h27};
+        fifo[wr_ptr[PTR_SIZE-1:0]].ldb_allocated     <= 1'b0;
+        fifo[wr_ptr[PTR_SIZE-1:0]].state             <= ((issue_sb_id == dispatch_sb_id) && dispatch_next_senior) ? SENIOR :
+                                                        ((issue_sb_id == dispatch_sb_id) &&        dispatch_kill) ? KILL   : DISPATCH;
+      end
+
+      // invalidate read entry
+      if (read_req && read_valid) begin
+        fifo[rd_ptr[PTR_SIZE-1:0]].state <= INVALID;
+      end
+
+      // memop update
+      if (memop_sync_start) begin
+        fifo[ls_ptr[PTR_SIZE-1:0]].pending_mem_sync <= 1'b0;
+      end
+      else if (ldb_alloc_valid && ldb_alloc_ack) begin
+        fifo[ls_ptr[PTR_SIZE-1:0]].ldb_allocated <= 1'b1;
+      end
+    end
+  end
+  
+  // other clock updates
   always_ff @(posedge clk) begin
     if (!reset_n) begin
       wr_ptr <= 0;
       rd_ptr <= 0;
       ls_ptr <= 0;
-      dispatch_ptr <= 0;
-      last_dispatch_was_kill <= 0;
-      for (int i = 0; i < DEPTH; i = i + 1) begin
-        fifo[i].issue_inst       <= 0;
-        fifo[i].issue_sb_id      <= 0;
-        fifo[i].issue_scalar_opnd <= 0;
-        fifo[i].issue_vcsr       <= 0;
-        fifo[i].issue_vcsr_lmulb2 <= 0;
-        fifo[i].next_senior <= 0;
-        fifo[i].pending_mem_sync <= 0;
-        fifo[i].ldb_allocated <= 0;
-        fifo[i].valid <= 0;
-      end
     end
-    else if (!queue_full && issue_valid) begin
-      fifo[wr_ptr[PTR_SIZE-1:0]].issue_inst       <= issue_inst;
-      fifo[wr_ptr[PTR_SIZE-1:0]].issue_sb_id      <= issue_sb_id;
-      fifo[wr_ptr[PTR_SIZE-1:0]].issue_scalar_opnd <= issue_scalar_opnd;
-      fifo[wr_ptr[PTR_SIZE-1:0]].issue_vcsr       <= issue_vcsr;
-      fifo[wr_ptr[PTR_SIZE-1:0]].issue_vcsr_lmulb2 <= issue_vcsr_lmulb2;
-      fifo[wr_ptr[PTR_SIZE-1:0]].valid            <= 1;
-      fifo[wr_ptr[PTR_SIZE-1:0]].pending_mem_sync <= issue_inst[6:0] inside {7'h7, 7'h27}; // set for vector load/store
-      fifo[wr_ptr[PTR_SIZE-1:0]].ldb_allocated    <= 1'b0;
-      // dispatch.next_senior can be sent in the same cycle as the instruction
-      if(dispatch_next_senior) begin
-        // TODO: assert that wr_ptr == dispatch_ptr
-        fifo[wr_ptr[PTR_SIZE-1:0]].next_senior <= 1;
-        dispatch_ptr <= dispatch_ptr + 1;
-        last_dispatch_was_kill <= 0;
-      end
-      else
-        fifo[wr_ptr[PTR_SIZE-1:0]].next_senior <= 0;
 
-      wr_ptr <= wr_ptr + 1;
-    end
     else begin
-      if(dispatch_next_senior) begin
-        // TODO: assert that dispatch.sb_id == fifo[dispatch_ptr].sb_id
-        fifo[dispatch_ptr].next_senior <= 1;
-        last_dispatch_was_kill <= 0;
-        dispatch_ptr <= dispatch_ptr + 1;
+      if (!queue_full && issue_valid) begin
+        wr_ptr <= wr_ptr + 1;
       end
-      else if(dispatch_kill && !last_dispatch_was_kill) begin
-        wr_ptr <= dispatch_ptr;
-        last_dispatch_was_kill <= 1;
+      if (read_req && read_valid) begin
+        rd_ptr <= rd_ptr + 1;
+      end
+      if ((memop_sync_start) ||
+          ((ls_candidate.state != INVALID) && !ls_candidate.pending_mem_sync) &&
+          (ls_ptr != wr_ptr))
+      begin
+        ls_ptr <= ls_ptr + 1;
       end
     end
-
-    if (read_req && read_valid) begin
-      rd_ptr <= rd_ptr + 1;
-      fifo[rd_ptr[PTR_SIZE-1:0]].valid <= 0;
-    end
-
-    // Clear the pending bit
-    if (memop_sync_start) begin
-      fifo[ls_ptr[PTR_SIZE-1:0]].pending_mem_sync <= 1'b0;
-    end
-
-    if (ldb_alloc_valid && ldb_alloc_ack) begin
-      fifo[ls_ptr[PTR_SIZE-1:0]].ldb_allocated <= 1'b1;
-    end
-
-    if ((  memop_sync_start                  ||
-         ( ls_candidate.valid            &&
-          !ls_candidate.pending_mem_sync   )   ) &&
-           ls_ptr != wr_ptr                        ) begin
-      ls_ptr <= ls_ptr + 1;
-    end
-         
   end
 
+  // read logic
   always_comb begin
-    read_issue_inst        = fifo[rd_ptr[PTR_SIZE-1:0]].issue_inst;
-    read_issue_sb_id       = fifo[rd_ptr[PTR_SIZE-1:0]].issue_sb_id;
-    read_issue_scalar_opnd = fifo[rd_ptr[PTR_SIZE-1:0]].issue_scalar_opnd;
-    read_issue_vcsr        = fifo[rd_ptr[PTR_SIZE-1:0]].issue_vcsr;
-    read_issue_vcsr_lmulb2  = fifo[rd_ptr[PTR_SIZE-1:0]].issue_vcsr_lmulb2;
-    // We don't speculatively issue vector instructions to Ocelot
-    // as it does not support flushing.
-    if (!queue_empty && fifo[rd_ptr[PTR_SIZE-1:0]].next_senior && fifo[rd_ptr[PTR_SIZE-1:0]].valid && !fifo[rd_ptr[PTR_SIZE-1:0]].pending_mem_sync)
-      read_valid             = 1'b1;
-    else
-      read_valid             = 1'b0;
+    read_issue_inst        =  fifo[rd_ptr[PTR_SIZE-1:0]].issue_inst;
+    read_issue_sb_id       =  fifo[rd_ptr[PTR_SIZE-1:0]].issue_sb_id;
+    read_issue_scalar_opnd =  fifo[rd_ptr[PTR_SIZE-1:0]].issue_scalar_opnd;
+    read_issue_vcsr        =  fifo[rd_ptr[PTR_SIZE-1:0]].issue_vcsr;
+    read_issue_vcsr_lmulb2 =  fifo[rd_ptr[PTR_SIZE-1:0]].issue_vcsr_lmulb2;
+    read_issue_state       =  fifo[rd_ptr[PTR_SIZE-1:0]].state;
+
+    // // We don't speculatively issue vector instructions to Ocelot
+    // // as it does not support flushing.
+    // if (!queue_empty && fifo[rd_ptr[PTR_SIZE-1:0]].next_senior && fifo[rd_ptr[PTR_SIZE-1:0]].valid && !fifo[rd_ptr[PTR_SIZE-1:0]].pending_mem_sync)
+    //   read_valid             = 1'b1;
+    // else
+    //   read_valid             = 1'b0;
+
+    // Enabling speculative read:
+    read_valid = (
+      !queue_empty &&
+      (fifo[rd_ptr[PTR_SIZE-1:0]].state != INVALID) &&
+      !fifo[rd_ptr[PTR_SIZE-1:0]].pending_mem_sync
+    );
   end
 
   // immediate_dispatch: assert property(@(posedge clk) disable iff (!reset_n)
   //     ((!queue_full && issue_valid && dispatch_next_senior) wr_ptr == dispatch_ptr));
 
+
+  // === ld stuff ===
+
   logic [31:0] ls_inst;
 
   assign ls_candidate = fifo[ls_ptr[PTR_SIZE-1:0]];
 
-  assign memop_sync_start = ls_candidate.valid &&
-                            ls_candidate.pending_mem_sync &&
-                          ( ls_candidate.issue_inst[6:0] == 7'h27 ||
-                           (ls_candidate.issue_inst[6:0] == 7'h7 && ls_candidate.ldb_allocated));
+  assign memop_sync_start = (ls_candidate.state != INVALID) &&
+                             ls_candidate.pending_mem_sync &&
+                            (ls_candidate.issue_inst[6:0] == 7'h27 ||
+                            (ls_candidate.issue_inst[6:0] == 7'h7 && ls_candidate.ldb_allocated));
   assign memop_sync_start_sb_id = ls_candidate.issue_sb_id;
 
   // allocate Load Data Buffer entry(s) for load
-  assign ldb_alloc_valid = ls_candidate.valid &&
-                           ls_candidate.issue_inst[6:0] == 7'h7 &&
-                          !ls_candidate.ldb_allocated;
+  assign ldb_alloc_valid = (ls_candidate.state != INVALID) &&
+                           (ls_candidate.issue_inst[6:0] == 7'h7) &&
+                           !ls_candidate.ldb_allocated;
 
   // Allocation size calculation
   logic [1:0] ldb_alloc_mop;
@@ -184,6 +204,8 @@ module tt_fifo #(parameter DEPTH = 4)
   logic [2:0] ldb_alloc_sew;
   logic [2:0] ldb_alloc_lmul;
   logic [2:0] ldb_alloc_emul;
+  logic       ldb_alloc_is_seg;
+  logic [2:0] ldb_alloc_max_seg_field; // simply the nf (unless wholeLS)
 
   assign ldb_alloc_nf    =  ls_candidate.issue_inst[31:29];
   assign ldb_alloc_mop   =  ls_candidate.issue_inst[27:26];
@@ -196,6 +218,13 @@ module tt_fifo #(parameter DEPTH = 4)
   assign ldb_alloc_sew   =  ls_candidate.issue_vcsr[38:36];
   assign ldb_alloc_lmul  = {ls_candidate.issue_vcsr_lmulb2,
                             ls_candidate.issue_vcsr[35:34]};
+  
+  // Segmented load detection: not whole, not mask, and nf > 0
+  assign ldb_alloc_is_seg = !((ldb_alloc_mop == 2'b00) && (ldb_alloc_lumop == 5'b01000)) &&  // not whole
+                            !((ldb_alloc_mop == 2'b00) && (ldb_alloc_lumop == 5'b01011)) &&  // not mask
+                             (ldb_alloc_nf != 3'b000);                                       // nf > 0
+  assign ldb_alloc_max_seg_field = ldb_alloc_is_seg ? ldb_alloc_nf : 3'b000;
+
   always_comb begin
      // Indexed Load: emul = lmul
      if (ldb_alloc_mop inside {2'b01, 2'b11}) begin
@@ -221,18 +250,123 @@ module tt_fifo #(parameter DEPTH = 4)
      end
   end
 
+  // Allocation size calculation: EMUL * (1 << max_seg_field) for segmented loads
+  logic [3:0] ldb_alloc_base_size;
+
+  // Calculate base EMUL size first
   always_comb begin
      case (ldb_alloc_emul) inside
         // Fractional
-        3'b1??: ldb_alloc_size = 4'h1;
-        3'b000: ldb_alloc_size = 4'h1;
-        3'b001: ldb_alloc_size = 4'h2;
-        3'b010: ldb_alloc_size = 4'h4;
-        3'b011: ldb_alloc_size = 4'h8;
-        default: ldb_alloc_size = 4'h0;
+        3'b1??:  ldb_alloc_base_size = 4'h1;
+        3'b000:  ldb_alloc_base_size = 4'h1;
+        3'b001:  ldb_alloc_base_size = 4'h2;
+        3'b010:  ldb_alloc_base_size = 4'h4;
+        3'b011:  ldb_alloc_base_size = 4'h8;
+        default: ldb_alloc_base_size = 4'h0;
+     endcase
+  end
+  
+  // Clean shift-based multiplier using separate shift wires
+  logic [3:0] ldb_sh0, ldb_sh1, ldb_sh2, ldb_sh3;
+
+  assign ldb_sh0 = ldb_alloc_base_size;        // base << 0 = base * 1
+  assign ldb_sh1 = ldb_alloc_base_size << 1;   // base << 1 = base * 2  
+  assign ldb_sh2 = ldb_alloc_base_size << 2;   // base << 2 = base * 4
+  assign ldb_sh3 = ldb_alloc_base_size << 3;   // base << 3 = base * 8
+  
+  // Select appropriate combination of shifts based on nf field (segment count = nf + 1)
+  always_comb begin
+     case (ldb_alloc_max_seg_field)
+        3'b000:  ldb_alloc_size = ldb_sh0;           // nf=0: 1 segment = sh0
+        3'b001:  ldb_alloc_size = ldb_sh1;           // nf=1: 2 segments = sh1  
+        3'b010:  ldb_alloc_size = ldb_sh0 + ldb_sh1; // nf=2: 3 segments = sh0 + sh1
+        3'b011:  ldb_alloc_size = ldb_sh2;           // nf=3: 4 segments = sh2
+        3'b100:  ldb_alloc_size = ldb_sh0 + ldb_sh2; // nf=4: 5 segments = sh0 + sh2
+        3'b101:  ldb_alloc_size = ldb_sh1 + ldb_sh2; // nf=5: 6 segments = sh1 + sh2
+        3'b110:  ldb_alloc_size = ldb_sh3 - ldb_sh0; // nf=6: 7 segments = sh3 - sh0 (8 - 1)
+        3'b111:  ldb_alloc_size = ldb_sh3;           // nf=7: 8 segments = sh3
+        default: ldb_alloc_size = 4'h0;              // Should never happen
      endcase
   end
   assign ldb_alloc_sb_id  = ls_candidate.issue_sb_id;
 
 
 endmodule
+
+  // always_ff @(posedge clk) begin
+  //   if (!reset_n) begin
+  //     wr_ptr <= 0;
+  //     rd_ptr <= 0;
+  //     ls_ptr <= 0;
+  //     dispatch_ptr <= 0;
+  //     last_dispatch_was_kill <= 0;
+  //     for (int i = 0; i < DEPTH; i = i + 1) begin
+  //       fifo[i].issue_inst       <= 0;
+  //       fifo[i].issue_sb_id      <= 0;
+  //       fifo[i].issue_scalar_opnd <= 0;
+  //       fifo[i].issue_vcsr       <= 0;
+  //       fifo[i].issue_vcsr_lmulb2 <= 0;
+  //       fifo[i].next_senior <= 0;
+  //       fifo[i].pending_mem_sync <= 0;
+  //       fifo[i].ldb_allocated <= 0;
+  //       fifo[i].valid <= 0;
+  //     end
+  //   end
+  //   else if (!queue_full && issue_valid) begin
+  //     fifo[wr_ptr[PTR_SIZE-1:0]].issue_inst       <= issue_inst;
+  //     fifo[wr_ptr[PTR_SIZE-1:0]].issue_sb_id      <= issue_sb_id;
+  //     fifo[wr_ptr[PTR_SIZE-1:0]].issue_scalar_opnd <= issue_scalar_opnd;
+  //     fifo[wr_ptr[PTR_SIZE-1:0]].issue_vcsr       <= issue_vcsr;
+  //     fifo[wr_ptr[PTR_SIZE-1:0]].issue_vcsr_lmulb2 <= issue_vcsr_lmulb2;
+  //     fifo[wr_ptr[PTR_SIZE-1:0]].valid            <= 1;
+  //     fifo[wr_ptr[PTR_SIZE-1:0]].pending_mem_sync <= issue_inst[6:0] inside {7'h7, 7'h27}; // set for vector load/store
+  //     fifo[wr_ptr[PTR_SIZE-1:0]].ldb_allocated    <= 1'b0;
+  //     // dispatch.next_senior can be sent in the same cycle as the instruction
+  //     if(dispatch_next_senior) begin
+  //       // TODO: assert that wr_ptr == dispatch_ptr
+  //       fifo[wr_ptr[PTR_SIZE-1:0]].next_senior <= 1;
+  //       dispatch_ptr <= dispatch_ptr + 1;
+  //       last_dispatch_was_kill <= 0;
+  //     end
+  //     else
+  //       fifo[wr_ptr[PTR_SIZE-1:0]].next_senior <= 0;
+
+  //     wr_ptr <= wr_ptr + 1;
+  //   end
+  //   else begin
+  //     if(dispatch_next_senior) begin
+  //       // TODO: assert that dispatch.sb_id == fifo[dispatch_ptr].sb_id
+  //       fifo[dispatch_ptr].next_senior <= 1;
+  //       last_dispatch_was_kill <= 0;
+  //       dispatch_ptr <= dispatch_ptr + 1;
+  //     end
+  //     else if(dispatch_kill && !last_dispatch_was_kill) begin
+  //       wr_ptr <= dispatch_ptr;
+  //       last_dispatch_was_kill <= 1;
+  //     end
+  //   end
+
+  //   if (read_req && read_valid) begin
+  //     rd_ptr <= rd_ptr + 1;
+  //     fifo[rd_ptr[PTR_SIZE-1:0]].valid <= 0;
+  //   end
+
+  //   // Clear the pending bit
+  //   if (memop_sync_start) begin
+  //     fifo[ls_ptr[PTR_SIZE-1:0]].pending_mem_sync <= 1'b0;
+  //   end
+
+  //   if (ldb_alloc_valid && ldb_alloc_ack) begin
+  //     fifo[ls_ptr[PTR_SIZE-1:0]].ldb_allocated <= 1'b1;
+  //   end
+
+  //   if ((  memop_sync_start                  ||
+  //        ( ls_candidate.valid            &&
+  //         !ls_candidate.pending_mem_sync   )   ) &&
+  //          ls_ptr != wr_ptr                        ) begin
+  //     ls_ptr <= ls_ptr + 1;
+  //   end
+         
+  // end
+
+  

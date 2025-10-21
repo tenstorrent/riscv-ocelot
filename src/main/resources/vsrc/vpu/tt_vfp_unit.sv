@@ -1,6 +1,6 @@
 // See LICENSE.TT for license details.
 `include "briscv_defines.h"
-`include "tt_briscv_pkg.vh"
+`include "tt_briscv_pkg.svh"
 
 module tt_vfp_unit 
 # (parameter NUM_LANE=2)

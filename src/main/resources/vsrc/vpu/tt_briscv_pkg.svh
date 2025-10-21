@@ -1,21 +1,32 @@
 // See LICENSE.TT for license details.
 
 `ifndef TT_BRISCV_PKG_VH
- `define  TT_BRISCV_PKG_VH
+`define  TT_BRISCV_PKG_VH
 package tt_briscv_pkg;
    typedef struct packed {
-      logic 	   vrf_wr_flag;
-      logic 	   squash_vec_wr_flag;
-      logic 	   fp_rf_wr_flag;
+      logic 	    vrf_wr_flag;
+      logic 	    squash_vec_wr_flag;
+      logic 	    fp_rf_wr_flag;
       logic        rf_wr_flag;
       logic [31:0] pc;
       logic [31:0] sim_instrn;
-      logic 	   is_branch;
-      logic 	   load;
-      logic 	   vec_load;
+      logic 	    is_branch;
+      logic 	    load;
+      logic 	    vec_load;
       logic [4:0]  rf_wraddr;
       logic        vl_is_zero;
+      logic [4:0]  sb_id;
    } lq_info_s;
+
+   typedef enum logic [2:0] {
+      INVALID = 'b0,
+      DISPATCH,
+      SENIOR,
+      KILL,
+      COMPLETE,
+      COMMITTABLE,
+      DISCARDABLE
+   } inst_state_e;
 
 localparam ACTUAL_LQ_DEPTH = 8;
 
@@ -64,6 +75,7 @@ localparam ADDRWIDTH=40;
       logic [2:0] v_lmul;
       logic [1:0] v_vxrm;
       logic [$clog2(VLEN+1)-1:0] v_vl;
+      logic [$clog2(VLEN+1)-1:0] v_vstart;
       logic [2:0] frm;
    } csr_t;
 
@@ -129,6 +141,10 @@ localparam ADDRWIDTH=40;
       logic [7:0] addrp0_incr;
       logic [7:0] addrp1_reset; // For Iterating through segment-indexed LdSt ops 
       logic 	  mask_only;
+      
+      // Division operation flags
+      logic       idivop;        // Integer division (vdiv, vdivu, vrem, vremu)
+      logic       fdivop;        // Floating-point division (vfdiv, vfrdiv, vfsqrt)
 
    } vec_autogen_s;
 
@@ -389,5 +405,5 @@ function automatic [2:0] get_vecldst_emul;
 endfunction      
 
 endpackage
-   
+
 `endif

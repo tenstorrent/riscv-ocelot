@@ -1,22 +1,26 @@
 // See LICENSE.TT for license details.
-module tt_mask_fsm #(parameter VLEN = 256,
-                     parameter MASK_CREDITS = 2)
-                    (input  logic                      i_clk,
-                     input  logic                      i_reset_n,
-                     input  logic                      i_is_masked_memop,
-                     input  logic                      i_is_indexed,
-                     input  logic [VLEN-1:0]           i_mask_data,
-                     input  logic [VLEN-1:0]           i_index_data,
-                     input  logic                      i_index_data_valid,
-                     input  logic                      i_last_index,
-                     input  logic                      i_memop_sync_start_next,
-                     input  logic [$clog2(VLEN+1)-1:0] i_vl,
-                     input  logic [1:0]                i_eew,
-                     input  logic                      i_mask_idx_credit,
-                     output logic                      o_draining_mask_idx,
-                     output logic [64:0]               o_mask_idx_item,
-                     output logic                      o_mask_idx_valid,
-                     output logic                      o_mask_idx_last_idx);
+module tt_mask_fsm #(
+  parameter VLEN = 256,
+  parameter MASK_CREDITS = 2
+) (
+  input  logic                      i_clk,
+  input  logic                      i_reset_n,
+  input  logic                      i_is_masked_memop,
+  input  logic                      i_is_indexed,
+  input  logic [VLEN-1:0]           i_mask_data,
+  input  logic [VLEN-1:0]           i_index_data,
+  input  logic                      i_index_data_valid,
+  input  logic                      i_last_index,
+  input  logic                      i_memop_sync_start_next,
+  input  logic [$clog2(VLEN+1)-1:0] i_vl,
+  input  logic [$clog2(VLEN+1)-1:0] i_vstart,
+  input  logic [1:0]                i_eew,
+  input  logic                      i_mask_idx_credit,
+  output logic                      o_draining_mask_idx,
+  output logic [64:0]               o_mask_idx_item,
+  output logic                      o_mask_idx_valid,
+  output logic                      o_mask_idx_last_idx
+);
 
   // ----- For masked memops -----
   // if strided, send 1, 2, 3 or 4 transactions based on vl,
@@ -24,10 +28,10 @@ module tt_mask_fsm #(parameter VLEN = 256,
 
   // FSM to drive the mask interface
   typedef enum logic [1:0] {
-  IDLE = 2'b00,
-  WAIT = 2'b01, // Wait for ID finish cracking
-  SEND = 2'b10, // Send mask packets
-  RSVD = 2'b11
+    IDLE = 2'b00,
+    WAIT = 2'b01, // Wait for ID finish cracking
+    SEND = 2'b10, // Send mask packets
+    RSVD = 2'b11
   } mask_state_t;
   mask_state_t mask_fsm_state;
   mask_state_t mask_fsm_next_state;
@@ -40,9 +44,14 @@ module tt_mask_fsm #(parameter VLEN = 256,
   logic drain_index_buffer;
   logic drain_index_buffer_next;
 
+  logic [VLEN-1:0]   i_index_shifted;
+  logic [$clog2(VLEN+1)-1:0] byte_shift;
+  logic [$clog2(VLEN+1)-1:0] start_reg;
+  logic [$clog2(VLEN+1)-1:0] reg_cnt;
+
   logic [VLEN-1:0]   mask_buffer; 
   logic [8*VLEN-1:0] idx_buffer;
-  logic [2:0]        idx_buffer_wptr;
+  logic [VLEN-1:0]   idx_buffer_wptr;
   logic [64:0] mask_idx_item_next;
   logic mask_idx_valid_next;
   logic is_indexed;
@@ -53,29 +62,44 @@ module tt_mask_fsm #(parameter VLEN = 256,
       is_indexed <= 0;
       eew <= 0;
     end
-    else if(i_is_indexed && i_memop_sync_start_next) begin
-      is_indexed <= 1;
+    else if(i_memop_sync_start_next) begin
+      is_indexed <= i_is_indexed;
       eew <= i_eew;
     end
-    else if(num_transactions_next == 0)
-      is_indexed <= 0;
+    // else if(num_transactions_next == 0)
+    //   is_indexed <= 0;
   end
+
+  always_comb begin
+    if (i_eew == 2'd0) begin
+      byte_shift = {'0, i_vstart[4:0], 0'b0};
+      start_reg  = {'0, i_vstart[7:5]};
+    end
+    else if (i_eew == 2'd1) begin
+      byte_shift = {'0, i_vstart[3:0], 1'b0};
+      start_reg  = {'0, i_vstart[6:4]};
+    end
+    else if (i_eew == 2'd2) begin
+      byte_shift = {'0, i_vstart[2:0], 2'b0};
+      start_reg  = {'0, i_vstart[5:3]};
+    end
+    else if (i_eew == 2'd3) begin
+      byte_shift = {'0, i_vstart[1:0], 3'b0};
+      start_reg  = {'0, i_vstart[4:2]};
+    end
+  end
+
+  assign i_index_shifted = i_index_data >> (byte_shift << 'd3);
 
   integer k;
   always @(posedge i_clk) begin
     if(!i_reset_n)
       idx_buffer <= 0;
     else if(i_is_indexed && i_index_data_valid) begin
-      case(idx_buffer_wptr)
-        3'd0: idx_buffer[255:0    ] <= i_index_data;
-        3'd1: idx_buffer[511:256  ] <= i_index_data;
-        3'd2: idx_buffer[767:512  ] <= i_index_data;
-        3'd3: idx_buffer[1023:768 ] <= i_index_data;
-        3'd4: idx_buffer[1279:1024] <= i_index_data;
-        3'd5: idx_buffer[1535:1280] <= i_index_data;
-        3'd6: idx_buffer[1791:1536] <= i_index_data;
-        3'd7: idx_buffer[2047:1792] <= i_index_data;
-      endcase
+      if (reg_cnt == start_reg)
+        idx_buffer[idx_buffer_wptr*8 +: VLEN] <= i_index_shifted;
+      else if (reg_cnt > start_reg)
+        idx_buffer[idx_buffer_wptr*8 +: VLEN] <= i_index_data;
     end
     else if(mask_idx_valid_next) begin
       case(eew)
@@ -89,12 +113,20 @@ module tt_mask_fsm #(parameter VLEN = 256,
   always @(posedge i_clk) begin
     if(!i_reset_n) begin
       idx_buffer_wptr <= 0;
+      reg_cnt <= 0;
     end
     else begin
-      if(i_is_indexed && i_index_data_valid)
-        idx_buffer_wptr <= idx_buffer_wptr + 1;
-      else if(num_transactions_next == 0)
+      if(i_is_indexed && i_index_data_valid) begin
+        if (reg_cnt == start_reg)
+          idx_buffer_wptr <= idx_buffer_wptr + VLEN/8 - byte_shift;
+        else if (reg_cnt > start_reg)
+          idx_buffer_wptr <= idx_buffer_wptr + VLEN/8;
+        reg_cnt <= reg_cnt + 1;
+      end
+      else if(num_transactions_next == 0) begin
         idx_buffer_wptr <= 0;
+        reg_cnt <= 0;
+      end
     end
   end
 
@@ -117,7 +149,7 @@ module tt_mask_fsm #(parameter VLEN = 256,
     if(!i_reset_n)
       mask_buffer <= 0;
     else if(i_is_masked_memop && mask_fsm_state == IDLE)
-      mask_buffer <= i_mask_data;
+      mask_buffer <= i_mask_data >> i_vstart;
     else if(mask_idx_valid_next)
       mask_buffer <= is_indexed ? mask_buffer >> 1 : mask_buffer >> 64;
   end
@@ -134,17 +166,17 @@ module tt_mask_fsm #(parameter VLEN = 256,
     case(mask_fsm_state)
       IDLE: begin
         if(!i_is_indexed) begin
-          if(i_vl <= 64)
+          if((i_vl - i_vstart) <= 64)
             num_transactions_next = 1;
-          else if (i_vl <= 128)
+          else if ((i_vl - i_vstart) <= 128)
             num_transactions_next = 2;
-          else if (i_vl <= 192)
+          else if ((i_vl - i_vstart) <= 192)
             num_transactions_next = 3;
           else
             num_transactions_next = 4;
         end
         else begin
-          num_transactions_next = i_vl;
+          num_transactions_next = (i_vl - i_vstart);
         end
       end
       SEND: begin
@@ -166,7 +198,7 @@ module tt_mask_fsm #(parameter VLEN = 256,
   always_comb begin
     case(mask_fsm_state)
       IDLE: begin
-        if((i_is_masked_memop || i_is_indexed) && i_memop_sync_start_next && i_vl != 0) begin
+        if((i_is_masked_memop || i_is_indexed) && i_memop_sync_start_next && (i_vl != 0) && (i_vstart < i_vl)) begin
           if (i_last_index) begin
             mask_fsm_next_state = SEND;
           end else begin
