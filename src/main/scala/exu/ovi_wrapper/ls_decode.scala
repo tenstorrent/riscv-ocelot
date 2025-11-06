@@ -68,7 +68,6 @@ extends BoomModule with VecLSGenConstants {
       val ready = Output(Bool())
       val valid = Input(Bool())
       val req   = Input(new EnhancedFuncUnitReq(xLen, VLEN))
-      val sb_id = Input(UInt(5.W))
     }
     // Outputs
     val out = new Bundle {
@@ -170,7 +169,7 @@ extends BoomModule with VecLSGenConstants {
   io.out.is_load := isLoad
 
   // sb_id - from the SBIDQ
-  io.out.dec_info.sb_id := io.in.sb_id
+  io.out.dec_info.sb_id := io.in.req.sb_id
   
   // base_v_reg (Base Vector Register) - vd for loads, vs3 for stores
   io.out.dec_info.base_v_reg := instVldDest  // For loads: vd[4:0], For stores: vs3[4:0] (same bit position)

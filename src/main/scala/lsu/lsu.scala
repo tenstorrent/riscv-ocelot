@@ -95,6 +95,8 @@ class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   // mask interface
   val isMask = Bool()
   val Mask = Bits(32.W)
+  // fault
+  val fault = Bool()
 }
 
 class VGenReqHelp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
@@ -323,6 +325,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   with rocket.HasL1HellaCacheParameters
 {
   val io = IO(new LSUIO)
+
+  io.core.VGen.resp.bits.fault := false.B
 
   val numDsqEntries = 4
   val numDlqEntries = 8

@@ -23,19 +23,22 @@ class EnhancedFuncUnitReq(xLen: Int, vLen: Int)(implicit p: Parameters) extends 
   val vxrm = UInt(2.W)
   val fcsr_rm = UInt(3.W)
   val vstart = UInt(log2Ceil(vLen+1).W)
+  val sb_id = UInt(5.W)
   val req = new FuncUnitReq(xLen)
 }
 
 class OviWrapper(implicit p: Parameters) extends BoomModule
-    with freechips.rocketchip.rocket.constants.MemoryOpConstants {
+with freechips.rocketchip.rocket.constants.MemoryOpConstants {
+
+  // =============== IO Ports Definition ===============
   val io = IO(new Bundle {
-    val req = Flipped(new DecoupledIO(new FuncUnitReq(xLen)))
+    val req  = Flipped(new DecoupledIO(new FuncUnitReq(xLen)))
     val resp = new DecoupledIO(new FuncUnitResp(xLen))
 
     val vconfig = Input(new VConfig())
     val vxrm    = Input(UInt(2.W))
     val fcsr_rm = Input(UInt(3.W))
-    val vstart = Input(UInt(log2Ceil(vLen+1).W))
+    val vstart  = Input(UInt(log2Ceil(vLen+1).W))
 
     val vGenIO = Flipped(new boom.lsu.VGenIO)
 
@@ -50,6 +53,22 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
       val exception    = Input(Bool())
     }
   })
+
+  // =============== Constants Definition ===============
+
+  val vlsiQDepth = 4
+  val oviWidth   = 512
+  val outStandingLSCount = 32
+  val vpuVlen = 256
+  val vdbDepth = 4
+  val vAGenDepth = 4
+  val fakeLoadDepth = 8
+  val lsuDmemWidth = coreDataBits
+  val byteVreg = vpuVlen / 8
+  val byteDmem = lsuDmemWidth / 8
+  val addrBreak = log2Ceil(lsuDmemWidth/8)
+  val MAX_ISSUE_CREDIT = 32
+  val MAX_OUTSTANDING_VMEMOPS = 8 // max number of vector memory operations that can be outstanding
 
   io := DontCare
   val vpu = Module(new tt_vpu_ovi(vLen))
@@ -91,7 +110,6 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   io.debug_wb_vec_wdata := vpu.io.debug_wb_vec_wdata
   io.debug_wb_vec_wmask := vpu.io.debug_wb_vec_wmask
 
-  val MAX_ISSUE_CREDIT = 32
   val issue_credit_cnt = RegInit(MAX_ISSUE_CREDIT.U)
   issue_credit_cnt := issue_credit_cnt + vpu.io.issue_credit - vpu.io.issue_valid 
   val vpu_ready = (issue_credit_cnt =/= 0.U) && sb_ready // <== !full
@@ -106,15 +124,15 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 */
   
 
-   val MemSyncStart = vpu.io.memop_sync_start
-   val MemStoreValid = vpu.io.store_valid 
-   val MemStoreData = vpu.io.store_data
-   val MemMaskValid = vpu.io.mask_idx_valid
-   val MemMaskId    = Cat(vpu.io.mask_idx_last_idx, vpu.io.mask_idx_item)
+  val MemSyncStart = vpu.io.memop_sync_start
+  val MemStoreValid = vpu.io.store_valid 
+  val MemStoreData = vpu.io.store_data
+  val MemMaskValid = vpu.io.mask_idx_valid
+  val MemMaskId    = Cat(vpu.io.mask_idx_last_idx, vpu.io.mask_idx_item)
 
   val MemSyncEnd = WireInit(false.B)
   val MemSbId = WireInit(0.U(5.W))
-  val MemVstart = 0.U
+  val VstartVlfof = WireInit(0.U(15.W))
   val MemLoadValid = WireInit (false.B)
   val MemSeqId = WireInit(0.U(34.W))
   val MemLoadData = WireInit(0.U(512.W))
@@ -130,46 +148,16 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   val seqVreg = WireInit(0.U(5.W))    // 5
 
 /*
-   Constants Definition
-*/  
-   val vlsiQDepth = 4
-   val oviWidth   = 512
-   val outStandingLSCount = 32
-   val vpuVlen = 256
-   val vdbDepth = 4
-   val vAGenDepth = 4
-   val fakeLoadDepth = 8
-
-   val lsuDmemWidth = coreDataBits
-   val byteVreg = vpuVlen / 8
-   val byteDmem = lsuDmemWidth / 8
-   val addrBreak = log2Ceil(lsuDmemWidth/8)
-
-/*
   vLSIQ start
 */
 
-  // in the middle of handling vector load store
-  val inMiddle = RegInit(false.B)
-  // trying to dequeue VLSIQ 
-  val tryDeqVLSIQ = RegInit(false.B)
-  // this chunk is checking the number of outstanding mem_sync_start
-  val outStandingReq = RegInit(0.U(log2Ceil(outStandingLSCount).W))
-  val canStartAnother = WireInit(false.B)
-  val vOSud = Cat (vpu.io.memop_sync_start, canStartAnother)
-  when (vOSud === 1.U) {
-    outStandingReq := outStandingReq - 1.U
-  }.elsewhen (vOSud === 2.U) {
-    outStandingReq := outStandingReq + 1.U 
-  }
-
   val vLSIQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), vlsiQDepth))
-  val sbIdQueue = Module(new Queue(UInt(5.W), vlsiQDepth))
 
   // Dequeue a request whenever VPU and vLSIQueue are ready
   io.req.ready := vpu_ready && vLSIQueue.io.enq.ready
 
   val req_uop = io.req.bits.uop
+  vLSIQueue.io.enq.noenq()
   when(io.req.fire && (req_uop.uses_stq || req_uop.uses_ldq)) {
     vLSIQueue.io.enq.valid := true.B
     vLSIQueue.io.enq.bits.req     := io.req.bits
@@ -177,42 +165,32 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
     vLSIQueue.io.enq.bits.vxrm    := io.vxrm
     vLSIQueue.io.enq.bits.fcsr_rm := io.fcsr_rm
     vLSIQueue.io.enq.bits.vstart  := io.vstart
-
-    sbIdQueue.io.enq.enq(next_sb_id)
-  }.otherwise {
-    vLSIQueue.io.enq.noenq()
-    sbIdQueue.io.enq.noenq()
+    vLSIQueue.io.enq.bits.sb_id   := next_sb_id
   }
-
 
   // ===============  OSC3 LSGEN DEQ CODE START ===============
-
-  class DecoderInputBundle extends Bundle {
-    val req_data = new EnhancedFuncUnitReq(xLen, vLen)
-    val sb_id = UInt(5.W)
-  }
   
-  // 3-element deep buffer for decoder inputs
-  val decoder_buffer = Module(new Queue(new DecoderInputBundle, 3))
+  // 1-element deep buffer for decoder inputs (it was 3 but we really only need a flip-flop)
+  val decoder_buffer = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), 1))
 
   // Counter-based VLSIQ dequeue logic with outstanding operation tracking
   // Outstanding counter: accumulate MemSyncStart signals
-  val outstanding_ctr = RegInit(0.U(3.W))  // 3-bit counter (up to 7 pending operations)
+  // NOTE: technically this is a "outstanding v.mem_op AND started decoding" counter
+  val outstanding_ctr = RegInit(0.U(log2Ceil(MAX_OUTSTANDING_VMEMOPS).W))
 
   // reset the deq logic
   vLSIQueue.io.deq.ready := false.B
-  sbIdQueue.io.deq.ready := false.B
   decoder_buffer.io.enq.valid := false.B
 
   // Counter update logic
   val memsync_arrives = MemSyncStart
-  val vlsiq_fire = outstanding_ctr =/= 0.U && vLSIQueue.io.deq.valid && decoder_buffer.io.enq.ready
+  val vlsiq_fire = (outstanding_ctr =/= 0.U) && (vLSIQueue.io.deq.valid) && (decoder_buffer.io.enq.ready)
 
   when (memsync_arrives && !vlsiq_fire) {
-    when (outstanding_ctr =/= 7.U) {
+    when (outstanding_ctr =/= (MAX_OUTSTANDING_VMEMOPS-1).U) {
       outstanding_ctr := outstanding_ctr + 1.U
     } .otherwise {
-      assert(false.B, "ERROR: Outstanding counter overflow! Increase counter width.")
+      assert(false.B, "ERROR: Outstanding counter overflow! Increase MAX_OUTSTANDING_VMEMOPS.")
     }
   } .elsewhen (!memsync_arrives && vlsiq_fire) {
     outstanding_ctr := outstanding_ctr - 1.U
@@ -221,11 +199,9 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   // Override VLSIQ and decoder buffer signals
   when (vlsiq_fire) {
     vLSIQueue.io.deq.ready := true.B
-    sbIdQueue.io.deq.ready := true.B
     decoder_buffer.io.enq.valid := true.B
   }
-  decoder_buffer.io.enq.bits.req_data := vLSIQueue.io.deq.bits
-  decoder_buffer.io.enq.bits.sb_id := sbIdQueue.io.deq.bits
+  decoder_buffer.io.enq.bits := vLSIQueue.io.deq.bits
 
   // Debug signals
   dontTouch(outstanding_ctr)
@@ -252,8 +228,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   // Use OR of both generators' gen_active signals instead of separate register
   val gen_active = (loadGen.io.gen_active || storeGen.io.gen_active)
 
-  lsDecoder.io.in.req := decoder_buffer.io.deq.bits.req_data
-  lsDecoder.io.in.sb_id := decoder_buffer.io.deq.bits.sb_id
+  lsDecoder.io.in.req := decoder_buffer.io.deq.bits
   lsDecoder.io.in.valid := decoder_buffer.io.deq.valid
 
 
@@ -332,7 +307,6 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
   // ===============  OSC3 LSGEN INSTANTIATION CODE END ===============
 
 
-
   // Latch the load/store type when decoder fires to know which generator to use
   val gen_is_load = RegInit(false.B)
   
@@ -352,9 +326,9 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
     Cat(0.U((11-log2Ceil(vpuVlen/8)).W), loadGen.io.load_packet.bits.el_id), // bits 15:5  (11 bits total, padded)
     loadGen.io.load_packet.bits.v_reg(4, 0)                            // bits 4:0   (5 bits)
   )
-/*
-   Fake load response for masked-off elements
-*/
+
+  // =============== Route load/store to LSU or fake queue ===============
+  // NOTE: this section is only long becuase of difference in naming (LSU vs OVI)
 
   val fakeLoadReturnQueue = Module(new Queue(UInt(34.W), fakeLoadDepth))
   fakeLoadReturnQueue.io.deq.ready := false.B 
@@ -388,7 +362,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
     io.vGenIO.reqHelp.bits.isMask := loadGen.io.load_packet.bits.mask_valid
     io.vGenIO.reqHelp.bits.Mask := loadGen.io.load_packet.bits.mask_data(31, 0)  // Truncate to 32 bits
     io.vGenIO.reqHelp.bits.isFake := loadGen.io.load_packet.bits.is_fake
-  } .elsewhen (gen_active && !gen_is_load && storeGen.io.store_packet.valid) {
+  }.elsewhen (gen_active && !gen_is_load && storeGen.io.store_packet.valid) {
     // Store packet → LSU req interface  
     io.vGenIO.req.valid := storeGen.io.store_packet.valid
     io.vGenIO.req.bits.uop := storeGen.io.store_packet.bits.uop
@@ -414,7 +388,7 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
     io.vGenIO.reqHelp.bits.isMask := false.B     // Stores don't use mask interface the same way
     io.vGenIO.reqHelp.bits.Mask := 0.U           // Not applicable for stores  
     io.vGenIO.reqHelp.bits.isFake := storeGen.io.store_packet.bits.is_fake
-  } .otherwise {
+  }.otherwise {
     // When generators are not active, set LSU outputs to invalid
     io.vGenIO.req.valid := false.B
     io.vGenIO.req.bits := DontCare
@@ -424,43 +398,40 @@ class OviWrapper(implicit p: Parameters) extends BoomModule
 
 
 
-/*
-   Parse LSU response
-*/
+  // =============== Mem Response Handler ===============
+
+  // Parse the LSU response (invert for neg stride)
   val LSUReturnLoadValid = WireInit(false.B)
   LSUReturnLoadValid := io.vGenIO.resp.valid && io.vGenIO.resp.bits.s0l1  // needs fixing later if we are overlapping
   val LSUReturnData = WireInit(0.U(oviWidth.W))
   when (io.vGenIO.resp.bits.strideDir){  // negative
-       LSUReturnData := Cat(io.vGenIO.resp.bits.data ((lsuDmemWidth-1), 0), 0.U((oviWidth-lsuDmemWidth).W))
-    }.otherwise {
-      LSUReturnData := Cat(0.U, io.vGenIO.resp.bits.data ((lsuDmemWidth-1), 0))
-    }
+    LSUReturnData := Cat(io.vGenIO.resp.bits.data ((lsuDmemWidth-1), 0), 0.U((oviWidth-lsuDmemWidth).W))
+  }.otherwise {
+    LSUReturnData := Cat(0.U, io.vGenIO.resp.bits.data ((lsuDmemWidth-1), 0))
+  }
 
-/*
-   Data back to VPU
-*/
+  // some Mem SB ID logic..
+  MemSbId := 0.U
+  val MemSb = RegInit(0.U(32.W))
+  val vectorDone = WireInit(0.U(2.W))
+  val MemSbResidue = WireInit(false.B)
+  vectorDone := Cat (io.vGenIO.resp.bits.vectorDoneLd, io.vGenIO.resp.bits.vectorDoneSt)
+  when (vectorDone === 1.U) {
+    MemSbId := io.vGenIO.resp.bits.sbIdDoneSt  
+  }.elsewhen (vectorDone === 2.U) {
+    MemSbId := io.vGenIO.resp.bits.sbIdDoneLd 
+  }.elsewhen (vectorDone === 3.U) {
+    MemSbId := io.vGenIO.resp.bits.sbIdDoneLd
+    MemSb := MemSb.bitSet (io.vGenIO.resp.bits.sbIdDoneSt, true.B)
+  }.elsewhen (MemSb =/= 0.U) {
+    MemSbResidue := true.B 
+    MemSbId := PriorityEncoder (MemSb)
+    MemSb := MemSb.bitSet (MemSbId, false.B)
+  }
+  MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbResidue
 
-MemSbId := 0.U
-val MemSb = RegInit(0.U(32.W))
-val vectorDone = WireInit(0.U(2.W))
-val MemSbResidue = WireInit(false.B)
-vectorDone := Cat (io.vGenIO.resp.bits.vectorDoneLd, io.vGenIO.resp.bits.vectorDoneSt)
-when (vectorDone === 1.U) {
-   MemSbId := io.vGenIO.resp.bits.sbIdDoneSt  
-}.elsewhen (vectorDone === 2.U) {
-   MemSbId := io.vGenIO.resp.bits.sbIdDoneLd 
-}.elsewhen (vectorDone === 3.U) {
-   MemSbId := io.vGenIO.resp.bits.sbIdDoneLd
-   MemSb := MemSb.bitSet (io.vGenIO.resp.bits.sbIdDoneSt, true.B)
-}.elsewhen (MemSb =/= 0.U) {
-   MemSbResidue := true.B 
-   MemSbId := PriorityEncoder (MemSb)
-   MemSb := MemSb.bitSet (MemSbId, false.B)
-}
-MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbResidue
-
-  
-
+  // Mux the response from fake queue or the real load..
+  // TODO: what if we have fake responses left in the queue when we get a memop_sync_end? Need to check for this case..
   MemLoadValid := LSUReturnLoadValid || fakeLoadReturnQueue.io.deq.valid
   MemSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg) 
 
@@ -485,7 +456,56 @@ MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbR
     MemReturnMask := false.B 
     fakeLoadReturnQueue.io.deq.ready := true.B 
   }
-  
+
+  // =============== Vstart Bookkeeping ===============
+
+  class VstartVlfofTrackerEntry extends Bundle {
+    val valid = Bool()
+    val sb_id = UInt(5.W)
+    val vstart_vlfof = UInt(15.W)
+  }
+  val vsvlf_tracker = RegInit(VecInit.fill(MAX_OUTSTANDING_VMEMOPS)(0.U.asTypeOf(new VstartVlfofTrackerEntry)))
+  val vsvlf_next_available_vec = PriorityEncoderOH(vsvlf_tracker.map(~_.valid))
+
+  for (i <- 0 until MAX_OUTSTANDING_VMEMOPS) {
+    // when a memop ends (last possible el_id for vstart/vlfof has been sent)
+    // we need to send the final value to the VPU and reset the tracker
+    when (
+      (MemSyncEnd) &&
+      (vsvlf_tracker(i).valid) &&
+      (vsvlf_tracker(i).sb_id === MemSbId)
+    ) {
+      VstartVlfof := vsvlf_tracker(i).vstart_vlfof
+      vsvlf_tracker(i).valid := false.B
+      vsvlf_tracker(i).vstart_vlfof := 0.U
+    }
+    // when theres a valid memory packet that is being transferred
+    // we need to update the tracker with the minimum value
+    .elsewhen (
+      (LSUReturnLoadValid) &&
+      (vsvlf_tracker(i).valid) &&
+      (io.vGenIO.resp.bits.fault) &&
+      (vsvlf_tracker(i).sb_id === io.vGenIO.resp.bits.sbId) &&
+      (vsvlf_tracker(i).vstart_vlfof > io.vGenIO.resp.bits.elemID)
+    ) {
+      vsvlf_tracker(i).vstart_vlfof := io.vGenIO.resp.bits.elemID
+    }
+    // when a new memory transaction is starting
+    // reserve a slot for the new transaction (valid + sb_id)
+    .elsewhen (
+      (vlsiq_fire) &&
+      (vsvlf_next_available_vec(i))
+    ) {
+      assert(!vsvlf_tracker(i).valid, "ERROR: VstartVlfof tracker slot is already taken!")
+      assert(!(VecInit(vsvlf_next_available_vec).asUInt & (VecInit(vsvlf_next_available_vec).asUInt - 1.U)), "ERROR: VstartVlfof tracker has multiple valid slots!")
+      vsvlf_tracker(i).valid := true.B
+      vsvlf_tracker(i).sb_id := vLSIQueue.io.deq.bits.sb_id
+      vsvlf_tracker(i).vstart_vlfof := 0.U
+    }
+  }
+
+
+  // =============== Send Data to VPU ===============
 
   vpu.io := DontCare
   vpu.io.clk := clock
@@ -515,18 +535,16 @@ MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbR
   vpu.io.dispatch_sb_id := dispatch_sb_id
   vpu.io.dispatch_next_senior := dispatch_next_senior
   vpu.io.dispatch_kill := dispatch_kill
-
-   vpu.io.memop_sync_end := MemSyncEnd
-   vpu.io.memop_sb_id := MemSbId  
-// vpu.io.mem_vstart := MEMVstart
-   vpu.io.load_valid := MemLoadValid
-   vpu.io.load_seq_id := MemSeqId
-   vpu.io.load_data := MemLoadData
-   vpu.io.load_mask_valid := MemReturnMaskValid
-   vpu.io.load_mask := MemReturnMask
+  vpu.io.memop_sync_end := MemSyncEnd
+  vpu.io.memop_sb_id := MemSbId  
+  vpu.io.memop_vstart_vlfof := VstartVlfof
+  vpu.io.load_valid := MemLoadValid
+  vpu.io.load_seq_id := MemSeqId
+  vpu.io.load_data := MemLoadData
+  vpu.io.load_mask_valid := MemReturnMaskValid
+  vpu.io.load_mask := MemReturnMask
   vpu.io.store_credit := vecDataBuffer.io.credit
   vpu.io.mask_idx_credit := maskIdxBuffer.io.credit
-  
   
 }
 
@@ -557,6 +575,7 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
     val memop_sync_end = Input(Bool())
     val memop_sync_start = Output(Bool())
     val memop_sb_id = Input(UInt(5.W))
+    val memop_vstart_vlfof = Input(UInt(15.W))
     val debug_wb_vec_valid = Output(Bool())
     val debug_wb_vec_wdata = Output(UInt((vLen * 8).W))
     val debug_wb_vec_wmask = Output(UInt(8.W))
@@ -614,6 +633,7 @@ class tt_vpu_ovi (vLen: Int)(implicit p: Parameters) extends BlackBox(Map("VLEN"
   addResource("/vsrc/vpu/tt_memop_fsm.sv")
   addResource("/vsrc/vpu/tt_mask_fsm.sv")
   addResource("/vsrc/vpu/tt_store_buffer.sv")
+  addResource("/vsrc/vpu/tt_load_buffer.sv")
   addResource("/vsrc/vpu/tt_scoreboard_ovi.sv") 
   addResource("/vsrc/vpu/lrm_model.sv")
   addResource("/vsrc/vpu/tt_fifo.sv")

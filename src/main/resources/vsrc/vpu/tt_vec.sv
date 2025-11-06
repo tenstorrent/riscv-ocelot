@@ -142,8 +142,9 @@ module tt_vec #(
    logic                vex_post_rts_1a,vex_post_rts_2a,vex_post_rts_3a;
    logic [VLEN/8-1:0]   vm0_muxed_0a,vm0_muxed_1a,vm0_sized_0a;
    logic [VLEN/8-1:0]   vstart_muxed_0a;
-   logic [VLEN/8-1:0]   vl_muxed_0a,vl_muxed_1a;
-   logic [VLEN/8-1:0]   vl_sized_0a;
+   logic [VLEN/8-1:0]   vl_muxed_0a;
+   logic [VLEN/8-1:0]   vstart_vl_muxed_0a,vstart_vl_muxed_1a;
+   logic [VLEN/8-1:0]   vstart_vl_sized_0a;
    logic [VLEN/8-1:0]   compress_mask_0a;
    logic [VLEN-1:0]     compress_mask_selects_0a;       
    logic [$clog2(VLEN+1)-1:0]          vl_cnt_1a;              
@@ -507,16 +508,17 @@ module tt_vec #(
    assign dstwr_bytemask_0a = sel_fs_mv_0a ?  vmv_s_x_mask_0a | {{VLEN/16{1'b0}}, {VLEN/16{vmv_x_s | vmv_f_s}}}
                                                   //If VL = 0 cancel all updates to the destination register.
                                                   : (reductop_0a ?  reductop_mask_0a & {VLEN/8{i_csr.v_vl != 0}} 
-                                                                 :  (vm0_sized_0a | {VLEN/8{i_v_vm | vmerge_0a | i_id_vec_autogen.usemask}}) & (vl_sized_0a | {VLEN/8{compress_0a}}) & nrw_mask_0a);
+                                                                 :  (vm0_sized_0a | {VLEN/8{i_v_vm | vmerge_0a | i_id_vec_autogen.usemask}}) & (vstart_vl_sized_0a | {VLEN/8{compress_0a}}) & nrw_mask_0a);
 
    wire  [$clog2(VLEN/8+1)-1:0] lmul_amt_multiple_0a = {$clog2(VLEN/8+1){~i_csr.v_lmul[2]}} & (i_csr.v_vsew[1:0]==2'b11 ? VLEN/64 :
                                                                                                i_csr.v_vsew[1:0]==2'b10 ? VLEN/32 :
                                                                                                i_csr.v_vsew[1:0]==2'b01 ? VLEN/16 :
                                                                                                                           VLEN/8   );
    //assign lmul_cnt_change_0a = two_cycle_iterate_0a ? lmul_cnt_1a[2:0] : lmul_cnt_0a[2:0];
-   assign vl_muxed_0a     = ((vl_mask_0a    [VLEN-1:0] >> (($clog2(VLEN+1))'(lmul_amt_multiple_0a) * lmul_cnt_0a[2:0])) | {VLEN/8{vmvgrp_0a}}) & ~vstart_muxed_0a;//spyglass disable STARC05-2.10.3.2b_sa
-   assign vm0_muxed_0a    = ((vm0_0a        [VLEN-1:0] >> (($clog2(VLEN+1))'(lmul_amt_multiple_0a) * lmul_cnt_0a[2:0])) | {VLEN/8{i_v_vm}});       //spyglass disable STARC05-2.10.3.2b_sa
-   assign vstart_muxed_0a = ((vstart_mask_0a[VLEN-1:0] >> (($clog2(VLEN+1))'(lmul_amt_multiple_0a) * lmul_cnt_0a[2:0])));
+   assign vl_muxed_0a        = ((vl_mask_0a    [VLEN-1:0] >> (($clog2(VLEN+1))'(lmul_amt_multiple_0a) * lmul_cnt_0a[2:0])) | {VLEN/8{vmvgrp_0a}}); //spyglass disable STARC05-2.10.3.2b_sa
+   assign vm0_muxed_0a       = ((vm0_0a        [VLEN-1:0] >> (($clog2(VLEN+1))'(lmul_amt_multiple_0a) * lmul_cnt_0a[2:0])) | {VLEN/8{i_v_vm}});    //spyglass disable STARC05-2.10.3.2b_sa
+   assign vstart_muxed_0a    = ((vstart_mask_0a[VLEN-1:0] >> (($clog2(VLEN+1))'(lmul_amt_multiple_0a) * lmul_cnt_0a[2:0])));
+   assign vstart_vl_muxed_0a = ((vl_muxed_0a & ~vstart_muxed_0a));
    assign compress_mask_selects_0a[VLEN-1:0] = src1_0a[VLEN-1:0] & vl_mask_0a[VLEN-1:0];
 
    //In each cycle, narrow ops only need half as many mask bits.
@@ -532,10 +534,10 @@ module tt_vec #(
    always_comb
      for(int i=0;i<VLEN/8;i++) 
        case(i_csr.v_vsew[1:0] + wdeop_0a) 
-         2'b00: vl_sized_0a[i] =                                                                  (nrwop_0a & tot_iterate_cnt_0a[0]) ? vl_muxed_0a[VLEN/16+i[$clog2(VLEN/16)-1:0]  ] : vl_muxed_0a[i];  
-         2'b01: vl_sized_0a[i] =  (wdeop_0a & tot_iterate_cnt_0a[0]) ? vl_muxed_0a[VLEN/16+i/2] : (nrwop_0a & tot_iterate_cnt_0a[0]) ? vl_muxed_0a[VLEN/32+i[$clog2(VLEN/16)-1:0]/2] : vl_muxed_0a[i/2];
-         2'b10: vl_sized_0a[i] =  (wdeop_0a & tot_iterate_cnt_0a[0]) ? vl_muxed_0a[VLEN/32+i/4] : (nrwop_0a & tot_iterate_cnt_0a[0]) ? vl_muxed_0a[VLEN/64+i[$clog2(VLEN/16)-1:0]/4] : vl_muxed_0a[i/4];
-         2'b11: vl_sized_0a[i] =  (wdeop_0a & tot_iterate_cnt_0a[0]) ? vl_muxed_0a[VLEN/64+i/8] :                                                                                      vl_muxed_0a[i/8];
+         2'b00: vstart_vl_sized_0a[i] =                                                                         (nrwop_0a & tot_iterate_cnt_0a[0]) ? vstart_vl_muxed_0a[VLEN/16+i[$clog2(VLEN/16)-1:0]  ] : vstart_vl_muxed_0a[i];  
+         2'b01: vstart_vl_sized_0a[i] =  (wdeop_0a & tot_iterate_cnt_0a[0]) ? vstart_vl_muxed_0a[VLEN/16+i/2] : (nrwop_0a & tot_iterate_cnt_0a[0]) ? vstart_vl_muxed_0a[VLEN/32+i[$clog2(VLEN/16)-1:0]/2] : vstart_vl_muxed_0a[i/2];
+         2'b10: vstart_vl_sized_0a[i] =  (wdeop_0a & tot_iterate_cnt_0a[0]) ? vstart_vl_muxed_0a[VLEN/32+i/4] : (nrwop_0a & tot_iterate_cnt_0a[0]) ? vstart_vl_muxed_0a[VLEN/64+i[$clog2(VLEN/16)-1:0]/4] : vstart_vl_muxed_0a[i/4];
+         2'b11: vstart_vl_sized_0a[i] =  (wdeop_0a & tot_iterate_cnt_0a[0]) ? vstart_vl_muxed_0a[VLEN/64+i/8] :                                                                                             vstart_vl_muxed_0a[i/8];
        endcase 
 
    //Mask only instructions write mask bits, inputs mask does tell which of the mask bits are to be written (look at vmseq). 
@@ -546,7 +548,7 @@ module tt_vec #(
                                                                    {VLEN/8 {1'b1}}   )
                                        & (vm0_muxed_1a  | {VLEN/8{mask_only_instrn_1a & wrmask_1a}})
                                        & ({VLEN/8{1'b1}} >> ({|i_csr.v_vsew[1:0],3'b000} + {1'b0,i_csr.v_vsew[1],2'b00})) //shift by 8 (01 or 10) + shift by 4 for (10)
-                                       & vl_muxed_1a;
+                                       & vstart_vl_muxed_1a;
  
    always_comb
      case(vsew_1a[1:0] )
@@ -708,7 +710,7 @@ module tt_vec #(
         lmul_1a[2:0]                      <= i_csr.v_lmul[2:0];
         lmul_cnt_1a[2:0]                  <= lmul_cnt_0a[2:0];
         vm0_muxed_1a                      <= vm0_muxed_0a;
-        vl_muxed_1a                       <= vl_muxed_0a;
+        vstart_vl_muxed_1a                <= vstart_vl_muxed_0a;
         vl_cnt_1a                         <= i_csr.v_vl;
         v_vm_1a                           <= i_v_vm;
         wrmask_1a                         <= i_id_vec_autogen.wrmask;
@@ -939,7 +941,7 @@ module tt_vec #(
        //.i_id_vfp_ex0_rts      (i_id_vex_rts & i_id_vec_autogen.vfp_rf_rd_op_valid  & ~i_id_vec_autogen.out_from_vec_int), // set for valid vfp instructions that are executed in fp side.
        //.i_id_vfp_autogen      (i_id_vec_autogen),
        //.i_rddata              ({src3_0a[VLEN-1:0],src2_0a[VLEN-1:0],src1_mux_0a[VLEN-1:0]}),
-       //.i_vm0                 (vm0_muxed_0a & vl_muxed_0a),
+       //.i_vm0                 (vm0_muxed_0a & vstart_vl_muxed_0a),
        //.i_reduct_wdeop        (reduct_wdeop_0a),
        //.i_lmul_cnt            (lmul_cnt_1a),
        //.i_prod                (mulsum_1a),
@@ -968,7 +970,7 @@ module tt_vec #(
     .i_id_vfp_autogen         (i_id_vec_autogen),
     .i_lmul_cnt               (lmul_cnt_0a),
     .i_rddata                 ({src3_0a[VLEN-1:0],src2_0a[VLEN-1:0],src1_mux_0a[VLEN-1:0]}),
-    .i_vm0                    (vm0_muxed_0a & vl_muxed_0a),
+    .i_vm0                    (vm0_muxed_0a & vstart_vl_muxed_0a),
     .i_sew                    (i_csr.v_vsew[1:0]),
     .i_xrm                    (i_csr.v_vxrm),
     .i_frm                    (i_csr.frm),
@@ -1069,7 +1071,7 @@ module tt_vec #(
     .i_addorsub_0a        (i_id_vec_autogen.addorsub),  
     .i_src1hw_0a          (i_id_vec_autogen.src1hw),
     .i_inversesub_0a      (i_id_vec_autogen.inversesub),   
-    .i_mask_0a            (vm0_muxed_0a & vl_muxed_0a),
+    .i_mask_0a            (vm0_muxed_0a & vstart_vl_muxed_0a),
     .i_usemask_0a         (i_id_vec_autogen.usemask),              
     .i_wrmask_0a          (i_id_vec_autogen.wrmask),               
     .i_mulh_0a            (i_id_vec_autogen.mulh),                 

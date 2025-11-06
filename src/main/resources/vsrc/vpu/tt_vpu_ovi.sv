@@ -38,6 +38,7 @@ module tt_vpu_ovi #(
   output logic         memop_sync_start,
   input  logic         memop_sync_end,
   input  logic [4:0]   memop_sb_id,
+  input  logic [14:0]  memop_vstart_vlfof, // memop's vstart/vlfof value
 
   input  logic         mask_idx_credit,
   output logic [64:0]  mask_idx_item,
@@ -233,6 +234,7 @@ module tt_vpu_ovi #(
   logic [3:0] req_buffer_wptr;
   logic drain_load_buffer;
   logic [2:0] load_buffer_rptr;
+  logic [VLEN-1:0] ldb_data;
   logic [LQ_DEPTH_LOG2-1:0] load_buffer_lqid;
 
   logic       drain_complete_valid;
@@ -253,10 +255,14 @@ module tt_vpu_ovi #(
   logic         sb_drain_load_buffer;
   logic [2:0]   sb_drain_lqid_start;
   logic [2:0]   sb_drain_ldb_start;
+  logic [7:0]   sb_drain_vstart_vlfof;
+  logic [2:0]   sb_drain_eew;
+  logic [2:0]   sb_drain_emul;
   logic [2:0]   sb_ref_count;
   logic         sb_completed_valid;
   logic [4:0]   sb_completed_sb_id;
   logic [63:0]  sb_completed_dest_reg;
+  logic [7:0]   sb_completed_vstart;
   logic [4:0]   sb_completed_fflags;
   logic [4:0]   v_reg;
   logic [10:0]  el_id;
@@ -274,7 +280,7 @@ module tt_vpu_ovi #(
   logic [$clog2(VLEN)-1:0] shamt;
   logic [8:0] el_id_lower_bound;
   logic [8:0] el_id_upper_bound;
-  logic [7:0][VLEN-1:0] load_buffer;  
+  // logic [7:0][VLEN-1:0] load_buffer;  
   logic       commit_is_load;
   logic       fsm_is_load;
   logic       id_is_whole_memop;
@@ -742,7 +748,7 @@ tt_lq #(
   .i_data_vld_0(drain_load_buffer),
   .i_data_vld_cancel_0('0),
   .i_data_resp_id_0(DATA_REQ_ID_WIDTH'(load_buffer_lqid)),
-  .i_data_rddata_0(load_buffer[load_buffer_rptr[2:0]]),
+  .i_data_rddata_0(ldb_data),
 
   .i_data_vld_1('0),
   .i_data_vld_cancel_1('0),
@@ -917,6 +923,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .i_load_stride_eew(load_stride_eew),
     .i_memop_sync_end(memop_sync_end),
     .i_memop_sync_end_sb_id(memop_sb_id),
+    .i_memop_vstart_vlfof(memop_vstart_vlfof[7:0]),
     .i_id_store(vecldst_autogen_store),
     .i_id_load(vecldst_autogen_load),
     .i_id_ex_rts(id_ex_rts),
@@ -950,6 +957,9 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .o_drain_ref_count(sb_ref_count),
     .o_drain_lqid_start(sb_drain_lqid_start),
     .o_drain_ldb_start(sb_drain_ldb_start),
+    .o_drain_vstart_vlfof(sb_drain_vstart_vlfof),
+    .o_drain_eew(sb_drain_eew),
+    .o_drain_emul(sb_drain_emul),
 
     .i_drain_complete_valid(drain_complete_valid),
     .i_drain_complete_ldb_idx(drain_complete_ldb_idx),
@@ -957,6 +967,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .o_completed_valid(sb_completed_valid),
     .o_completed_sb_id(sb_completed_sb_id),
     .o_completed_dest_reg(sb_completed_dest_reg),
+    .o_completed_vstart(sb_completed_vstart),
     .o_completed_fflags(sb_completed_fflags),
     .i_debug_commit_data(ocelot_instrn_commit_data),
     .i_debug_commit_mask(ocelot_instrn_commit_mask),
@@ -1030,6 +1041,10 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
   end
   assign scalar_opnd = (ocelot_read_req && read_valid) ? read_issue_scalar_opnd : scalar_opnd_reg;
 
+  // ========= Load Reshape and Buffer =========
+
+  logic [VLEN/8-1:0] vstart_vlfof_byte_mask;
+
   lrm_model lrm (
     .clk(clk),
     .reset_n(reset_n),
@@ -1046,63 +1061,163 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
     .byte_en(byte_en)
   );
 
-  logic [2:0] load_buffer_drain_cntr;
-  always @(posedge clk) begin
-    if(!reset_n)
-      {drain_load_buffer,load_buffer_drain_cntr} <= 0;
-    else begin
-      if(!drain_load_buffer && sb_drain_load_buffer)
-        drain_load_buffer <= 1;
-      else if(load_buffer_drain_cntr == 0)
-        drain_load_buffer <= 0;
-
-      if(sb_drain_load_buffer && !drain_load_buffer)
-        load_buffer_drain_cntr <= sb_ref_count - 1;
-      else if(drain_load_buffer && load_buffer_drain_cntr != 0)
-        load_buffer_drain_cntr <= load_buffer_drain_cntr - 1;
-    end
+  // NOTE: we need to crop the values since OVI supports 512 but VLEN can be less
+  logic [VLEN-1:0]   ldb_write_data [7:0];
+  logic [VLEN/8-1:0] ldb_write_byte_en [7:0];
+  for(genvar k1 = 0; k1 < 8; k1 = k1 + 1) begin
+    assign ldb_write_data[k1] = shifted_load_data[k1][VLEN-1:0];
+    assign ldb_write_byte_en[k1] = byte_en[k1][VLEN/8-1:0];
   end
 
-  always @(posedge clk) begin
-    if(!reset_n) begin
-      load_buffer_rptr <= '0;
-      load_buffer_lqid <= '0;
-    end else begin
-      if(!drain_load_buffer && sb_drain_load_buffer) begin
-        load_buffer_rptr <= sb_drain_ldb_start;
-        load_buffer_lqid <= sb_drain_lqid_start;
-      end else if(drain_load_buffer) begin
-        load_buffer_rptr <= load_buffer_rptr + 1;
-        load_buffer_lqid <= load_buffer_lqid + 1;
-      end
-    end
-  end
+  tt_load_buffer #(
+    .VLEN(VLEN),
+    .LQ_DEPTH(LQ_DEPTH)
+  ) load_buffer (
+    // clock and reset
+    .clk(clk),
+    .reset_n(reset_n),
+
+    // drain input signals
+    .i_drain_start(sb_drain_load_buffer),
+    .i_drain_rptr(sb_drain_ldb_start),
+    .i_drain_vcount(sb_ref_count),
+    .i_drain_eew(sb_drain_eew),
+    .i_drain_emul(sb_drain_emul),
+    .i_drain_lqid(sb_drain_lqid_start),
+    .i_drain_vstart_vlfof_idx(sb_drain_vstart_vlfof),
+
+    // drain output signals
+    .o_drain_valid(drain_load_buffer),
+    .o_drain_data(ldb_data),
+    .o_drain_rptr(load_buffer_rptr),
+    .o_drain_lqid(load_buffer_lqid),
+    .o_drain_vstart_vlfof_byte_mask(vstart_vlfof_byte_mask),
+
+    // write input meta data
+    .i_write_valid(load_valid),
+    .i_write_idx(sb_ldb_start),
+    .i_write_start_vreg(v_reg),
+    .i_write_dest_vreg(sb_vd),
+    .i_write_emul(sb_emul),
+
+    // write input data
+    .i_write_data(ldb_write_data),
+    .i_write_byte_en(ldb_write_byte_en)
+  );
 
   assign drain_complete_valid = drain_load_buffer;
   assign drain_complete_ldb_idx = load_buffer_rptr;
 
-  logic [10:0] lrm_ldb_wr_idx;
-  logic [10:0] lrm_ldb_sh_idx;
-  // should work for fractional emul (effective positive calculated in scoreboard)
-  assign lrm_ldb_wr_idx = (((v_reg - sb_vd) & ((5'b1 << sb_emul[1:0]) - 1'b1)) + sb_ldb_start); 
 
-  integer k1, k2;
-  always @(posedge clk) begin
-    // reset
-    if(!reset_n) begin
-      for(k2=0; k2<8; k2=k2+1)
-        load_buffer[k2] <= 0;
-    end
-    // load_valid
-    else if(load_valid) begin
-      for(k1=0; k1<8; k1=k1+1)      // segment output of lrm_model
-        for(k2=0; k2<VLEN; k2=k2+8) // element byte into ldb
-          if (byte_en[k1][k2/8]) begin
-            lrm_ldb_sh_idx = (k1<<sb_emul); // shift index (seg)
-            load_buffer[((lrm_ldb_wr_idx+lrm_ldb_sh_idx)%8)][k2+:8] <= shifted_load_data[k1][k2+:8];
-          end
-    end
-  end
+  // // ========= LDB Read FSM =========
+
+  // logic [1:0] load_buffer_emul_reg; // emul
+  // logic [3:0] load_buffer_ctr, load_buffer_ctr_max; // compare and capture register
+
+  // logic [2:0] idx_vgroup, idx_vgroup_reg;
+  // logic [7:0] idx_byte_offset, idx_byte_offset_reg;
+
+  // logic [VLEN/8-1:0] load_buffer_vstart_vlfof_byte_mask;
+
+  // always_comb begin // mux to avoid div or mod
+  //   unique case (sb_drain_eew[1:0])
+  //     'd0: idx_vgroup      = sb_drain_vstart_vlfof[7:5];
+  //          idx_byte_offset = sb_drain_vstart_vlfof[4:0] << sb_drain_eew[1:0];
+  //     'd1: idx_vgroup      = sb_drain_vstart_vlfof[6:4];
+  //          idx_byte_offset = sb_drain_vstart_vlfof[3:0] << sb_drain_eew[1:0];
+  //     'd2: idx_vgroup      = sb_drain_vstart_vlfof[5:3];
+  //          idx_byte_offset = sb_drain_vstart_vlfof[2:0] << sb_drain_eew[1:0];
+  //     'd3: idx_vgroup      = sb_drain_vstart_vlfof[4:2];
+  //          idx_byte_offset = sb_drain_vstart_vlfof[1:0] << sb_drain_eew[1:0];
+  //   endcase
+  // end
+
+  // always_ff @(posedge clk) begin
+  //   // -- reset case --
+  //   if (!reset_n) begin
+  //     // FSM state case
+  //     drain_load_buffer <= '0;
+  //     // drain counter
+  //     load_buffer_ctr <= '0;
+  //     load_buffer_ctr_max <= '0;
+  //     // meta data
+  //     load_buffer_emul_reg <= '0;
+  //     idx_vgroup_reg <= '0;
+  //     idx_byte_offset_reg <= '0;
+  //     // pointers
+  //     load_buffer_rptr <= '0;
+  //     load_buffer_lqid <= '0;
+  //   end
+  //   // -- start draining ldb case --
+  //   else if(!drain_load_buffer && sb_drain_load_buffer) begin
+  //     // FSM state case
+  //     drain_load_buffer <= 1'b1;
+  //     // drain counter
+  //     load_buffer_ctr <= '0;
+  //     load_buffer_ctr_max <= sb_ref_count - 1'b1;
+  //     // meta data
+  //     load_buffer_emul_reg <= sb_drain_emul[1:0];
+  //     idx_vgroup_reg <= idx_vgroup;
+  //     idx_byte_offset_reg <= idx_byte_offset;
+  //     // pointers
+  //     load_buffer_rptr <= sb_drain_ldb_start;
+  //     load_buffer_lqid <= sb_drain_lqid_start;
+  //   end
+  //   // -- ldb reading case --
+  //   else begin
+  //     // check end condition
+  //     if (load_buffer_ctr == load_buffer_ctr_max) begin
+  //       drain_load_buffer <= 1'b0;
+  //     end
+  //     // drain counter decrement
+  //     if (drain_load_buffer && load_buffer_ctr != load_buffer_ctr_max) begin
+  //       load_buffer_ctr <= load_buffer_ctr + 1'b1;
+  //     end
+  //     // ptr increment
+  //     if (drain_load_buffer) begin
+  //       load_buffer_rptr <= load_buffer_rptr + 1'b1;
+  //       load_buffer_lqid <= load_buffer_lqid + 1'b1;
+  //     end
+  //   end
+  // end
+
+  // logic [2:0] ctr_vgroup = load_buffer_ctr & ((4'b1<<load_buffer_emul_reg)-1'b1);
+  // always_comb begin
+  //   if (ctr_vgroup < idx_vgroup_reg)
+  //     load_buffer_vstart_vlfof_byte_mask = '0;
+  //   else if (ctr_vgroup == idx_vgroup_reg)
+  //     load_buffer_vstart_vlfof_byte_mask = ('d1 << idx_byte_offset_reg);
+  //   else
+  //     load_buffer_vstart_vlfof_byte_mask = '1;
+  // end
+
+  // assign drain_complete_valid = drain_load_buffer;
+  // assign drain_complete_ldb_idx = load_buffer_rptr;
+
+  // // ========= LDB Write Buffer =========
+
+  // logic [10:0] lrm_ldb_wr_idx;
+  // logic [10:0] lrm_ldb_sh_idx;
+  // // should work for fractional emul (effective positive calculated in scoreboard)
+  // assign lrm_ldb_wr_idx = (((v_reg - sb_vd) & ((5'b1 << sb_emul[1:0]) - 1'b1)) + sb_ldb_start); 
+
+  // integer k1, k2;
+  // always @(posedge clk) begin
+  //   // reset
+  //   if(!reset_n) begin
+  //     for(k2=0; k2<8; k2=k2+1)
+  //       load_buffer[k2] <= 0;
+  //   end
+  //   // load_valid
+  //   else if(load_valid) begin
+  //     for(k1=0; k1<8; k1=k1+1)      // segment output of lrm_model
+  //       for(k2=0; k2<VLEN; k2=k2+8) // element byte into ldb
+  //         if (byte_en[k1][k2/8]) begin
+  //           lrm_ldb_sh_idx = (k1<<sb_emul); // shift index (seg)
+  //           load_buffer[((lrm_ldb_wr_idx+lrm_ldb_sh_idx)%8)][k2+:8] <= shifted_load_data[k1][k2+:8];
+  //         end
+  //   end
+  // end
 
   integer r;
   always @(posedge clk) begin
@@ -1213,7 +1328,7 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
       completed_fflags <= sb_completed_fflags;
       completed_dest_reg <= sb_completed_dest_reg;
       completed_vxsat <= 0;
-      completed_vstart <= 0;
+      completed_vstart <= {'0, sb_completed_vstart};
       completed_illegal <= 0;
     end
   end

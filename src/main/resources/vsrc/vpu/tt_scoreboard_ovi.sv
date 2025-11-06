@@ -21,6 +21,7 @@ module tt_scoreboard_ovi(
   input  logic [2:0]  i_load_stride_eew,
   input  logic        i_memop_sync_end,
   input  logic [4:0]  i_memop_sync_end_sb_id,
+  input  logic [7:0]  i_memop_vstart_vlfof,
   input  logic        i_id_store,
   input  logic        i_id_load,
   input  logic        i_id_ex_rts,
@@ -57,6 +58,9 @@ module tt_scoreboard_ovi(
   output logic [2:0]  o_drain_ref_count,
   output logic [2:0]  o_drain_lqid_start,
   output logic [2:0]  o_drain_ldb_start,
+  output logic [7:0]  o_drain_vstart_vlfof,
+  output logic [2:0]  o_drain_eew,
+  output logic [2:0]  o_drain_emul,
 
   input  logic        i_drain_complete_valid,
   input  logic [2:0]  i_drain_complete_ldb_idx,
@@ -65,6 +69,7 @@ module tt_scoreboard_ovi(
   output logic [4:0]  o_completed_sb_id,
   output logic [4:0]  o_completed_fflags,
   output logic [63:0] o_completed_dest_reg,
+  output logic [7:0]  o_completed_vstart,
 
   input  logic [2047:0] i_debug_commit_data,
   input  logic [7:0]    i_debug_commit_mask,
@@ -83,6 +88,8 @@ module tt_scoreboard_ovi(
     logic [2:0]     load_stride_eew; // stride enc
     logic [2:0]     load_seg; // segment count
     logic           is_load;
+    logic           has_vstart; // is load/store but not fault-only-first
+    logic [7:0]     vstart_vlfof; // memop's vstart/vlfof value
     logic           drained;
     logic           got_sync_end;
     logic [3:0]     ref_count; // counts the number of lq entries allocated for this instruction
@@ -126,8 +133,8 @@ module tt_scoreboard_ovi(
   logic issue_is_maskls;
   logic issue_is_seg;
   logic [2:0] issue_load_seg;
-  
-
+  logic issue_has_vstart;
+    
   // this is in bytes
   always_ff @(posedge clk) begin
     if (!reset_n) begin
@@ -212,6 +219,8 @@ module tt_scoreboard_ovi(
         scoreboard[i_issue_sb_id].index_size      <= issue_index_size;
         scoreboard[i_issue_sb_id].load_stride_eew <= issue_load_stride_eew;
         scoreboard[i_issue_sb_id].load_seg        <= issue_load_seg;
+        scoreboard[i_issue_sb_id].has_vstart      <= issue_has_vstart;
+        scoreboard[i_issue_sb_id].vstart_vlfof    <= '0; // initialize to 0 (not really required but why not)
       end
 
       if(ldb_alloc_valid && ldb_alloc_ack) begin
@@ -242,6 +251,7 @@ module tt_scoreboard_ovi(
         end else
         if(i_memop_sync_end && i_memop_sync_end_sb_id == c) begin
           scoreboard[c].got_sync_end <= 1;
+          scoreboard[c].vstart_vlfof <= i_memop_vstart_vlfof;
         end
 
         if(i_ex_id_rtr && i_id_ex_rts && i_id_mem_lqalloc && i_first_alloc && i_id_sb_id == c) begin
@@ -289,8 +299,15 @@ module tt_scoreboard_ovi(
                         i_issue_vsew == 3'b101 ? 2 : // 16-bit EEW
                         i_issue_vsew == 3'b110 ? 4 : 8; // 32-bit, 64-bit EEW
 
-    issue_is_whole  = (i_issue_inst[27:26] == 2'b00) && (i_issue_inst[24:20] == 5'b01000); // whole load/store
-    issue_is_maskls = (i_issue_inst[27:26] == 2'b00) && (i_issue_inst[24:20] == 5'b01011); // mask load/store
+    issue_is_whole   = (i_issue_inst[27:26] == 2'b00) && (i_issue_inst[24:20] == 5'b01000); // whole load/store
+    issue_is_maskls  = (i_issue_inst[27:26] == 2'b00) && (i_issue_inst[24:20] == 5'b01011); // mask load/store
+    
+    issue_has_vstart = (
+      // load or store instruction:
+      (i_issue_inst[6:0] == 'd7 || i_issue_inst[6:0] == 'd39) &&
+      // NOT: load instruction, unit strice, fault-only-first:
+      !(i_issue_inst[6:0] == 'd7 && i_issue_inst[27:26] == 'd0 && i_issue_inst[24:20] == 'd16)
+    );
 
     issue_is_seg    = !issue_is_whole && !issue_is_maskls && (i_issue_inst[31:29] != 3'b000); // Segmented detection: not whole/mask and nf > 0
 
@@ -379,9 +396,12 @@ module tt_scoreboard_ovi(
     .enc_req_out(drain_sb_id)
   );
 
-  assign o_drain_ref_count = selected_entry.ref_count;
-  assign o_drain_lqid_start = selected_entry.lqid;
-  assign o_drain_ldb_start = selected_entry.ldb_start;
+  assign o_drain_ref_count    = selected_entry.ref_count[2:0]; // range is 1-8 but can crop to 1-7,0 (with 8=>0)
+  assign o_drain_lqid_start   = selected_entry.lqid;
+  assign o_drain_ldb_start    = selected_entry.ldb_start;
+  assign o_drain_vstart_vlfof = selected_entry.vstart_vlfof;
+  assign o_drain_eew          = selected_entry.data_size;
+  assign o_drain_emul         = selected_entry.emul;
 
   logic [31:0] completed_entries;
   always_comb begin
@@ -404,6 +424,7 @@ module tt_scoreboard_ovi(
 
   assign o_completed_fflags      = completed_entry.fflags;
   assign o_completed_dest_reg    = completed_entry.rd;
+  assign o_completed_vstart      = completed_entry.has_vstart ? completed_entry.vstart_vlfof : 8'h0;
   assign o_debug_commit_data     = completed_entry.debug_commit_data;
   assign o_debug_commit_mask     = completed_entry.debug_commit_mask;
 
