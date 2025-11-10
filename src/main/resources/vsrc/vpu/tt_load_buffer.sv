@@ -46,6 +46,7 @@ module tt_load_buffer #(
   logic [1:0] drain_emul_reg;
   logic [2:0] idx_vgroup, idx_vgroup_reg;
   logic [7:0] idx_byte_offset, idx_byte_offset_reg;
+  logic       idx_is_zero_reg;
   // pointers
   logic [2:0] drain_rptr;
   logic [LQ_DEPTH_LOG2-1:0] drain_lqid;
@@ -85,6 +86,7 @@ module tt_load_buffer #(
       drain_emul_reg <= '0;
       idx_vgroup_reg <= '0;
       idx_byte_offset_reg <= '0;
+      idx_is_zero_reg <= '0;
       // pointers
       drain_rptr <= '0;
       drain_lqid <= '0;
@@ -100,6 +102,7 @@ module tt_load_buffer #(
       drain_emul_reg <= i_drain_emul[1:0];
       idx_vgroup_reg <= idx_vgroup;
       idx_byte_offset_reg <= idx_byte_offset;
+      idx_is_zero_reg <= (i_drain_vstart_vlfof_idx == '0);
       // pointers
       drain_rptr <= i_drain_rptr;
       drain_lqid <= i_drain_lqid;
@@ -122,16 +125,24 @@ module tt_load_buffer #(
     end
   end
 
+  logic [2:0] ctr_vgroup;
+  assign ctr_vgroup = drain_ctr & ((4'b1<<drain_emul_reg)-1'b1);
+
   // output logic
-  logic [2:0] ctr_vgroup = drain_ctr & ((4'b1<<drain_emul_reg)-1'b1);
   assign o_drain_valid = drain_valid;
   assign o_drain_data = load_data_buffer[drain_rptr];
   assign o_drain_rptr = drain_rptr;
   assign o_drain_lqid = drain_lqid;
-  assign o_drain_vstart_vlfof_byte_mask =
-    (ctr_vgroup < idx_vgroup_reg)  ? '1 :                           // not yet reached the vgroup (mask on)
-    (ctr_vgroup == idx_vgroup_reg) ? ('d1 << idx_byte_offset_reg) : // at the vgroup (use mask)
-    '0;                                                             // past the vgroup (mask off)
+  assign o_drain_vstart_vlfof_byte_mask = (
+    // unhandled case (assume no except and mask on)
+    (idx_is_zero_reg) ? '1 :
+    // not yet reached the vgroup (mask on)
+    (ctr_vgroup < idx_vgroup_reg) ? '1 :
+    // at the vgroup (use mask)
+    (ctr_vgroup == idx_vgroup_reg) ? (('d1<<idx_byte_offset_reg)-1'b1) :
+    // past the vgroup (mask off)
+    '0
+  );
 
   // =============== write FSM ===============
 

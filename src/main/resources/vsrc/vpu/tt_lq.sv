@@ -82,7 +82,7 @@ module tt_lq #(
    input                                 i_data_vld_0,
    input                                 i_data_vld_cancel_0,
    input  [DATA_REQ_ID_WIDTH-1:0]        i_data_resp_id_0,
-   input  [VLEN-1:0]                     i_data_rddata_0,
+   input  [VLEN-1:0]                     i_data_rddata_0, // <== loads return data
 
    input                                 i_data_vld_1, 
    input                                 i_data_vld_cancel_1,
@@ -97,10 +97,10 @@ module tt_lq #(
    // LQ Read signals
    input  logic                          i_lq_rden,
    output logic [LQ_DEPTH_LOG2-1:0]      o_lq_rdid,
-   output tt_briscv_pkg::lq_info_s       o_lq_rdinfo, // <== TODO: keep tracking for info that writes to regfile (address and w_En is here)
+   output tt_briscv_pkg::lq_info_s       o_lq_rdinfo,
    output [2:0]                          o_lq_rdldstsz,
    output [1:0]                          o_lq_rdmemaddr,
-   output [VLEN-1:0]                     o_lq_rddata, // <== TODO: keep tracking for data that writes to regfile here
+   output [VLEN-1:0]                     o_lq_rddata,
    output [4:0]                          o_lq_rdexc,
 
    // RF Fwd signals

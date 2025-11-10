@@ -191,7 +191,7 @@ class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
 
   // Stores clear busy bit when stdata is received
   // memWidth for int, 1 for fp (to avoid back-pressure fpstdat)
-  val clr_bsy         = Output(Vec(memWidth + 1, Valid(UInt(robAddrSz.W))))
+  val clr_bsy         = Output(Vec(memWidth + 1, Valid(UInt(robAddrSz.W)))) // <==
 
   // Speculatively safe load (barring memory ordering failure)
   val clr_unsafe      = Output(Vec(memWidth, Valid(UInt(robAddrSz.W))))
@@ -326,7 +326,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 {
   val io = IO(new LSUIO)
 
-  io.core.VGen.resp.bits.fault := false.B
+  io.core.VGen.resp.bits.fault := false.B // <== exception
 
   val numDsqEntries = 4
   val numDlqEntries = 8

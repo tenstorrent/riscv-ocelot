@@ -18,6 +18,12 @@ import hardfloat._
 import boom.exu.OviScoreboard // moved the SB to a different file
 import chisel3.dontTouch // this is for debugging purposes
 
+// class VecException(implicit p: Parameters) extends BoomBundle {
+//   val rob_idx = UInt(robAddrSz.W)
+//   val cause = Bits(log2Ceil(freechips.rocketchip.rocket.Causes.all.max+2).W)
+//   val badvaddr = UInt(coreMaxAddrBits.W)
+// }
+
 class EnhancedFuncUnitReq(xLen: Int, vLen: Int)(implicit p: Parameters) extends Bundle {
   val vconfig = new VConfig()
   val vxrm = UInt(2.W)
