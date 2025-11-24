@@ -18,18 +18,13 @@ import hardfloat._
 import boom.exu.OviScoreboard // moved the SB to a different file
 import chisel3.dontTouch // this is for debugging purposes
 
-// class VecException(implicit p: Parameters) extends BoomBundle {
-//   val rob_idx = UInt(robAddrSz.W)
-//   val cause = Bits(log2Ceil(freechips.rocketchip.rocket.Causes.all.max+2).W)
-//   val badvaddr = UInt(coreMaxAddrBits.W)
-// }
-
 class EnhancedFuncUnitReq(xLen: Int, vLen: Int)(implicit p: Parameters) extends Bundle {
   val vconfig = new VConfig()
   val vxrm = UInt(2.W)
   val fcsr_rm = UInt(3.W)
   val vstart = UInt(log2Ceil(vLen+1).W)
   val sb_id = UInt(5.W)
+  val poison = Bool()
   val req = new FuncUnitReq(xLen)
 }
 
@@ -157,27 +152,27 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
   vLSIQ start
 */
 
-  val vLSIQueue = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), vlsiQDepth))
+  val vlsi_queue = Module(new OviQueue(vlsiQDepth))
+  vlsi_queue.io.core := io.core
 
-  // Dequeue a request whenever VPU and vLSIQueue are ready
-  io.req.ready := vpu_ready && vLSIQueue.io.enq.ready
+  // Dequeue a request whenever VPU and v.ls i-queue are ready
+  io.req.ready := vpu_ready && vlsi_queue.io.enq.ready
 
-  val req_uop = io.req.bits.uop
-  vLSIQueue.io.enq.noenq()
-  when(io.req.fire && (req_uop.uses_stq || req_uop.uses_ldq)) {
-    vLSIQueue.io.enq.valid := true.B
-    vLSIQueue.io.enq.bits.req     := io.req.bits
-    vLSIQueue.io.enq.bits.vconfig := io.vconfig
-    vLSIQueue.io.enq.bits.vxrm    := io.vxrm
-    vLSIQueue.io.enq.bits.fcsr_rm := io.fcsr_rm
-    vLSIQueue.io.enq.bits.vstart  := io.vstart
-    vLSIQueue.io.enq.bits.sb_id   := next_sb_id
-  }
+  // v.ls i-queue enq logic
+  vlsi_queue.io.enq.valid := io.req.fire && (io.req.bits.uop.uses_stq || io.req.bits.uop.uses_ldq)
+  vlsi_queue.io.enq.bits.req     := io.req.bits
+  vlsi_queue.io.enq.bits.vconfig := io.vconfig
+  vlsi_queue.io.enq.bits.vxrm    := io.vxrm
+  vlsi_queue.io.enq.bits.fcsr_rm := io.fcsr_rm
+  vlsi_queue.io.enq.bits.vstart  := io.vstart
+  vlsi_queue.io.enq.bits.sb_id   := next_sb_id
+  vlsi_queue.io.enq.bits.poison  := false.B // the que will automatically update the poison bit
 
   // ===============  OSC3 LSGEN DEQ CODE START ===============
   
   // 1-element deep buffer for decoder inputs (it was 3 but we really only need a flip-flop)
-  val decoder_buffer = Module(new Queue(new EnhancedFuncUnitReq(xLen, vLen), 1))
+  val decoder_buffer = Module(new OviQueue(1))
+  decoder_buffer.io.core := io.core
 
   // Counter-based VLSIQ dequeue logic with outstanding operation tracking
   // Outstanding counter: accumulate MemSyncStart signals
@@ -185,12 +180,12 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
   val outstanding_ctr = RegInit(0.U(log2Ceil(MAX_OUTSTANDING_VMEMOPS).W))
 
   // reset the deq logic
-  vLSIQueue.io.deq.ready := false.B
+  vlsi_queue.io.deq.ready := false.B
   decoder_buffer.io.enq.valid := false.B
 
   // Counter update logic
   val memsync_arrives = MemSyncStart
-  val vlsiq_fire = (outstanding_ctr =/= 0.U) && (vLSIQueue.io.deq.valid) && (decoder_buffer.io.enq.ready)
+  val vlsiq_fire = (outstanding_ctr =/= 0.U) && (vlsi_queue.io.deq.valid) && (decoder_buffer.io.enq.ready)
 
   when (memsync_arrives && !vlsiq_fire) {
     when (outstanding_ctr =/= (MAX_OUTSTANDING_VMEMOPS-1).U) {
@@ -204,10 +199,10 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
 
   // Override VLSIQ and decoder buffer signals
   when (vlsiq_fire) {
-    vLSIQueue.io.deq.ready := true.B
+    vlsi_queue.io.deq.ready := true.B
     decoder_buffer.io.enq.valid := true.B
   }
-  decoder_buffer.io.enq.bits := vLSIQueue.io.deq.bits
+  decoder_buffer.io.enq.bits := vlsi_queue.io.deq.bits
 
   // Debug signals
   dontTouch(outstanding_ctr)
@@ -230,6 +225,9 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
   // Instantiate load and store generators
   val loadGen = Module(new LoadGen(vpuVlen, lsuDmemWidth))
   val storeGen = Module(new StoreGen(vpuVlen, lsuDmemWidth))
+  // connect core signals to generators (for poison bit updates)
+  loadGen.io.core := io.core
+  storeGen.io.core := io.core
 
   // Use OR of both generators' gen_active signals instead of separate register
   val gen_active = (loadGen.io.gen_active || storeGen.io.gen_active)
@@ -266,7 +264,6 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
   // Connect mask/index buffer to load generator
   loadGen.io.mask_idx.valid := maskIdxBuffer.io.mask_idx_out.valid
   loadGen.io.mask_idx.data := maskIdxBuffer.io.mask_idx_out.bits
-  loadGen.io.kill := false.B // TODO: Connect to appropriate kill signal
 
   storeGen.io.start.valid := lsDecoder.io.out.valid && !lsDecoder.io.out.is_load && !gen_active
   storeGen.io.start.bits := lsDecoder.io.out.dec_info
@@ -276,7 +273,6 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
   // Connect Vector Data Buffer to store generator
   storeGen.io.vdb_data.valid_bytes := vecDataBuffer.io.data_out.valid_bytes
   storeGen.io.vdb_data.data := vecDataBuffer.io.data_out.bits
-  storeGen.io.kill := false.B // TODO: Connect to appropriate kill signal
 
   // Shadow outputs - connect to actual LSU ready signals
   loadGen.io.load_packet.ready := io.vGenIO.req.ready
@@ -359,6 +355,7 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
     // Load packet → LSU reqHelp interface
     io.vGenIO.reqHelp.valid := loadGen.io.load_packet.valid
     io.vGenIO.reqHelp.bits.uop := loadGen.io.load_packet.bits.uop
+    io.vGenIO.reqHelp.bits.poison := loadGen.io.load_packet.bits.poison
     io.vGenIO.reqHelp.bits.elemID := loadGen.io.load_packet.bits.el_id
     io.vGenIO.reqHelp.bits.elemOffset := loadGen.io.load_packet.bits.el_off
     io.vGenIO.reqHelp.bits.elemCount := loadGen.io.load_packet.bits.el_count
@@ -368,6 +365,7 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
     io.vGenIO.reqHelp.bits.isMask := loadGen.io.load_packet.bits.mask_valid
     io.vGenIO.reqHelp.bits.Mask := loadGen.io.load_packet.bits.mask_data(31, 0)  // Truncate to 32 bits
     io.vGenIO.reqHelp.bits.isFake := loadGen.io.load_packet.bits.is_fake
+    io.vGenIO.reqHelp.bits.misaligned := loadGen.io.load_packet.bits.misaligned
   }.elsewhen (gen_active && !gen_is_load && storeGen.io.store_packet.valid) {
     // Store packet → LSU req interface  
     io.vGenIO.req.valid := storeGen.io.store_packet.valid
@@ -385,7 +383,8 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
     // Store packet → LSU reqHelp interface
     io.vGenIO.reqHelp.valid := storeGen.io.store_packet.valid
     io.vGenIO.reqHelp.bits.uop := storeGen.io.store_packet.bits.uop
-    io.vGenIO.reqHelp.bits.elemID := 0.U  // Store generators don't track element IDs the same way
+    io.vGenIO.reqHelp.bits.poison := storeGen.io.store_packet.bits.poison
+    io.vGenIO.reqHelp.bits.elemID := storeGen.io.store_packet.bits.elem_id
     io.vGenIO.reqHelp.bits.elemOffset := 0.U  // Store generators don't track element offsets the same way
     io.vGenIO.reqHelp.bits.elemCount := 1.U   // Stores typically handle 1 element at a time
     io.vGenIO.reqHelp.bits.vRegID := 0.U      // Not applicable for stores
@@ -394,6 +393,7 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
     io.vGenIO.reqHelp.bits.isMask := false.B     // Stores don't use mask interface the same way
     io.vGenIO.reqHelp.bits.Mask := 0.U           // Not applicable for stores  
     io.vGenIO.reqHelp.bits.isFake := storeGen.io.store_packet.bits.is_fake
+    io.vGenIO.reqHelp.bits.misaligned := storeGen.io.store_packet.bits.misaligned
   }.otherwise {
     // When generators are not active, set LSU outputs to invalid
     io.vGenIO.req.valid := false.B
@@ -406,109 +406,163 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
 
   // =============== Mem Response Handler ===============
 
-  // Parse the LSU response (invert for neg stride)
-  val LSUReturnLoadValid = WireInit(false.B)
-  LSUReturnLoadValid := io.vGenIO.resp.valid && io.vGenIO.resp.bits.s0l1  // needs fixing later if we are overlapping
-  val LSUReturnData = WireInit(0.U(oviWidth.W))
-  when (io.vGenIO.resp.bits.strideDir){  // negative
-    LSUReturnData := Cat(io.vGenIO.resp.bits.data ((lsuDmemWidth-1), 0), 0.U((oviWidth-lsuDmemWidth).W))
-  }.otherwise {
-    LSUReturnData := Cat(0.U, io.vGenIO.resp.bits.data ((lsuDmemWidth-1), 0))
-  }
+  val ovi_resp_handler = Module(new OviLSURespHandler(MAX_OUTSTANDING_VMEMOPS))
 
-  // some Mem SB ID logic..
-  MemSbId := 0.U
-  val MemSb = RegInit(0.U(32.W))
-  val vectorDone = WireInit(0.U(2.W))
-  val MemSbResidue = WireInit(false.B)
-  vectorDone := Cat (io.vGenIO.resp.bits.vectorDoneLd, io.vGenIO.resp.bits.vectorDoneSt)
-  when (vectorDone === 1.U) {
-    MemSbId := io.vGenIO.resp.bits.sbIdDoneSt  
-  }.elsewhen (vectorDone === 2.U) {
-    MemSbId := io.vGenIO.resp.bits.sbIdDoneLd 
-  }.elsewhen (vectorDone === 3.U) {
-    MemSbId := io.vGenIO.resp.bits.sbIdDoneLd
-    MemSb := MemSb.bitSet (io.vGenIO.resp.bits.sbIdDoneSt, true.B)
-  }.elsewhen (MemSb =/= 0.U) {
-    MemSbResidue := true.B 
-    MemSbId := PriorityEncoder (MemSb)
-    MemSb := MemSb.bitSet (MemSbId, false.B)
-  }
-  MemSyncEnd := (io.vGenIO.resp.bits.vectorDone && io.vGenIO.resp.valid) || MemSbResidue
+  // new entry for memop tracker from vlsiq
+  ovi_resp_handler.io.enq.valid := vlsiq_fire
+  ovi_resp_handler.io.enq.bits  := vlsi_queue.io.deq.bits
+  // response from LSU
+  ovi_resp_handler.io.lsu_resp  := io.vGenIO.resp
+  // fake load return queue
+  ovi_resp_handler.io.fake_load_return_data <> fakeLoadReturnQueue.io.deq
+  // core signals
+  ovi_resp_handler.io.core_in    := io.core
+  // core reports
+  // val TODO_core_out := ovi_resp_handler.io.core_out
+  // vpu reports
+  MemSyncEnd  := ovi_resp_handler.io.vpu.sync_end
+  MemSbId     := ovi_resp_handler.io.vpu.sb_id
+  VstartVlfof := ovi_resp_handler.io.vpu.vstart_vlfof
+  // vpu load data
+  MemLoadValid       := ovi_resp_handler.io.vpu.load_valid
+  MemSeqId           := ovi_resp_handler.io.vpu.load_seq_id
+  MemLoadData        := ovi_resp_handler.io.vpu.load_data
+  MemReturnMaskValid := ovi_resp_handler.io.vpu.load_mask_valid
+  MemReturnMask      := ovi_resp_handler.io.vpu.load_mask
 
-  // Mux the response from fake queue or the real load..
-  // TODO: what if we have fake responses left in the queue when we get a memop_sync_end? Need to check for this case..
-  MemLoadValid := LSUReturnLoadValid || fakeLoadReturnQueue.io.deq.valid
-  MemSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg) 
+  // // -- Memop Sync End logic --
+  
+  // val PendingSBIDMap = RegInit(0.U(32.W)) // like a bool map of pending sb_ids
+  // val vstDone = io.vGenIO.resp.vectorDoneSt
+  // val vldDone = io.vGenIO.resp.vectorDoneLd
 
-  when (LSUReturnLoadValid) {
-    MemLoadData := LSUReturnData    
-    seqSbId := io.vGenIO.resp.bits.sbId
-    seqElCount := io.vGenIO.resp.bits.elemCount
-    seqElOff := io.vGenIO.resp.bits.elemOffset
-    seqElId := Cat(0.U(3.W), io.vGenIO.resp.bits.elemID)
-    seqVreg := io.vGenIO.resp.bits.vRegID
+  // when (vstDone && !vldDone) {
+  //   MemSbId := io.vGenIO.resp.sbIdDoneSt  
+  //   MemSyncEnd := true.B
+  // }.elsewhen (!vstDone && vldDone) {
+  //   MemSbId := io.vGenIO.resp.sbIdDoneLd 
+  //   MemSyncEnd := true.B
+  // }.elsewhen (vstDone && vldDone) {
+  //   MemSbId := io.vGenIO.resp.sbIdDoneLd
+  //   PendingSBIDMap := PendingSBIDMap.bitSet (io.vGenIO.resp.sbIdDoneSt, true.B)
+  //   MemSyncEnd := true.B
+  // }.elsewhen (PendingSBIDMap =/= 0.U) {
+  //   MemSbId := PriorityEncoder (PendingSBIDMap)
+  //   PendingSBIDMap := PendingSBIDMap.bitSet (MemSbId, false.B)
+  //   MemSyncEnd := true.B
+  // }.otherwise {
+  //   MemSbId := 0.U
+  //   MemSyncEnd := false.B
+  // }
+
+  // // -- Handle load data response --
+
+  // // Parse the LSU response (invert for neg stride)
+  // val LSUReturnLoadValid = io.vGenIO.resp.vectorDataBack && io.vGenIO.resp.s0l1 // only consider loads
+  // val LSUReturnData = Mux(
+  //   io.vGenIO.resp.strideDir,
+  //   Cat(io.vGenIO.resp.data ((lsuDmemWidth-1), 0), 0.U((oviWidth-lsuDmemWidth).W)), // negative stride
+  //   Cat(0.U, io.vGenIO.resp.data ((lsuDmemWidth-1), 0))                             // positive stride
+  // )
+
+  // // Mux the response from fake queue or the real load..
+  // // TODO: what if we have fake responses left in the queue when we get a memop_sync_end? Need to check for this case..
+  // MemLoadValid := LSUReturnLoadValid || fakeLoadReturnQueue.io.deq.valid
+  // MemSeqId := Cat (seqSbId, seqElCount, seqElOff, seqElId, seqVreg) 
+
+  // when (LSUReturnLoadValid) {
+  //   MemLoadData := LSUReturnData    
+  //   seqSbId := io.vGenIO.resp.sbId
+  //   seqElCount := io.vGenIO.resp.elemCount
+  //   seqElOff := io.vGenIO.resp.elemOffset
+  //   seqElId := Cat(0.U(3.W), io.vGenIO.resp.elemID)
+  //   seqVreg := io.vGenIO.resp.vRegID
     
-    MemReturnMaskValid := io.vGenIO.resp.bits.isMask
-    MemReturnMask := io.vGenIO.resp.bits.Mask
-  }.elsewhen (fakeLoadReturnQueue.io.deq.valid) {    
-    MemLoadData := 0.U     
-    seqSbId := fakeLoadReturnQueue.io.deq.bits (33, 29)
-    seqElCount := fakeLoadReturnQueue.io.deq.bits (28, 22)
-    seqElOff := fakeLoadReturnQueue.io.deq.bits (21, 16)
-    seqElId := fakeLoadReturnQueue.io.deq.bits (15, 5)
-    seqVreg := fakeLoadReturnQueue.io.deq.bits (4, 0)
-    MemReturnMaskValid := true.B 
-    MemReturnMask := false.B 
-    fakeLoadReturnQueue.io.deq.ready := true.B 
-  }
+  //   MemReturnMaskValid := io.vGenIO.resp.isMask
+  //   MemReturnMask := io.vGenIO.resp.Mask
+  // }.elsewhen (fakeLoadReturnQueue.io.deq.valid) {    
+  //   MemLoadData := 0.U     
+  //   seqSbId := fakeLoadReturnQueue.io.deq.bits (33, 29)
+  //   seqElCount := fakeLoadReturnQueue.io.deq.bits (28, 22)
+  //   seqElOff := fakeLoadReturnQueue.io.deq.bits (21, 16)
+  //   seqElId := fakeLoadReturnQueue.io.deq.bits (15, 5)
+  //   seqVreg := fakeLoadReturnQueue.io.deq.bits (4, 0)
+  //   MemReturnMaskValid := true.B 
+  //   MemReturnMask := false.B 
+  //   fakeLoadReturnQueue.io.deq.ready := true.B 
+  // }
 
-  // =============== Vstart Bookkeeping ===============
+  // // =============== Vstart Bookkeeping ===============
 
-  class VstartVlfofTrackerEntry extends Bundle {
-    val valid = Bool()
-    val sb_id = UInt(5.W)
-    val vstart_vlfof = UInt(15.W)
-  }
-  val vsvlf_tracker = RegInit(VecInit.fill(MAX_OUTSTANDING_VMEMOPS)(0.U.asTypeOf(new VstartVlfofTrackerEntry)))
-  val vsvlf_next_available_vec = PriorityEncoderOH(vsvlf_tracker.map(~_.valid))
+  // class VstartVlfofTrackerEntry extends Bundle {
+  //   val valid = Bool()
+  //   val exception = Bool()
+  //   val xcpt_cause = UInt(xLen.W)
+  //   val sb_id = UInt(5.W)
+  //   val vstart_vlfof = UInt(15.W)
+  // }
+  // val vsvlf_tracker = RegInit(VecInit.fill(MAX_OUTSTANDING_VMEMOPS)(0.U.asTypeOf(new VstartVlfofTrackerEntry)))
+  // val vsvlf_next_available_vec = PriorityEncoderOH(vsvlf_tracker.map(~_.valid))
 
-  for (i <- 0 until MAX_OUTSTANDING_VMEMOPS) {
-    // when a memop ends (last possible el_id for vstart/vlfof has been sent)
-    // we need to send the final value to the VPU and reset the tracker
-    when (
-      (MemSyncEnd) &&
-      (vsvlf_tracker(i).valid) &&
-      (vsvlf_tracker(i).sb_id === MemSbId)
-    ) {
-      VstartVlfof := vsvlf_tracker(i).vstart_vlfof
-      vsvlf_tracker(i).valid := false.B
-      vsvlf_tracker(i).vstart_vlfof := 0.U
-    }
-    // when theres a valid memory packet that is being transferred
-    // we need to update the tracker with the minimum value
-    .elsewhen (
-      (LSUReturnLoadValid) &&
-      (vsvlf_tracker(i).valid) &&
-      (io.vGenIO.resp.bits.fault) &&
-      (vsvlf_tracker(i).sb_id === io.vGenIO.resp.bits.sbId) &&
-      (vsvlf_tracker(i).vstart_vlfof > io.vGenIO.resp.bits.elemID)
-    ) {
-      vsvlf_tracker(i).vstart_vlfof := io.vGenIO.resp.bits.elemID
-    }
-    // when a new memory transaction is starting
-    // reserve a slot for the new transaction (valid + sb_id)
-    .elsewhen (
-      (vlsiq_fire) &&
-      (vsvlf_next_available_vec(i))
-    ) {
-      assert(!vsvlf_tracker(i).valid, "ERROR: VstartVlfof tracker slot is already taken!")
-      assert(!(VecInit(vsvlf_next_available_vec).asUInt & (VecInit(vsvlf_next_available_vec).asUInt - 1.U)), "ERROR: VstartVlfof tracker has multiple valid slots!")
-      vsvlf_tracker(i).valid := true.B
-      vsvlf_tracker(i).sb_id := vLSIQueue.io.deq.bits.sb_id
-      vsvlf_tracker(i).vstart_vlfof := 0.U
-    }
-  }
+  // for (i <- 0 until MAX_OUTSTANDING_VMEMOPS) {
+  //   // when a memop ends (last possible el_id for vstart/vlfof has been sent)
+  //   // we need to send the final value to the VPU and reset the tracker
+  //   when (
+  //     (MemSyncEnd) &&
+  //     (vsvlf_tracker(i).valid) &&
+  //     (vsvlf_tracker(i).sb_id === MemSbId)
+  //   ) {
+  //     // sometimes the memop ends on the same cycle as the last element is being
+  //     // transferred. forward the exception
+  //     when (
+  //       (io.vGenIO.resp.vectorDataBack) &&
+  //       (vsvlf_tracker(i).valid) &&
+  //       (io.vGenIO.resp.exception) &&
+  //       (vsvlf_tracker(i).sb_id === io.vGenIO.resp.sbId) &&
+  //       (vsvlf_tracker(i).vstart_vlfof > io.vGenIO.resp.elemID)
+  //     ) {
+  //       VstartVlfof := io.vGenIO.resp.elemID
+  //     }
+  //     // otherwise, just send the final value from the table
+  //     .otherwise {
+  //       VstartVlfof := vsvlf_tracker(i).vstart_vlfof
+  //     }
+  //     // reset the tracker
+  //     vsvlf_tracker(i).valid := false.B
+  //     vsvlf_tracker(i).exception := false.B
+  //     vsvlf_tracker(i).xcpt_cause := 0.U
+  //     vsvlf_tracker(i).vstart_vlfof := 0.U
+  //   }
+
+  //   // when theres a valid memory packet that is being transferred
+  //   // we need to update the tracker with the minimum value
+  //   .elsewhen (
+  //     (io.vGenIO.resp.vectorDataBack) &&
+  //     (vsvlf_tracker(i).valid) &&
+  //     (io.vGenIO.resp.exception) &&
+  //     (vsvlf_tracker(i).sb_id === io.vGenIO.resp.sbId) &&
+  //     (vsvlf_tracker(i).vstart_vlfof > io.vGenIO.resp.elemID)
+  //   ) {
+  //     vsvlf_tracker(i).exception := true.B
+  //     vsvlf_tracker(i).xcpt_cause := io.vGenIO.resp.xcpt_cause
+  //     vsvlf_tracker(i).vstart_vlfof := io.vGenIO.resp.elemID
+  //   }
+
+  //   // when a new memory transaction is starting
+  //   // reserve a slot for the new transaction (valid + sb_id)
+  //   .elsewhen (
+  //     (vlsiq_fire) &&
+  //     (vsvlf_next_available_vec(i))
+  //   ) {
+  //     assert(!vsvlf_tracker(i).valid, "ERROR: VstartVlfof tracker slot is already marked valid!")
+  //     assert(!(VecInit(vsvlf_next_available_vec).asUInt & (VecInit(vsvlf_next_available_vec).asUInt - 1.U)), "ERROR: VstartVlfof tracker has multiple slots marked available!")
+  //     vsvlf_tracker(i).valid := true.B
+  //     vsvlf_tracker(i).exception := false.B
+  //     vsvlf_tracker(i).xcpt_cause := 0.U
+  //     vsvlf_tracker(i).sb_id := vlsi_queue.io.deq.bits.sb_id
+  //     vsvlf_tracker(i).vstart_vlfof := 0.U
+  //   }
+  // }
 
 
   // =============== Send Data to VPU ===============

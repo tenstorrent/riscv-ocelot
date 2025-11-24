@@ -26,7 +26,6 @@ extends Module with VecLSGenConstants {
       val valid_bytes = Input(UInt(VDB_R_SIZE_BYTES.W))  // like a valid signal
       val data        = Input(UInt(DMEM_WIDTH.W))
     }
-    val kill = Input(Bool())
     // store packet
     val store_packet = DecoupledIO(new StorePacket(VLEN, DMEM_WIDTH))
     // status signal
@@ -142,11 +141,13 @@ extends Module with VecLSGenConstants {
   io.store_packet.bits.addr     := (base_addr.asSInt + addr_off).asUInt
   io.store_packet.bits.data     := io.vdb_data.data
   io.store_packet.bits.mem_size := (ctr_inc_enc + eew_enc)
+  io.store_packet.bits.elem_id  := (EEW_CTR >> el_mask_off) & ((1.U << el_mask_width) - 1.U)
   io.store_packet.bits.sb_id    := sb_id
   io.store_packet.bits.is_fake  := false.B
   io.store_packet.bits.misaligned := ((base_addr & ((1.U << eew_enc) - 1.U)) =/= 0.U)
   io.store_packet.bits.last     := (state === State.PACKING) && (vl_constraint_met)
   io.store_packet.bits.uop      := io.start.bits.uop
+  io.store_packet.bits.poison   := io.start.bits.poison
 
   // ======== State Machine ========
 
@@ -178,43 +179,37 @@ extends Module with VecLSGenConstants {
     }
     // VSTART HANDLING STATE
     is (State.VSTART_HANDLING) {
-      when (io.kill) {
-        state := State.IDLE
-      } .otherwise {
 
-        // -- Next values calculation --
-        val vdb_fire = (vdb_ready && vdb_valid)
-        val vstart_readout_done = vstart_readout_done_q || (vstart_last_readout && vdb_fire)
-        val next_addr = (base_addr.asSInt + (Mux(
-          stride_dir,
-          -((vstart_EEW_CTR) << eew_enc).asSInt,
-           ((vstart_EEW_CTR) << eew_enc).asSInt
-        ))).asUInt
+      // -- Next values calculation --
+      val vdb_fire = (vdb_ready && vdb_valid)
+      val vstart_readout_done = vstart_readout_done_q || (vstart_last_readout && vdb_fire)
+      val next_addr = (base_addr.asSInt + (Mux(
+        stride_dir,
+        -((vstart_EEW_CTR) << eew_enc).asSInt,
+          ((vstart_EEW_CTR) << eew_enc).asSInt
+      ))).asUInt
 
-        // -- Readout state (if not done) --
-        when (!vstart_readout_done_q) {
-          vstart_readout_done_q := vstart_readout_done
-          val next_EEW_CTR = (EEW_CTR & ~(((1.U<<el_mask_width)-1.U)<<el_mask_off)) |
-                            ((EEW_CTR &  (((1.U<<el_mask_width)-1.U)<<el_mask_off)) + (vstart_el_id_inc<<el_mask_off))
-          EEW_CTR := Mux(vdb_fire, next_EEW_CTR, EEW_CTR)
-        }
+      // -- Readout state (if not done) --
+      when (!vstart_readout_done_q) {
+        vstart_readout_done_q := vstart_readout_done
+        val next_EEW_CTR = (EEW_CTR & ~(((1.U<<el_mask_width)-1.U)<<el_mask_off)) |
+                          ((EEW_CTR &  (((1.U<<el_mask_width)-1.U)<<el_mask_off)) + (vstart_el_id_inc<<el_mask_off))
+        EEW_CTR := Mux(vdb_fire, next_EEW_CTR, EEW_CTR)
+      }
 
-        // -- State transition --
-        when (vstart_readout_done) { // vdb.fire
-          // next state
-          state := State.PACKING
-          // realign dmem offset to the new address
-          val high_off = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc
-          val low_off  = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc
-          dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
-        }
+      // -- State transition --
+      when (vstart_readout_done) { // vdb.fire
+        // next state
+        state := State.PACKING
+        // realign dmem offset to the new address
+        val high_off = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+        val low_off  = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+        dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
       }
     }
     // PACKING STATE
     is (State.PACKING) {
-      when (io.kill) {
-        state := State.IDLE
-      } .elsewhen (io.store_packet.fire) {
+      when (io.store_packet.fire) {
 
         // -- Increment counter --
         EEW_CTR := EEW_CTR + ctr_inc_val
@@ -244,7 +239,6 @@ extends Module with VecLSGenConstants {
   // IO ports
   dontTouch(io.start)
   dontTouch(io.vdb_data)
-  dontTouch(io.kill)
   dontTouch(io.store_packet)
 
   // Internal state and config

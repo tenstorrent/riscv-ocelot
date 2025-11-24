@@ -27,8 +27,6 @@ extends Module with VecLSGenConstants {
       val mask_bit    = Input(Bool())      // Element valid/invalid
       val last_index  = Input(Bool())      // Last index in sequence
     }
-    // kill signal (used to reset the FSM)
-    val kill = Input(Bool())
     // store data interface
     val vdb_data = new Bundle {
       val read_bytes  = Output(UInt(VDB_R_SIZE_BYTES.W)) // like a ready signal
@@ -155,11 +153,13 @@ extends Module with VecLSGenConstants {
   io.store_packet.bits.addr     := (current_addr.asSInt + addr_off).asUInt
   io.store_packet.bits.data     := io.vdb_data.data
   io.store_packet.bits.mem_size := (seg_inc_enc + eew_enc)
+  io.store_packet.bits.elem_id  := current_el_id
   io.store_packet.bits.sb_id    := sb_id
   io.store_packet.bits.is_fake  := (seg_inc_val === 0.U) || (is_mask && (current_mask_bit === false.B))
   io.store_packet.bits.misaligned := ((current_addr & ((1.U << eew_enc) - 1.U)) =/= 0.U)
   io.store_packet.bits.last     := (state === State.WALKING) && (max_ctr_met)
   io.store_packet.bits.uop      := io.start.bits.uop
+  io.store_packet.bits.poison   := io.start.bits.poison
 
   // ======== State Machine ========
 
@@ -201,50 +201,45 @@ extends Module with VecLSGenConstants {
     }
     // VSTART HANDLING STATE
     is (State.VSTART_HANDLING) {
-      when (io.kill) {
-        state := State.IDLE
-      } .otherwise {
 
-        // -- Next values calculation --
-        // vstart controls
-        val vdb_fire = (vdb_ready && vdb_valid)
-        val vstart_readout_done = vstart_readout_done_q || (vstart_last_readout && vdb_fire)
-        val vstart_addr_done    = vstart_addr_done_q || vstart_last_inc
-        // address calculation
-        val next_addr = Mux(
-          vstart_addr_done_q,
-          current_addr, // if done use current address while doing dmem_off
-          (current_addr.asSInt + (stride << vstart_skip_enc)).asUInt
-        )
+      // -- Next values calculation --
+      // vstart controls
+      val vdb_fire = (vdb_ready && vdb_valid)
+      val vstart_readout_done = vstart_readout_done_q || (vstart_last_readout && vdb_fire)
+      val vstart_addr_done    = vstart_addr_done_q || vstart_last_inc
+      // address calculation
+      val next_addr = Mux(
+        vstart_addr_done_q,
+        current_addr, // if done use current address while doing dmem_off
+        (current_addr.asSInt + (stride << vstart_skip_enc)).asUInt
+      )
 
-        // -- Readout state (if not done) --
-        when (!vstart_readout_done_q) {
-          vstart_readout_done_q := vstart_readout_done
-          current_el_id := current_el_id + Mux(vdb_fire, vstart_el_id_inc, 0.U)
-        }
-        // -- Increment address and counter (if not done) --
-        when (!vstart_addr_done_q) {
-          vstart_addr_done_q := vstart_addr_done
-          current_addr := next_addr
-          current_ctr  := current_ctr + (1.U << vstart_skip_enc)
-        }
-
-        // -- State transition --
-        when (vstart_readout_done && vstart_addr_done) {
-          // next state
-          state := State.WALKING
-          // realign dmem offset to the new address
-          val high_off = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc
-          val low_off  = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc
-          dmem_off := Mux(current_dir && !use_seg_constraint, high_off, low_off)
-        }
+      // -- Readout state (if not done) --
+      when (!vstart_readout_done_q) {
+        vstart_readout_done_q := vstart_readout_done
+        current_el_id := current_el_id + Mux(vdb_fire, vstart_el_id_inc, 0.U)
       }
+      // -- Increment address and counter (if not done) --
+      when (!vstart_addr_done_q) {
+        vstart_addr_done_q := vstart_addr_done
+        current_addr := next_addr
+        current_ctr  := current_ctr + (1.U << vstart_skip_enc)
+      }
+
+      // -- State transition --
+      when (vstart_readout_done && vstart_addr_done) {
+        // next state
+        state := State.WALKING
+        // realign dmem offset to the new address
+        val high_off = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+        val low_off  = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+        dmem_off := Mux(current_dir && !use_seg_constraint, high_off, low_off)
+      }
+
     }
     // WALKING STATE
     is (State.WALKING) {
-      when (io.kill) {
-        state := State.IDLE
-      } .elsewhen (io.store_packet.fire) {
+      when (io.store_packet.fire) {
 
         // -- Next Address calculation --
         val next_addr = Mux(
@@ -311,7 +306,6 @@ extends Module with VecLSGenConstants {
   dontTouch(io.start)
   dontTouch(io.index)
   dontTouch(io.vdb_data)
-  dontTouch(io.kill)
   dontTouch(io.store_packet)
 
   // Internal state and config

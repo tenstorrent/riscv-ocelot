@@ -30,24 +30,30 @@ extends Bundle with VecLSGenConstants {
   val dir        = Bool() // for padding of return data
   val is_fof     = Bool()
   val uop        = new MicroOp()
+  val poison     = Bool()
 }
 
 // Load Generator for OVI
 // holds all the load generators for OVI
 class LoadGen(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
-extends Module with VecLSGenConstants {
+extends BoomModule with VecLSGenConstants {
   // ======== Input-Output Ports ========
   val io = IO(new Bundle {
     // start config signals
     val start = Flipped(DecoupledIO(new ConfigInfo(VLEN, DMEM_WIDTH)))
+    // core signals for poison updates
+    val core = new Bundle {
+      val rob_pnr_idx  = Input(UInt(robAddrSz.W))
+      val rob_head_idx = Input(UInt(robAddrSz.W))
+      val brupdate     = Input(new BrUpdateInfo())
+      val exception    = Input(Bool())
+    }
     // mask/index interface (for masked/indexed loads)
     val mask_idx = new Bundle {
       val ready = Output(Bool())
       val valid = Input(Bool())
       val data  = Input(UInt((MASK_W+2).W))
     }
-    // kill signal (used to reset the FSM)
-    val kill = Input(Bool())
     // load process FSM outputs (packet info)
     val load_packet = DecoupledIO(new LoadPacket(VLEN, DMEM_WIDTH))
     // status signal
@@ -64,8 +70,17 @@ extends Module with VecLSGenConstants {
   val state   = RegInit(State.IDLE)
   val start_q = RegInit(0.U.asTypeOf(new ConfigInfo(VLEN, DMEM_WIDTH))) // latched config info
 
-  // pass through config info
-  val config_info = Mux((state === State.IDLE), io.start.bits, start_q)
+  // mux between immideate input and latched config info
+  val muxed_start_bits = Mux((state === State.IDLE), io.start.bits, start_q)
+  // update speculative info (poison bit and branch stuff)
+  val config_info = Wire(new ConfigInfo(VLEN, DMEM_WIDTH))
+  config_info := muxed_start_bits
+  config_info.uop.br_mask := GetNewBrMask(io.core.brupdate, muxed_start_bits.uop)
+  config_info.poison := (
+    (muxed_start_bits.poison) ||
+    (io.core.exception && !IsOlder(muxed_start_bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)) ||
+    (IsKilledByBranch(io.core.brupdate, muxed_start_bits.uop))
+  )
 
   // control signals
   val bypassable = (config_info.vl === 0.U) || (config_info.vstart >= config_info.vl)
@@ -87,8 +102,6 @@ extends Module with VecLSGenConstants {
   // mask config
   packer.io.mask.valid     := io.mask_idx.valid
   packer.io.mask.mask_data := io.mask_idx.data(MASK_W-1, 0) // data only
-  // kill signal
-  packer.io.kill := io.kill
   // load packet
   packer.io.load_packet.ready := io.load_packet.ready
 
@@ -100,8 +113,6 @@ extends Module with VecLSGenConstants {
   // mask config
   skipper.io.mask.valid     := io.mask_idx.valid
   skipper.io.mask.mask_data := io.mask_idx.data(MASK_W-1, 0) // data only
-  // kill signal
-  skipper.io.kill := io.kill
   // load packet
   skipper.io.load_packet.ready := io.load_packet.ready
 
@@ -115,8 +126,6 @@ extends Module with VecLSGenConstants {
   walker.io.index.index_value := io.mask_idx.data(MASK_W-1, 0).asSInt // idx val
   walker.io.index.mask_bit    := io.mask_idx.data(MASK_W)             // mask bit
   walker.io.index.last_index  := io.mask_idx.data(MASK_W+1)           // last bit
-  // kill signal
-  walker.io.kill := io.kill
   // load packet
   walker.io.load_packet.ready := io.load_packet.ready
 
@@ -165,6 +174,7 @@ extends Module with VecLSGenConstants {
   bypass_packet.misaligned := DontCare
   bypass_packet.last       := true.B         // assert end
   bypass_packet.uop        := config_info.uop
+  bypass_packet.poison     := config_info.poison
   bypass_packet.dir        := DontCare
   bypass_packet.is_fof     := config_info.is_fof 
 
@@ -233,18 +243,16 @@ extends Module with VecLSGenConstants {
         (walkable)   -> State.WALKING,
         (true.B)     -> State.IDLE
       ))
-      start_q := io.start.bits
+      start_q := config_info
     }
   }.otherwise {
-    // end on kill
-    when (io.kill) {
-      state := State.IDLE
-    // end on last packet
-    }.elsewhen (io.load_packet.fire) {
+    when (io.load_packet.fire){
       when (io.load_packet.bits.last) {
         state := State.IDLE
       }
     }
+    // update poison bit
+    start_q := config_info
   }
 
   // ======== Debug Signals ========

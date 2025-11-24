@@ -38,8 +38,6 @@ extends Module with VecLSGenConstants {
       val valid = Input(Bool())
       val mask_data = Input(UInt(MASK_W.W))
     }
-    // kill signal (used to reset the FSM)
-    val kill = Input(Bool())
     // load process FSM outputs (packet info)
     val load_packet = DecoupledIO(new LoadPacket(VLEN, DMEM_WIDTH))
     // status signal
@@ -266,6 +264,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.misaligned := ((base_addr & ((1.U << eew_enc) - 1.U)) =/= 0.U)
   io.load_packet.bits.last   := (state === State.PACKING) && (vl_constraint_met)
   io.load_packet.bits.uop    := io.start.bits.uop
+  io.load_packet.bits.poison := io.start.bits.poison
   io.load_packet.bits.dir    := stride_dir && !use_seg_constraint
   io.load_packet.bits.is_fof := io.start.bits.is_fof
 
@@ -303,9 +302,7 @@ extends Module with VecLSGenConstants {
     }
     // PACKING STATE
     is (State.PACKING) {
-      when (io.kill) {
-        state := State.IDLE
-      }.elsewhen (io.load_packet.fire) {
+      when (io.load_packet.fire) {
 
         // -- Increment counter --
         EEW_CTR := EEW_CTR + ctr_inc_val
@@ -371,7 +368,6 @@ extends Module with VecLSGenConstants {
   io.debug.debug_v_group_mask_width := v_group_mask_width
   dontTouch(io.start)
   dontTouch(io.load_packet)
-  dontTouch(io.kill)
   dontTouch(io.debug)
   dontTouch(seg_constraint)
   dontTouch(seg_constraint_met)

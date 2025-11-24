@@ -53,7 +53,7 @@ module tt_load_buffer #(
 
   // decode the vgroup and byte offset from the vstart_vlfof index
   always_comb begin // mux to avoid div or mod
-    unique case (i_drain_eew[1:0])
+    case (i_drain_eew[1:0])
       'd0: begin
         idx_vgroup      = i_drain_vstart_vlfof_idx[7:5];
         idx_byte_offset = i_drain_vstart_vlfof_idx[4:0] << i_drain_eew[1:0];

@@ -36,8 +36,6 @@ extends Module with VecLSGenConstants {
       val valid = Input(Bool())
       val mask_data = Input(UInt(MASK_W.W))
     }
-    // kill signal (used to reset the FSM)
-    val kill = Input(Bool())
     // load process FSM outputs (packet info)
     val load_packet = DecoupledIO(new LoadPacket(VLEN, DMEM_WIDTH))
     // status signal
@@ -169,6 +167,7 @@ extends Module with VecLSGenConstants {
   io.load_packet.bits.misaligned := ((current_addr & ((1.U << eew_enc) - 1.U)) =/= 0.U)
   io.load_packet.bits.last     := (state === State.SKIPPING) && (vl_constraint_met || max_ctr_met)
   io.load_packet.bits.uop      := io.start.bits.uop
+  io.load_packet.bits.poison   := io.start.bits.poison
   io.load_packet.bits.dir      := stride_dir && !use_seg_constraint
   io.load_packet.bits.is_fof   := io.start.bits.is_fof
 
@@ -218,33 +217,27 @@ extends Module with VecLSGenConstants {
     }
     // VSTART HANDLING STATE
     is(State.VSTART_HANDLING) {
-      when (io.kill) {
-        state := State.IDLE
-      }.otherwise {
 
-        // -- Next Address calculation --
-        val next_addr = (current_addr.asSInt + (stride << vstart_skip_enc)).asUInt
+      // -- Next Address calculation --
+      val next_addr = (current_addr.asSInt + (stride << vstart_skip_enc)).asUInt
 
-        // -- Increment address and counter --
-        current_addr := next_addr
-        current_ctr  := current_ctr + (1.U << vstart_skip_enc)
+      // -- Increment address and counter --
+      current_addr := next_addr
+      current_ctr  := current_ctr + (1.U << vstart_skip_enc)
 
-        // -- State transition --
-        when (vstart_last_inc) {
-          // next state
-          state := State.SKIPPING
-          // realign dmem offset to the new address
-          val high_off = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc
-          val low_off  = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc
-          dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
-        }
+      // -- State transition --
+      when (vstart_last_inc) {
+        // next state
+        state := State.SKIPPING
+        // realign dmem offset to the new address
+        val high_off = (((1<<(ADDR_BREAK))-1).U - next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+        val low_off  = (next_addr(ADDR_BREAK-1, 0)) >> eew_enc
+        dmem_off := Mux(stride_dir && !use_seg_constraint, high_off, low_off)
       }
     }
     // SKIPPING STATE
     is(State.SKIPPING) {
-      when (io.kill) {
-        state := State.IDLE
-      }.elsewhen (io.load_packet.fire) {
+      when (io.load_packet.fire) {
 
         // -- Next Address calculation --
         val next_addr = (current_addr.asSInt + Mux(skippable, (stride << skip_enc), stride)).asUInt
@@ -337,7 +330,6 @@ extends Module with VecLSGenConstants {
   dontTouch(io.debug)
   dontTouch(io.start)
   dontTouch(io.load_packet)
-  dontTouch(io.kill)
 
   dontTouch(skippable)
   dontTouch(skip_val)
@@ -360,7 +352,6 @@ extends Module with VecLSGenConstants {
   dontTouch(io.mask.ready)
   dontTouch(io.start)
   dontTouch(io.load_packet)
-  dontTouch(io.kill)
   dontTouch(io.gen_active)
   dontTouch(vreg_constraint)
   dontTouch(vl_constraint)

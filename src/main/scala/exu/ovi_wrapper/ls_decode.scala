@@ -57,7 +57,11 @@ extends Bundle with VecLSGenConstants {
   val is_fof     = Bool()
   val base_addr  = UInt(64.W)
   val uop        = new MicroOp()
+  val poison     = Bool()
 }
+
+// NOTE: this module is not clocked (simply pass through)
+// make sure to handle poison mechanism in the decoder buffer
 
 class OviLsDecode(override val VLEN: Int, override val DMEM_WIDTH: Int)(implicit p: Parameters)
 extends BoomModule with VecLSGenConstants {
@@ -237,6 +241,9 @@ extends BoomModule with VecLSGenConstants {
 
   // entire MicroOp
   io.out.dec_info.uop := io.in.req.req.uop
+
+  // poison bit
+  io.out.dec_info.poison := io.in.req.poison
 
   // ========= Illegal Check ========
 
