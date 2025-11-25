@@ -1388,6 +1388,14 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
   rob.io.lsu_clr_unsafe := io.lsu.clr_unsafe
   rob.io.lxcpt          <> io.lsu.lxcpt
 
+  // OVI <> ROB - Vector memory operation completion (clear busy or report exception)
+  if (usingVector) {
+    rob.io.vmem_complete <> exe_units.vec_exe_unit.io.ovi.vmem_complete
+  } else {
+    rob.io.vmem_complete.valid := false.B
+    rob.io.vmem_complete.bits  := DontCare
+  }
+
   assert (!(csr.io.singleStep), "[core] single-step is unsupported.")
 
 

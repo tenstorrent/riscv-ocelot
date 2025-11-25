@@ -53,6 +53,8 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
       val brupdate     = Input(new BrUpdateInfo())
       val exception    = Input(Bool())
     }
+
+    val vmem_complete = ValidIO(new VectorMemComplete())
   })
 
   // =============== Constants Definition ===============
@@ -417,8 +419,8 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
   ovi_resp_handler.io.fake_load_return_data <> fakeLoadReturnQueue.io.deq
   // core signals
   ovi_resp_handler.io.core_in    := io.core
-  // core reports
-  // val TODO_core_out := ovi_resp_handler.io.core_out
+  // core reports - output for clearing ROB busy bit or reporting exception
+  io.vmem_complete <> ovi_resp_handler.io.core_out
   // vpu reports
   MemSyncEnd  := ovi_resp_handler.io.vpu.sync_end
   MemSbId     := ovi_resp_handler.io.vpu.sb_id

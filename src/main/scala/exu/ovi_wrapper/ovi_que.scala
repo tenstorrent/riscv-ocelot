@@ -49,7 +49,7 @@ extends BoomModule {
   io.enq.ready := (size < num_entries.U)
   io.deq.valid := (size > 0.U)
 
-  // Keep poison-bit up-to-date
+  // Keep poison-bit up-to-date (enq entries will be overwritten)
   for (idx <- 0 until num_entries) {
     entries(idx).req.uop.br_mask := GetNewBrMask(io.core.brupdate, entries(idx).req.uop)
     when (
@@ -59,12 +59,12 @@ extends BoomModule {
     }
   }
 
-  // enqueue logic
+  // enqueue logic (overwrite entry update above with enq data)
   when(io.enq.fire) {
     entries(enq_ptr) := io.enq.bits
     entries(enq_ptr).req.uop.br_mask := GetNewBrMask(io.core.brupdate, io.enq.bits.req.uop)
     entries(enq_ptr).poison := (
-      (entries(enq_ptr).poison) ||
+      (io.enq.bits.poison) ||
       (io.core.exception && !IsOlder(io.enq.bits.req.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)) ||
       (IsKilledByBranch(io.core.brupdate, io.enq.bits.req.uop))
     )

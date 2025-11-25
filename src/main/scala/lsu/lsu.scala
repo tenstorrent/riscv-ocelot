@@ -339,7 +339,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 {
   val io = IO(new LSUIO)
 
-  val numDsqEntries = 256 // TODO: we can only store after commit. and we can only commit after checking all elements (max possible is VLEN/8 * 8) so need to accomodate for all? Confirm this
+  val numDsqEntries = 4
   val numDlqEntries = 8
   val dsqAddrSz = log2Ceil(numDsqEntries) 
   val dlqAddrSz = log2Ceil(numDlqEntries) 
@@ -2078,7 +2078,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   for (i <- 0 until numStqEntries)
   {
     st_brkilled_mask(i) := false.B
-
     when (stq(i).valid)
     {
       stq(i).bits.uop.br_mask := GetNewBrMask(io.core.brupdate, stq(i).bits.uop.br_mask)
@@ -2097,16 +2096,18 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   }
 
   // vector stores
+  val dsq_is_killed_vec = WireInit(VecInit(Seq.fill(numDsqEntries)(false.B)))
   for (i <- 0 until numDsqEntries) {
+    dsq_is_killed_vec(i) := false.B // initialize to false
     when (dsq(i).valid) {
       dsq(i).bits.uop.br_mask := GetNewBrMask(io.core.brupdate, dsq(i).bits.uop.br_mask)
-      val is_killed = (
+      dsq_is_killed_vec(i) := (
         (dsq(i).bits.poison) ||
         (io.core.exception && !IsOlder(dsq(i).bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)) ||
         (IsKilledByBranch(io.core.brupdate, dsq(i).bits.uop))
       )
-      dsq(i).bits.isFake := dsq(i).bits.isFake || is_killed
-      dsq(i).bits.poison := is_killed
+      dsq(i).bits.isFake := dsq(i).bits.isFake || dsq_is_killed_vec(i)
+      dsq(i).bits.poison := dsq_is_killed_vec(i)
     }
   }
 
@@ -2125,31 +2126,56 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   }
 
   // vector loads
+  val dlq_is_killed_vec = WireInit(VecInit(Seq.fill(numDlqEntries)(false.B)))
   for (i <- 0 until numDlqEntries) {
+    dlq_is_killed_vec(i) := false.B // initialize to false
     when (dlq(i).valid) {
       dlq(i).bits.uop.br_mask := GetNewBrMask(io.core.brupdate, dlq(i).bits.uop.br_mask)
-      val is_killed = (
+      dlq_is_killed_vec(i) := (
         (dlq(i).bits.poison) ||
         (io.core.exception && !IsOlder(dlq(i).bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)) ||
         (IsKilledByBranch(io.core.brupdate, dlq(i).bits.uop))
       )
-    dlq(i).bits.isFake := dlq(i).bits.isFake || is_killed
-    dlq(i).bits.poison := is_killed
+    dlq(i).bits.isFake := dlq(i).bits.isFake || dlq_is_killed_vec(i)
+    dlq(i).bits.poison := dlq_is_killed_vec(i)
     }
   }
 
   //-------------------------------------------------------------
+  // Tail rewind monitoring signals (for debugging)
+  dontTouch(io.core.brupdate.b2.mispredict)
+  dontTouch(io.core.exception)
+  dontTouch(io.core.brupdate.b2.uop.ldq_idx)
+  dontTouch(io.core.brupdate.b2.uop.stq_idx)
+  dontTouch(ldq_tail)
+  dontTouch(stq_tail)
+  dontTouch(ldq_v_head)
+  dontTouch(stq_v_head)
+  dontTouch(ldq_head)
+  dontTouch(stq_head)
+  dontTouch(dlq_is_killed_vec)
+  dontTouch(dsq_is_killed_vec)
+  dontTouch(dsq)
+  dontTouch(dlq)
+  dontTouch(stq)
+  dontTouch(ldq)
+
+  // cannot rely on the is_killed_vec since this rewinding
+  // mechanism has a one-cycle delay from is_killed_by_branch
+  val v_head_rewinding = (io.core.brupdate.b2.mispredict && !io.core.exception);
+
   when (io.core.brupdate.b2.mispredict && !io.core.exception)
   {
     stq_tail := io.core.brupdate.b2.uop.stq_idx
     stq_v_head := io.core.brupdate.b2.uop.stq_idx
     ldq_tail := io.core.brupdate.b2.uop.ldq_idx
     ldq_v_head := io.core.brupdate.b2.uop.ldq_idx
+
+    // added v_head rewind logic along with tail. added the assertions to make sure it never goes out of sync
+    assert(!IsOlder(stq_tail, stq_v_head, stq_head), "stq_v_head passed stq_tail (rewind)")
+    assert(!IsOlder(ldq_tail, ldq_v_head, ldq_head), "ldq_v_head passed ldq_tail (rewind)")
   }
 
-  // added v_head rewind logic along with tail. added the assertions to make sure it never goes out of sync
-  assert(IsOlder(stq_v_head, stq_tail, stq_head), "stq_v_head is not older than stq_tail")
-  assert(IsOlder(ldq_v_head, ldq_tail, ldq_head), "ldq_v_head is not older than ldq_tail")
 
   //-------------------------------------------------------------
   //-------------------------------------------------------------
@@ -2169,6 +2195,23 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       stq(idx).bits.committed := true.B
     } .elsewhen (commit_load) {
       assert (ldq(idx).valid, "[lsu] trying to commit an un-allocated load entry.")
+      
+      // // same assertion with more details
+      // assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded , "no")
+      assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded ,
+        "[lsu] trying to commit un-executed load: idx=%d head=%d tail=%d v_head=%d | " +
+        "valid=%d isVec=%d exec=%d succ=%d fwd=%d | " +
+        "rob_idx=%d br_mask=0x%x killed=%d mask_AND=0x%x | " +
+        "rob_head=%d rob_pnr=%d exception=%d | " +
+        "b1_misp=0x%x b1_res=0x%x b2_misp=%d",
+        idx, ldq_head, ldq_tail, ldq_v_head,
+        ldq(idx).valid, ldq(idx).bits.isVector, ldq(idx).bits.executed, ldq(idx).bits.succeeded, ldq(idx).bits.forward_std_val,
+        ldq(idx).bits.uop.rob_idx, ldq(idx).bits.uop.br_mask, 
+        IsKilledByBranch(io.core.brupdate, ldq(idx).bits.uop),
+        io.core.brupdate.b1.mispredict_mask & ldq(idx).bits.uop.br_mask,
+        io.core.rob_head_idx, io.core.rob_pnr_idx, io.core.exception,
+        io.core.brupdate.b1.mispredict_mask, io.core.brupdate.b1.resolve_mask, io.core.brupdate.b2.mispredict)
+
       assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded ,
         "[lsu] trying to commit an un-executed load entry.")
 
@@ -2246,14 +2289,20 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       when (dlq(dlq_head).bits.last) {
         dlq_finished := true.B
         sbIdDoneLd := dlq(dlq_head).bits.sbId
-        when (!dlq(dlq_head).bits.poison) {
+        when (!dlq_is_killed_vec(dlq_head)) {
           ldq(dlq(dlq_head).bits.uop.ldq_idx).bits.succeeded := true.B 
           ldq(dlq(dlq_head).bits.uop.ldq_idx).bits.executed := true.B
         }
         
-        when ((ldq_v_head =/= ldq_tail) && (ldq_v_head === dlq(dlq_head).bits.uop.ldq_idx) && !dlq(dlq_head).bits.poison) {
-          ldq_v_head := WrapInc(ldq_v_head, numLdqEntries)
-        }
+        // when (
+        //   (ldq_v_head =/= ldq_tail) &&
+        //   (ldq_v_head === dlq(dlq_head).bits.uop.ldq_idx) &&
+        //   (!dlq_is_killed_vec(dlq_head)) &&
+        //   (!ldq_is_killed_vec(ldq_v_head))
+        // ) {
+        //   ldq_v_head := WrapInc(ldq_v_head, numLdqEntries)
+        //   assert(!IsOlder(ldq_tail, ldq_v_head, ldq_head), "ldq_v_head passed ldq_tail (dlq_head update)")
+        // }
       }
     }
   }
@@ -2265,7 +2314,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   when (dsq(dsq_head).valid && dsq(dsq_head).bits.succeeded) {
     val can_use_resp_bus = !resp_data_bus_used_by_load_data_back && !resp_data_bus_used_by_load_xpct // 3rd priority
-    val vstxcpt_was_killed = (wait_for_vstxcpt_kill && dsq(dsq_head).bits.poison)
+    val vstxcpt_was_killed = (wait_for_vstxcpt_kill && dsq_is_killed_vec(dsq_head))
     when (!dsq(dsq_head).bits.exception || (!wait_for_vstxcpt_kill && can_use_resp_bus) || vstxcpt_was_killed) {
 
       // run this block when youre seeing the exception for the first time and freeze ptr
@@ -2289,12 +2338,18 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         when (dsq(dsq_head).bits.last) {
           dsq_finished := true.B
           sbIdDoneSt := dsq(dsq_head).bits.sbId
-          when (!dsq(dsq_head).bits.poison) {
+          when (!dsq_is_killed_vec(dsq_head)) {
             stq(dsq(dsq_head).bits.uop.stq_idx).bits.succeeded := true.B 
           }
-          when ((stq_v_head =/= stq_tail) && (stq_v_head === dsq(dsq_head).bits.uop.stq_idx) && !dsq(dsq_head).bits.poison) {
-            stq_v_head := WrapInc(stq_v_head, numStqEntries)
-          }
+          // when (
+          //   (stq_v_head =/= stq_tail) &&
+          //   (stq_v_head === dsq(dsq_head).bits.uop.stq_idx) &&
+          //   (!dsq_is_killed_vec(dsq_head)) &&
+          //   (!stq_is_killed_vec(stq_v_head))
+          // ) {
+          //   stq_v_head := WrapInc(stq_v_head, numStqEntries)
+          //   assert(!IsOlder(stq_tail, stq_v_head, stq_head), "stq_v_head passed stq_tail (dsq_head update)")
+          // }
         }
       }
     }
@@ -2308,20 +2363,29 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   )
 
   // v_head will skip through 1. invalid entry 2. scalar ones that are successful 3. vector ones that are ready to go
-  when ((stq_v_head =/= stq_tail) && (
-    (!stq_vector_e.valid) || 
-    (!stq_vector_e.bits.isVector && stq_vector_e.bits.succeeded) || 
-    (stq_vector_e.bits.isVector && (stq_vector_e.bits.vectorCanGo || stq_vector_e.bits.vectorNoYoung) && exe_vst_at_pnr)
-  )) {
+  when (
+    (!v_head_rewinding) && 
+    (stq_v_head =/= stq_tail) && (
+     (!stq_vector_e.valid) || 
+     (!stq_vector_e.bits.isVector && stq_vector_e.bits.succeeded) || (
+      (stq_vector_e.bits.isVector) &&
+      (stq_vector_e.bits.vectorCanGo || stq_vector_e.bits.vectorNoYoung || stq_vector_e.bits.succeeded) &&
+      (exe_vst_at_pnr)))
+  ) {
     stq_v_head := WrapInc(stq_v_head, numStqEntries)
+    assert(!IsOlder(stq_tail, stq_v_head, stq_head), "stq_v_head passed stq_tail (natural ptr march)")
   }
 
-  when ((ldq_v_head =/= ldq_tail) && (
-    (!ldq_commit_e.valid) || 
-    (!ldq_commit_e.bits.isVector && ldq_commit_e.bits.succeeded) || 
-    (ldq_commit_e.bits.isVector && (ldq_commit_e.bits.vectorCanGo || ldq_commit_e.bits.vectorNoYoung))
-  )) {
+  when (
+    (!v_head_rewinding) && 
+    (ldq_v_head =/= ldq_tail) && (
+     (!ldq_commit_e.valid) || 
+     (!ldq_commit_e.bits.isVector && ldq_commit_e.bits.succeeded) || (
+      (ldq_commit_e.bits.isVector) &&
+      (ldq_commit_e.bits.vectorCanGo || ldq_commit_e.bits.vectorNoYoung || ldq_commit_e.bits.succeeded)))
+  ) {
     ldq_v_head := WrapInc(ldq_v_head, numLdqEntries)
+    assert(!IsOlder(ldq_tail, ldq_v_head, ldq_head), "ldq_v_head passed ldq_tail (natural ptr march)")
   }
   
 

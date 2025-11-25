@@ -21,6 +21,8 @@
 //    - Exceptions are only taken when at the head of the commit bundle --
 //      this helps deal with loads, stores, and refetch instructions.
 
+// TODO: need to add vstart mechanism for exception and take vmem exception cause
+
 package boom.exu
 
 import scala.math.ceil
@@ -73,6 +75,9 @@ class RobIo(
 
   // Port for unmarking loads/stores as speculation hazards..
   val lsu_clr_unsafe   = Input(Vec(memWidth, Valid(UInt(robAddrSz.W))))
+
+  // Vector memory operation completion (for clearing busy or reporting exception)
+  val vmem_complete    = Flipped(new ValidIO(new VectorMemComplete()))
 
 
   // Track side-effects for debug purposes.
@@ -200,6 +205,18 @@ class Exception(implicit p: Parameters) extends BoomBundle
   val uop = new MicroOp()
   val cause = Bits(log2Ceil(freechips.rocketchip.rocket.Causes.all.max+2).W)
   val badvaddr = UInt(coreMaxAddrBits.W)
+}
+
+/**
+ * Bundle of signals indicating vector memory operation completion
+ * Used to report exceptions or clear busy bit for OVI vector memory ops
+ */
+class VectorMemComplete(implicit p: Parameters) extends BoomBundle
+{
+  val rob_idx      = UInt(robAddrSz.W)
+  val exception    = Bool()
+  val xcpt_cause   = UInt(xLen.W)
+  val vstart_vlfof = UInt(15.W)
 }
 
 /**
@@ -380,6 +397,20 @@ class Rob(
         assert (rob_val(cidx) === true.B, "[rob] store writing back to invalid entry.")
         assert (rob_bsy(cidx) === true.B, "[rob] store writing back to a not-busy entry.")
       }
+    }
+    // Vector memory operations clear busy bits (if no exception) or mark exception
+    when (io.vmem_complete.valid && MatchBank(GetBankIdx(io.vmem_complete.bits.rob_idx))) {
+      val cidx = GetRowIdx(io.vmem_complete.bits.rob_idx)
+      when (!io.vmem_complete.bits.exception) {
+        rob_bsy(cidx)    := false.B
+        rob_unsafe(cidx) := false.B
+      } .otherwise {
+        rob_exception(cidx) := true.B
+      }
+      assert (rob_val(cidx) === true.B, "[rob] vmem_complete writing back to invalid entry.")
+      assert (rob_bsy(cidx) === true.B, "[rob] vmem_complete writing back to a not-busy entry.")
+      assert (rob_unsafe(cidx) === true.B, "[rob] vmem_complete writing back to a safe entry.")
+      assert (rob_exception(cidx) === false.B, "[rob] vmem_complete writing back to an exception entry.")
     }
     for (clr <- io.lsu_clr_unsafe) {
       when (clr.valid && MatchBank(GetBankIdx(clr.bits))) {

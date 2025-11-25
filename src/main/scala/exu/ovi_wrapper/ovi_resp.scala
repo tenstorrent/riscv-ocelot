@@ -35,13 +35,8 @@ extends BoomModule {
       val brupdate     = Input(new BrUpdateInfo())
       val exception    = Input(Bool())
     }
-    // to core (to report exceptions)
-    val core_out = ValidIO(new Bundle {
-      val rob_idx      = Output(UInt(robAddrSz.W))
-      val exception    = Output(Bool())
-      val xcpt_cause   = Output(UInt(xLen.W))
-      val vstart_vlfof = Output(UInt(15.W))
-    })
+    // to core (to report exceptions and clear busy)
+    val core_out = ValidIO(new VectorMemComplete())
     // to vpu
     val vpu = new Bundle {
       // sync end
@@ -251,7 +246,8 @@ extends BoomModule {
 
       // assertions
       assert(!(VecInit(vsvlf_report_candidate_vec).asUInt & (VecInit(vsvlf_report_candidate_vec).asUInt - 1.U)), "ERROR: VstartVlfof tracker has multiple slots marked reportable!")
-      assert(vsvlf_tracker(i).vpu_report === State.PENDING, "ERROR: VstartVlfof tracker slot is not marked pending!")
+      assert(vsvlf_tracker(i).vpu_report =/= State.DONE, "ERROR: VstartVlfof tracker slot is marked done!")
+      assert(core_report_vec(i) === State.PENDING || core_report_vec(i) === State.DONE, "ERROR: VstartVlfof tracker slot is not marked pending or done!")
     }
   }
 
