@@ -302,7 +302,7 @@ module
 
     /*------------------------------------------------------------------------
     *------------------------------------------------------------------------*/
-    wire sqrtOpOut;
+//    wire sqrtOpOut;
     wire [2:0] roundingModeOut;
     wire invalidExc, infiniteExc, out_isNaN, out_isInf, out_isZero, out_sign;
     wire signed [(expWidth + 1):0] out_sExp;

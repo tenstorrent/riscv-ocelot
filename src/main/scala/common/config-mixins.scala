@@ -80,11 +80,17 @@ class WithRationalBoomTiles extends Config((site, here, up) => {
 })
 
 class WithBoomDebugHarness extends Config((site, here, up) => {
-  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
-    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
-      enableDebugHarness = true
-    )))
-    case other => other
+  case TilesLocated(InSubsystem) => {
+    // Check if building with VCS (true) or Verilator (false)
+    val cwd = System.getProperty("user.dir", "")
+    val simEnv = sys.env.get("SIMULATOR").orElse(sys.env.get("SIM_NAME"))
+    val isVcs = simEnv.map(_.toLowerCase == "vcs").getOrElse(cwd.contains("/sims/vcs") || cwd.contains("sims/vcs"))
+    up(TilesLocated(InSubsystem), site) map {
+      case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+        enableDebugHarness = isVcs
+      )))
+      case other => other
+    }
   }
 })
 
