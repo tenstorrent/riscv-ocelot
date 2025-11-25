@@ -56,7 +56,7 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
 
     val vmem_complete = ValidIO(new VectorMemComplete())
   })
-
+ 
   // =============== Constants Definition ===============
 
   val vlsiQDepth = 4
