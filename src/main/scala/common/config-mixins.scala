@@ -83,8 +83,17 @@ class WithBoomDebugHarness extends Config((site, here, up) => {
   case TilesLocated(InSubsystem) => {
     // Check if building with VCS (true) or Verilator (false)
     val cwd = System.getProperty("user.dir", "")
+    val cwdAbs = try {
+      new java.io.File(cwd).getAbsolutePath
+    } catch {
+      case _: Exception => cwd
+    }
     val simEnv = sys.env.get("SIMULATOR").orElse(sys.env.get("SIM_NAME"))
-    val isVcs = simEnv.map(_.toLowerCase == "vcs").getOrElse(cwd.contains("/sims/vcs") || cwd.contains("sims/vcs"))
+    val isVcs = simEnv.map(_.toLowerCase == "vcs").getOrElse {
+      // Check if path contains "vcs" (case-insensitive) and not "verilator"
+      val pathLower = (cwd + " " + cwdAbs).toLowerCase
+      pathLower.contains("vcs") && !pathLower.contains("verilator")
+    }
     up(TilesLocated(InSubsystem), site) map {
       case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
         enableDebugHarness = isVcs
