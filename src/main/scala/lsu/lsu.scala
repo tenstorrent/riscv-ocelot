@@ -2197,20 +2197,19 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       assert (ldq(idx).valid, "[lsu] trying to commit an un-allocated load entry.")
       
       // // same assertion with more details
-      // assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded , "no")
-      assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded ,
-        "[lsu] trying to commit un-executed load: idx=%d head=%d tail=%d v_head=%d | " +
-        "valid=%d isVec=%d exec=%d succ=%d fwd=%d | " +
-        "rob_idx=%d br_mask=0x%x killed=%d mask_AND=0x%x | " +
-        "rob_head=%d rob_pnr=%d exception=%d | " +
-        "b1_misp=0x%x b1_res=0x%x b2_misp=%d",
-        idx, ldq_head, ldq_tail, ldq_v_head,
-        ldq(idx).valid, ldq(idx).bits.isVector, ldq(idx).bits.executed, ldq(idx).bits.succeeded, ldq(idx).bits.forward_std_val,
-        ldq(idx).bits.uop.rob_idx, ldq(idx).bits.uop.br_mask, 
-        IsKilledByBranch(io.core.brupdate, ldq(idx).bits.uop),
-        io.core.brupdate.b1.mispredict_mask & ldq(idx).bits.uop.br_mask,
-        io.core.rob_head_idx, io.core.rob_pnr_idx, io.core.exception,
-        io.core.brupdate.b1.mispredict_mask, io.core.brupdate.b1.resolve_mask, io.core.brupdate.b2.mispredict)
+      // assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded ,
+      //   "[lsu] trying to commit un-executed load: idx=%d head=%d tail=%d v_head=%d | " +
+      //   "valid=%d isVec=%d exec=%d succ=%d fwd=%d | " +
+      //   "rob_idx=%d br_mask=0x%x killed=%d mask_AND=0x%x | " +
+      //   "rob_head=%d rob_pnr=%d exception=%d | " +
+      //   "b1_misp=0x%x b1_res=0x%x b2_misp=%d",
+      //   idx, ldq_head, ldq_tail, ldq_v_head,
+      //   ldq(idx).valid, ldq(idx).bits.isVector, ldq(idx).bits.executed, ldq(idx).bits.succeeded, ldq(idx).bits.forward_std_val,
+      //   ldq(idx).bits.uop.rob_idx, ldq(idx).bits.uop.br_mask, 
+      //   IsKilledByBranch(io.core.brupdate, ldq(idx).bits.uop),
+      //   io.core.brupdate.b1.mispredict_mask & ldq(idx).bits.uop.br_mask,
+      //   io.core.rob_head_idx, io.core.rob_pnr_idx, io.core.exception,
+      //   io.core.brupdate.b1.mispredict_mask, io.core.brupdate.b1.resolve_mask, io.core.brupdate.b2.mispredict)
 
       assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded ,
         "[lsu] trying to commit an un-executed load entry.")

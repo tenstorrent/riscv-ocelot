@@ -18,8 +18,12 @@ import chisel3.dontTouch // this is for debugging purposes
 
 // Response handler for OVI wrapper
 // NOTE: there are some hard-coded constants in this module
-class OviLSURespHandler(val MAX_OUTSTANDING_VMEMOPS: Int)(implicit p: Parameters)
-extends BoomModule {
+class OviLSURespHandler(
+  val MAX_OUTSTANDING_VMEMOPS: Int,
+  val vpuVlen: Int,
+  val oviWidth: Int,
+  val lsuDmemWidth: Int
+)(implicit p: Parameters) extends BoomModule {
   // ======== Input-Output Ports ========
   val io = IO(new Bundle {
     // from vlsiq
@@ -36,7 +40,7 @@ extends BoomModule {
       val exception    = Input(Bool())
     }
     // to core (to report exceptions and clear busy)
-    val core_out = ValidIO(new VectorMemComplete())
+    val core_out = ValidIO(new VecMemClrUnsafe())
     // to vpu
     val vpu = new Bundle {
       // sync end
@@ -98,11 +102,15 @@ extends BoomModule {
       io.lsu_resp.sbId(4, 0),
       io.lsu_resp.elemCount(6, 0),
       io.lsu_resp.elemOffset(5, 0),
-      0.U((11-log2Ceil(256/8)).W), // pad to 11
-      io.lsu_resp.elemID(log2Ceil(256/8)-1, 0),
+      0.U((11-log2Ceil(vpuVlen/8)).W), // pad to 11
+      io.lsu_resp.elemID(log2Ceil(vpuVlen/8)-1, 0),
       io.lsu_resp.vRegID(4, 0)
     )
-    io.vpu.load_data := io.lsu_resp.data
+    io.vpu.load_data := Mux(
+      io.lsu_resp.strideDir,
+      Cat(io.lsu_resp.data ((lsuDmemWidth-1), 0), 0.U((oviWidth-lsuDmemWidth).W)), // negative stride
+      Cat(0.U, io.lsu_resp.data ((lsuDmemWidth-1), 0))                             // positive stride
+    )
     io.vpu.load_mask_valid := io.lsu_resp.isMask
     io.vpu.load_mask := io.lsu_resp.Mask
 
@@ -138,6 +146,7 @@ extends BoomModule {
   enq_uop := io.enq.bits.req.uop
   enq_uop.br_mask := GetNewBrMask(io.core_in.brupdate, io.enq.bits.req.uop)
   enq_core_report := Mux((
+    (io.enq.bits.poison) ||
     (io.core_in.exception && !IsOlder(io.enq.bits.req.uop.rob_idx, io.core_in.rob_pnr_idx, io.core_in.rob_head_idx)) ||
     (IsKilledByBranch(io.core_in.brupdate, io.enq.bits.req.uop))
   ), State.DONE, State.WAIT)

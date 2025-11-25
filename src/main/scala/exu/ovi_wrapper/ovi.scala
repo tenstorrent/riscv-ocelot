@@ -54,7 +54,7 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
       val exception    = Input(Bool())
     }
 
-    val vmem_complete = ValidIO(new VectorMemComplete())
+    val ovi_clr_unsafe = ValidIO(new VecMemClrUnsafe())
   })
  
   // =============== Constants Definition ===============
@@ -408,7 +408,7 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
 
   // =============== Mem Response Handler ===============
 
-  val ovi_resp_handler = Module(new OviLSURespHandler(MAX_OUTSTANDING_VMEMOPS))
+  val ovi_resp_handler = Module(new OviLSURespHandler(MAX_OUTSTANDING_VMEMOPS, vpuVlen, oviWidth, lsuDmemWidth))
 
   // new entry for memop tracker from vlsiq
   ovi_resp_handler.io.enq.valid := vlsiq_fire
@@ -420,7 +420,7 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
   // core signals
   ovi_resp_handler.io.core_in    := io.core
   // core reports - output for clearing ROB busy bit or reporting exception
-  io.vmem_complete <> ovi_resp_handler.io.core_out
+  io.ovi_clr_unsafe <> ovi_resp_handler.io.core_out
   // vpu reports
   MemSyncEnd  := ovi_resp_handler.io.vpu.sync_end
   MemSbId     := ovi_resp_handler.io.vpu.sb_id

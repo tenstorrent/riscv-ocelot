@@ -77,7 +77,7 @@ class RobIo(
   val lsu_clr_unsafe   = Input(Vec(memWidth, Valid(UInt(robAddrSz.W))))
 
   // Vector memory operation completion (for clearing busy or reporting exception)
-  val vmem_complete    = Flipped(new ValidIO(new VectorMemComplete()))
+  val ovi_clr_unsafe    = Flipped(new ValidIO(new VecMemClrUnsafe()))
 
 
   // Track side-effects for debug purposes.
@@ -211,7 +211,7 @@ class Exception(implicit p: Parameters) extends BoomBundle
  * Bundle of signals indicating vector memory operation completion
  * Used to report exceptions or clear busy bit for OVI vector memory ops
  */
-class VectorMemComplete(implicit p: Parameters) extends BoomBundle
+class VecMemClrUnsafe(implicit p: Parameters) extends BoomBundle
 {
   val rob_idx      = UInt(robAddrSz.W)
   val exception    = Bool()
@@ -398,19 +398,18 @@ class Rob(
         assert (rob_bsy(cidx) === true.B, "[rob] store writing back to a not-busy entry.")
       }
     }
-    // Vector memory operations clear busy bits (if no exception) or mark exception
-    when (io.vmem_complete.valid && MatchBank(GetBankIdx(io.vmem_complete.bits.rob_idx))) {
-      val cidx = GetRowIdx(io.vmem_complete.bits.rob_idx)
-      when (!io.vmem_complete.bits.exception) {
-        rob_bsy(cidx)    := false.B
+    // Vector memory operations clear unsafe bits (if no exception) or mark exception
+    when (io.ovi_clr_unsafe.valid && MatchBank(GetBankIdx(io.ovi_clr_unsafe.bits.rob_idx))) {
+      val cidx = GetRowIdx(io.ovi_clr_unsafe.bits.rob_idx)
+      when (!io.ovi_clr_unsafe.bits.exception) {
         rob_unsafe(cidx) := false.B
       } .otherwise {
         rob_exception(cidx) := true.B
       }
-      assert (rob_val(cidx) === true.B, "[rob] vmem_complete writing back to invalid entry.")
-      assert (rob_bsy(cidx) === true.B, "[rob] vmem_complete writing back to a not-busy entry.")
-      assert (rob_unsafe(cidx) === true.B, "[rob] vmem_complete writing back to a safe entry.")
-      assert (rob_exception(cidx) === false.B, "[rob] vmem_complete writing back to an exception entry.")
+      assert (rob_val(cidx) === true.B, "[rob] ovi_clr_unsafe writing back to invalid entry.")
+      assert (rob_bsy(cidx) === true.B, "[rob] ovi_clr_unsafe writing back to a not-busy entry.")
+      assert (rob_unsafe(cidx) === true.B, "[rob] ovi_clr_unsafe writing back to a safe entry.")
+      assert (rob_exception(cidx) === false.B, "[rob] ovi_clr_unsafe writing back to an exception entry.")
     }
     for (clr <- io.lsu_clr_unsafe) {
       when (clr.valid && MatchBank(GetBankIdx(clr.bits))) {

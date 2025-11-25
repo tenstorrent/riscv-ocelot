@@ -175,7 +175,7 @@ class OviWrapperCoreIO(implicit p: Parameters) extends BoomBundle
   val set_vxsat = Output(Bool())
 
   // Vector memory operation completion (for clearing busy or reporting exception)
-  val vmem_complete = ValidIO(new VectorMemComplete())
+  val ovi_clr_unsafe = ValidIO(new VecMemClrUnsafe())
 }
 
 class OviWrapperWrapper(implicit p: Parameters) extends BoomModule // Yeah...
@@ -236,7 +236,7 @@ class OviWrapperWrapper(implicit p: Parameters) extends BoomModule // Yeah...
   ovi_wrapper.io.debug_wb_vec_wdata <> io.core.debug_wb_vec_wdata
   ovi_wrapper.io.debug_wb_vec_wmask <> io.core.debug_wb_vec_wmask
 
-  ovi_wrapper.io.vmem_complete <> io.core.vmem_complete
+  ovi_wrapper.io.ovi_clr_unsafe <> io.core.ovi_clr_unsafe
 
   ////////////////////////////////////////////////////////////////
 
