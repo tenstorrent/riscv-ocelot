@@ -2141,39 +2141,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     }
   }
 
-  //-------------------------------------------------------------
-  // Tail rewind monitoring signals (for debugging)
-  dontTouch(io.core.brupdate.b2.mispredict)
-  dontTouch(io.core.exception)
-  dontTouch(io.core.brupdate.b2.uop.ldq_idx)
-  dontTouch(io.core.brupdate.b2.uop.stq_idx)
-  dontTouch(ldq_tail)
-  dontTouch(stq_tail)
-  dontTouch(ldq_v_head)
-  dontTouch(stq_v_head)
-  dontTouch(ldq_head)
-  dontTouch(stq_head)
-  dontTouch(dlq_is_killed_vec)
-  dontTouch(dsq_is_killed_vec)
-  dontTouch(dsq)
-  dontTouch(dlq)
-  dontTouch(stq)
-  dontTouch(ldq)
-
-  // cannot rely on the is_killed_vec since this rewinding
-  // mechanism has a one-cycle delay from is_killed_by_branch
-  val v_head_rewinding = (io.core.brupdate.b2.mispredict && !io.core.exception);
 
   when (io.core.brupdate.b2.mispredict && !io.core.exception)
   {
     stq_tail := io.core.brupdate.b2.uop.stq_idx
-    stq_v_head := io.core.brupdate.b2.uop.stq_idx
     ldq_tail := io.core.brupdate.b2.uop.ldq_idx
-    ldq_v_head := io.core.brupdate.b2.uop.ldq_idx
-
-    // added v_head rewind logic along with tail. added the assertions to make sure it never goes out of sync
-    assert(!IsOlder(stq_tail, stq_v_head, stq_head), "stq_v_head passed stq_tail (rewind)")
-    assert(!IsOlder(ldq_tail, ldq_v_head, ldq_head), "ldq_v_head passed ldq_tail (rewind)")
   }
 
 
@@ -2196,21 +2168,6 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     } .elsewhen (commit_load) {
       assert (ldq(idx).valid, "[lsu] trying to commit an un-allocated load entry.")
       
-      // // same assertion with more details
-      // assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded ,
-      //   "[lsu] trying to commit un-executed load: idx=%d head=%d tail=%d v_head=%d | " +
-      //   "valid=%d isVec=%d exec=%d succ=%d fwd=%d | " +
-      //   "rob_idx=%d br_mask=0x%x killed=%d mask_AND=0x%x | " +
-      //   "rob_head=%d rob_pnr=%d exception=%d | " +
-      //   "b1_misp=0x%x b1_res=0x%x b2_misp=%d",
-      //   idx, ldq_head, ldq_tail, ldq_v_head,
-      //   ldq(idx).valid, ldq(idx).bits.isVector, ldq(idx).bits.executed, ldq(idx).bits.succeeded, ldq(idx).bits.forward_std_val,
-      //   ldq(idx).bits.uop.rob_idx, ldq(idx).bits.uop.br_mask, 
-      //   IsKilledByBranch(io.core.brupdate, ldq(idx).bits.uop),
-      //   io.core.brupdate.b1.mispredict_mask & ldq(idx).bits.uop.br_mask,
-      //   io.core.rob_head_idx, io.core.rob_pnr_idx, io.core.exception,
-      //   io.core.brupdate.b1.mispredict_mask, io.core.brupdate.b1.resolve_mask, io.core.brupdate.b2.mispredict)
-
       assert ((ldq(idx).bits.executed || ldq(idx).bits.forward_std_val) && ldq(idx).bits.succeeded ,
         "[lsu] trying to commit an un-executed load entry.")
 
@@ -2289,19 +2246,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         dlq_finished := true.B
         sbIdDoneLd := dlq(dlq_head).bits.sbId
         when (!dlq_is_killed_vec(dlq_head)) {
-          ldq(dlq(dlq_head).bits.uop.ldq_idx).bits.succeeded := true.B 
+          ldq(dlq(dlq_head).bits.uop.ldq_idx).bits.succeeded := true.B // now v_head can pass it
           ldq(dlq(dlq_head).bits.uop.ldq_idx).bits.executed := true.B
         }
-        
-        // when (
-        //   (ldq_v_head =/= ldq_tail) &&
-        //   (ldq_v_head === dlq(dlq_head).bits.uop.ldq_idx) &&
-        //   (!dlq_is_killed_vec(dlq_head)) &&
-        //   (!ldq_is_killed_vec(ldq_v_head))
-        // ) {
-        //   ldq_v_head := WrapInc(ldq_v_head, numLdqEntries)
-        //   assert(!IsOlder(ldq_tail, ldq_v_head, ldq_head), "ldq_v_head passed ldq_tail (dlq_head update)")
-        // }
       }
     }
   }
@@ -2338,55 +2285,133 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           dsq_finished := true.B
           sbIdDoneSt := dsq(dsq_head).bits.sbId
           when (!dsq_is_killed_vec(dsq_head)) {
-            stq(dsq(dsq_head).bits.uop.stq_idx).bits.succeeded := true.B 
+            stq(dsq(dsq_head).bits.uop.stq_idx).bits.succeeded := true.B // v_head will pass this
           }
-          // when (
-          //   (stq_v_head =/= stq_tail) &&
-          //   (stq_v_head === dsq(dsq_head).bits.uop.stq_idx) &&
-          //   (!dsq_is_killed_vec(dsq_head)) &&
-          //   (!stq_is_killed_vec(stq_v_head))
-          // ) {
-          //   stq_v_head := WrapInc(stq_v_head, numStqEntries)
-          //   assert(!IsOlder(stq_tail, stq_v_head, stq_head), "stq_v_head passed stq_tail (dsq_head update)")
-          // }
         }
       }
     }
   }
   // make sure stq_execute_head will skip vector store that is successful
   
-  // this controls the stq_v_head pointer:
+
+  // ---------- control signals for v_head ----------
+  // TODO: what if the head passes v_head? need to verify this never happens
+
+  // on mispredicts, the tail rewinds using this logic. so we need to adjust the v_head too
+  // cannot rely on the is_killed_vec since this rewinding mechanism has a one-cycle delay from is_killed_by_branch
+  val rewind_v_head = (io.core.brupdate.b2.mispredict && !io.core.exception)
+  // when should stores start executing? scalar does after commit, but for vector, we need to try before commit for trap
+  // so allow vector stores to start executing at pnr
   val exe_vst_at_pnr = (
-    (IsOlder(dsq_commit_e.bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)) ||
-    (dsq_commit_e.bits.uop.rob_idx === io.core.rob_pnr_idx) // <== this is still an unsafe store (before pnr) but its the next instuction that the pnr is waiting for
+    (IsOlder(stq_vector_e.bits.uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)) ||
+    (stq_vector_e.bits.uop.rob_idx === io.core.rob_pnr_idx) // <== this is still an unsafe store (before pnr) but its the next instuction that the pnr is waiting for
+  )
+  // v_head advances through valid suceeded instructions AND..
+  // ..they also advance when a vector instruction has (vectorCanGo || vectorNoYoung). this condition helps start the vector instruction
+  val stq_v_head_can_advance = (
+    (stq_v_head =/= stq_tail) &&
+    (stq_vector_e.valid) &&
+    ((stq_vector_e.bits.succeeded) ||
+     ((stq_vector_e.bits.isVector) && (stq_vector_e.bits.vectorCanGo || stq_vector_e.bits.vectorNoYoung) && (exe_vst_at_pnr)))
+  )
+  val ldq_v_head_can_advance = (
+    (ldq_v_head =/= ldq_tail) &&
+    (ldq_commit_e.valid) &&
+    ((ldq_commit_e.bits.succeeded) ||
+     ((ldq_commit_e.bits.isVector) && (ldq_commit_e.bits.vectorCanGo || ldq_commit_e.bits.vectorNoYoung)))
   )
 
-  // v_head will skip through 1. invalid entry 2. scalar ones that are successful 3. vector ones that are ready to go
-  when (
-    (!v_head_rewinding) && 
-    (stq_v_head =/= stq_tail) && (
-     (!stq_vector_e.valid) || 
-     (!stq_vector_e.bits.isVector && stq_vector_e.bits.succeeded) || (
-      (stq_vector_e.bits.isVector) &&
-      (stq_vector_e.bits.vectorCanGo || stq_vector_e.bits.vectorNoYoung || stq_vector_e.bits.succeeded) &&
-      (exe_vst_at_pnr)))
-  ) {
-    stq_v_head := WrapInc(stq_v_head, numStqEntries)
-    assert(!IsOlder(stq_tail, stq_v_head, stq_head), "stq_v_head passed stq_tail (natural ptr march)")
+  // ---------- v_head advancement logic ----------
+  // advance the v_head pointers depending on the control signals
+
+  // advance stq_v_head
+  when (stq_v_head_can_advance) {
+    when (rewind_v_head) {
+      stq_v_head := Mux(
+        IsOlder(io.core.brupdate.b2.uop.stq_idx, WrapInc(stq_v_head, numStqEntries), stq_head),
+        io.core.brupdate.b2.uop.stq_idx,
+        WrapInc(stq_v_head, numStqEntries)
+      )
+    }.otherwise {
+      stq_v_head := WrapInc(stq_v_head, numStqEntries)
+    }
+  }.elsewhen (rewind_v_head) {
+    stq_v_head := Mux(
+      IsOlder(io.core.brupdate.b2.uop.stq_idx, stq_v_head, stq_head),
+      io.core.brupdate.b2.uop.stq_idx,
+      stq_v_head
+    )
   }
 
-  when (
-    (!v_head_rewinding) && 
-    (ldq_v_head =/= ldq_tail) && (
-     (!ldq_commit_e.valid) || 
-     (!ldq_commit_e.bits.isVector && ldq_commit_e.bits.succeeded) || (
-      (ldq_commit_e.bits.isVector) &&
-      (ldq_commit_e.bits.vectorCanGo || ldq_commit_e.bits.vectorNoYoung || ldq_commit_e.bits.succeeded)))
-  ) {
-    ldq_v_head := WrapInc(ldq_v_head, numLdqEntries)
-    assert(!IsOlder(ldq_tail, ldq_v_head, ldq_head), "ldq_v_head passed ldq_tail (natural ptr march)")
+  // advance ldq_v_head
+  when (ldq_v_head_can_advance) {
+    when (rewind_v_head) {
+      ldq_v_head := Mux(
+        IsOlder(io.core.brupdate.b2.uop.ldq_idx, WrapInc(ldq_v_head, numLdqEntries), ldq_head),
+        io.core.brupdate.b2.uop.ldq_idx,
+        WrapInc(ldq_v_head, numLdqEntries)
+      )
+    }.otherwise {
+      ldq_v_head := WrapInc(ldq_v_head, numLdqEntries)
+    }
+  }.elsewhen (rewind_v_head) {
+    ldq_v_head := Mux(
+      IsOlder(io.core.brupdate.b2.uop.ldq_idx, ldq_v_head, ldq_head),
+      io.core.brupdate.b2.uop.ldq_idx,
+      ldq_v_head
+    )
   }
+
+  // ---------- v_head assertions ----------
+
+  assert(!IsOlder(stq_tail, stq_v_head, stq_head), "stq_v_head passed stq_tail")
+  assert(!IsOlder(ldq_tail, ldq_v_head, ldq_head), "ldq_v_head passed ldq_tail")
   
+  // more assertions for vec loads and stores
+  for (w <- 0 until memWidth) {
+    when (dmem_req(w).valid && dmem_req(w).bits.uop.is_vec && dmem_req(w).bits.uop.uses_ldq) {
+      val ldq_idx = dlq(dmem_req(w).bits.uop.ldq_idx).bits.uop.ldq_idx
+      for (j <- 0 until numStqEntries) {
+        when (stq(j).valid && !stq(j).bits.succeeded && IsOlder(j.U, ldq(ldq_idx).bits.youngest_stq_idx, stq_head)) {
+          // Check that when a vector load dmem_req is sent, there is no valid stq entry older than it
+          assert(false.B, s"[lsu] Vector load dmem_req with ldq_idx=%d is firing with valid stq($j) that is older", ldq_idx)
+        }
+      }
+    }
+  }
+  for (w <- 0 until memWidth) {
+    when (dmem_req(w).valid && dmem_req(w).bits.uop.is_vec && dmem_req(w).bits.uop.uses_stq) {
+      val stq_idx = dsq(dmem_req(w).bits.uop.stq_idx).bits.uop.stq_idx
+      for (j <- 0 until numLdqEntries) {
+        when (ldq(j).valid && !ldq(j).bits.succeeded && IsOlder(j.U, stq(stq_idx).bits.youngest_ldq_idx, ldq_head)) {
+          // Check that when a vector store dmem_req is sent, there is no valid ldq entry older than it
+          assert(false.B, s"[lsu] Vector store dmem_req with stq_idx=%d is firing with valid ldq($j) that is older", stq_idx)
+        }
+      }
+    }
+  }
+  // dont Touch signals for debugging
+  dontTouch(io.core.brupdate.b2.mispredict)
+  dontTouch(io.core.exception)
+  dontTouch(io.core.brupdate.b2.uop.ldq_idx)
+  dontTouch(io.core.brupdate.b2.uop.stq_idx)
+  dontTouch(ldq_tail)
+  dontTouch(stq_tail)
+  dontTouch(ldq_v_head)
+  dontTouch(stq_v_head)
+  dontTouch(ldq_head)
+  dontTouch(stq_head)
+  dontTouch(dlq_is_killed_vec)
+  dontTouch(dsq_is_killed_vec)
+  dontTouch(dsq)
+  dontTouch(dlq)
+  dontTouch(stq)
+  dontTouch(ldq)
+  dontTouch(can_fire_ldq_vector)
+  dontTouch(can_fire_stq_vector)
+  dontTouch(can_fire_dsq_vector)
+  dontTouch(can_fire_dlq_vector)
+
 
 
   // -----------------------

@@ -174,6 +174,7 @@ class OviLSURespHandler(
         (vsvlf_tracker(i).vstart_vlfof > io.lsu_resp.elemID)
       ) {
         vsvlf_tracker(i).vstart_vlfof := io.lsu_resp.elemID
+        assert(core_report_vec(i) === State.WAIT, "ERROR: smaller VstartVlfof after reporting to core?!")
       }
       // -- move statuses from wait to pending (if necessary) --
       when (core_report_vec(i) === State.WAIT) {
@@ -194,6 +195,7 @@ class OviLSURespHandler(
       when (vsvlf_tracker(i).vstart_vlfof > io.lsu_resp.elemID) {
         vsvlf_tracker(i).xcpt_cause   := io.lsu_resp.xcpt_cause
         vsvlf_tracker(i).vstart_vlfof := io.lsu_resp.elemID
+        assert(core_report_vec(i) === State.WAIT, "ERROR: smaller VstartVlfof after reporting to core?!")
       }
       // check for early report requests
       when (io.lsu_resp.xcpt_early_report && core_report_vec(i) === State.WAIT) {
