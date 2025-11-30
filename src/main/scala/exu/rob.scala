@@ -453,7 +453,7 @@ class Rob(
       }
     }
 
-    val xcpt_should_com  = r_xcpt_val && r_xcpt_is_ovi && (r_xcpt_vstart_vlfof =/= 0.U) // whether the xcpt should (partially) commit
+    val xcpt_should_com  = r_xcpt_is_ovi && (r_xcpt_vstart_vlfof =/= 0.U) // whether the xcpt should (partially) commit
     can_throw_exception(w) := rob_val(rob_head) && rob_exception(rob_head) && (!xcpt_should_com || rob_bsy(rob_head))
 
     //-----------------------------------------------
@@ -712,27 +712,33 @@ class Rob(
   when (!(io.flush.valid || exception_thrown) && rob_state =/= s_rollback) {
 
     // three ports for exceptions: lxcpt, ovi_clr_unsafe, and enq_xcpts (dispatch exception)
-    when (io.lxcpt.valid || (io.ovi_clr_unsafe.valid && io.ovi_clr_unsafe.bits.exception)) {
+    val lxcpt_valid = io.lxcpt.valid
+    val ovi_xcpt_valid = io.ovi_clr_unsafe.valid && io.ovi_clr_unsafe.bits.exception
+
+    when (lxcpt_valid || ovi_xcpt_valid) {
+
       // since there are 2 in-pipeline ports (lxcpt and ovi_clr_unsafe), we need to pick the valid and older one to report
-      // got to this point since either port is valid. so vec wins if lxcpt is not valid or both are valid with vec being older
-      val reporting_xcpt_is_ovi = !io.lxcpt.valid || IsOlder(io.ovi_clr_unsafe.bits.uop.rob_idx, io.lxcpt.bits.uop.rob_idx, rob_head_idx)
-      val reporting_xcpt_uop          = Mux(reporting_xcpt_is_ovi, io.ovi_clr_unsafe.bits.uop,        io.lxcpt.bits.uop)
-      val reporting_xcpt_cause        = Mux(reporting_xcpt_is_ovi, io.ovi_clr_unsafe.bits.xcpt_cause, io.lxcpt.bits.cause)
-      val reporting_xcpt_badvaddr     = Mux(reporting_xcpt_is_ovi, io.ovi_clr_unsafe.bits.badvaddr,   io.lxcpt.bits.badvaddr)
-      val reporting_xcpt_vstart_vlfof = Mux(reporting_xcpt_is_ovi, io.ovi_clr_unsafe.bits.vstart_vlfof, 0.U)
-      val reporting_xcpt_is_fof       = Mux(reporting_xcpt_is_ovi, io.ovi_clr_unsafe.bits.is_fof,     false.B)
-      when (!r_xcpt_val || IsOlder(reporting_xcpt_uop.rob_idx, r_xcpt_uop.rob_idx, rob_head_idx)) {
+      val mux_xcpt_is_ovi = (!lxcpt_valid || (ovi_xcpt_valid && IsOlder(io.ovi_clr_unsafe.bits.uop.rob_idx, io.lxcpt.bits.uop.rob_idx, rob_head_idx)))
+      val mux_xcpt_uop          = Mux(mux_xcpt_is_ovi, io.ovi_clr_unsafe.bits.uop,        io.lxcpt.bits.uop)
+      val mux_xcpt_cause        = Mux(mux_xcpt_is_ovi, io.ovi_clr_unsafe.bits.xcpt_cause, io.lxcpt.bits.cause)
+      val mux_xcpt_badvaddr     = Mux(mux_xcpt_is_ovi, io.ovi_clr_unsafe.bits.badvaddr,   io.lxcpt.bits.badvaddr)
+      val mux_xcpt_vstart_vlfof = Mux(mux_xcpt_is_ovi, io.ovi_clr_unsafe.bits.vstart_vlfof, 0.U)
+      val mux_xcpt_is_fof       = Mux(mux_xcpt_is_ovi, io.ovi_clr_unsafe.bits.is_fof,     false.B)
+
+      // upate the exception info if it is older than stored one (or if first time)
+      when (!r_xcpt_val || IsOlder(mux_xcpt_uop.rob_idx, r_xcpt_uop.rob_idx, rob_head_idx)) {
         r_xcpt_val              := true.B
-        next_xcpt_uop           := reporting_xcpt_uop
-        next_xcpt_uop.exc_cause := reporting_xcpt_cause
-        r_xcpt_badvaddr         := reporting_xcpt_badvaddr
-        r_xcpt_is_ovi           := reporting_xcpt_is_ovi
-        r_xcpt_vstart_vlfof     := reporting_xcpt_vstart_vlfof
-        r_xcpt_is_fof           := reporting_xcpt_is_fof
+        next_xcpt_uop           := mux_xcpt_uop
+        next_xcpt_uop.exc_cause := mux_xcpt_cause
+        r_xcpt_badvaddr         := mux_xcpt_badvaddr
+        r_xcpt_is_ovi           := mux_xcpt_is_ovi
+        r_xcpt_vstart_vlfof     := mux_xcpt_vstart_vlfof
+        r_xcpt_is_fof           := mux_xcpt_is_fof
       }
 
     // if no in-pipeline exception yet, dispatch exception wins
     } .elsewhen (!r_xcpt_val && enq_xcpts.reduce(_|_)) {
+
       val idx = enq_xcpts.indexWhere{i: Bool => i}
       // TODO: add vector dispatch exception handling here?
       // if no exception yet, dispatch exception wins

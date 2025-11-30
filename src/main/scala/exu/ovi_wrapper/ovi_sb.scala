@@ -44,11 +44,11 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
       val dispatch_next_senior = Output(Bool()) // next senior pending entry
       val dispatch_kill        = Output(Bool()) // next kill pending entry
     }
-    // signals to set partial commit on xcpt flag
+    // signals to set partial commit on PNR flag
     // NOTE: doesnt do same-cycle checks/updates
     val resp_handler = new Bundle {
-      val sb_id           = Input(UInt(log2Ceil(SB_SIZE).W))
-      val set_com_on_xcpt = Input(Bool())
+      val sb_id               = Input(UInt(log2Ceil(SB_SIZE).W))
+      val set_pcom_on_pnr_flag = Input(Bool())
     }
     // debug signals
     val debug = new Bundle {
@@ -88,7 +88,7 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
   // scoreboard (basically a uop array) container data
   val sb_uop   = Reg(Vec(SB_SIZE, new MicroOp()))
   val sb_state = RegInit(VecInit(Seq.fill(SB_SIZE)(SBState.INVALID)))
-  val sb_com_on_xcpt = RegInit(VecInit(Seq.fill(SB_SIZE)(false.B))) // whether to commit when it xcpts
+  val sb_pcom_on_pnr_flag = RegInit(VecInit(Seq.fill(SB_SIZE)(false.B))) // whether to commit when it xcpts
 
   val head = RegInit(0.U((log2Ceil(SB_SIZE)+1).W)) // read ptr with wrap state
   val tail = RegInit(0.U((log2Ceil(SB_SIZE)+1).W)) // write ptr with wrap state
@@ -136,22 +136,22 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
             SBState.KILL_PENDING,
             SBState.DISPATCH
           ) // same cycle enq-kill
-          sb_com_on_xcpt(i) := false.B // reset flag
+          sb_pcom_on_pnr_flag(i) := false.B // reset flag
           tail := wrapInc(tail, SB_SIZE)
         }
       }
 
       // DIS to SEN/KILL PENDING due to core decisions
       is (SBState.DISPATCH) {
-        when (is_to_be_senior(sb_uop(i), sb_com_on_xcpt(i))) {
+        when (is_to_be_senior(sb_uop(i), sb_pcom_on_pnr_flag(i))) {
           sb_state(i) := SBState.SENIOR_PENDING
-        } .elsewhen (is_to_be_killed(sb_uop(i), sb_com_on_xcpt(i))) {
+        } .elsewhen (is_to_be_killed(sb_uop(i), sb_pcom_on_pnr_flag(i))) {
           sb_state(i) := SBState.KILL_PENDING
         } .otherwise {
           sb_uop(i).br_mask := GetNewBrMask(io.core.brupdate, sb_uop(i))
-          sb_com_on_xcpt(i) := (
-            sb_com_on_xcpt(i) || // prevent unseting value
-            (io.resp_handler.set_com_on_xcpt &&
+          sb_pcom_on_pnr_flag(i) := (
+            sb_pcom_on_pnr_flag(i) || // prevent unseting value
+            (io.resp_handler.set_pcom_on_pnr_flag &&
             io.resp_handler.sb_id === i.U)
           ) // update flag (no same-cycle checks)
         }
@@ -250,10 +250,10 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
     }
   }
 
-  // Assert: When io.com.flag is high, there must be an entry with matching sb_id and its state must be DISPATCH
-  when (io.resp_handler.set_com_on_xcpt) {
+  // Assert: When partial commit on PNR flag is high, there must be an entry with matching sb_id and its state must be DISPATCH
+  when (io.resp_handler.set_pcom_on_pnr_flag) {
     assert(sb_state(io.resp_handler.sb_id) === SBState.DISPATCH,
-      p"[SB] io.resp_handler.set_com_on_xcpt is high but entry ${io.resp_handler.sb_id} is not in DISPATCH state! State=${sb_state(io.resp_handler.sb_id)}")
+      p"[SB] io.resp_handler.set_pcom_on_pnr_flag is high but entry ${io.resp_handler.sb_id} is not in DISPATCH state! State=${sb_state(io.resp_handler.sb_id)}")
   }
 
   // debug signals

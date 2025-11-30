@@ -432,8 +432,8 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
   MemReturnMaskValid := ovi_resp_handler.io.vpu.load_mask_valid
   MemReturnMask      := ovi_resp_handler.io.vpu.load_mask
 
-  // set partial commit on xcpt flag
-  scoreboard.io.resp_handler.set_com_on_xcpt := (
+  // set partial commit on PNR flag
+  scoreboard.io.resp_handler.set_pcom_on_pnr_flag := (
     ovi_resp_handler.io.core_out.valid &&
     ovi_resp_handler.io.core_out.bits.exception &&
     ovi_resp_handler.io.core_out.bits.vstart_vlfof =/= 0.U
