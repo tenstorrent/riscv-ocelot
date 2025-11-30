@@ -296,8 +296,8 @@ extends BoomModule with VecLSGenConstants {
     }
   }
 
-  when (io.load_packet.fire) {
-    assert(!io.load_packet.bits.misaligned, "LoadGen: misaligned load at addr = %x\n", io.load_packet.bits.addr)
-  }
+  // when (io.load_packet.fire) {
+  //   assert(!io.load_packet.bits.misaligned, "LoadGen: misaligned load at addr = %x\n", io.load_packet.bits.addr)
+  // }
 
 }

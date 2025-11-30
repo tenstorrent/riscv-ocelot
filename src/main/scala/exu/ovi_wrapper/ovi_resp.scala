@@ -183,7 +183,7 @@ class OviLSURespHandler(
       when (
         (io.lsu_resp.vectorDataBack && vsvlf_tracker(i).sb_id === io.lsu_resp.sbId) &&
         (io.lsu_resp.exception) &&
-        (vsvlf_tracker(i).vstart_vlfof > io.lsu_resp.elemID)
+        (!vsvlf_tracker(i).exception || (vsvlf_tracker(i).vstart_vlfof > io.lsu_resp.elemID))
       ) {
         vsvlf_tracker(i).exception    := true.B
         vsvlf_tracker(i).xcpt_cause   := io.lsu_resp.xcpt_cause
@@ -206,8 +206,8 @@ class OviLSURespHandler(
       (io.lsu_resp.vectorDataBack && vsvlf_tracker(i).sb_id === io.lsu_resp.sbId) &&
       (io.lsu_resp.exception)
     ) {
-      // update the value if the new exception is smaller
-      when (vsvlf_tracker(i).vstart_vlfof > io.lsu_resp.elemID) {
+      // update the value if the new exception is smaller (or first time)
+      when (!vsvlf_tracker(i).exception || (vsvlf_tracker(i).vstart_vlfof > io.lsu_resp.elemID)) {
         vsvlf_tracker(i).exception    := true.B
         vsvlf_tracker(i).xcpt_cause   := io.lsu_resp.xcpt_cause
         vsvlf_tracker(i).vstart_vlfof := io.lsu_resp.elemID

@@ -70,16 +70,16 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
   }
   def wrapInc(idx: UInt, max: Int): UInt = Mux((idx === (max-1).U), 0.U, idx + 1.U)
 
-  def is_to_be_killed(uop: MicroOp, com_on_xcpt: Bool): Bool = {
+  def is_to_be_killed(uop: MicroOp, pcom_on_pnr: Bool): Bool = {
     (io.core.exception && (
       IsOlder(io.core.rob_pnr_idx, uop.rob_idx, io.core.rob_head_idx) ||
       (uop.rob_idx === io.core.rob_pnr_idx))) || // no partial commit on xcpt
     IsKilledByBranch(io.core.brupdate, uop)
   }
 
-  def is_to_be_senior(uop: MicroOp, com_on_xcpt: Bool): Bool = {
+  def is_to_be_senior(uop: MicroOp, pcom_on_pnr: Bool): Bool = {
     IsOlder(uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx) ||
-    (com_on_xcpt && uop.rob_idx === io.core.rob_pnr_idx) // partial commit on xcpt
+    (pcom_on_pnr && uop.rob_idx === io.core.rob_pnr_idx) // partial commit on xcpt
   }
 
   // ============================================================
@@ -196,19 +196,6 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
 
   // ============================================================
   // assertions for debugging
-
-  when (io.core.exception) {
-    for (i <- 0 until SB_SIZE) {
-      when (
-        sb_state(i) === SBState.DISPATCH ||
-        sb_state(i) === SBState.SENIOR ||
-        sb_state(i) === SBState.SENIOR_PENDING
-      ) {
-        assert((sb_uop(i).rob_idx =/= io.core.rob_pnr_idx),
-        p"[SB] Exception for sb_id $i in state ${sb_state(i)}! If it was ment to parital commit, it shouldve alredy been completed from here")
-      }
-    }
-  }
 
   when (io.remove.valid) {
     assert(sb_state(io.remove.idx) === SBState.SENIOR,

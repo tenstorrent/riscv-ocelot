@@ -454,7 +454,7 @@ class Rob(
     }
 
     val xcpt_should_com  = r_xcpt_is_ovi && (r_xcpt_vstart_vlfof =/= 0.U) // whether the xcpt should (partially) commit
-    can_throw_exception(w) := rob_val(rob_head) && rob_exception(rob_head) && (!xcpt_should_com || rob_bsy(rob_head))
+    can_throw_exception(w) := rob_val(rob_head) && rob_exception(rob_head) && !(xcpt_should_com && rob_bsy(rob_head))
 
     //-----------------------------------------------
     // Commit or Rollback
