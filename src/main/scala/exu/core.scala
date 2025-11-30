@@ -1120,17 +1120,32 @@ class BoomCore()(implicit p: Parameters) extends BoomModule
     csr.io.vector.get.set_vxsat := exe_units.vec_exe_unit.io.ovi.set_vxsat
     // config updates
     csr.io.vector.get.set_vtype := exe_units.vec_exe_unit.io.ovi.set_vtype
-    csr.io.vector.get.set_vl := exe_units.vec_exe_unit.io.ovi.set_vl
-    // vstart update
-    // reset vstart after VPU issue with non-zero vstart
-    when (exe_units.vec_exe_unit.io.ovi.reset_vstart) {
+    csr.io.vector.get.set_vl    := exe_units.vec_exe_unit.io.ovi.set_vl
+    // unconnected ports
+    csr.io.vector.get.set_vstart.valid := false.B
+    csr.io.vector.get.set_vstart.bits  := DontCare
+    
+    // vstart/vl update on OVI exception
+    val ovi_xcpt_valid = RegNext(rob.io.com_xcpt.valid && rob.io.com_xcpt.bits.is_ovi)
+    val ovi_xcpt_is_fof = RegNext(rob.io.com_xcpt.bits.is_fof)
+    val ovi_xcpt_vstart_vlfof = RegNext(rob.io.com_xcpt.bits.vstart_vlfof)
+
+    // exception update (from ROB)
+    when (ovi_xcpt_valid) {
+      when (ovi_xcpt_is_fof) {
+        csr.io.vector.get.set_vl.valid := true.B
+        csr.io.vector.get.set_vl.bits  := ovi_xcpt_vstart_vlfof
+      } .otherwise {
+        csr.io.vector.get.set_vstart.valid := true.B
+        csr.io.vector.get.set_vstart.bits  := ovi_xcpt_vstart_vlfof
+      }
+
+    // vstart reset after VPU issue with non-zero vstart (from OVI_wrapper_wrapper)
+    }.elsewhen (exe_units.vec_exe_unit.io.ovi.reset_vstart) {
       csr.io.vector.get.set_vstart.valid := true.B
       csr.io.vector.get.set_vstart.bits  := 0.U
-    } .otherwise {
-      csr.io.vector.get.set_vstart.valid := false.B
-      csr.io.vector.get.set_vstart.bits  := DontCare
     }
-    // csr.io.vector.get.set_vstart := DontCare
+
   }
 
 // TODO can we add this back in, but handle reset properly and save us

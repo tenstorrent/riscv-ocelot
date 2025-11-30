@@ -91,6 +91,7 @@ class VGenResp(val dataWidth: Int)(implicit p: Parameters) extends BoomBundle
   val isMask = Bool()          // mask data
   val Mask = Bits(32.W)
   val exception = Bool()       // exception flag
+  val badvaddr = UInt(coreMaxAddrBits.W)
   val xcpt_cause = UInt(xLen.W)
   val xcpt_early_report = Bool()
   // -- Allocation control --
@@ -433,6 +434,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.core.VGen.resp.isMask := false.B 
   io.core.VGen.resp.Mask := 0.U 
   io.core.VGen.resp.exception := false.B
+  io.core.VGen.resp.badvaddr := 0.U
   io.core.VGen.resp.xcpt_cause := 0.U
   io.core.VGen.resp.xcpt_early_report := false.B
   // -- Allocation control --
@@ -463,6 +465,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     io.core.VGen.resp.isMask     := Mux(is_load, dlq(idx).bits.isMask,      false.B)
     io.core.VGen.resp.Mask       := Mux(is_load, dlq(idx).bits.Mask,        0.U)
     io.core.VGen.resp.exception  := Mux(is_load, dlq(idx).bits.exception,   dsq(idx).bits.exception)
+    io.core.VGen.resp.badvaddr   := Mux(is_load, dlq(idx).bits.addr.bits,  dsq(idx).bits.addr.bits)
     io.core.VGen.resp.xcpt_cause := Mux(is_load, dlq(idx).bits.xcpt_cause,  dsq(idx).bits.xcpt_cause)
     io.core.VGen.resp.xcpt_early_report := false.B
   }

@@ -44,6 +44,12 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
       val dispatch_next_senior = Output(Bool()) // next senior pending entry
       val dispatch_kill        = Output(Bool()) // next kill pending entry
     }
+    // signals to set partial commit on xcpt flag
+    // NOTE: doesnt do same-cycle checks/updates
+    val resp_handler = new Bundle {
+      val sb_id           = Input(UInt(log2Ceil(SB_SIZE).W))
+      val set_com_on_xcpt = Input(Bool())
+    }
     // debug signals
     val debug = new Bundle {
       val debug_head     = Output(UInt((log2Ceil(SB_SIZE)+1).W))
@@ -64,14 +70,16 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
   }
   def wrapInc(idx: UInt, max: Int): UInt = Mux((idx === (max-1).U), 0.U, idx + 1.U)
 
-  def is_to_be_killed(uop: MicroOp): Bool = {
-    (io.core.exception && !IsOlder(uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx)) ||
+  def is_to_be_killed(uop: MicroOp, com_on_xcpt: Bool): Bool = {
+    (io.core.exception && (
+      IsOlder(io.core.rob_pnr_idx, uop.rob_idx, io.core.rob_head_idx) ||
+      (uop.rob_idx === io.core.rob_pnr_idx))) || // no partial commit on xcpt
     IsKilledByBranch(io.core.brupdate, uop)
   }
 
-  def is_to_be_senior(uop: MicroOp): Bool = {
+  def is_to_be_senior(uop: MicroOp, com_on_xcpt: Bool): Bool = {
     IsOlder(uop.rob_idx, io.core.rob_pnr_idx, io.core.rob_head_idx) ||
-    (uop.rob_idx === io.core.rob_pnr_idx)
+    (com_on_xcpt && uop.rob_idx === io.core.rob_pnr_idx) // partial commit on xcpt
   }
 
   // ============================================================
@@ -80,6 +88,7 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
   // scoreboard (basically a uop array) container data
   val sb_uop   = Reg(Vec(SB_SIZE, new MicroOp()))
   val sb_state = RegInit(VecInit(Seq.fill(SB_SIZE)(SBState.INVALID)))
+  val sb_com_on_xcpt = RegInit(VecInit(Seq.fill(SB_SIZE)(false.B))) // whether to commit when it xcpts
 
   val head = RegInit(0.U((log2Ceil(SB_SIZE)+1).W)) // read ptr with wrap state
   val tail = RegInit(0.U((log2Ceil(SB_SIZE)+1).W)) // write ptr with wrap state
@@ -123,22 +132,28 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
             io.insert.bits
           ) // same cycle enq-br update
           sb_state(i) := Mux(
-            is_to_be_killed(io.insert.bits),
+            is_to_be_killed(io.insert.bits, false.B),
             SBState.KILL_PENDING,
             SBState.DISPATCH
           ) // same cycle enq-kill
+          sb_com_on_xcpt(i) := false.B // reset flag
           tail := wrapInc(tail, SB_SIZE)
         }
       }
 
       // DIS to SEN/KILL PENDING due to core decisions
       is (SBState.DISPATCH) {
-        when (is_to_be_senior(sb_uop(i))) {
+        when (is_to_be_senior(sb_uop(i), sb_com_on_xcpt(i))) {
           sb_state(i) := SBState.SENIOR_PENDING
-        } .elsewhen (is_to_be_killed(sb_uop(i))) {
+        } .elsewhen (is_to_be_killed(sb_uop(i), sb_com_on_xcpt(i))) {
           sb_state(i) := SBState.KILL_PENDING
         } .otherwise {
           sb_uop(i).br_mask := GetNewBrMask(io.core.brupdate, sb_uop(i))
+          sb_com_on_xcpt(i) := (
+            sb_com_on_xcpt(i) || // prevent unseting value
+            (io.resp_handler.set_com_on_xcpt &&
+            io.resp_handler.sb_id === i.U)
+          ) // update flag (no same-cycle checks)
         }
       }
 
@@ -182,6 +197,19 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
   // ============================================================
   // assertions for debugging
 
+  when (io.core.exception) {
+    for (i <- 0 until SB_SIZE) {
+      when (
+        sb_state(i) === SBState.DISPATCH ||
+        sb_state(i) === SBState.SENIOR ||
+        sb_state(i) === SBState.SENIOR_PENDING
+      ) {
+        assert((sb_uop(i).rob_idx =/= io.core.rob_pnr_idx),
+        p"[SB] Exception for sb_id $i in state ${sb_state(i)}! If it was ment to parital commit, it shouldve alredy been completed from here")
+      }
+    }
+  }
+
   when (io.remove.valid) {
     assert(sb_state(io.remove.idx) === SBState.SENIOR,
       p"[SB] Remove valid but entry ${io.remove.idx} is not in SENIOR state! State=${sb_state(io.remove.idx)}")
@@ -220,6 +248,12 @@ class OviScoreboard(val SB_SIZE: Int = 32)(implicit p: Parameters) extends BoomM
         }
       }
     }
+  }
+
+  // Assert: When io.com.flag is high, there must be an entry with matching sb_id and its state must be DISPATCH
+  when (io.resp_handler.set_com_on_xcpt) {
+    assert(sb_state(io.resp_handler.sb_id) === SBState.DISPATCH,
+      p"[SB] io.resp_handler.set_com_on_xcpt is high but entry ${io.resp_handler.sb_id} is not in DISPATCH state! State=${sb_state(io.resp_handler.sb_id)}")
   }
 
   // debug signals

@@ -167,6 +167,11 @@ class CommitExceptionSignals(implicit p: Parameters) extends BoomBundle
 // The ROB needs to tell the FTQ if there's a pipeline flush (and what type)
 // so the FTQ can drive the frontend with the correct redirected PC.
   val flush_typ  = FlushTypes()
+  
+  // OVI exception info for updating vstart/vl
+  val is_ovi           = Bool()  // exception is from vector memory operation
+  val is_fof           = Bool()  // fault-only-first (update vl instead of vstart)
+  val vstart_vlfof     = UInt(15.W) // value to update vstart or vl to
 }
 
 /**
@@ -186,13 +191,14 @@ object FlushTypes
   def useSamePC(typ: UInt): Bool = typ === refetch
   def usePCplus4(typ: UInt): Bool = typ === next
 
-  def getType(valid: Bool, i_xcpt: Bool, i_eret: Bool, i_refetch: Bool): UInt = {
+  def getType(valid: Bool, i_xcpt: Bool, i_eret: Bool, i_refetch: Bool, i_next: Bool = false.B): UInt = {
     val ret =
       Mux(!valid, none,
       Mux(i_eret, eret,
       Mux(i_xcpt, xcpt,
       Mux(i_refetch, refetch,
-        next))))
+      Mux(i_next, next,
+        next)))))
     ret
   }
 }
@@ -213,10 +219,12 @@ class Exception(implicit p: Parameters) extends BoomBundle
  */
 class VecMemClrUnsafe(implicit p: Parameters) extends BoomBundle
 {
-  val rob_idx      = UInt(robAddrSz.W)
+  val uop          = new MicroOp()
   val exception    = Bool()
   val xcpt_cause   = UInt(xLen.W)
   val vstart_vlfof = UInt(15.W)
+  val is_fof       = Bool()
+  val badvaddr     = UInt(coreMaxAddrBits.W)
 }
 
 /**
@@ -288,6 +296,9 @@ class Rob(
   val r_xcpt_val       = RegInit(false.B)
   val r_xcpt_uop       = Reg(new MicroOp())
   val r_xcpt_badvaddr  = Reg(UInt(coreMaxAddrBits.W))
+  val r_xcpt_is_ovi    = RegInit(false.B)   // its v.mem and has to update the vstart register
+  val r_xcpt_vstart_vlfof = Reg(UInt(15.W)) // the vstart value to update to
+  val r_xcpt_is_fof    = RegInit(false.B)
   io.flush_frontend := r_xcpt_val
 
   //--------------------------------------------------
@@ -399,8 +410,8 @@ class Rob(
       }
     }
     // Vector memory operations clear unsafe bits (if no exception) or mark exception
-    when (io.ovi_clr_unsafe.valid && MatchBank(GetBankIdx(io.ovi_clr_unsafe.bits.rob_idx))) {
-      val cidx = GetRowIdx(io.ovi_clr_unsafe.bits.rob_idx)
+    when (io.ovi_clr_unsafe.valid && MatchBank(GetBankIdx(io.ovi_clr_unsafe.bits.uop.rob_idx))) {
+      val cidx = GetRowIdx(io.ovi_clr_unsafe.bits.uop.rob_idx)
       when (!io.ovi_clr_unsafe.bits.exception) {
         rob_unsafe(cidx) := false.B
       } .otherwise {
@@ -410,6 +421,7 @@ class Rob(
       assert (rob_bsy(cidx) === true.B, "[rob] ovi_clr_unsafe writing back to a not-busy entry.")
       assert (rob_unsafe(cidx) === true.B, "[rob] ovi_clr_unsafe writing back to a safe entry.")
       assert (rob_exception(cidx) === false.B, "[rob] ovi_clr_unsafe writing back to an exception entry.")
+      assert (rob_uop(cidx).is_vec === true.B, "[rob] ovi_clr_unsafe writing back to a scalar instruction.")
     }
     for (clr <- io.lsu_clr_unsafe) {
       when (clr.valid && MatchBank(GetBankIdx(clr.bits))) {
@@ -440,7 +452,9 @@ class Rob(
           "An instruction marked as safe is causing an exception")
       }
     }
-    can_throw_exception(w) := rob_val(rob_head) && rob_exception(rob_head)
+
+    val xcpt_should_com  = r_xcpt_val && r_xcpt_is_ovi && (r_xcpt_vstart_vlfof =/= 0.U) // whether the xcpt should (partially) commit
+    can_throw_exception(w) := rob_val(rob_head) && rob_exception(rob_head) && (!xcpt_should_com || rob_bsy(rob_head))
 
     //-----------------------------------------------
     // Commit or Rollback
@@ -608,15 +622,26 @@ class Rob(
   // Note: exception must be in the commit bundle.
   // Note: exception must be the first valid instruction in the commit bundle.
   exception_thrown := will_throw_exception
-  val is_mini_exception = io.com_xcpt.bits.cause === MINI_EXCEPTION_MEM_ORDERING
+  val is_mem_ordering_mini_exception = io.com_xcpt.bits.cause === MINI_EXCEPTION_MEM_ORDERING
+  val is_fof_mini_exception = r_xcpt_is_ovi && r_xcpt_is_fof && r_xcpt_vstart_vlfof =/= 0.U
+  val is_mini_exception = is_mem_ordering_mini_exception || is_fof_mini_exception
   io.com_xcpt.valid := exception_thrown && !is_mini_exception
   io.com_xcpt.bits.cause := r_xcpt_uop.exc_cause
 
   io.com_xcpt.bits.badvaddr := Sext(r_xcpt_badvaddr, xLen)
+  
+  // OVI exception info for updating vstart/vl
+  io.com_xcpt.bits.is_ovi := r_xcpt_is_ovi
+  io.com_xcpt.bits.is_fof := r_xcpt_is_fof
+  io.com_xcpt.bits.vstart_vlfof := r_xcpt_vstart_vlfof
+
   val insn_sys_pc2epc =
     rob_head_vals.reduce(_|_) && PriorityMux(rob_head_vals, io.commit.uops.map{u => u.is_sys_pc2epc})
 
-  val refetch_inst = exception_thrown || insn_sys_pc2epc
+  // refetch_inst: refetch the same instruction (for mem ordering mini exception)
+  val refetch_inst = (exception_thrown && is_mem_ordering_mini_exception) || insn_sys_pc2epc
+  // next_inst: fetch the next instruction (for fof mini exception)
+  val next_inst = (exception_thrown && is_fof_mini_exception)
   val com_xcpt_uop = PriorityMux(rob_head_vals, io.commit.uops)
   io.com_xcpt.bits.ftq_idx   := com_xcpt_uop.ftq_idx
   io.com_xcpt.bits.edge_inst := com_xcpt_uop.edge_inst
@@ -641,7 +666,8 @@ class Rob(
   io.flush.bits.flush_typ := FlushTypes.getType(flush_val,
                                                 exception_thrown && !is_mini_exception,
                                                 flush_commit && flush_uop.uopc === uopERET,
-                                                refetch_inst)
+                                                refetch_inst,
+                                                next_inst)
 
 
   // -----------------------------------------------
@@ -684,23 +710,38 @@ class Rob(
   }
 
   when (!(io.flush.valid || exception_thrown) && rob_state =/= s_rollback) {
-    when (io.lxcpt.valid) {
-      val new_xcpt_uop = io.lxcpt.bits.uop
 
-      when (!r_xcpt_val || IsOlder(new_xcpt_uop.rob_idx, r_xcpt_uop.rob_idx, rob_head_idx)) {
+    // three ports for exceptions: lxcpt, ovi_clr_unsafe, and enq_xcpts (dispatch exception)
+    when (io.lxcpt.valid || (io.ovi_clr_unsafe.valid && io.ovi_clr_unsafe.bits.exception)) {
+      // since there are 2 in-pipeline ports (lxcpt and ovi_clr_unsafe), we need to pick the valid and older one to report
+      // got to this point since either port is valid. so vec wins if lxcpt is not valid or both are valid with vec being older
+      val reporting_xcpt_is_ovi = !io.lxcpt.valid || IsOlder(io.ovi_clr_unsafe.bits.uop.rob_idx, io.lxcpt.bits.uop.rob_idx, rob_head_idx)
+      val reporting_xcpt_uop          = Mux(reporting_xcpt_is_ovi, io.ovi_clr_unsafe.bits.uop,        io.lxcpt.bits.uop)
+      val reporting_xcpt_cause        = Mux(reporting_xcpt_is_ovi, io.ovi_clr_unsafe.bits.xcpt_cause, io.lxcpt.bits.cause)
+      val reporting_xcpt_badvaddr     = Mux(reporting_xcpt_is_ovi, io.ovi_clr_unsafe.bits.badvaddr,   io.lxcpt.bits.badvaddr)
+      val reporting_xcpt_vstart_vlfof = Mux(reporting_xcpt_is_ovi, io.ovi_clr_unsafe.bits.vstart_vlfof, 0.U)
+      val reporting_xcpt_is_fof       = Mux(reporting_xcpt_is_ovi, io.ovi_clr_unsafe.bits.is_fof,     false.B)
+      when (!r_xcpt_val || IsOlder(reporting_xcpt_uop.rob_idx, r_xcpt_uop.rob_idx, rob_head_idx)) {
         r_xcpt_val              := true.B
-        next_xcpt_uop           := new_xcpt_uop
-        next_xcpt_uop.exc_cause := io.lxcpt.bits.cause
-        r_xcpt_badvaddr         := io.lxcpt.bits.badvaddr
+        next_xcpt_uop           := reporting_xcpt_uop
+        next_xcpt_uop.exc_cause := reporting_xcpt_cause
+        r_xcpt_badvaddr         := reporting_xcpt_badvaddr
+        r_xcpt_is_ovi           := reporting_xcpt_is_ovi
+        r_xcpt_vstart_vlfof     := reporting_xcpt_vstart_vlfof
+        r_xcpt_is_fof           := reporting_xcpt_is_fof
       }
+
+    // if no in-pipeline exception yet, dispatch exception wins
     } .elsewhen (!r_xcpt_val && enq_xcpts.reduce(_|_)) {
       val idx = enq_xcpts.indexWhere{i: Bool => i}
-
+      // TODO: add vector dispatch exception handling here?
       // if no exception yet, dispatch exception wins
       r_xcpt_val      := true.B
       next_xcpt_uop   := io.enq_uops(idx)
       r_xcpt_badvaddr := AlignPCToBoundary(io.xcpt_fetch_pc, icBlockBytes) | io.enq_uops(idx).pc_lob
-
+      r_xcpt_is_ovi   := false.B
+      r_xcpt_vstart_vlfof := 0.U
+      r_xcpt_is_fof   := false.B
     }
   }
 

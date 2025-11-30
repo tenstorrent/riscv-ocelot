@@ -41,6 +41,8 @@ class OviLSURespHandler(
     }
     // to core (to report exceptions and clear busy)
     val core_out = ValidIO(new VecMemClrUnsafe())
+    // part of the core_out bundle but need to send this info to sb
+    val core_out_sb_id = Output(UInt(5.W))
     // to vpu
     val vpu = new Bundle {
       // sync end
@@ -62,15 +64,24 @@ class OviLSURespHandler(
     val WAIT, PENDING, DONE = Value
   }
 
-  class VstartVlfofTrackerEntry extends Bundle {
+  class VstartVlfofTrackerEntry extends BoomBundle {
     val valid = Bool()
     val core_report = State()
     val vpu_report = State()
     val exception = Bool()
     val xcpt_cause = UInt(xLen.W)
     val vstart_vlfof = UInt(15.W)
+    val badvaddr = UInt(coreMaxAddrBits.W)
     val uop = new MicroOp()
     val sb_id = UInt(5.W)
+  }
+
+  // there could be a port from the decoder for this, but this will do for now
+  def uop_is_fof(uop: MicroOp): Bool = {
+    val instMop  = uop.inst(27, 26) // should be "unit"
+    val instUMop = uop.inst(24, 20) // should be "fof"
+    val instOP   = uop.inst(6, 0)   // should be "load"
+    return (instMop === 0.U) && (instUMop === 16.U) && (instOP === 7.U)
   }
 
   val vsvlf_tracker = RegInit(VecInit.fill(MAX_OUTSTANDING_VMEMOPS)(0.U.asTypeOf(new VstartVlfofTrackerEntry)))
@@ -82,6 +93,7 @@ class OviLSURespHandler(
   io.vpu.vstart_vlfof := 0.U
   io.core_out.valid := false.B
   io.core_out.bits := DontCare
+  io.core_out_sb_id := DontCare
   io.fake_load_return_data.ready := false.B
   io.vpu.load_valid := false.B
   io.vpu.load_seq_id := 0.U
@@ -173,7 +185,10 @@ class OviLSURespHandler(
         (io.lsu_resp.exception) &&
         (vsvlf_tracker(i).vstart_vlfof > io.lsu_resp.elemID)
       ) {
+        vsvlf_tracker(i).exception    := true.B
+        vsvlf_tracker(i).xcpt_cause   := io.lsu_resp.xcpt_cause
         vsvlf_tracker(i).vstart_vlfof := io.lsu_resp.elemID
+        vsvlf_tracker(i).badvaddr     := io.lsu_resp.badvaddr
         assert(core_report_vec(i) === State.WAIT, "ERROR: smaller VstartVlfof after reporting to core?!")
       }
       // -- move statuses from wait to pending (if necessary) --
@@ -193,8 +208,10 @@ class OviLSURespHandler(
     ) {
       // update the value if the new exception is smaller
       when (vsvlf_tracker(i).vstart_vlfof > io.lsu_resp.elemID) {
+        vsvlf_tracker(i).exception    := true.B
         vsvlf_tracker(i).xcpt_cause   := io.lsu_resp.xcpt_cause
         vsvlf_tracker(i).vstart_vlfof := io.lsu_resp.elemID
+        vsvlf_tracker(i).badvaddr     := io.lsu_resp.badvaddr
         assert(core_report_vec(i) === State.WAIT, "ERROR: smaller VstartVlfof after reporting to core?!")
       }
       // check for early report requests
@@ -246,10 +263,13 @@ class OviLSURespHandler(
       // report xcpt or safe signal to core
       when (core_report_vec(i) === State.PENDING) {
         io.core_out.valid := true.B
-        io.core_out.bits.rob_idx      := vsvlf_tracker(i).uop.rob_idx
+        io.core_out.bits.uop          := vsvlf_tracker(i).uop
         io.core_out.bits.exception    := vsvlf_tracker(i).exception
         io.core_out.bits.xcpt_cause   := vsvlf_tracker(i).xcpt_cause
         io.core_out.bits.vstart_vlfof := vsvlf_tracker(i).vstart_vlfof
+        io.core_out.bits.is_fof       := uop_is_fof(vsvlf_tracker(i).uop)
+        io.core_out.bits.badvaddr     := vsvlf_tracker(i).badvaddr
+        io.core_out_sb_id             := vsvlf_tracker(i).sb_id
         vsvlf_tracker(i).core_report  := State.DONE // unnecessary: gonna be cleared anyways
       }
       // clear the entry (0ing sets the valid to 0)
@@ -268,5 +288,13 @@ class OviLSURespHandler(
     assert(!(vsvlf_tracker(i).valid && (vsvlf_tracker(i).vpu_report === State.DONE)), "ERROR: VstartVlfof tracker: valid entry cannot have vpu_report in DONE state!")
   }
   assert(!(io.enq.valid && vsvlf_tracker.map(_.valid).reduce(_ && _)), "ERROR: VstartVlfof tracker: enq valid fired when all entries are full!")
+  // Assert: no two valid entries can have the same sb_id
+  for (i <- 0 until MAX_OUTSTANDING_VMEMOPS) {
+    for (j <- i + 1 until MAX_OUTSTANDING_VMEMOPS) {
+      assert(!(vsvlf_tracker(i).valid && vsvlf_tracker(j).valid && (vsvlf_tracker(i).sb_id === vsvlf_tracker(j).sb_id)),
+        s"ERROR: VstartVlfof tracker: Entries $i and $j have the same sb_id!")
+    }
+  }
+
 }
 

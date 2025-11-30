@@ -432,6 +432,14 @@ with freechips.rocketchip.rocket.constants.MemoryOpConstants {
   MemReturnMaskValid := ovi_resp_handler.io.vpu.load_mask_valid
   MemReturnMask      := ovi_resp_handler.io.vpu.load_mask
 
+  // set partial commit on xcpt flag
+  scoreboard.io.resp_handler.set_com_on_xcpt := (
+    ovi_resp_handler.io.core_out.valid &&
+    ovi_resp_handler.io.core_out.bits.exception &&
+    ovi_resp_handler.io.core_out.bits.vstart_vlfof =/= 0.U
+  )
+  scoreboard.io.resp_handler.sb_id := ovi_resp_handler.io.core_out_sb_id
+
   // =============== Send Data to VPU ===============
 
   vpu.io := DontCare
