@@ -341,6 +341,20 @@ class Rob(
   rob_debug_inst_mem.write(rob_tail, rob_debug_inst_wdata, rob_debug_inst_wmask)
   val rob_debug_inst_rdata = rob_debug_inst_mem.read(rob_head, will_commit.reduce(_||_))
 
+  // debug signals for rob entries
+  val rob_debug_val       = Wire(Vec(coreWidth, Vec(numRobRows, Bool())))
+  val rob_debug_bsy       = Wire(Vec(coreWidth, Vec(numRobRows, Bool())))
+  val rob_debug_unsafe    = Wire(Vec(coreWidth, Vec(numRobRows, Bool())))
+  val rob_debug_uop       = Wire(Vec(coreWidth, Vec(numRobRows, new MicroOp())))
+  val rob_debug_exception = Wire(Vec(coreWidth, Vec(numRobRows, Bool())))
+
+  dontTouch(rob_debug_val)
+  dontTouch(rob_debug_bsy)
+  dontTouch(rob_debug_unsafe)
+  dontTouch(rob_debug_uop)
+  dontTouch(rob_debug_exception)
+  dontTouch(rob_head)
+
   for (w <- 0 until coreWidth) {
     def MatchBank(bank_idx: UInt): Bool = (bank_idx === w.U)
 
@@ -356,6 +370,13 @@ class Rob(
     val rob_debug_wdata = Mem(numRobRows, UInt(xLen.W))
     val rob_debug_vec_wdata = Mem(numRobRows, UInt((coreParams.vLen*8).W))
     val rob_debug_vec_wmask = Mem(numRobRows, UInt(8.W))
+
+    // expose bank-wise signals to debug as global wires
+    rob_debug_val(w) := rob_val
+    rob_debug_bsy(w) := rob_bsy
+    rob_debug_unsafe(w) := rob_unsafe
+    rob_debug_uop(w) := rob_uop
+    rob_debug_exception(w) := rob_exception
 
     //-----------------------------------------------
     // Dispatch: Add Entry to ROB
