@@ -83,16 +83,19 @@ module tt_lq #(
    input                                 i_data_vld_cancel_0,
    input  [DATA_REQ_ID_WIDTH-1:0]        i_data_resp_id_0,
    input  [VLEN-1:0]                     i_data_rddata_0, // <== loads return data
+   input  [VLEN/8-1:0]                   i_data_mask_0,   // <== mask coming with load data
 
-   input                                 i_data_vld_1, 
+   input                                 i_data_vld_1,
    input                                 i_data_vld_cancel_1,
    input  [DATA_REQ_ID_WIDTH-1:0]        i_data_resp_id_1,
-   input  [63:0]                         i_data_rddata_1, 
+   input  [63:0]                         i_data_rddata_1,
+   input  [VLEN/8-1:0]                   i_data_mask_1,   // <== mask coming with load data
 
-   input                                 i_data_vld_2, 
+   input                                 i_data_vld_2,
    input                                 i_data_vld_cancel_2,
    input  [DATA_REQ_ID_WIDTH-1:0]        i_data_resp_id_2,
-   input  [63:0]                         i_data_rddata_2, 
+   input  [63:0]                         i_data_rddata_2,
+   input  [VLEN/8-1:0]                   i_data_mask_2,   // <== mask coming with load data 
 
    // LQ Read signals
    input  logic                          i_lq_rden,
@@ -110,7 +113,7 @@ module tt_lq #(
 
    output logic                          lq_full,
    output logic                          lq_empty,
-   output logic                          o_lq_data_wb_ready, // <== TODO: keep tracking for part of w_en for regfile
+   output logic                          o_lq_data_wb_ready,
    output logic                          o_lq_data_discard_ready,
    output logic                          o_lq_mem_load,
    output logic                          o_lq_mem_vec_load,
@@ -510,19 +513,19 @@ if (INCL_VEC == 1) begin: GenInclVec
 
    // Write data for vector loads
    assign ret_vecld_vld_0   = o_lq_broadside_info[i_data_resp_id_0[LQ_DEPTH_LOG2-1:0]].vec_load;
-   assign {lq_fifo_vecld_write_data_mask_0, lq_fifo_vecld_write_data_0} = get_vecld_data(lq_broadside_data_value[i_data_resp_id_0[LQ_DEPTH_LOG2-1:0]], i_data_rddata_0, i_data_resp_id_0);
-   assign lq_fifo_vecld_hold_data_mask_0 = ~(lq_fifo_vecld_write_data_mask_0 | 
-                                             ({LD_DATA_WIDTH_BITS{rsp_entry_match_0_1}} & lq_fifo_vecld_write_data_mask_1) | 
+   assign {lq_fifo_vecld_write_data_mask_0, lq_fifo_vecld_write_data_0} = get_vecld_data(lq_broadside_data_value[i_data_resp_id_0[LQ_DEPTH_LOG2-1:0]], i_data_rddata_0, i_data_resp_id_0, i_data_mask_0);
+   assign lq_fifo_vecld_hold_data_mask_0 = ~(lq_fifo_vecld_write_data_mask_0 |
+                                             ({LD_DATA_WIDTH_BITS{rsp_entry_match_0_1}} & lq_fifo_vecld_write_data_mask_1) |
                                              ({LD_DATA_WIDTH_BITS{rsp_entry_match_0_2}} & lq_fifo_vecld_write_data_mask_2));
-   
+
    assign ret_vecld_vld_1 = o_lq_broadside_info[i_data_resp_id_1[LQ_DEPTH_LOG2-1:0]].vec_load;;
-   assign {lq_fifo_vecld_write_data_mask_1, lq_fifo_vecld_write_data_1} = get_vecld_data(lq_broadside_data_value[i_data_resp_id_1[LQ_DEPTH_LOG2-1:0]], i_data_rddata_1, i_data_resp_id_1);
-   assign lq_fifo_vecld_hold_data_mask_1 = ~(lq_fifo_vecld_write_data_mask_1 | 
-                                             ({LD_DATA_WIDTH_BITS{rsp_entry_match_0_1}} & lq_fifo_vecld_write_data_mask_0) | 
+   assign {lq_fifo_vecld_write_data_mask_1, lq_fifo_vecld_write_data_1} = get_vecld_data(lq_broadside_data_value[i_data_resp_id_1[LQ_DEPTH_LOG2-1:0]], i_data_rddata_1, i_data_resp_id_1, i_data_mask_1);
+   assign lq_fifo_vecld_hold_data_mask_1 = ~(lq_fifo_vecld_write_data_mask_1 |
+                                             ({LD_DATA_WIDTH_BITS{rsp_entry_match_0_1}} & lq_fifo_vecld_write_data_mask_0) |
                                              ({LD_DATA_WIDTH_BITS{rsp_entry_match_1_2}} & lq_fifo_vecld_write_data_mask_2));
-      
+
    assign ret_vecld_vld_2 = o_lq_broadside_info[i_data_resp_id_2[LQ_DEPTH_LOG2-1:0]].vec_load;;
-   assign {lq_fifo_vecld_write_data_mask_2, lq_fifo_vecld_write_data_2} = get_vecld_data(lq_broadside_data_value[i_data_resp_id_2[LQ_DEPTH_LOG2-1:0]], i_data_rddata_2, i_data_resp_id_2);
+   assign {lq_fifo_vecld_write_data_mask_2, lq_fifo_vecld_write_data_2} = get_vecld_data(lq_broadside_data_value[i_data_resp_id_2[LQ_DEPTH_LOG2-1:0]], i_data_rddata_2, i_data_resp_id_2, i_data_mask_2);
    assign lq_fifo_vecld_hold_data_mask_2 = ~(lq_fifo_vecld_write_data_mask_2 | 
                                              ({LD_DATA_WIDTH_BITS{rsp_entry_match_0_2}} & lq_fifo_vecld_write_data_mask_0) | 
                                              ({LD_DATA_WIDTH_BITS{rsp_entry_match_1_2}} & lq_fifo_vecld_write_data_mask_1));
@@ -559,6 +562,7 @@ if (INCL_VEC == 1) begin: GenInclVec
       input logic [LQ_DATA_WIDTH-1:0]      lq_data;
       input logic [LD_DATA_WIDTH_BITS-1:0] return_data;
       input logic [DATA_REQ_ID_WIDTH-1:0]  return_id;
+      input logic [VLEN/8-1:0]             incoming_mask;
    
       logic                                    vecld_128;
       logic [$clog2(LD_DATA_WIDTH_BITS/8)-1:0] vecld_idx;
@@ -593,7 +597,7 @@ if (INCL_VEC == 1) begin: GenInclVec
          // Final return data after gating with mask
          for (int i=0; i<(LD_DATA_WIDTH_BITS/8); i++) begin
             //vec_load_vrf_wrdata[(8*i)+:8]      = vec_load_aligned_data[(8*i)+:8];
-            vec_load_vrf_wrdata_mask[(8*i)+:8] = {8{vec_load_vrf_wrdata_byten[i] & ~vecld_mask[i]}};
+            vec_load_vrf_wrdata_mask[(8*i)+:8] = {8{vec_load_vrf_wrdata_byten[i] & ~vecld_mask[i] & incoming_mask[i]}};
          end
             
          return {vec_load_vrf_wrdata_mask, vec_load_vrf_wrdata};

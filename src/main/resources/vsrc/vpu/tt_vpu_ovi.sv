@@ -668,6 +668,8 @@ logic [31:0]   lq_sim_ex_mem_instrn;
 logic          lq_rden, lq_poison_rden;
 logic [2:0]    lq_rdid;
 
+logic [VLEN/8-1:0] vstart_vlfof_byte_mask;
+
 tt_briscv_pkg::lq_info_s        lq_rdinfo;
 
 tt_lq #(
@@ -749,16 +751,19 @@ tt_lq #(
   .i_data_vld_cancel_0('0),
   .i_data_resp_id_0(DATA_REQ_ID_WIDTH'(load_buffer_lqid)),
   .i_data_rddata_0(ldb_data),
+  .i_data_mask_0(vstart_vlfof_byte_mask),
 
   .i_data_vld_1('0),
   .i_data_vld_cancel_1('0),
   .i_data_resp_id_1('0),
   .i_data_rddata_1('0),
+  .i_data_mask_1({VLEN/8{1'b1}}),
 
   .i_data_vld_2('0),
   .i_data_vld_cancel_2('0),
   .i_data_resp_id_2('0),
   .i_data_rddata_2('0),
+  .i_data_mask_2({VLEN/8{1'b1}}),
 
   .lq_full(mem_fe_lqfull),
   .lq_empty(),
@@ -1042,8 +1047,6 @@ assign mem_fp_rf_wrdata[63:0] = lq_rddata[63:0];
   assign scalar_opnd = (ocelot_read_req && read_valid) ? read_issue_scalar_opnd : scalar_opnd_reg;
 
   // ========= Load Reshape and Buffer =========
-
-  logic [VLEN/8-1:0] vstart_vlfof_byte_mask;
 
   lrm_model lrm (
     .clk(clk),
