@@ -281,6 +281,7 @@ class Rob(
   val will_commit         = Wire(Vec(coreWidth, Bool()))
   val can_commit          = Wire(Vec(coreWidth, Bool()))
   val can_throw_exception = Wire(Vec(coreWidth, Bool()))
+  val can_throw_vec_commit_exception = Wire(Vec(coreWidth, Bool()))
 
   val rob_pnr_unsafe      = Wire(Vec(coreWidth, Bool())) // are the instructions at the pnr unsafe?
   val rob_head_vals       = Wire(Vec(coreWidth, Bool())) // are the instructions at the head valid?
@@ -364,6 +365,7 @@ class Rob(
     val rob_unsafe    = Reg(Vec(numRobRows, Bool()))
     val rob_uop       = Reg(Vec(numRobRows, new MicroOp()))
     val rob_exception = Reg(Vec(numRobRows, Bool()))
+    val rob_vec_commit_exception = Reg(Vec(numRobRows, Bool()))
     val rob_predicated = Reg(Vec(numRobRows, Bool())) // Was this instruction predicated out?
     val rob_fflags    = Mem(numRobRows, Bits(freechips.rocketchip.tile.FPConstants.FLAGS_SZ.W))
 
@@ -392,6 +394,7 @@ class Rob(
       rob_uop(rob_tail)       := io.enq_uops(w)
       rob_exception(rob_tail) := io.enq_uops(w).exception
       rob_predicated(rob_tail)   := false.B
+      rob_vec_commit_exception(rob_tail) := false.B
       rob_fflags(rob_tail)    := 0.U
 
       assert (rob_val(rob_tail) === false.B, "[rob] overwriting a valid entry.")
@@ -436,7 +439,13 @@ class Rob(
       when (!io.ovi_clr_unsafe.bits.exception) {
         rob_unsafe(cidx) := false.B
       } .otherwise {
-        rob_exception(cidx) := true.B
+        when (io.ovi_clr_unsafe.bits.vstart_vlfof =/= 0.U) {
+          rob_unsafe(cidx) := false.B
+          rob_vec_commit_exception(cidx) := true.B
+        }.otherwise {
+          rob_exception(cidx) := false.B
+          rob_unsafe(cidx) := true.B
+        }
       }
       assert (rob_val(cidx) === true.B, "[rob] ovi_clr_unsafe writing back to invalid entry.")
       assert (rob_bsy(cidx) === true.B, "[rob] ovi_clr_unsafe writing back to a not-busy entry.")
@@ -475,13 +484,16 @@ class Rob(
     }
 
     val xcpt_should_com  = r_xcpt_is_ovi && (r_xcpt_vstart_vlfof =/= 0.U) // whether the xcpt should (partially) commit
-    can_throw_exception(w) := rob_val(rob_head) && rob_exception(rob_head) && !(xcpt_should_com && rob_bsy(rob_head))
+    val xcpt_vec_not_com = r_xcpt_is_ovi && (r_xcpt_vstart_vlfof === 0.U)
+    //can_throw_exception(w) := rob_val(rob_head) && rob_exception(rob_head) && !(xcpt_should_com && rob_bsy(rob_head))
+    can_throw_exception(w) := rob_val(rob_head) && rob_exception(rob_head) && (!(xcpt_should_com) || xcpt_vec_not_com)
+    can_throw_vec_commit_exception(w) := rob_val(rob_head) && rob_vec_commit_exception(rob_head) && (xcpt_should_com)
 
     //-----------------------------------------------
     // Commit or Rollback
 
     // Can this instruction commit? (the check for exceptions/rob_state happens later).
-    can_commit(w) := rob_val(rob_head) && !(rob_bsy(rob_head)) && !io.csr_stall
+    can_commit(w) := rob_val(rob_head) && !(rob_bsy(rob_head)) && (!io.csr_stall || can_throw_vec_commit_exception(w))
 
 
     // use the same "com_uop" for both rollback AND commit
@@ -629,11 +641,13 @@ class Rob(
 
   var block_commit = (rob_state =/= s_normal) && (rob_state =/= s_wait_till_empty) || RegNext(exception_thrown) || RegNext(RegNext(exception_thrown))
   var will_throw_exception = false.B
+  var will_throw_vec_commit_exception = false.B
   var block_xcpt   = false.B
 
   for (w <- 0 until coreWidth) {
-    will_throw_exception = (can_throw_exception(w) && !block_commit && !block_xcpt) || will_throw_exception
-
+//    will_throw_exception = ((can_throw_exception(w) || vec_exception_thrown(w)) && !block_commit && !block_xcpt) || will_throw_exception
+    will_throw_exception = ((can_throw_exception(w)) && !block_commit && !block_xcpt) || will_throw_exception
+    will_throw_vec_commit_exception = (will_commit(w) && can_throw_vec_commit_exception(w)) || will_throw_vec_commit_exception
     will_commit(w)       := can_commit(w) && !can_throw_exception(w) && !block_commit
     block_commit         = (rob_head_vals(w) &&
                            (!can_commit(w) || can_throw_exception(w))) || block_commit
@@ -671,7 +685,7 @@ class Rob(
 
   val flush_commit_mask = Range(0,coreWidth).map{i => io.commit.valids(i) && io.commit.uops(i).flush_on_commit}
   val flush_commit = flush_commit_mask.reduce(_|_)
-  val flush_val = exception_thrown || flush_commit
+  val flush_val = exception_thrown || flush_commit || will_throw_vec_commit_exception
 
   assert(!(PopCount(flush_commit_mask) > 1.U),
     "[rob] Can't commit multiple flush_on_commit instructions on one cycle")
