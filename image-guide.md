@@ -52,7 +52,8 @@ cd chipyard
 ./scripts/init-submodules-no-riscv-tools.sh -f
 ```
 
-**Note:** After initializing submodules, you should see the `boom` repository under the `generators` directory.
+**Note:** After initializing submodules, you should see the `boom` repository under the `generators` directory. Both Chipyard and Boom should be on the HEAD of the bobtail/main branch.
+
 
 
 
