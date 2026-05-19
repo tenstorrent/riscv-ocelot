@@ -16,7 +16,7 @@ package boom.ifu
 import chisel3._
 import chisel3.util._
 
-import org.chipsalliance.cde.config.{Parameters}
+import freechips.rocketchip.config.{Parameters}
 import freechips.rocketchip.rocket.{MStatus, BP, BreakpointUnit}
 
 import boom.common._
@@ -192,7 +192,7 @@ class FetchBuffer(implicit p: Parameters) extends BoomModule
   }
 
   // TODO Is this necessary?
-  when (reset.asBool) {
+  when (reset.toBool) {
     io.deq.bits.uops map { u => u.valid := false.B }
   }
 

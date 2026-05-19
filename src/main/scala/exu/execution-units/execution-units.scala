@@ -15,7 +15,7 @@ import scala.collection.mutable.{ArrayBuffer}
 
 import chisel3._
 
-import org.chipsalliance.cde.config.{Parameters}
+import freechips.rocketchip.config.{Parameters}
 
 import boom.common._
 import boom.util.{BoomCoreStringPrefix}
@@ -25,7 +25,7 @@ import boom.util.{BoomCoreStringPrefix}
  *
  * @param fpu using a FPU?
  */
-class ExecutionUnits(val fpu: Boolean, val vec: Boolean)(implicit val p: Parameters) extends HasBoomCoreParameters
+class ExecutionUnits(val fpu: Boolean)(implicit val p: Parameters) extends HasBoomCoreParameters
 {
   val totalIssueWidth = issueParams.map(_.issueWidth).sum
 
@@ -90,14 +90,9 @@ class ExecutionUnits(val fpu: Boolean, val vec: Boolean)(implicit val p: Paramet
     exe_units.find(_.hasFpiu).get
   }
 
+
   lazy val jmp_unit_idx = {
     exe_units.indexWhere(_.hasJmpUnit)
-  }
-
-  lazy val vec_exe_unit = {
-    require (usingVector)
-    require (exe_units.count(_.hasVecExe) == 1)
-    exe_units.find(_.hasVecExe).get
   }
 
   lazy val rocc_unit = {
@@ -129,14 +124,6 @@ class ExecutionUnits(val fpu: Boolean, val vec: Boolean)(implicit val p: Paramet
         hasDiv         = is_nth(3),
         hasIfpu        = is_nth(4) && usingFPU))
       exe_units += alu_exe_unit
-    }
-
-    if (vec) {
-      val vecExeUnit = Module(new ALUExeUnit(
-        hasVecExe = true,
-        hasAlu    = false))
-
-      exe_units += vecExeUnit
     }
   } else {
     val fp_width = issueParams.find(_.iqType == IQT_FP.litValue).get.issueWidth

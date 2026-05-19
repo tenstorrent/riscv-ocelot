@@ -14,7 +14,7 @@ package boom.exu
 import chisel3._
 import chisel3.util._
 
-import org.chipsalliance.cde.config.Parameters
+import freechips.rocketchip.config.Parameters
 import freechips.rocketchip.util.{Str}
 
 import boom.common._
@@ -56,7 +56,6 @@ class IqWakeup(val pregSz: Int) extends Bundle
 {
   val pdst = UInt(width=pregSz.W)
   val poisoned = Bool()
-  val rtype = UInt(2.W)
 }
 
 /**

@@ -3,7 +3,7 @@ package boom.lsu
 import chisel3._
 import chisel3.util._
 
-import org.chipsalliance.cde.config.Parameters
+import freechips.rocketchip.config.Parameters
 import freechips.rocketchip.rocket._
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.subsystem.{CacheBlockBytes}
@@ -16,11 +16,10 @@ import boom.util.{BoolToChar, AgePriorityEncoder, IsKilledByBranch, GetNewBrMask
 
 class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p) {
   require(!instruction)
-  val portWidth = memWidth + 2
   val io = IO(new Bundle {
-    val req = Flipped(Vec(portWidth, Decoupled(new TLBReq(lgMaxSize))))
+    val req = Flipped(Vec(memWidth, Decoupled(new TLBReq(lgMaxSize))))
     val miss_rdy = Output(Bool())
-    val resp = Output(Vec(portWidth+2, new TLBResp))
+    val resp = Output(Vec(memWidth, new TLBResp))
     val sfence = Input(Valid(new SFenceReq))
     val ptw = new TLBPTWIO
     val kill = Input(Bool())
@@ -117,10 +116,10 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge
     }
   }
 
-  def widthMap[T <: Data](f: Int => T) = VecInit((0 until portWidth).map(f))
+  def widthMap[T <: Data](f: Int => T) = VecInit((0 until memWidth).map(f))
 
   val pageGranularityPMPs = pmpGranularity >= (1 << pgIdxBits)
-  val sectored_entries = Reg(Vec((cfg.nSets * cfg.nWays) / cfg.nSectors, new Entry(cfg.nSectors, false, false)))
+  val sectored_entries = Reg(Vec(cfg.nEntries / cfg.nSectors, new Entry(cfg.nSectors, false, false)))
   val superpage_entries = Reg(Vec(cfg.nSuperpageEntries, new Entry(1, true, true)))
   val special_entry = (!pageGranularityPMPs).option(Reg(new Entry(1, true, false)))
   def ordinary_entries = sectored_entries ++ superpage_entries
@@ -143,13 +142,13 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge
   val vpn = widthMap(w => io.req(w).bits.vaddr(vaddrBits-1, pgIdxBits))
   val refill_ppn = io.ptw.resp.bits.pte.ppn(ppnBits-1, 0)
   val do_refill = usingVM.B && io.ptw.resp.valid
-  val invalidate_refill = state.isOneOf(s_request /* don't care */, s_wait_invalidate) || io.sfence.valid
+  val invalidate_refill = state.isOneOf(s_request /* don't care */, s_wait_invalidate)
   val mpu_ppn = widthMap(w =>
                 Mux(do_refill, refill_ppn,
                 Mux(vm_enabled(w) && special_entry.nonEmpty.B, special_entry.map(_.ppn(vpn(w))).getOrElse(0.U), io.req(w).bits.vaddr >> pgIdxBits)))
   val mpu_physaddr = widthMap(w => Cat(mpu_ppn(w), io.req(w).bits.vaddr(pgIdxBits-1, 0)))
-  val pmp = Seq.fill(portWidth) { Module(new PMPChecker(lgMaxSize)) }
-  for (w <- 0 until portWidth) {
+  val pmp = Seq.fill(memWidth) { Module(new PMPChecker(lgMaxSize)) }
+  for (w <- 0 until memWidth) {
     pmp(w).io.addr := mpu_physaddr(w)
     pmp(w).io.size := io.req(w).bits.size
     pmp(w).io.pmp := (io.ptw.pmp: Seq[PMP])
@@ -175,14 +174,14 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge
   val ppn = widthMap(w => Mux1H(hitsVec(w) :+ !vm_enabled(w), all_entries.map(_.ppn(vpn(w))) :+ vpn(w)(ppnBits-1, 0)))
 
     // permission bit arrays
-  when (do_refill) {
+  when (do_refill && !invalidate_refill) {
     val pte = io.ptw.resp.bits.pte
     val newEntry = Wire(new EntryData)
     newEntry.ppn := pte.ppn
     newEntry.c := cacheable(0)
     newEntry.u := pte.u
     newEntry.g := pte.g
-    newEntry.ae := io.ptw.resp.bits.ae_final
+    newEntry.ae := io.ptw.resp.bits.ae
     newEntry.sr := pte.sr()
     newEntry.sw := pte.sw()
     newEntry.sx := pte.sx()
@@ -272,7 +271,7 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge
 
   val sectored_plru = new PseudoLRU(sectored_entries.size)
   val superpage_plru = new PseudoLRU(superpage_entries.size)
-  for (w <- 0 until portWidth) {
+  for (w <- 0 until memWidth) {
     when (io.req(w).valid && vm_enabled(w)) {
       when (sector_hits(w).orR) { sectored_plru.access(OHToUInt(sector_hits(w))) }
       when (superpage_hits(w).orR) { superpage_plru.access(OHToUInt(superpage_hits(w))) }
@@ -287,7 +286,7 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge
   val multipleHits = widthMap(w => PopCountAtLeast(real_hits(w), 2))
 
   io.miss_rdy := state === s_ready
-  for (w <- 0 until portWidth) {
+  for (w <- 0 until memWidth) {
     io.req(w).ready    := true.B
     io.resp(w).pf.ld   := (bad_va(w) && cmd_read(w)) || (pf_ld_array(w) & hits(w)).orR
     io.resp(w).pf.st   := (bad_va(w) && cmd_write_perms(w)) || (pf_st_array(w) & hits(w)).orR
@@ -311,13 +310,13 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge
 
   if (usingVM) {
     val sfence = io.sfence.valid
-    for (w <- 0 until portWidth) {
-      when (io.req(w).fire && tlb_miss(w) && state === s_ready) {
+    for (w <- 0 until memWidth) {
+      when (io.req(w).fire() && tlb_miss(w) && state === s_ready) {
         state := s_request
         r_refill_tag := vpn(w)
 
-        r_superpage_repl_addr := replacementEntry(superpage_entries, superpage_plru.way)
-        r_sectored_repl_addr  := replacementEntry(sectored_entries, sectored_plru.way)
+        r_superpage_repl_addr := replacementEntry(superpage_entries, superpage_plru.replace)
+        r_sectored_repl_addr  := replacementEntry(sectored_entries, sectored_plru.replace)
         r_sectored_hit_addr   := OHToUInt(sector_hits(w))
         r_sectored_hit        := sector_hits(w).orR
       }
@@ -335,7 +334,7 @@ class NBDTLB(instruction: Boolean, lgMaxSize: Int, cfg: TLBConfig)(implicit edge
     }
 
     when (sfence) {
-      for (w <- 0 until portWidth) {
+      for (w <- 0 until memWidth) {
         assert(!io.sfence.bits.rs1 || (io.sfence.bits.addr >> pgIdxBits) === vpn(w))
         for (e <- all_entries) {
           when (io.sfence.bits.rs1) { e.invalidateVPN(vpn(w)) }

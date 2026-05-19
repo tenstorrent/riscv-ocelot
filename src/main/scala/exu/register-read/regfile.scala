@@ -16,7 +16,7 @@ import scala.collection.mutable.ArrayBuffer
 import chisel3._
 import chisel3.util._
 
-import org.chipsalliance.cde.config.Parameters
+import freechips.rocketchip.config.Parameters
 
 import boom.common._
 import boom.util.{BoomCoreStringPrefix}
@@ -145,7 +145,7 @@ class RegisterFileSynthesizable(
       val bypass_ens = bypassable_wports.map(x => x.valid &&
         x.bits.addr === read_addrs(i))
 
-      val bypass_data = Mux1H(VecInit(bypass_ens.toSeq), VecInit(bypassable_wports.map(_.bits.data).toSeq))
+      val bypass_data = Mux1H(VecInit(bypass_ens), VecInit(bypassable_wports.map(_.bits.data)))
 
       io.read_ports(i).data := Mux(bypass_ens.reduce(_|_), bypass_data, read_data(i))
     }

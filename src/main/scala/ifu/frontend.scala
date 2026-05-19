@@ -13,9 +13,10 @@ package boom.ifu
 
 import chisel3._
 import chisel3.util._
+import chisel3.core.{withReset}
 import chisel3.internal.sourceinfo.{SourceInfo}
 
-import org.chipsalliance.cde.config._
+import freechips.rocketchip.config._
 import freechips.rocketchip.subsystem._
 import freechips.rocketchip.diplomacy._
 import freechips.rocketchip.rocket._
@@ -267,8 +268,6 @@ class BoomFrontendIO(implicit p: Parameters) extends BoomBundle
   // Breakpoint info
   val status            = Output(new MStatus)
   val bp                = Output(Vec(nBreakpoints, new BP))
-  val mcontext          = Output(UInt(coreParams.mcontextWidth.W))
-  val scontext          = Output(UInt(coreParams.scontextWidth.W))
 
   val sfence = Valid(new SFenceReq)
 
@@ -294,13 +293,11 @@ class BoomFrontendIO(implicit p: Parameters) extends BoomBundle
  * @param icacheParams parameters for the icache
  * @param hartid id for the hardware thread of the core
  */
-class BoomFrontend(val icacheParams: ICacheParams, staticIdForMetadataUseOnly: Int)(implicit p: Parameters) extends LazyModule
+class BoomFrontend(val icacheParams: ICacheParams, hartid: Int)(implicit p: Parameters) extends LazyModule
 {
   lazy val module = new BoomFrontendModule(this)
-  val icache = LazyModule(new boom.ifu.ICache(icacheParams, staticIdForMetadataUseOnly))
+  val icache = LazyModule(new boom.ifu.ICache(icacheParams, hartid))
   val masterNode = icache.masterNode
-  val resetVectorSinkNode = BundleBridgeSink[UInt](Some(() =>
-    UInt(masterNode.edges.out.head.bundle.addressBits.W)))
 }
 
 /**
@@ -309,6 +306,7 @@ class BoomFrontend(val icacheParams: ICacheParams, staticIdForMetadataUseOnly: I
  * @param outer top level Frontend class
  */
 class BoomFrontendBundle(val outer: BoomFrontend) extends CoreBundle()(outer.p)
+  with HasExternallyDrivenTileConstants
 {
   val cpu = Flipped(new BoomFrontendIO())
   val ptw = new TLBPTWIO()
@@ -326,7 +324,6 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
   with HasBoomFrontendParameters
 {
   val io = IO(new BoomFrontendBundle(outer))
-  val io_reset_vector = outer.resetVectorSinkNode.bundle
   implicit val edge = outer.masterNode.edges.out(0)
   require(fetchWidth*coreInstBytes == outer.icacheParams.fetchBytes)
 
@@ -335,10 +332,11 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
   val ras = Module(new BoomRAS)
 
   val icache = outer.icache.module
+  icache.io.hartid     := io.hartid
   icache.io.invalidate := io.cpu.flush_icache
-  val tlb = Module(new TLB(true, log2Ceil(fetchBytes), TLBConfig(nTLBSets, nTLBWays)))
+  val tlb = Module(new TLB(true, log2Ceil(fetchBytes), TLBConfig(nTLBEntries)))
   io.ptw <> tlb.io.ptw
-  io.cpu.perf.tlbMiss := io.ptw.req.fire
+  io.cpu.perf.tlbMiss := io.ptw.req.fire()
   io.cpu.perf.acquire := icache.io.perf.acquire
 
   // --------------------------------------------------------
@@ -362,7 +360,7 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
 
   when (RegNext(reset.asBool) && !reset.asBool) {
     s0_valid   := true.B
-    s0_vpc     := io_reset_vector
+    s0_vpc     := io.reset_vector
     s0_ghist   := (0.U).asTypeOf(new GlobalHistory)
     s0_tsrc    := BSRC_C
   }
@@ -390,8 +388,6 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
   tlb.io.req.bits.vaddr := s1_vpc
   tlb.io.req.bits.passthrough := false.B
   tlb.io.req.bits.size  := log2Ceil(coreInstBytes * fetchWidth).U
-  tlb.io.req.bits.v     := io.ptw.status.v
-  tlb.io.req.bits.prv   := io.ptw.status.prv
   tlb.io.sfence         := RegNext(io.cpu.sfence)
   tlb.io.kill           := false.B
 
@@ -514,12 +510,12 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
   // **** F3 ****
   // --------------------------------------------------------
   val f3_clear = WireInit(false.B)
-  val f3 = withReset(reset.asBool || f3_clear) {
+  val f3 = withReset(reset.toBool || f3_clear) {
     Module(new Queue(new FrontendResp, 1, pipe=true, flow=false)) }
 
   // Queue up the bpd resp as well, incase f4 backpressures f3
   // This is "flow" because the response (enq) arrives in f3, not f2
-  val f3_bpd_resp = withReset(reset.asBool || f3_clear) {
+  val f3_bpd_resp = withReset(reset.toBool || f3_clear) {
     Module(new Queue(new BranchPredictionBundle, 1, pipe=true, flow=true)) }
 
 
@@ -541,7 +537,7 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
   // RAS takes a cycle to read
   val ras_read_idx = RegInit(0.U(log2Ceil(nRasEntries).W))
   ras.io.read_idx := ras_read_idx
-  when (f3.io.enq.fire) {
+  when (f3.io.enq.fire()) {
     ras_read_idx := f3.io.enq.bits.ghist.ras_idx
     ras.io.read_idx := f3.io.enq.bits.ghist.ras_idx
   }
@@ -550,7 +546,7 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
   // The BPD resp comes in f3
   f3_bpd_resp.io.enq.valid := f3.io.deq.valid && RegNext(f3.io.enq.ready)
   f3_bpd_resp.io.enq.bits  := bpd.io.resp.f3
-  when (f3_bpd_resp.io.enq.fire) {
+  when (f3_bpd_resp.io.enq.fire()) {
     bpd.io.f3_fire := true.B
   }
 
@@ -606,11 +602,9 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
 
       val valid = Wire(Bool())
       val bpu = Module(new BreakpointUnit(nBreakpoints))
-      bpu.io.status   := io.cpu.status
-      bpu.io.bp       := io.cpu.bp
-      bpu.io.ea       := DontCare
-      bpu.io.mcontext := io.cpu.mcontext
-      bpu.io.scontext := io.cpu.scontext
+      bpu.io.status := io.cpu.status
+      bpu.io.bp     := io.cpu.bp
+      bpu.io.ea     := DontCare
 
       val brsigs = Wire(new BranchDecodeSignals)
       if (w == 0) {
@@ -766,7 +760,7 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
   f3_fetch_bundle.end_half.valid := bank_prev_is_half
   f3_fetch_bundle.end_half.bits  := bank_prev_half
 
-  when (f3.io.deq.fire) {
+  when (f3.io.deq.fire()) {
     f3_prev_is_half := bank_prev_is_half
     f3_prev_half    := bank_prev_half
     assert(f3_bpd_resp.io.deq.bits.pc === f3_fetch_bundle.pc)
@@ -842,7 +836,7 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
 
   // When f3 finds a btb mispredict, queue up a bpd correction update
   val f4_btb_corrections = Module(new Queue(new BranchPredictionUpdate, 2))
-  f4_btb_corrections.io.enq.valid := f3.io.deq.fire && f3_btb_mispredicts.reduce(_||_) && enableBTBFastRepair.B
+  f4_btb_corrections.io.enq.valid := f3.io.deq.fire() && f3_btb_mispredicts.reduce(_||_) && enableBTBFastRepair.B
   f4_btb_corrections.io.enq.bits  := DontCare
   f4_btb_corrections.io.enq.bits.is_mispredict_update := false.B
   f4_btb_corrections.io.enq.bits.is_repair_update     := false.B
@@ -857,7 +851,7 @@ class BoomFrontendModule(outer: BoomFrontend) extends LazyModuleImp(outer)
   // **** F4 ****
   // -------------------------------------------------------
   val f4_clear = WireInit(false.B)
-  val f4 = withReset(reset.asBool || f4_clear) {
+  val f4 = withReset(reset.toBool || f4_clear) {
     Module(new Queue(new FetchBundle, 1, pipe=true, flow=false))}
 
   val fb  = Module(new FetchBuffer)

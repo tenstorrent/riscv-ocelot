@@ -18,7 +18,7 @@ package boom.exu
 import chisel3._
 import chisel3.util._
 
-import org.chipsalliance.cde.config.Parameters
+import freechips.rocketchip.config.Parameters
 
 import boom.common._
 import boom.util._
@@ -183,18 +183,15 @@ class IssueSlot(val numWakeupPorts: Int)(implicit p: Parameters)
 
   for (i <- 0 until numWakeupPorts) {
     when (io.wakeup_ports(i).valid &&
-         (io.wakeup_ports(i).bits.pdst === next_uop.prs1) &&
-         (io.wakeup_ports(i).bits.rtype === next_uop.lrs1_rtype)) {
+         (io.wakeup_ports(i).bits.pdst === next_uop.prs1)) {
       p1 := true.B
     }
     when (io.wakeup_ports(i).valid &&
-         (io.wakeup_ports(i).bits.pdst === next_uop.prs2) &&
-         (io.wakeup_ports(i).bits.rtype === next_uop.lrs2_rtype)) {
+         (io.wakeup_ports(i).bits.pdst === next_uop.prs2)) {
       p2 := true.B
     }
     when (io.wakeup_ports(i).valid &&
-         (io.wakeup_ports(i).bits.pdst === next_uop.prs3) &&
-         (io.wakeup_ports(i).bits.rtype === next_uop.dst_rtype)) {
+         (io.wakeup_ports(i).bits.pdst === next_uop.prs3)) {
       p3 := true.B
     }
   }

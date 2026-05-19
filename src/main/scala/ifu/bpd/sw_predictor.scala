@@ -3,7 +3,7 @@ package boom.ifu
 import chisel3._
 import chisel3.util._
 
-import org.chipsalliance.cde.config.{Field, Parameters}
+import freechips.rocketchip.config.{Field, Parameters}
 import freechips.rocketchip.diplomacy._
 import freechips.rocketchip.tilelink._
 
@@ -20,10 +20,10 @@ class SwBranchPredictorBank(implicit p: Parameters) extends BranchPredictorBank(
     val pred_harness = Module(new BranchPredictorHarness)
 
     btb_harness.io.clock := clock
-    btb_harness.io.reset := reset.asBool
+    btb_harness.io.reset := reset.toBool
 
     pred_harness.io.clock := clock
-    pred_harness.io.reset := reset.asBool
+    pred_harness.io.reset := reset.toBool
 
 
     btb_harness.io.req_valid := s1_valid
@@ -45,7 +45,7 @@ class SwBranchPredictorBank(implicit p: Parameters) extends BranchPredictorBank(
     pred_harness.io.update_pc    := io.update.bits.pc + (w << 1).U
     pred_harness.io.update_hist  := io.update.bits.ghist
     pred_harness.io.update_taken := w.U === io.update.bits.cfi_idx.bits &&
-                                      io.update.bits.cfi_idx.valid && io.update.bits.cfi_taken
+                                      io.update.bits.cfi_idx.valid
 
 
     io.resp.f2(w).taken              := pred_harness.io.req_taken

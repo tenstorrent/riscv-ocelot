@@ -27,8 +27,9 @@ import scala.math.ceil
 
 import chisel3._
 import chisel3.util._
+import chisel3.experimental.chiselName
 
-import org.chipsalliance.cde.config.Parameters
+import freechips.rocketchip.config.Parameters
 import freechips.rocketchip.util.Str
 
 import boom.common._
@@ -80,10 +81,6 @@ class RobIo(
   val debug_wb_valids = Input(Vec(numWakeupPorts, Bool()))
   val debug_wb_wdata  = Input(Vec(numWakeupPorts, Bits(xLen.W)))
 
-  val debug_wb_vec_valids = Input(Vec(numWakeupPorts, Bool()))
-  val debug_wb_vec_wdata  = Input(Vec(numWakeupPorts, Bits((coreParams.vLen*8).W)))
-  val debug_wb_vec_wmask  = Input(Vec(numWakeupPorts, Bits(8.W)))
-
   val fflags = Flipped(Vec(numFpuPorts, new ValidIO(new FFlagsResp())))
   val lxcpt = Flipped(new ValidIO(new Exception())) // LSU
 
@@ -133,17 +130,6 @@ class CommitSignals(implicit p: Parameters) extends BoomBundle
   val rollback   = Bool()
 
   val debug_wdata = Vec(retireWidth, UInt(xLen.W))
-  val debug_vec_wdata = Vec(retireWidth, UInt((coreParams.vLen*8).W))
-  val debug_vec_wmask = Vec(retireWidth, UInt(8.W))
-}
-
-/**
- * Commit signals for Debug Harness
- */
-class DebugCommitSignals(val coreMaxAddrBits: Int, val retireWidth: Int, val xLen: Int, val vLen: Int, val lregSz: Int, val memWidth: Int) extends Bundle
-{
-  val arch_valids = Vec(retireWidth, Bool())
-  val uops        = Vec(retireWidth, new DebugMicroOp(coreMaxAddrBits, xLen, vLen, lregSz))
 }
 
 /**
@@ -222,6 +208,7 @@ class DebugRobSignals(implicit p: Parameters) extends BoomBundle
  * @param numWakeupPorts number of wakeup ports to the ROB
  * @param numFpuPorts number of FPU units that will write back fflags
  */
+@chiselName
 class Rob(
   val numWakeupPorts: Int,
   val numFpuPorts: Int
@@ -326,8 +313,6 @@ class Rob(
     val rob_fflags    = Mem(numRobRows, Bits(freechips.rocketchip.tile.FPConstants.FLAGS_SZ.W))
 
     val rob_debug_wdata = Mem(numRobRows, UInt(xLen.W))
-    val rob_debug_vec_wdata = Mem(numRobRows, UInt((coreParams.vLen*8).W))
-    val rob_debug_vec_wmask = Mem(numRobRows, UInt(8.W))
 
     //-----------------------------------------------
     // Dispatch: Add Entry to ROB
@@ -524,12 +509,6 @@ class Rob(
       when (io.debug_wb_valids(i) && MatchBank(GetBankIdx(rob_idx))) {
         rob_debug_wdata(GetRowIdx(rob_idx)) := io.debug_wb_wdata(i)
       }
-      when (io.debug_wb_vec_valids(i) && MatchBank(GetBankIdx(rob_idx))) {
-        rob_debug_vec_wdata(GetRowIdx(rob_idx)) := io.debug_wb_vec_wdata(i)
-      }
-      when (io.debug_wb_vec_valids(i) && MatchBank(GetBankIdx(rob_idx))) {
-        rob_debug_vec_wmask(GetRowIdx(rob_idx)) := io.debug_wb_vec_wmask(i)
-      }
       val temp_uop = rob_uop(GetRowIdx(rob_idx))
 
       assert (!(io.wb_resps(i).valid && MatchBank(GetBankIdx(rob_idx)) &&
@@ -543,10 +522,6 @@ class Rob(
                "[rob] writeback (" + i + ") occurred to the wrong pdst.")
     }
     io.commit.debug_wdata(w) := rob_debug_wdata(rob_head)
-
-    io.commit.debug_vec_wdata(w) := rob_debug_vec_wdata(rob_head)
-
-    io.commit.debug_vec_wmask(w) := rob_debug_vec_wmask(rob_head)
 
   } //for (w <- 0 until coreWidth)
 

@@ -12,7 +12,7 @@ import freechips.rocketchip.rocket._
 import freechips.rocketchip.tile._
 import freechips.rocketchip.util._
 import freechips.rocketchip.subsystem.{MemoryPortParams}
-import org.chipsalliance.cde.config.{Parameters, Field}
+import freechips.rocketchip.config.{Parameters, Field}
 import freechips.rocketchip.devices.tilelink.{BootROMParams, CLINTParams, PLICParams}
 
 import boom.ifu._
@@ -80,32 +80,21 @@ case class BoomCoreParams(
   mulDiv: Option[freechips.rocketchip.rocket.MulDivParams] = Some(MulDivParams(divEarlyOut=true)),
   nBreakpoints: Int = 0, // TODO Fix with better frontend breakpoint unit
   nL2TLBEntries: Int = 512,
-  val nPTECacheEntries: Int = 8, // TODO: check
-  nL2TLBWays: Int = 1,
   nLocalInterrupts: Int = 0,
-  useNMI: Boolean = false,
   useAtomics: Boolean = true,
   useDebug: Boolean = true,
   useUser: Boolean = true,
   useSupervisor: Boolean = false,
-  useHypervisor: Boolean = false,
   useVM: Boolean = true,
   useSCIE: Boolean = false,
   useRVE: Boolean = false,
   useBPWatch: Boolean = false,
   clockGate: Boolean = false,
-  mcontextWidth: Int = 0,
-  scontextWidth: Int = 0,
-  trace: Boolean = false,
-  enableVector: Boolean = false,
-  setvLen: Int = 128,
-  setvMemDataBits: Int = 64,
 
   /* debug stuff */
   enableCommitLogPrintf: Boolean = false,
   enableBranchPrintf: Boolean = false,
-  enableMemtracePrintf: Boolean = false,
-  enableDebugHarness: Boolean = false
+  enableMemtracePrintf: Boolean = false
 
 // DOC include end: BOOM Parameters
 ) extends freechips.rocketchip.tile.CoreParams
@@ -116,17 +105,9 @@ case class BoomCoreParams(
   val lrscCycles: Int = 80 // worst case is 14 mispredicted branches + slop
   val retireWidth = decodeWidth
   val jumpInFrontend: Boolean = false // unused in boom
-  val useBitManip = false
-  val useBitManipCrypto = false
-  val useCryptoNIST = false
-  val useCryptoSM = false
-  val traceHasWdata = trace
+
 
   override def customCSRs(implicit p: Parameters) = new BoomCustomCSRs
-  override val useVector: Boolean = enableVector
-  override def vLen: Int = setvLen
-  override def vMemDataBits: Int = setvMemDataBits
-
 }
 
 /**
@@ -151,9 +132,6 @@ class BoomCustomCSRs(implicit p: Parameters) extends freechips.rocketchip.tile.C
     Some(CustomCSR(chickenCSRId, mask, Some(init)))
   }
   def disableOOO = getOrElse(chickenCSR, _.value(3), true.B)
-  def marchid = CustomCSR.constant(CSRs.marchid, BigInt(2))
-
-  override def decls: Seq[CustomCSR] = super.decls :+ marchid
 }
 
 /**
@@ -194,7 +172,6 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val usingFDivSqrt = boomParams.fpu.isDefined && boomParams.fpu.get.divSqrt
 
   val mulDivParams = boomParams.mulDiv.getOrElse(MulDivParams())
-  val trace = boomParams.trace
   // TODO: Allow RV32IF
   require(!(xLen == 32 && usingFPU), "RV32 does not support fp")
 
@@ -295,7 +272,6 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val COMMIT_LOG_PRINTF   = boomParams.enableCommitLogPrintf // dump commit state, for comparision against ISA sim
   val BRANCH_PRINTF       = boomParams.enableBranchPrintf // dump branch predictor results
   val MEMTRACE_PRINTF     = boomParams.enableMemtracePrintf // dump trace of memory accesses to L1D for debugging
-  val DEBUG_HARNESS       = boomParams.enableDebugHarness // Attach Debug Harness to Cores
 
   //************************************
   // Other Non/Should-not-be sythesizable modules

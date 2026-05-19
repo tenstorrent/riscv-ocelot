@@ -20,7 +20,7 @@ package boom.exu
 import chisel3._
 import chisel3.util._
 
-import org.chipsalliance.cde.config.Parameters
+import freechips.rocketchip.config.Parameters
 
 import boom.common._
 import boom.util._
@@ -137,16 +137,6 @@ abstract class AbstractRenameStage(
     ren2_uops(w)   := r_uop
   }
 
-  // Inject debug tag
-  val debug_tag = RegInit(0.U(48.W))
-  when (io.dis_fire.reduce(_||_)) {
-    debug_tag := debug_tag + 1.U
-  }
-
-  for (w <- 0 until plWidth) {
-    ren2_uops(w).debug_tag  := Cat(debug_tag, w.U(16.W))
-  }
-
   //-------------------------------------------------------------
   // Outputs
 
@@ -260,7 +250,7 @@ class RenameStage(
   val remap_reqs = Wire(Vec(plWidth, new RemapReq(lregSz, pregSz)))
 
   // Generate maptable requests.
-  for ((((ren1,ren2),com),w) <- (ren1_uops zip ren2_uops zip io.com_uops.reverse).zipWithIndex) {
+  for ((((ren1,ren2),com),w) <- ren1_uops zip ren2_uops zip io.com_uops.reverse zipWithIndex) {
     map_reqs(w).lrs1 := ren1.lrs1
     map_reqs(w).lrs2 := ren1.lrs2
     map_reqs(w).lrs3 := ren1.lrs3

@@ -23,8 +23,8 @@ Store Instructions
 ------------------
 
 Entries in the Store Queue are allocated in the *Decode* stage (
-stq(i).valid is set). A “valid" bit denotes when an entry in the STQ holds
-a valid address and valid data (stq(i).bits.addr.valid and stq(i).bits.data.valid).
+stq(i).valid is set). A “valid" bit denotes when an entry in the SAQ or
+SDQ holds a valid address or data (stq(i).bits.addr.valid and stq(i).bits.data.valid).
 Once a store instruction is committed, the corresponding entry in the Store
 Queue is marked as committed. The store is then free to be fired to the
 memory system at its convenience. Stores are fired to the memory in program
@@ -45,7 +45,7 @@ on store-heavy code. Sequences involving stores to the stack should
 operate at IPC=1!
 
 However, it is common for store addresses to be known well in advance of
-the store data. Store addresses should be moved to the STQ as soon as
+the store data. Store addresses should be moved to the SAQ as soon as
 possible to allow later loads to avoid any memory ordering failures.
 Thus, the issue window will emit uopSTA or uopSTD :term:`UOP<Micro-Op (UOP)>` s as required,
 but retain the remaining half of the store until the second operand is

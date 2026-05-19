@@ -17,7 +17,7 @@ import chisel3.util._
 import freechips.rocketchip.rocket.Instructions._
 import freechips.rocketchip.rocket._
 import freechips.rocketchip.util.{Str}
-import org.chipsalliance.cde.config.{Parameters}
+import freechips.rocketchip.config.{Parameters}
 import freechips.rocketchip.tile.{TileKey}
 
 import boom.common.{MicroOp}
@@ -268,24 +268,17 @@ object Sext
  */
 object ImmGen
 {
-  import boom.common.{LONGEST_IMM_SZ, IS_B, IS_I, IS_J, IS_S, IS_U, IS_IVLI}
+  import boom.common.{LONGEST_IMM_SZ, IS_B, IS_I, IS_J, IS_S, IS_U}
   def apply(ip: UInt, isel: UInt): SInt = {
-    val sign   = Mux(isel === IS_IVLI, 0.S, ip(LONGEST_IMM_SZ-1).asSInt)
-    val i30_20 = Mux(isel === IS_IVLI, 0.S,
-                 Mux(isel === IS_U, ip(18,8).asSInt, sign))
-    val i19_12 = Mux(isel === IS_IVLI, 0.S,
-                 Mux(isel === IS_U || isel === IS_J, ip(7,0).asSInt, sign))
-    val i11    = Mux(isel === IS_IVLI, 0.S,
-                 Mux(isel === IS_U, 0.S,
-                 Mux(isel === IS_J || isel === IS_B, ip(8).asSInt, sign)))
-    val i10_5  = Mux(isel === IS_IVLI, 0.S,
-                 Mux(isel === IS_U, 0.S, ip(18,13).asSInt))
-    val i4_1   = Mux(isel === IS_IVLI, ip(7,4).asSInt,
-                 Mux(isel === IS_U, 0.S, ip(12,9).asSInt))
-    val i0     = Mux(isel === IS_IVLI, ip(3).asSInt,
-                 Mux(isel === IS_S || isel === IS_I, ip(8).asSInt, 0.S))
+    val sign = ip(LONGEST_IMM_SZ-1).asSInt
+    val i30_20 = Mux(isel === IS_U, ip(18,8).asSInt, sign)
+    val i19_12 = Mux(isel === IS_U || isel === IS_J, ip(7,0).asSInt, sign)
+    val i11    = Mux(isel === IS_U, 0.S,
+                 Mux(isel === IS_J || isel === IS_B, ip(8).asSInt, sign))
+    val i10_5  = Mux(isel === IS_U, 0.S, ip(18,14).asSInt)
+    val i4_1   = Mux(isel === IS_U, 0.S, ip(13,9).asSInt)
+    val i0     = Mux(isel === IS_S || isel === IS_I, ip(8).asSInt, 0.S)
 
-    // Return uimm[4:0] for AVL
     return Cat(sign, i30_20, i19_12, i11, i10_5, i4_1, i0).asSInt
   }
 }
@@ -397,7 +390,7 @@ object MaskUpper
  */
 object Transpose
 {
-  def apply[T <: chisel3.Data](in: Vec[Vec[T]]) = {
+  def apply[T <: chisel3.core.Data](in: Vec[Vec[T]]) = {
     val n = in(0).size
     VecInit((0 until n).map(i => VecInit(in.map(row => row(i)))))
   }
@@ -424,7 +417,7 @@ object SelectFirstN
 /**
  * Connect the first k of n valid input interfaces to k output interfaces.
  */
-class Compactor[T <: chisel3.Data](n: Int, k: Int, gen: T) extends Module
+class Compactor[T <: chisel3.core.Data](n: Int, k: Int, gen: T) extends Module
 {
   require(n >= k)
 
@@ -453,7 +446,7 @@ class Compactor[T <: chisel3.Data](n: Int, k: Int, gen: T) extends Module
  * Assumption: enq.valid only high if not killed by branch (so don't check IsKilled on io.enq).
  */
 class BranchKillableQueue[T <: boom.common.HasBoomUOP](gen: T, entries: Int, flush_fn: boom.common.MicroOp => Bool = u => true.B, flow: Boolean = true)
-  (implicit p: org.chipsalliance.cde.config.Parameters)
+  (implicit p: freechips.rocketchip.config.Parameters)
   extends boom.common.BoomModule()(p)
   with boom.common.HasBoomCoreParameters
 {
@@ -479,7 +472,7 @@ class BranchKillableQueue[T <: boom.common.HasBoomUOP](gen: T, entries: Int, flu
   val ptr_match = enq_ptr.value === deq_ptr.value
   io.empty := ptr_match && !maybe_full
   val full = ptr_match && maybe_full
-  val do_enq = WireInit(io.enq.fire)
+  val do_enq = WireInit(io.enq.fire())
   val do_deq = WireInit((io.deq.ready || !valids(deq_ptr.value)) && !io.empty)
 
   for (i <- 0 until entries) {

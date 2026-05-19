@@ -14,7 +14,7 @@ package boom.exu
 import chisel3._
 import chisel3.util._
 
-import org.chipsalliance.cde.config.Parameters
+import freechips.rocketchip.config.Parameters
 
 import boom.common._
 import boom.util._
@@ -152,7 +152,6 @@ class RegisterRead(
   val bypassed_rs1_data = Wire(Vec(issueWidth, Bits(registerWidth.W)))
   val bypassed_rs2_data = Wire(Vec(issueWidth, Bits(registerWidth.W)))
   val bypassed_pred_data = Wire(Vec(issueWidth, Bool()))
-  bypassed_rs2_data  := DontCare
   bypassed_pred_data := DontCare
 
   for (w <- 0 until issueWidth) {

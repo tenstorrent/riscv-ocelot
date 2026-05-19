@@ -14,7 +14,7 @@ package boom.common
 import chisel3._
 import chisel3.util._
 
-import org.chipsalliance.cde.config.Parameters
+import freechips.rocketchip.config.Parameters
 
 import boom.exu.FUConstants
 
@@ -38,7 +38,6 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val debug_inst       = UInt(32.W)
   val is_rvc           = Bool()
   val debug_pc         = UInt(coreMaxAddrBits.W)
-  val debug_tag        = UInt(64.W)            // A sequential ID assigned at dispatch. Used by MCM to distinguish between flushed and retired loads.
   val iq_type          = UInt(IQT_SZ.W)        // which issue unit do we use?
   val fu_code          = UInt(FUConstants.FUC_SZ.W) // which functional unit do we use?
   val ctrl             = new CtrlSignals
@@ -94,14 +93,11 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val exc_cause        = UInt(xLen.W)          // TODO compress this down, xlen is insanity
   val bypassable       = Bool()                      // can we bypass ALU results? (doesn't include loads, csr, etc...)
   val mem_cmd          = UInt(M_SZ.W)          // sync primitives/cache flushes
-  val mem_size         = if (usingVector) UInt(3.W) else UInt(2.W)
+  val mem_size         = UInt(2.W)
   val mem_signed       = Bool()
   val is_fence         = Bool()
   val is_fencei        = Bool()
   val is_amo           = Bool()
-  val is_vec           = Bool()
-  val is_empty_st      = Bool()
-  val last_vec_stq     = Bool()                // Release stq allocated for a vector store
   val uses_ldq         = Bool()
   val uses_stq         = Bool()
   val is_sys_pc2epc    = Bool()                      // Is a ECall or Breakpoint -- both set EPC to PC.
@@ -122,7 +118,7 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val lrs3             = UInt(lregSz.W)
 
   val ldst_val         = Bool()              // is there a destination? invalid for stores, rd==x0, etc.
-  val dst_rtype        = UInt(3.W)
+  val dst_rtype        = UInt(2.W)
   val lrs1_rtype       = UInt(2.W)
   val lrs2_rtype       = UInt(2.W)
   val frs3_en          = Bool()
@@ -153,24 +149,9 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   def rf_wen           = dst_rtype =/= RT_X
 
   // Is it possible for this uop to misspeculate, preventing the commit of subsequent uops?
-  def unsafe           = (uses_ldq && !is_vec) || ((uses_stq && !is_vec) && !is_fence) || is_br || is_jalr
+  def unsafe           = uses_ldq || (uses_stq && !is_fence) || is_br || is_jalr
 
   def fu_code_is(_fu: UInt) = (fu_code & _fu) =/= 0.U
-}
-
-/**
- * MicroOp for Debug Harness
- */
-class DebugMicroOp(val coreMaxAddrBits: Int, val xLen: Int, val vLen: Int, val lregSz: Int) extends Bundle
-{
-  val ldst             = UInt(lregSz.W)
-  val dst_rtype        = UInt(3.W)
-  val debug_pc         = UInt(coreMaxAddrBits.W)
-  val debug_tag        = UInt(64.W)            // A sequential ID assigned at dispatch. Used by MCM to distinguish between flushed and retired loads.
-  val debug_inst       = UInt(32.W)
-  val debug_wdata      = UInt(xLen.W)
-  val debug_vec_wdata  = UInt((vLen*8).W)
-  val debug_vec_wmask  = UInt(8.W)
 }
 
 /**
@@ -184,7 +165,7 @@ class CtrlSignals extends Bundle()
   val op1_sel     = UInt(OP1_X.getWidth.W)
   val op2_sel     = UInt(OP2_X.getWidth.W)
   val imm_sel     = UInt(IS_X.getWidth.W)
-  val op_fcn      = UInt((new freechips.rocketchip.rocket.ALUFN).SZ_ALU_FN.W)
+  val op_fcn      = UInt(freechips.rocketchip.rocket.ALU.SZ_ALU_FN.W)
   val fcn_dw      = Bool()
   val csr_cmd     = UInt(freechips.rocketchip.rocket.CSR.SZ.W)
   val is_load     = Bool()   // will invoke TLB address lookup

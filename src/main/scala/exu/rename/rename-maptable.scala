@@ -15,7 +15,7 @@ import chisel3._
 import chisel3.util._
 import boom.common._
 import boom.util._
-import org.chipsalliance.cde.config.Parameters
+import freechips.rocketchip.config.Parameters
 
 class MapReq(val lregSz: Int) extends Bundle
 {
