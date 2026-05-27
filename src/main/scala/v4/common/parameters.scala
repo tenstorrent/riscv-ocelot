@@ -120,6 +120,7 @@ case class BoomCoreParams(
   enableCommitLogPrintf: Boolean = false,
   enableBranchPrintf: Boolean = false,
   enableMemtracePrintf: Boolean = false,
+  enableDebugHarness: Boolean = false,
 
   /* enableConservativeSNI: speculative non-interference */
   enableConservativeSNI: Boolean = false,
@@ -357,6 +358,7 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val COMMIT_LOG_PRINTF   = boomParams.enableCommitLogPrintf // dump commit state, for comparision against ISA sim
   val BRANCH_PRINTF       = boomParams.enableBranchPrintf // dump branch predictor results
   val MEMTRACE_PRINTF     = boomParams.enableMemtracePrintf // dump trace of memory accesses to L1D for debugging
+  val DEBUG_HARNESS       = boomParams.enableDebugHarness // attach BoomCoreHarnessWrapper BlackBox for whisper-cosim DPI bridge
 
   //************************************
   // Other Non/Should-not-be sythesizable modules

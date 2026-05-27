@@ -51,6 +51,33 @@ class WithBoomMemtracePrintf extends Config((site, here, up) => {
   }
 })
 
+// Attach the whisper-cosim debug harness (BoomCoreHarnessWrapper_N BlackBox + monitor_* DPI imports).
+// The BlackBox SV uses `import "DPI-C"` constructs that VCS handles natively but Verilator does not,
+// so we auto-disable on Verilator builds by sniffing the cwd / SIMULATOR env var. Set SIMULATOR=vcs
+// (or SIM_NAME=vcs) to force-enable from a non-vcs path.
+class WithBoomDebugHarness extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => {
+    val cwd = System.getProperty("user.dir", "")
+    val cwdAbs = try {
+      new java.io.File(cwd).getAbsolutePath
+    } catch {
+      // Fully-qualified: `Exception` unqualified here resolves to boom.v4.exu.Exception (the ROB bundle).
+      case _: java.lang.Exception => cwd
+    }
+    val simEnv = sys.env.get("SIMULATOR").orElse(sys.env.get("SIM_NAME"))
+    val isVcs = simEnv.map(_.toLowerCase == "vcs").getOrElse {
+      val pathLower = (cwd + " " + cwdAbs).toLowerCase
+      pathLower.contains("vcs") && !pathLower.contains("verilator")
+    }
+    up(TilesLocated(InSubsystem), site) map {
+      case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+        enableDebugHarness = isVcs
+      )))
+      case other => other
+    }
+  }
+})
+
 class WithNBoomPerfCounters(n: Int) extends Config((site, here, up) => {
   case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
     case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(

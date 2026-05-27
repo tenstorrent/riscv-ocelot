@@ -22,6 +22,23 @@ abstract trait HasBoomUOP extends BoomBundle
   val uop = new MicroOp()
 }
 
+/**
+ * MicroOp for Debug Harness (whisper-cosim DPI bridge).
+ * vLen-sized fields are kept on the bundle so the harness SV interface stays stable;
+ * they're driven to zero by core.scala until v4 grows a VPU.
+ */
+class DebugMicroOp(val coreMaxAddrBits: Int, val xLen: Int, val vLen: Int, val lregSz: Int) extends Bundle
+{
+  val ldst             = UInt(lregSz.W)
+  val dst_rtype        = UInt(3.W)
+  val debug_pc         = UInt(coreMaxAddrBits.W)
+  val debug_tag        = UInt(64.W)
+  val debug_inst       = UInt(32.W)
+  val debug_wdata      = UInt(xLen.W)
+  val debug_vec_wdata  = UInt((vLen*8).W)
+  val debug_vec_wmask  = UInt(8.W)
+}
+
 class MicroOp(implicit p: Parameters) extends BoomBundle
   with freechips.rocketchip.rocket.constants.MemoryOpConstants
   with freechips.rocketchip.rocket.constants.ScalarOpConstants

@@ -32,6 +32,7 @@ import java.nio.file.{Paths}
 
 import chisel3._
 import chisel3.util._
+import chisel3.experimental.IntParam
 
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.Instructions._
@@ -1468,4 +1469,253 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     io.trace_core_ingress.get.time := RegNext(csr.io.time)
     io.trace_core_ingress.get.priv := RegNext(csr.io.status.prv)
   }
+
+
+  //-------------------------------------------------------------
+  //-------------------------------------------------------------
+  // **** Connect debugging harness for DV COSIM bridge ****
+  //-------------------------------------------------------------
+  //-------------------------------------------------------------
+  if (DEBUG_HARNESS) {
+     if (coreParams.retireWidth == 1) {
+       val harness_1 = Module(new BoomCoreHarnessWrapper_1(coreParams.vLen.max(64)))  // safe min for no-VPU configs
+                     
+       harness_1.io.clock        := clock.asBool
+       harness_1.io.reset        := reset.asBool
+       harness_1.io.hartid       := io.hartid
+
+       harness_1.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_1.io.csrwr.addr  := csr.io.rw.addr
+       harness_1.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_1.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 1) {
+          harness_1.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_1.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_1.io.commit.uops(w).debug_tag   := 0.U  // v4 MicroOp lacks debug_tag (dispatch-assigned MCM ID)
+          harness_1.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_1.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_1.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_1.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_1.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU yet
+          harness_1.io.commit.uops(w).debug_vec_wmask := 0.U
+       }
+     } else if (coreParams.retireWidth == 2) {
+       val harness_2 = Module(new BoomCoreHarnessWrapper_2(coreParams.vLen.max(64)))  // safe min for no-VPU configs
+                     
+       harness_2.io.clock        := clock.asBool
+       harness_2.io.reset        := reset.asBool
+       harness_2.io.hartid       := io.hartid
+       
+       harness_2.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_2.io.csrwr.addr  := csr.io.rw.addr
+       harness_2.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_2.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 2) {
+          harness_2.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_2.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_2.io.commit.uops(w).debug_tag   := 0.U  // v4 MicroOp lacks debug_tag (dispatch-assigned MCM ID)
+          harness_2.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_2.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_2.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_2.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_2.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU yet
+          harness_2.io.commit.uops(w).debug_vec_wmask := 0.U
+       }
+     } else if (coreParams.retireWidth == 3) {
+       val harness_3 = Module(new BoomCoreHarnessWrapper_3(coreParams.vLen.max(64)))  // safe min for no-VPU configs
+                     
+       harness_3.io.clock        := clock.asBool
+       harness_3.io.reset        := reset.asBool
+       harness_3.io.hartid       := io.hartid
+       
+       harness_3.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_3.io.csrwr.addr  := csr.io.rw.addr
+       harness_3.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_3.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 3) {
+          harness_3.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_3.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_3.io.commit.uops(w).debug_tag   := 0.U  // v4 MicroOp lacks debug_tag (dispatch-assigned MCM ID)
+          harness_3.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_3.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_3.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_3.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_3.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU yet
+          harness_3.io.commit.uops(w).debug_vec_wmask := 0.U
+       }
+     } else if (coreParams.retireWidth == 4) {
+       val harness_4 = Module(new BoomCoreHarnessWrapper_4(coreParams.vLen.max(64)))  // safe min for no-VPU configs
+                     
+       harness_4.io.clock        := clock.asBool
+       harness_4.io.reset        := reset.asBool
+       harness_4.io.hartid       := io.hartid
+       
+       harness_4.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_4.io.csrwr.addr  := csr.io.rw.addr
+       harness_4.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_4.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 4) {
+          harness_4.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_4.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_4.io.commit.uops(w).debug_tag   := 0.U  // v4 MicroOp lacks debug_tag (dispatch-assigned MCM ID)
+          harness_4.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_4.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_4.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_4.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_4.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU yet
+          harness_4.io.commit.uops(w).debug_vec_wmask := 0.U
+       }
+     } else if (coreParams.retireWidth == 6) {
+       val harness_6 = Module(new BoomCoreHarnessWrapper_6(coreParams.vLen.max(64)))  // safe min for no-VPU configs
+                     
+       harness_6.io.clock        := clock.asBool
+       harness_6.io.reset        := reset.asBool
+       harness_6.io.hartid       := io.hartid
+       
+       harness_6.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_6.io.csrwr.addr  := csr.io.rw.addr
+       harness_6.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_6.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 6) {
+          harness_6.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_6.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_6.io.commit.uops(w).debug_tag   := 0.U  // v4 MicroOp lacks debug_tag (dispatch-assigned MCM ID)
+          harness_6.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_6.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_6.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_6.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_6.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU yet
+          harness_6.io.commit.uops(w).debug_vec_wmask := 0.U
+       }
+     } else if (coreParams.retireWidth == 8) {
+       val harness_8 = Module(new BoomCoreHarnessWrapper_8(coreParams.vLen.max(64)))  // safe min for no-VPU configs
+                     
+       harness_8.io.clock        := clock.asBool
+       harness_8.io.reset        := reset.asBool
+       harness_8.io.hartid       := io.hartid
+       
+       harness_8.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_8.io.csrwr.addr  := csr.io.rw.addr
+       harness_8.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_8.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 8) {
+          harness_8.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_8.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_8.io.commit.uops(w).debug_tag   := 0.U  // v4 MicroOp lacks debug_tag (dispatch-assigned MCM ID)
+          harness_8.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_8.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_8.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_8.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_8.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU yet
+          harness_8.io.commit.uops(w).debug_vec_wmask := 0.U
+       }
+     }
+  }
+
+}
+
+
+
+
+//-------------------------------------------------------------
+// Below these classes instatiate black box wrappers for the COSIM harness
+//-------------------------------------------------------------
+
+// Snapshot of the CSR write port sampled by the cosim harness for differential checking.
+class CSRWrite(val xLen: Int) extends Bundle
+{
+  val cmd   = UInt(3.W) // 0:Nop, 2:Read, 4:SystemInsn, 5:Write, 6:Set, 7:Clear
+  val addr  = UInt(12.W)
+  val wdata = Bits(xLen.W)
+  val rdata = Bits(xLen.W)
+}
+
+class BoomCoreHarnessWrapper_1(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(vlen)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 1, 64, vlen, 5, 1))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_1.v")
+}
+
+class BoomCoreHarnessWrapper_2(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(vlen)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 2, 64, vlen, 5, 1))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_2.v")
+}
+
+class BoomCoreHarnessWrapper_3(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(vlen)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 3, 64, vlen, 5, 1))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_3.v")
+}
+
+class BoomCoreHarnessWrapper_4(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(vlen)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 4, 64, vlen, 5, 2))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_4.v")
+}
+
+class BoomCoreHarnessWrapper_6(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(vlen)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 6, 64, vlen, 5, 2))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_6.v")
+}
+
+class BoomCoreHarnessWrapper_8(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(vlen)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 8, 64, vlen, 5, 2))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_8.v")
 }
