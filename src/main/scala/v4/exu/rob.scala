@@ -317,12 +317,12 @@ class Rob(
     val ftq_idx = UInt(log2Ceil(ftqSz).W)
     val uses_ldq = Bool()
     val uses_stq = Bool()
-    val dst_rtype = UInt(2.W)
+    val dst_rtype = UInt(3.W)  // widened 2->3 for Caracal RT_VEC
     val ldst = UInt(lregSz.W)
     val pdst = UInt(maxPregSz.W)
     val stale_pdst = UInt(maxPregSz.W)
   }
-  val compactUopWidth = 1 + log2Ceil(ftqSz) + 1 + 1 + 2 + lregSz + maxPregSz + maxPregSz
+  val compactUopWidth = 1 + log2Ceil(ftqSz) + 1 + 1 + 3 + lregSz + maxPregSz + maxPregSz
   def compact_to_uop(compact: RobCompactUop, uop: MicroOp): MicroOp = {
     val out = WireInit(uop)
     out.is_fencei := compact.is_fencei

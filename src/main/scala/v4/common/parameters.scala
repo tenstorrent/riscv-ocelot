@@ -18,6 +18,7 @@ import freechips.rocketchip.devices.tilelink.{BootROMParams, CLINTParams, PLICPa
 import boom.v4.ifu._
 import boom.v4.exu._
 import boom.v4.lsu._
+import boom.v4.vec.common.{VectorParams}
 
 /**
  * Default BOOM core parameters
@@ -127,6 +128,10 @@ case class BoomCoreParams(
 
   enableTraceCoreIngress: Boolean = false,
 
+  /* Caracal RVV 1.0 vector extension (Goal 1) */
+  enableVector: Boolean = false,
+  vector: Option[VectorParams] = None,
+
 // DOC include end: BOOM Parameters
 ) extends freechips.rocketchip.tile.CoreParams
 {
@@ -226,6 +231,17 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val numIrfBanks = boomParams.numIrfBanks
   val numFrfReadPorts = boomParams.numFrfReadPorts
   val numFrfBanks = boomParams.numFrfBanks
+
+  //************************************
+  // Vector (Caracal Goal 1)
+  // usingRVV gates every downstream Caracal vector pipeline stage. Deliberately
+  // NOT named `usingVector`: rocketchip's HasCoreParameters already owns that
+  // name (tied to coreParams.useVector) and uses it to gate its own RVV CSR /
+  // decode plumbing plus hard require()s on vLen/eLen. Caracal supplies its own
+  // vector pipeline and CSRs, so we keep rocketchip's useVector=false and gate
+  // on this independent flag instead. Default off => baseline bit-identical.
+  val usingRVV = boomParams.enableVector
+  val vectorParams = boomParams.vector.getOrElse(VectorParams())
 
   //************************************
   // Functional Units
@@ -345,6 +361,20 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val stqAddrSz       = log2Ceil(numStqEntries)
   val lsuAddrSz       = ldqAddrSz max stqAddrSz
   val brTagSz         = log2Ceil(maxBrCount)
+
+  // Caracal vector sizes (Goal 1). Named with a `vec` prefix to avoid colliding
+  // with rocketchip HasCoreParameters' own vLen/maxVLMax (which are 0 for BOOM
+  // since useVector stays false -- see usingRVV). All derived from vectorParams.
+  val vecVLen         = vectorParams.vLen                          // VLEN in bits (default 256)
+  val numVecPhysRegs  = vectorParams.numVecPhysRegisters           // physical vector pregs (default 128)
+  val vecPregSz       = log2Ceil(numVecPhysRegs)                   // bits to index a vector preg
+  val vecLregSz       = 5                                          // 32 architectural vector regs v0..v31
+  val maxVecVL        = vecVLen                                    // max VL in elements (SEW=8, LMUL=8 => vLen)
+  val vecVLSz         = log2Ceil(maxVecVL + 1)                     // bits to hold a VL value (0..maxVecVL)
+  val vsetvlIdSz      = 3                                          // monotonic vset id (8 outstanding)
+  // RVV 1.0 constrains EMUL*NF <= 8, so max sub-uops per arch inst = 8; split
+  // index/total range 0..8 inclusive => log2Ceil(9) = 4 bits.
+  val vecSplitSz      = log2Ceil(vectorParams.crackerWidth + 1) max log2Ceil(9)
 
   require (numIntPhysRegs >= (32 + coreWidth))
   require (numFpPhysRegs >= (32 + coreWidth))

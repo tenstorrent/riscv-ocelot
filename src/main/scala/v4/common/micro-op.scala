@@ -39,6 +39,23 @@ class DebugMicroOp(val coreMaxAddrBits: Int, val xLen: Int, val vLen: Int, val l
   val debug_vec_wmask  = UInt(8.W)
 }
 
+/**
+ * Caracal vector configuration snapshot (the vcsr state) carried per-uop.
+ * Filled at decode/crack time from the cracker's architectural vtype/vl mirror.
+ */
+class VConfig(implicit p: Parameters) extends BoomBundle
+{
+  val vstart = UInt(vecVLSz.W)
+  val vl     = UInt(vecVLSz.W)
+  val vlmax  = UInt(vecVLSz.W)
+  val vsew   = UInt(3.W)
+  val vlmul  = UInt(3.W)   // signed (fractional LMUL encoded), 3 bits per spec
+  val vma    = Bool()      // mask agnostic
+  val vta    = Bool()      // tail agnostic
+  val vxrm   = UInt(2.W)   // fixed-point rounding mode
+  val vxsat  = Bool()      // fixed-point saturation flag
+}
+
 class MicroOp(implicit p: Parameters) extends BoomBundle
   with freechips.rocketchip.rocket.constants.MemoryOpConstants
   with freechips.rocketchip.rocket.constants.ScalarOpConstants
@@ -130,6 +147,59 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val csr_cmd          = UInt(freechips.rocketchip.rocket.CSR.SZ.W)
 
 
+  //------------------------------------------------------------------------
+  // Caracal RVV 1.0 vector fields (Goal 1).
+  // All inert (zero / false) for scalar uops; only meaningful when is_vec.
+  //------------------------------------------------------------------------
+  val is_vec           = Bool()                  // top-level "is this a vector uop?" gate
+
+  // Vector logical registers (only used Decode->Rename). lvm is the V0 mask reg
+  // (0 when masked). lvd is the vector destination logical reg.
+  val lvs1             = UInt(vecLregSz.W)
+  val lvs2             = UInt(vecLregSz.W)
+  val lvs3             = UInt(vecLregSz.W)
+  val lvd              = UInt(vecLregSz.W)
+  val lvm              = UInt(vecLregSz.W)
+
+  // Vector physical registers (post-rename). pvl is an INTEGER preg holding VL
+  // when not statically known (sized to the integer preg space).
+  val pvs1             = UInt(vecPregSz.W)
+  val pvs2             = UInt(vecPregSz.W)
+  val pvs3             = UInt(vecPregSz.W)
+  val pvdest           = UInt(vecPregSz.W)
+  val stale_pvdest     = UInt(vecPregSz.W)
+  val pvm              = UInt(vecPregSz.W)        // V0 mask physical preg
+  val pvl              = UInt(maxPregSz.W)        // integer preg carrying VL
+  val pvs1_busy        = Bool()
+  val pvs2_busy        = Bool()
+  val pvs3_busy        = Bool()
+  val pvm_busy         = Bool()
+  val pvl_busy         = Bool()
+
+  // Per-uop vcsr snapshot.
+  val vconfig          = new VConfig
+
+  // Effective element width / mul (differ from vsew/vlmul for widening/narrowing ops).
+  val v_eew            = UInt(3.W)
+  val v_emul           = UInt(3.W)
+
+  // Cracker bookkeeping. v_split_idx/total range 0..8 (RVV 1.0: EMUL*NF <= 8).
+  val v_split_first    = Bool()
+  val v_split_last     = Bool()
+  val v_split_idx      = UInt(vecSplitSz.W)
+  val v_split_total    = UInt(vecSplitSz.W)
+
+  // Monotonic id of the governing vset-class uop (cracker-broadcast matching).
+  val vsetvl_id        = UInt(vsetvlIdSz.W)
+
+  // Segment load/store fields.
+  val v_seg_nf         = UInt(3.W)               // number of fields (NF), 1..8
+  val v_seg_idx        = UInt(3.W)               // which field this sub-uop handles
+
+  // True when VL is determined at decode (vsetivli, or const after broadcast);
+  // false while waiting on a renamed scalar to deliver VL.
+  val vl_is_known      = Bool()
+
   // Predication
   def is_br            = br_type.isOneOf(B_NE, B_EQ, B_GE, B_GEU, B_LT, B_LTU)
   def is_jal           = br_type === B_J
@@ -145,9 +215,10 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val lrs2             = UInt(lregSz.W)
   val lrs3             = UInt(lregSz.W)
 
-  val dst_rtype        = UInt(2.W)
-  val lrs1_rtype       = UInt(2.W)
-  val lrs2_rtype       = UInt(2.W)
+  // Widened 2->3 bits for Caracal (RT_VEC). See consts.scala.
+  val dst_rtype        = UInt(3.W)
+  val lrs1_rtype       = UInt(3.W)
+  val lrs2_rtype       = UInt(3.W)
   val frs3_en          = Bool()
 
   val fcn_dw           = Bool()

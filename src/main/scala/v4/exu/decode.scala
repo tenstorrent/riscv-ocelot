@@ -20,6 +20,7 @@ import freechips.rocketchip.util._
 
 import boom.v4.common._
 import boom.v4.util._
+import boom.v4.vec.decode.VDecode
 
 // scalastyle:off
 /**
@@ -62,7 +63,7 @@ object DecodeTables
               //               |  |  |               |       |       |       |  |     |  |  |  |         |  |  |      |       |        | | | ren2 | | | | | | fast | | |
               //               |  |  |               |       |       |       |  |     |  |  |  |         |  |  |      |       |        | | | | ren3 | | | | | |  | | | |
               //               |  |  |               |       |       |       |  |     |  |  |  |         |  |  |      |       |        | | | | |  | | | | | | |  | | | |
-                          List(N, N, DC(FC_SZ)     , RT_X  , DC(2) , DC(2) , X, IS_N, X, X, X, M_X,      N, X, CSR.X, DW_X  , FN_X   , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X)
+                          List(N, N, DC(FC_SZ)     , RT_X  , DC(3) , DC(3) , X, IS_N, X, X, X, M_X,      N, X, CSR.X, DW_X  , FN_X   , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X)
 
   def X32_table: Seq[(BitPat, List[BitPat])] = { import Instructions32._; Seq(
     SLLI               -> List(Y, N, fc2oh(FC_ALU) , RT_FIX, RT_FIX, RT_X  , N, IS_I, N, N, N, M_X     , N, N, CSR.N, DW_XPR, FN_SL  , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X),
@@ -362,9 +363,9 @@ class CtrlSigs(implicit p: Parameters) extends Bundle
   val legal           = Bool()
   val fp_val          = Bool()
   val fu_code         = UInt(FC_SZ.W)
-  val dst_type        = UInt(2.W)
-  val rs1_type        = UInt(2.W)
-  val rs2_type        = UInt(2.W)
+  val dst_type        = UInt(3.W)  // widened 2->3 for Caracal RT_VEC
+  val rs1_type        = UInt(3.W)
+  val rs2_type        = UInt(3.W)
   val frs3_en         = Bool()
   val imm_sel         = UInt(IS_N.getWidth.W)
   val uses_ldq        = Bool()
@@ -456,9 +457,13 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
   val cs_legal = cs.legal
 //   dontTouch(cs_legal)
 
+  // Caracal: RVV instructions are not in the scalar decode tables, so cs_legal
+  // is false for them. Recognize them here so they aren't flagged illegal.
+  val v_legal = if (usingRVV) VDecode.isLegal(inst) else false.B
+
   require (fLen >= 64)
   val illegal_rm = inst(14,12).isOneOf(5.U,6.U) || (inst(14,12) === 7.U && io.fcsr_rm >= 5.U)
-  val id_illegal_insn = (!cs_legal ||
+  val id_illegal_insn = (!(cs_legal || v_legal) ||
     (cs.fp_val && (io.csr_decode.fp_illegal || illegal_rm)) ||
     (uop.is_rocc && io.csr_decode.rocc_illegal) ||
     (cs.is_amo && !io.status.isa('a'-'a'))  ||
@@ -602,6 +607,19 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
     (JAL  , B_J  ),
     (JALR , B_JR )
   ) .map { case (c, b) => Mux(inst === c, b, 0.U) } .reduce(_|_)
+
+  // Caracal vector decode hook. Placed after all scalar field population so its
+  // overrides win (Chisel last-connect-wins). The vector iq_type bits are cleared
+  // for every uop here (the Vec was widened 4->7); VDecode.decode re-asserts the
+  // right bit for recognized vector uops and fully owns iq_type for them.
+  if (usingRVV) {
+    uop.iq_type(IQ_V_LOAD)  := false.B
+    uop.iq_type(IQ_V_STORE) := false.B
+    uop.iq_type(IQ_V_ALU)   := false.B
+    when (VDecode.isLegal(inst)) {
+      VDecode.decode(uop, inst)
+    }
+  }
 
   io.deq.uop := uop
 }

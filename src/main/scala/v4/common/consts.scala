@@ -110,18 +110,27 @@ trait ScalarOpConstants
   val IS_F3  = 7.U(3.W)  // funct3
 
   // Decode Stage Control Signals
-  val RT_FIX   = 0.U(2.W)
-  val RT_FLT   = 1.U(2.W)
-  val RT_X     = 2.U(2.W) // not-a-register (prs1 = lrs1 special case)
-  val RT_ZERO  = 3.U(2.W)
+  // Widened 2->3 bits for Caracal: RT_VEC marks a vector register operand.
+  // (Plan text says RT_VEC=3 but RT_ZERO already owns 3, so RT_VEC=4.)
+  val RT_FIX   = 0.U(3.W)
+  val RT_FLT   = 1.U(3.W)
+  val RT_X     = 2.U(3.W) // not-a-register (prs1 = lrs1 special case)
+  val RT_ZERO  = 3.U(3.W)
+  val RT_VEC   = 4.U(3.W) // vector register operand (Caracal RVV 1.0)
 
 
   // IQT type
-  val IQ_SZ  = 4
-  val IQ_MEM = 0
-  val IQ_UNQ = 1
-  val IQ_ALU = 2
-  val IQ_FP  = 3
+  // Caracal: widened 4->7 to add three vector issue queues. The IQ_V_* issue
+  // *units* + IssueParams + require()s are added in Step 7; decode (Step 2) only
+  // needs the constants + the wider one-hot iq_type Vec to route vector uops.
+  val IQ_SZ      = 7
+  val IQ_MEM     = 0
+  val IQ_UNQ     = 1
+  val IQ_ALU     = 2
+  val IQ_FP      = 3
+  val IQ_V_LOAD  = 4
+  val IQ_V_STORE = 5
+  val IQ_V_ALU   = 6
 
   // Functional unit select
   // bit mask, since a given execution pipeline may support multiple functional units
