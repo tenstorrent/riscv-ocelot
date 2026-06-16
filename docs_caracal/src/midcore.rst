@@ -20,21 +20,45 @@ Vector instructions will also enter the rename_stage and fp_rename_stage and hav
 Dispatch-group atomicity across the two stages
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Because vector mapping takes an extra cycle, a vector ``OP.v`` would otherwise reach dispatch one
-cycle after a scalar uop in the same dispatch group. |caracal| does **not** insert a 1-cycle bubble
-on the scalar path to re-align them. Instead the ROB allocation is split from the vector metadata
-fill:
+Because vector mapping takes an extra cycle, a vector ``OP.v`` reaches dispatch one cycle after a
+scalar uop in the same dispatch group. |caracal| does **not** insert a 1-cycle bubble on the scalar
+path to re-align them. Instead it decouples the three things that the rename→dispatch boundary
+normally does in one cycle — ROB allocation, IQ-slot write, and branch snapshot — and lets the
+vector-specific two of them slip a cycle, while the in-order one stays put:
 
 - **Scalar Mapping (cycle 1)** allocates the ROB entry in program order — for both scalar and vector
-  uops — and assigns the ``br_tag`` and any scalar PRNs. The dispatch group is therefore allocated
-  atomically and in order exactly as in |boom|; branch-tag allocation is unchanged.
+  uops — and assigns the ``br_tag`` and any scalar PRNs. ROB allocation is the only thing that
+  *must* be in program order, and it stays exactly as in |boom|: the dispatch group reserves its ROB
+  entries atomically and in order. Scalar uops in the group also write their issue-queue slots this
+  cycle and may begin issuing immediately.
 - **Vector Mapping (cycle 2)** fills the vector-specific metadata (``pvdest``, the ``EMUL`` stale
-  group, ``pvs*``/``pvm``, ``v_emul``, etc.) into the **already-allocated** ROB entry the next cycle.
+  group, ``pvs*``/``pvm``, ``v_emul``, etc.) into the **already-allocated** ROB entry **and** writes
+  the vector ``OP.v``'s issue-queue slot. A vector ``OP.v`` therefore enters its ``IQ_V_*`` queue one
+  cycle behind its scalar group-mates. This is harmless: its ROB entry already exists (program order
+  preserved), and a vector slot cannot be granted before its operands are renamed anyway, so the
+  one-cycle-later slot write is never on the critical issue path. Scalar dispatch throughput is
+  unaffected — only the vector lane is delayed, and only by one cycle.
 
-The ROB entry is thus reserved by the in-order scalar stage and completed a cycle later by the vector
-stage; no bubble is needed and dispatch-group integrity is preserved. The only constraint is that the
-vector metadata write lands before the entry can complete/issue, which it always does since vector
-mapping is exactly one cycle behind.
+**Branch-snapshot alignment (the subtle part).** The scalar/integer/FP RMTs are snapshotted on the
+``ren_br_tags`` event in cycle 1. The **vector** RMT and the :ref:`VCFG mirror <vector-rvv-decode>`
+update a cycle later, so snapshotting them off the *same* cycle-1 event would capture state from the
+wrong cycle. |caracal| instead snapshots the vector RMT and the VCFG mirror off a **1-cycle-delayed
+``br_tag``** — the ``ren_br_tags`` valid/tag pipelined into the vector-mapping stage. Concretely:
+
+- When branch *B* in a dispatch group is assigned ``br_tag = t`` in cycle 1, any vector ``OP.v`` older
+  than *B* in that group performs its vector remap in cycle 2.
+- The vector RMT snapshot for tag *t* is written in cycle 2 from the delayed ``br_tag``, **after**
+  those older vector remaps have landed in the vector ``map_table``. The snapshot therefore captures
+  the correct "state as of *B*" — younger-than-*B* vector remaps have not yet been applied (they are
+  in the next group, a later cycle).
+- On ``brupdate.b2.mispredict`` the vector RMT and VCFG mirror restore from
+  ``br_snapshots(br_tag)`` / ``vcfg_snapshots(br_tag)`` exactly as the scalar RMT does — the
+  one-cycle-delayed *write* does not change the *restore* path; both reads are indexed by the same
+  ``br_tag`` the mispredict carries.
+
+The only ordering constraint is that the vector metadata write and the delayed snapshot both land
+before the entry can issue, which they always do since vector mapping is exactly one cycle behind ROB
+allocation. No scalar bubble is inserted and dispatch-group integrity is preserved.
 
 Rename Map Table (RMT)
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -151,37 +175,50 @@ ready, the instruction will be ready to be issued. The scalar Busy Table does th
 **sets** one busy bit per allocated ``pdst``, **clears** a bit per writeback port, and is **read**
 for the source operands (``prs1``/``prs2``/``prs3``) of each rename lane.
 
-The Vector Busy Table operates on the same principle over ``numVecPhysRegisters`` bits, but each of
-the three sides scales differently — and only the *set* side scales like the :ref:`free-list`:
+.. _group-done:
 
-**1. Set-busy (allocation) **
-   A vector dest is a whole ``EMUL`` group, so up to 8 busy bits are set per vector ``OP.v``. Because
-   the free list allocates **non-contiguous** PRNs, the set mask is the OR of ``UIntToOH(pvdest_j)``
-   over the group's PRNs, up to ``coreWidth*8`` bits/cycle.
+The naive way to track a group's readiness is per-PRN: store all up-to-8 source PRNs in the
+slot, read 8 busy bits per source, replicate the wakeup-match comparator 8× per source, and
+AND the 8 bits into a group-ready signal — on the order of **25 bit-reads and a 25-wide wakeup
+CAM per slot**, which would be the dominant area/timing cost of the whole vector path. |caracal|
+**does not do this.** It exploits the one property that makes a single representative bit
+sufficient: a vector register group is **allocated, renamed, completed, and freed atomically as
+a unit**, so all of its PRNs share one busy lifetime. The Busy Table therefore tracks readiness
+at the **group-base PRN** — the PRN that the RMT maps the group's *base* architectural reg to.
+Both producer and consumer reference that same base PRN through the RMT (the consumer's ``pvs1``
+base *is* the producer's ``pvdest`` base for the group it wrote), so a **single** comparator
+matches them. Non-contiguous allocation is fine: the base is one specific PRN, not derived from a
+contiguous run.
 
+This rests on **group-done completion** (see :ref:`group-done-wb`): every vector producer signals
+completion of a whole destination group **once** — the CII coprocessor completes an ``OP.v`` in
+program order and signals once per instruction; the Load Coalescing Buffer assembles all of a
+group's destination PRNs and emits **one** group-done after the *last* PRN lands. There is no
+intermediate per-PRN wakeup on the vector network.
 
-**2. Source reads **
-   The Busy Table is read for every source. A vector source is a
-   group, so each rename lane reads the busy status of an ``EMUL``-wide group per vector source:
-   ``pvs1[8]``, ``pvs2[8]``, ``pvs3[8]`` (the old ``vd`` for tail/mask-undisturbed) and the mask
-   ``pvm[1]`` — on the order of 25 bit-reads per lane, times ``plWidth``. The in-flight wakeup bypass
-   is replicated per group member. This is the dominant cost of the Vector Busy Table.
+The Vector Busy Table over ``numVecPhysRegisters`` bits then mirrors the scalar table almost
+exactly:
 
-**3. Clear-busy (writeback)**
-   Each vector writeback completes ONE PRN, so the clear side is ``numVecWbPorts`` wide,
-   the same shape as the scalar table — not a group-wide clear.
+**1. Set-busy (allocation).**
+   Set the **group-base** busy bit per vector ``OP.v`` (``UIntToOH(pvdest_base)``), up to
+   ``coreWidth`` bits/cycle — the same shape as the scalar set side. (The free list still
+   *allocates* the full non-contiguous ``EMUL`` group as in :ref:`free-list`; only the busy
+   *representative* is the base.)
 
-**Group-readiness aggregation .**
-   Because the mapper is atomic-group — no cracking, one ROB entry, **one issue slot** per ``OP.v`` —
-   a single slot operand (e.g. ``pvs1``) stands for an 8-PRN group. The Busy Table reads 8 per-PRN
-   bits, but the slot tracks one readiness signal per operand, so the per-PRN bits must be **AND-ed
-   into a single group-ready bit** and the operand woken only when the **last** group member writes
-   back. This is the busy-table-side counterpart of the ROB's group completion counter.
+**2. Source reads.**
+   One busy read per vector source **group**, at its base PRN: ``pvs1``/``pvs2``/``pvs3`` (the
+   old ``vd`` for tail/mask-undisturbed) and the mask ``pvm`` — **≈4 reads per lane**, plus the
+   integer ``pvl`` read on the integer side. Not 25.
 
-Accordingly the Vector Busy Table interface widens: ``busy_resps`` carries per-group source readiness
-(``pvs1``/``pvs2``/``pvs3``/``pvm``, aggregated to group-ready bits); ``ren_uops`` carries the group
-bases plus ``EMUL``; ``rebusy_reqs`` set up to 8 bits per ``OP.v``; and ``wakeups`` is
-``numVecWbPorts`` wide.
+**3. Clear-busy (group-done).**
+   Each group-done clears the **one** base bit it carries; the clear side is ``numVecWbPorts``
+   wide, identical in shape to the scalar table.
+
+The interface is thus barely wider than scalar: ``busy_resps`` carries one readiness bit per source
+group (``pvs1``/``pvs2``/``pvs3``/``pvm``); ``ren_uops`` carries the group **bases** (plus ``EMUL``
+for the free-list/ROB sides); ``rebusy_reqs`` set one base bit per ``OP.v``; ``wakeups`` is
+``numVecWbPorts`` wide and carries group-base PRNs. The expensive 8-wide-per-operand CAM is avoided
+entirely.
 
 
 
@@ -199,49 +236,52 @@ destination register. It therefore occupies **a single ROB entry**, regardless o
 ``EMUL``. This keeps the ROB small under wide vectors and lets vector instructions
 retire in one commit slot.
 
+.. _group-done-wb:
+
 Completion tracking
 ^^^^^^^^^^^^^^^^^^^^
 
-A single ROB entry that owns an ``EMUL``-wide destination group needs to know when
-**all** of the group's writes are done before it can clear its busy bit and commit.
-How that is detected differs between the two vector paths:
+A single ROB entry that owns an ``EMUL``-wide destination group needs to know when **all** of
+the group's writes are done before it can clear its busy bit and commit. |caracal| keeps the ROB
+side **identical to scalar** — a single-shot ``rob_bsy`` clear per entry — by requiring every
+vector producer to **aggregate its group into one group-done event** rather than streaming
+per-PRN writebacks into the ROB. The per-PRN counting lives in the producer, not in a new ROB
+counter:
 
 Vector arithmetic (tt_CII)
-   The vector ALU path executes **in program order on the in-order tt_CII
-   coprocessor** (see :ref:`vector-execution`). An in-order unit knows when an entire
-   ``op.v`` has retired, so it signals completion **once per instruction**. This maps
-   directly onto the existing single-writeback busy-clear in ``rob.scala`` — **no
-   per-destination counter is required** for CII ops. The ROB treats a CII completion
-   exactly like a scalar writeback: one wakeup clears ``rob_bsy`` for the entry.
+   The vector ALU path executes **in program order on the in-order tt_CII coprocessor** (see
+   :ref:`vector-execution`). An in-order unit knows when an entire ``OP.v`` has retired, so it
+   signals completion **once per instruction**. This maps directly onto the existing
+   single-writeback busy-clear in ``rob.scala`` — one wakeup clears ``rob_bsy``.
 
-Out-of-order vector load/store (VLS)
-   The vector memory path generates element/segment sub-accesses that complete
-   **independently and out of order** through the LSU. Here a single writeback is not
-   sufficient — the entry must remain busy until every sub-access has reported back.
-   For this path the ROB entry carries a small **completion counter** (4 bits;
-   ``EMUL ≤ 8``, and segment ``NF·EMUL ≤ 8``). The counter is initialized at dispatch to
-   the number of expected destination writes — derived from ``v_emul`` and ``v_seg_nf``,
-   **not** raw ``EMUL`` (widening/narrowing change the destination group size, and
-   mask/reduction results are a single register). Each writeback (or ``lsu_clr_bsy``
-   for stores) increments the counter by the number of ports matching the entry that
-   cycle; ``rob_bsy`` is cleared only when the counter reaches its target. Scalar ops
-   are the ``target = 1`` case and behave exactly as today.
+Out-of-order vector load (VLS)
+   The vector memory path generates element/segment sub-accesses that complete **out of order**
+   through the LSU, but they do **not** report to the ROB individually. The **Load Coalescing
+   Buffer** (:ref:`load-coalesce`) owns the per-PRN assembly *and* the per-group PRN-done count
+   (target derived from ``v_emul``/``v_seg_nf`` — the true destination-group size, accounting for
+   widening/narrowing and single-register mask/reduction results). When the **last** destination
+   PRN of the group is assembled, the LCB emits **one** group-done carrying the group-base PRN.
+   The ROB clears ``rob_bsy`` on that single event — no per-entry completion counter is added.
+   The same group-done drives the Busy-Table clear and the vector wakeup (see :ref:`group-done wakeup <group-done>`),
+   so the three structures stay consistent by construction. Vector **stores** clear via a single
+   ``lsu_clr_bsy`` once the whole active element set has translated/disambiguated (they write no
+   VRF); scalar ops are unchanged.
 
 Shared instruction (segmented LS)
    A shared instruction occupies **two issue slots** — one in the CII IQ (coprocessor half) and
-   one in the vector load/store IQ (LSU half) — but **a single ROB entry**. The entry stays busy
-   until **both** halves report. This reuses the VLS completion counter above: it is initialized to
-   expect the LSU sub-access completions **and** the coprocessor completion, and ``rob_bsy`` clears
-   only when the counter reaches that combined target. The two halves are sequenced by the TVRB
-   bypass — the producer (LSU for a segmented load, coprocessor for a segmented store) writes the
-   TVRB temp, whose available-broadcast wakes the consumer's IQ slot (see the CII Shared Instruction
+   one in the vector load/store IQ (LSU half) — but **a single ROB entry**. This is the **only**
+   case that waits for more than one completion, and it needs just a **1-bit "other half pending"
+   flag**, not a counter: the entry clears ``rob_bsy`` only when **both** the LSU group-done and
+   the coprocessor group-done have arrived. The two halves are sequenced by the TVRB bypass — the
+   producer (LSU for a segmented load, coprocessor for a segmented store) writes the TVRB temp,
+   whose available-broadcast wakes the consumer's IQ slot (see the CII Shared Instruction
    Scheduling section). For a segmented **store** the LSU half's actual D$ writes are still
    post-commit, exactly as for any store.
 
-The ``rob_unsafe`` (speculation-hazard) bit is gated the same way for VLS: a
-multi-access vector load is not memory-safe until **all** of its sub-accesses have
-disambiguated, so ``rob_unsafe`` is cleared only once the whole group reports safe,
-not on the first sub-access.
+The ``rob_unsafe`` (speculation-hazard) bit is gated the same way: a multi-access vector load is
+not memory-safe until **all** of its element addresses have disambiguated, so the LSU reports a
+single **group-safe** event (when the last element address has been LCAM-checked) that clears
+``rob_unsafe`` — not a per-sub-access clear.
 
 
 Commit
@@ -410,10 +450,19 @@ Segmented Store
 Speculative Wakeups
 ~~~~~~~~~~~~~~~~~~~
 
-The vector bypass network also supports speculative load wakeup, however speculative wakeup's are
-only sent to the vector operands of the ``IQ_V_*`` queues (via the vector wakeup network).
-Speculative bypass wakeup's to the scalar queues would not improve performance as it would require
-more than 1 cycle for the OP.v to reach a vector execution unit.
+With the single unified issue stage there is no separate scalar/vector scheduling stage to steer
+speculative wakeups to, so the policy is split by **operand class** instead:
+
+- **Scalar feeders of a vector slot** (base/stride/VL on the integer network, the ``.vf`` scalar on
+  the FP network) participate in |boom|'s existing **speculative load-hit wakeup** unchanged. A vector
+  uOP waiting on a scalar-load result is woken speculatively just like any integer/FP consumer, and is
+  re-busied through the same machinery if the load later misses.
+- **Vector operands** (``pvs*``, ``pvm`` on the vector wakeup network) wake only on **actual
+  completion**, not speculatively. A vector-load producer completes via the Load Coalescing Buffer
+  after a long, variable, streaming latency, and a vector-arithmetic producer completes in program
+  order over the CII — neither has the fixed short load-use latency that makes speculation profitable.
+  Waking vector operands on real writeback also avoids adding re-busy / replay machinery to the
+  vector network and the vector issue slots.
 
 
 
@@ -453,3 +502,18 @@ ports** — a store *reads* vector data from the VRF and writes it to memory; it
 Read-port breakdown: **8 total** = CoProcessor 4 (``pvs1``/``pvs2``/old-``vd``/``pvm``) + Store Unit 2
 (store data + mask/index) + Load Unit 2 (index + mask). Segmented-LS temporaries use the separate
 TVRB, not these VRF ports.
+
+**Tail/mask-undisturbed reads its budget from these same ports — no extra ports are added:**
+
+- **Arithmetic** tail/mask-undisturbed merges are done **inside the CII coprocessor**, which reads
+  the old ``vd`` on the read port already counted above (``old-vd`` of the CoProcessor's 4 reads) and
+  merges the inactive lanes before writing back. No additional port.
+- **Load** tail/mask fill is done **inside the LCB** before its single ``W0`` write
+  (:ref:`load-coalesce`); the inactive-lane source comes from the assembly entry, not a new VRF read.
+- **The standalone ``VL = 0`` / fully-inactive ``vta = 0`` group copy** ``pvdest ← stale_pvdest``
+  (see the VL == 0 case study) **reuses the Load Unit's 2R/2W ports**, which are idle when no load is
+  draining. It therefore fits in the 8R/4W budget with no new ports; under contention it arbitrates
+  behind active load drains (the copy is rare and not latency-critical).
+
+So the 8R/4W budget above is the **complete** Goal-1 VRF port requirement; tail-undisturbed handling
+does not widen it.

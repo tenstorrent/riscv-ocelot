@@ -183,13 +183,19 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val v_eew            = UInt(3.W)
   val v_emul           = UInt(3.W)
 
-  // Cracker bookkeeping. v_split_idx/total range 0..8 (RVV 1.0: EMUL*NF <= 8).
+  // nOP.v element/segment cursor. Caracal does NOT crack in the frontend: an
+  // OP.v stays a single uop through rename/ROB/issue (atomic LMUL/EMUL group
+  // rename). These fields are populated only when the Vector LS AGEN expands an
+  // OP.v into per-element/segment nOP.v accesses; they are inert on the OP.v
+  // itself. idx/total range 0..8 (RVV 1.0: EMUL*NF <= 8). See execution.rst
+  // "Vector LS AGEN stage" and the nOP.v glossary entry.
   val v_split_first    = Bool()
   val v_split_last     = Bool()
   val v_split_idx      = UInt(vecSplitSz.W)
   val v_split_total    = UInt(vecSplitSz.W)
 
-  // Monotonic id of the governing vset-class uop (cracker-broadcast matching).
+  // Monotonic id of the governing vset-class uop (VL-resolution / VCFG mirror
+  // bookkeeping; VL itself is delivered by the VLBU off the integer writeback).
   val vsetvl_id        = UInt(vsetvlIdSz.W)
 
   // Segment load/store fields.

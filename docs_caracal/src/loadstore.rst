@@ -107,8 +107,8 @@ Load Coalescing Buffer
 A vector load returns at most one element (``≤ ELEN``) per D$ response, and those responses may
 arrive **out of order** across MSHRs, while a destination physical register is a full ``VLEN``.
 Writing the VRF once per element would need an impractically wide, byte-masked write port and would
-break the one-write-per-PRN assumption the ROB completion counter and the vector Busy Table rely
-on.
+break the one-write-per-PRN (and one-**group-done**-per-instruction) assumption that the ROB
+single-shot busy-clear and the vector Busy Table rely on (see :ref:`group-done-wb`).
 
 To bridge this, |caracal| adds a **Load Coalescing Buffer (LCB)** in front of the VRF write port:
 
@@ -117,14 +117,20 @@ To bridge this, |caracal| adds a **Load Coalescing Buffer (LCB)** in front of th
 2. Each returning element is written into its byte offset within the assembly entry for its
    destination PRN, using the element index carried on the ``nOP.v``.
 3. When **all active bytes** of a destination PRN are present (tracked by a per-entry byte-valid
-   bitmap, bounded by the active-element mask), the LCB issues a **single** VRF write on ``W0`` and
-   signals one completion — which decrements the ROB ``EMUL`` completion counter and clears that
-   PRN's busy bit (waking the group-readiness aggregate in the Busy Table).
+   bitmap, bounded by the active-element mask), the LCB issues a **single** VRF write on ``W0`` for
+   that PRN.
 4. Inactive (masked-off or tail) byte lanes are filled per ``vta``/``vma`` policy before the write,
    so the single VRF write leaves no stale bytes.
+5. The LCB also owns the **per-group PRN-done count** (target = the destination-group size from
+   ``v_emul``/``v_seg_nf``). When the **last** destination PRN of the group is written, it emits
+   **one group-done** carrying the group-base PRN. That single event is what the ROB, the vector
+   Busy Table, and the vector wakeup network all consume (see :ref:`group-done-wb` and
+   :ref:`group-done wakeup <group-done>`) — there is no per-PRN ROB writeback or per-PRN vector wakeup. The
+   intermediate per-PRN VRF writes are visible only to the regfile.
 
-The LCB is what makes "one writeback per destination PRN" true even though the cache returns data
-element-by-element and out of order.
+The LCB is what makes "one writeback per destination PRN" true for the regfile — and **one
+group-done per instruction** true for the ROB / Busy Table / wakeup network — even though the cache
+returns data element-by-element and out of order.
 
 
 .. _elem-progress:
@@ -294,6 +300,32 @@ Memory SubSystem
 ----------------
 
 The memory subsystem remains unchanged from BOOMv4 — the D$ Interface Arbiter (:ref:`dcache-arbiter`)
-sits *outside* the cache and presents the same ``dmem.req`` interface. We recommend
-``LargeBoomV4Config`` or ``MegaBoomV4Config`` to enable the dual-port L1 D$, which lets the arbiter
-grant two requests per cycle for best scalar+vector throughput.
+sits *outside* the cache and presents the same ``dmem.req`` interface.
+
+.. _vector-bw-ceiling:
+
+Vector memory bandwidth ceiling
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Because the cache and its request interface are unchanged, **vector memory bandwidth is bounded by
+the scalar D$ port width, not by ``VLEN``.** Each ``dmem.req`` lane carries at most one element
+(``≤ ELEN`` = 64 bits) per cycle, and there are ``lsuWidth`` lanes — **1 on Medium, 2 on
+Large/Mega**. The consequences are first-order for vector performance and must be understood:
+
+- A single ``VLEN = 256`` destination register is **≥ 4 D$ beats** (``VLEN/ELEN``), even for the
+  densest unit-stride load — so peak vector load/store throughput is **64 bits/cycle on Medium,
+  128 bits/cycle on Mega**, regardless of ``LMUL``.
+- **SSI** (strided / indexed / segmented) accesses drain **one element per granted lane**, and that
+  lane is shared with scalar memory ops through the priority round-robin arbiter
+  (:ref:`dcache-arbiter`). A pathological scatter/gather is therefore element-serial.
+- **Unit-stride** is the optimized case (the Packer coalesces contiguous bytes up to the lane width
+  and the LCAM does one range check), but it is still capped at the same ``lsuWidth × ELEN``
+  bandwidth — the Packer reduces *address-generation* and *disambiguation* cost, not cache-port
+  width.
+
+This is a deliberate area/complexity trade-off: |caracal| reuses the scalar cache port rather than
+building a ``VLEN``-wide vector cache interface. For memory-bound vector kernels it is the dominant
+performance limiter, so ``LargeBoomV4Config`` / ``MegaBoomV4Config`` (dual-port L1 D$, two grants
+per cycle) is **required, not merely recommended,** for acceptable vector throughput. A wider /
+line-granular vector cache port is explicitly out of scope here and would be the highest-leverage
+follow-on if vector memory bandwidth proves limiting.

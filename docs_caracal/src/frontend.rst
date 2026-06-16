@@ -114,6 +114,52 @@ VL and use it for subsequent vector uOP decoding.
 
 This does result in poorer performance for this instruction, but this is acceptable as this vsetvl instruction type is not common.
 
+VCFG Mirror Recovery (speculative vtype/vl)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The VCFG mirror is **speculative decode-time state**: it is updated in program order as
+``vset*`` uop's decode, and every younger vector uop snapshots it into its ``vconfig``.
+Because the mapper derives ``EMUL`` from the mirror's ``vtype`` to size the PRN group it
+allocates, a ``vset*`` on a **mispredicted path** that updates the mirror would otherwise
+corrupt the ``EMUL`` of every surviving younger vector uop — a silent miss-size of the
+vector register group. The mirror therefore needs the **same recovery machinery as the
+RMT**, not just the RMT itself. |caracal| mirrors |boom|'s speculative/committed RMT pair:
+
+1. **Speculative VCFG mirror** — the working ``vtype``/``vl``/``vstart`` copy updated at
+   decode. This is the structure described above. The per-lane nearest-preceding-``vset``
+   prefix select already resolves the in-bundle program order, so the value each branch
+   "sees" is well defined.
+
+2. **Committed VCFG shadow** — updated **only** by the ROB when a ``vset*`` uop commits
+   (the same retire event that writes the architectural ``vtype``/``vl`` CSRs). It holds the
+   known-good architectural vector config.
+
+3. **Per-``br_tag`` snapshot** — on the same ``ren_br_tags`` allocation event that snapshots
+   the scalar/vector RMTs, the speculative mirror is snapshotted into a
+   ``maxBrCount``-deep array (≈24 bits/entry — ``vtype`` + ``vl`` + ``vstart`` — small).
+
+Recovery is then identical in shape to the RMT (see :ref:`snapshots`):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 1 1 2
+
+   * - Event
+     - Recovery source
+     - Cost
+   * - Branch mispredict
+     - ``vcfg_snapshots(br_tag)``
+     - 1 cycle, restores the speculative mirror in lockstep with the RMT restore
+   * - Exception / pipeline flush
+     - committed VCFG shadow
+     - 1 cycle, parallel to ``map_table := com_map_table``
+
+Because the mirror physically lives a stage ahead of ``br_tag`` allocation (decode vs.
+rename), the snapshot is written from the **delayed** ``br_tag`` that reaches the mapper
+stage — the same delayed-``br_tag`` path used for the vector RMT snapshot (see
+:ref:`rename-twostage`) — so the snapshotted value reflects all ``vset*`` updates older than
+the branch in program order.
+
 VL delivery — VL is just an integer register
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

@@ -4,6 +4,16 @@
 .. |boom| replace:: BOOM
 .. |isa| replace:: RV64GC
 
+
+Block Overview
+==============
+
+.. figure:: ../figures/boom_overlay.png
+   :align: center
+
+   Block diagram of Caracal Microarchitecture extended from BOOM.
+
+
 Core Overview
 =============
 

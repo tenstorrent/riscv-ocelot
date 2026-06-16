@@ -29,7 +29,8 @@ it is dispatched to BOTH the CII IQ/coprocessor and its own Load/Store path. A s
 resources — so shared handling applies only to vector load/store.
 
 The two halves occupy two issue slots but share **one ROB entry**, which stays busy until both
-halves report via the ROB completion counter (see the ROB Completion-tracking section). The halves
+halves report — tracked by the ROB's **1-bit "other half pending" flag** (see the ROB
+Completion-tracking section), not a counter. The halves
 rendezvous on a **TVRB tag** — a temp identifier from a namespace separate from the main vector PRNs
 (see the Temporary Register Buffer section) — carried in the ``OP.v``'s ``vsrc`` field, so the temp
 can never alias an architectural vector register.
@@ -84,8 +85,10 @@ matches across spaces never collide. |caracal| preserves this partitioning:
 - The scalar queues (``IQ_MEM``/``IQ_UNQ``/``IQ_ALU``/``IQ_FP``) are **bit-identical** to
   |boom| — they connect only to the existing integer/FP wakeup networks.
 - **Only the three ``IQ_V_*`` queues connect to the vector wakeup network** (driven by
-  vector register writebacks). Each also connects to whichever scalar networks supply its
-  scalar feeders:
+  **group-done** events — one per completed destination group, carrying the group-base PRN;
+  see :ref:`group-done wakeup <group-done>`). The network is *not* driven by per-PRN writebacks, so a vector slot
+  matches one base PRN per source group. Each queue also connects to whichever scalar networks
+  supply its scalar feeders:
 
   - The **integer** network — for the base address, stride, ``.vx`` scalar operand, and the
     VL physical register (all GPR-sourced). Needed by **all three** vector queues.
@@ -109,7 +112,13 @@ Only the ``IQ_V_*`` slots are extended; scalar slots are unchanged. A vector slo
   ``vfmv.*.f``) additionally source one scalar **FP** register, matched against the **FP**
   wakeup network; this applies to ``IQ_V_ALU`` only.
 - **Vector operands**, matched against the **vector** wakeup network: ``pvs1``/``pvs2``/
-  ``pvs3`` and the mask ``pvm`` (V0), each with its own busy bit.
+  ``pvs3`` and the mask ``pvm`` (V0), each with its own busy bit. Each of these is a **single
+  group-base PRN**, not an 8-PRN group expanded into the slot: because a vector register group
+  completes atomically via **group-done** (see :ref:`group-done wakeup <group-done>`), one busy bit and **one
+  wakeup comparator per source** suffice — the slot matches the group-base PRN against the
+  group-done broadcast's base PRN. A vector slot therefore costs the same number of wakeup
+  comparators as a scalar slot (4 vector + the integer/FP feeders), **not** ``4 × EMUL``. This
+  is what keeps the vector issue slot from becoming the area/timing pole of the design.
 
 An ``OP.v`` asserts ``request`` only when **all** of its operands — scalar and vector — are
 ready:

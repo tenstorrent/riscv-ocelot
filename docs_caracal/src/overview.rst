@@ -24,6 +24,12 @@ Relationship to BOOMv4 and Chipyard
 
 |caracal| is a fork of BOOMv4 [5/20/2026] with a clean-slate re-architecture to support RVV 1.0 and OOO vector load/store. The scalar pipeline is largely unchanged from BOOMv4, with the front-end and back-end stages extended to support vector instructions and state. |caracal| remains compatible with the Chipyard ecosystem, allowing it to be used as a drop-in core for Chipyard SoC designs and simulations.
 
+
+.. figure:: ../figures/boom_overlay.png
+   :align: center
+
+   Block diagram of Caracal Microarchitecture extended from BOOM.
+
 The following table shows which modules have been modified to support RVV1.0 instructions and OOO vector load/store support, with in-order CII issued vector arithmetic operations.
 
 .. list-table::
@@ -143,7 +149,8 @@ Writeback
 
 Commit
    Reuses |boom| v4's ROB unchanged in structure. The ROB entry's ``dst_rtype`` was
-   widened to 4 bits (``exu/rob.scala``) to encode ``RT_VEC``, so vector uop's commit
+   widened to 3 bits (``exu/rob.scala``; ``RT_VEC = 4`` fits in 3 bits alongside the
+   existing ``RT_FIX/RT_FLT/RT_X/RT_ZERO``) to encode ``RT_VEC``, so vector uop's commit
    in program order through the same head-pointer/exception machinery as scalar
    ops. Precise vector state (``vtype``/``vl``) is recovered on redirect/exception via
    the per-uop ``vconfig`` snapshot rather than a separate rollback path.
