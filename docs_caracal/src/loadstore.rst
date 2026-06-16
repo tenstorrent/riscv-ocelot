@@ -90,6 +90,14 @@ width is one element (``ELEN``, 64 bits); the ``st_US_DATA_Q`` entry width is a 
 bits), so a unit-stride store reads its entire source ``vPRN`` in one access and the Packer slices
 out per-element data at drain.
 
+The store data is **read from the source ``vPRN`` at DGEN (execute time)** and held in the data queue
+until the post-commit drain. Because the data is captured this early, the source ``vPRN`` needs **no
+pin** — it frees with the rest of the stale group at commit (a later writer to the same architectural
+vreg cannot clobber an in-flight store's data, since that data already lives in the queue). The cost
+is that, like the SSI address queue, the ``st_SSI_DATA_Q`` must hold a full store's active element
+data pre-commit, so it is sized to the worst-case single-store element count (matching the address
+queue); additional in-flight stores back-pressure the store vDGEN when it is full.
+
 
 .. _load-coalesce:
 
@@ -171,7 +179,8 @@ between scalar and vector memory ops is maintained in **both** directions:
   load's ``order_fail`` and replays it.
 - **LD→ST forwarding (any load vs. vector store).** A load address is searched against both the
   scalar STQ and the vector store address queues. The vector store's data, when forwarded, is read
-  from the ``st_*_DATA_Q`` (or the pinned source ``vPRN``), not from a scalar STQ data field.
+  from the ``st_*_DATA_Q`` (which already holds the store data, captured at DGEN), not from a scalar
+  STQ data field.
 - **Scalar LD/ST vs. scalar ST/LD.** Unchanged from |boom|.
 
 Granularity of the search differs by access class:
@@ -272,8 +281,10 @@ Vector Stores Algorithm
    drain to the ``stq_execute_queue``.
 4. **Fire** — the ``stq_execute_queue`` drains and the actual D$ writes occur, one element per
    granted lane via the arbiter. Store data is taken from ``st_US_DATA_Q`` (whole-``vPRN``, sliced by
-   the Packer) or ``st_SSI_DATA_Q`` (per element); the source ``vPRN`` is pinned (``store_pending``,
-   see the Free List) until the last element drains.
+   the Packer) or ``st_SSI_DATA_Q`` (per element). The store data was **read from the source ``vPRN``
+   at DGEN (execute time)** and has lived in the data queue ever since, so the source ``vPRN`` is
+   **not pinned** — it frees normally with the rest of the stale group at commit, since its value is
+   already captured in the data queue.
 
 Identical to scalar stores other than draining address and data from the dedicated vector queues and
 the pre-commit translation of the whole active element range.
