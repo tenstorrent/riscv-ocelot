@@ -109,7 +109,7 @@ this is why **vsetvli** (VTYPE immediate, EMUL known at decode) need not seriali
 To solve this issue we re-use the |boom| ``is_unique`` feature, and mark vsetvl as a unique
 instruction. This forces all instructions in the BOOM pipeline to complete before vsetvl 
 can be issued by the decoder. This allows the scalar instructions that calculate the vtype 
-and VL value to complete, and the VCSRU reads this value and updates its local copy of VTYPE, 
+and VL value to complete, and the VCFG reads this value and updates its local copy of VTYPE, 
 VL and use it for subsequent vector uOP decoding.
 
 This does result in poorer performance for this instruction, but this is acceptable as this vsetvl instruction type is not common.

@@ -123,9 +123,7 @@ Performance: in-order vector arithmetic is a deliberate trade-off
 |caracal| is **out-of-order for vector memory and in-order for vector arithmetic.** Vector
 load/store ``OP.v``'s issue out-of-order from ``IQ_V_LOAD``/``IQ_V_STORE`` and disambiguate against
 scalar memory in both directions; vector **arithmetic / reduction / permutation** ``OP.v``'s are
-issued from ``IQ_V_ALU`` **in program order** over the CII to the in-order VPU. This is an
-intentional architectural choice, not a temporary simplification, and it has a clear performance
-profile a reader should weigh:
+issued from ``IQ_V_ALU`` **in program order** over the CII to the in-order VPU. 
 
 - **What it costs.** A long-latency vector arithmetic ``OP.v`` (e.g. a vector multiply or a
   reduction) blocks *younger* vector arithmetic behind it, even when the younger op is independent —
@@ -143,17 +141,6 @@ In short: the OoO win is spent where it pays off most (the memory pipeline, give
 :ref:`bandwidth ceiling <vector-bw-ceiling>`), and the vector ALU is kept in-order to keep the
 coprocessor attach simple. Workloads that are vector-arithmetic-throughput-bound rather than
 memory-bound are the ones this trade-off disadvantages.
-
-.. note::
-
-   **Implementation risk — SystemVerilog port.** The VPU (Baby RISC-V Vector Unit) and the
-   Packer/Skipper/Walker AGEN generators are **SystemVerilog** on ``bobtail/main``
-   (``src/main/resources/vsrc/vpu/``), not Chisel. Bringing them into the |caracal| Chisel v4 core
-   — whether by ``BlackBox`` wrapping or by reimplementation — **and** retrofitting the CII
-   pull-model interface (which the OVI-based bobtail design does not have) is a substantial,
-   currently-unquantified engineering effort and a schedule risk. It should be scoped explicitly:
-   the interface mismatch (OVI vs. CII) means these blocks cannot be lifted verbatim.
-
 
 
 Tenstorrent Custom Instruction Interface (tt_CII)
