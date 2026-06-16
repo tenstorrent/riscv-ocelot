@@ -25,7 +25,7 @@ vector bypass networks TVRB_RF.
 Vector LS AGEN stage
 --------------------
 
-This stages sits between the vector scheduler's Vector Load IQ/Vector Store IQ and the Unified Load Store Unit.
+This stages sits between the ``IQ_V_LOAD``/``IQ_V_STORE`` issue queues and the Unified Load Store Unit.
 Its primary purpose is to perform cracking of L/S OP.v instructions into nOP.v which access memory at the element
 granularity. It also cracks OP.v instructions based on EMUL, so nOP.v also tracks to which PRN and offset within the PRN
 the memory access should read or write to.
@@ -37,7 +37,7 @@ The vector LS AGEN stage outputs these nOP.v bundles which may be very large to 
 Vector AGEN
 ~~~~~~~~~~~
 
-Once vector load store instructions exit the vector scheduler, they enter the vector AGEN stage.
+Once vector load store instructions are issued from the ``IQ_V_LOAD``/``IQ_V_STORE`` queues, they enter the vector AGEN stage.
 The vector AGEN stage contains the load vAGEN, store vAGEN/vDGEN. Vector OP.v's issued by 
 the CII IQ are directly forwarded to the co-processor via the CII interface.
 
@@ -68,8 +68,9 @@ its own computed address and direction; to avoid stall/wait states it won't rele
 final segment or start until the next index arrives. Use this for any indexed load or 
 indexed-masked load — it does not support non-indexed masked loads which the skipper will handle.
 
-|caracal| splits the vAGEN into two stages. The first stage is after the stage 2 IQ/vector scheduler 
-where load an store OP.v's are issued to ld_vAGEN_1 and st_vagen_1, respectively. 
+|caracal| splits the vAGEN into two stages. The first stage is after the issue stage (the
+``IQ_V_LOAD``/``IQ_V_STORE`` queues) where load and store OP.v's are issued to ld_vAGEN_1 and
+st_vagen_1, respectively.
 The stage 1 vAGENs will only contain the Skipper and Walker generators. This choice is taken to
 optimize the common unit-stride load/store case, and reduces the amount of pressure on the load and store
 queues. Thus in stage 1 AGEN only strided, indexed, and segmented load stores will have effective addresses
@@ -86,12 +87,15 @@ Vector DGEN
 
 st_vdgen for vector stores data generation works along side st_vagen_1. The st_vdgen will read from the
 vector register file for source vector operands or the FP/INT register file for scalar source operands
-that are not the VL, for instance vfmul.vf. 
+, for instance vfmul.vf. 
 
 
-For strided, indexed, and segmented load/stores, st_vdgen may read an entire vPRN and alongside
-the calculated effective address from the st_vagen_1 to be dispatched to LSU. These nOP.v
-bundles must be dispatched to the LSU store queues in-order and atomically. Each nOP.v
+For strided, indexed, and segmented (SSI) load/stores, st_vdgen may read an entire vPRN and alongside
+the calculated effective address from the st_vagen_1 be dispatched to LSU SSI_Q's. SSI_Q's are ELEN
+wide so the st_vdgen reads and buffers the entire vPRN read value, and generates a address and 
+64 bit data bundle that will be issued to the LSU SSI address and data queues.
+
+These nOP.v bundles must be dispatched to the LSU store queues in-order and atomically. Each nOP.v
 must be processed in program and memory order, to maintain precise exception tracking via 
 VSTART. As data within vPRN's is already packed each effective address corresponds to one 
 consecutive element of the vPRN.

@@ -74,12 +74,16 @@ Decode
    (``VDecode``) recognizes RVV opcodes (``v_legal`` gate in ``exu/decode.scala``) and
    populates the new vector ``MicroOp`` fields — ``is_vec``, the logical vector
    specifiers (``lvs1/lvs2/lvs3/lvd/lvm``), and the ``vconfig`` snapshot
-   (``vstart/vl/vtype`` mirror) in ``common/micro-op.scala``. ``vset{i}vl{i}`` is
-   decoded as a **scalar** ALU uop (not ``is_vec``) so it updates ``vtype``/``vl``
-   in-line on the existing integer datapath; younger vector uop's carry the
-   resulting ``vconfig`` so they need no separate CSR read. Decode also sets the
-   ``iq_type`` routing bits for the new vector issue queues
-   (``IQ_V_LOAD/IQ_V_STORE/IQ_V_ALU``, widened in ``common/consts.scala``).
+   (``vstart/vl/vtype`` mirror) in ``common/micro-op.scala``. The **Vector Config
+   Unit (VCFG)** keeps the running ``vtype``/``vl`` mirror so younger vector uop's
+   snapshot it into their ``vconfig`` without a CSR read. The three vset forms differ:
+   ``vsetivli`` (all-immediate) and ``vsetvli`` (vtype immediate) update the mirror at
+   decode; ``vsetvli``'s register-sourced VL is delivered later, at issue, by the VL
+   Broadcast Unit (VLBU); ``vsetvl`` (both vtype and VL from registers) is serialized via
+   |boom|'s ``is_unique`` so the mirror is correct before younger vector uop's decode
+   (the mapper needs vtype→EMUL). Decode also sets the ``iq_type`` routing bits for the
+   new vector issue queues (``IQ_V_LOAD/IQ_V_STORE/IQ_V_ALU``, widened in
+   ``common/consts.scala``).
 
 Rename
    Extended. The scalar integer/FP map tables, free lists, and busy tables are
@@ -112,17 +116,24 @@ Execute
    FPU are the |boom| v4 functional units, untouched. Vector arithmetic is **not**
    executed on a BOOM EU: vector-ALU uop's are issued in program order over the
    **Tenstorrent Custom Instruction Interface (tt_CII)** to an in-order vector
-   unit that owns the vector lanes and vector register file datapath. This is the
-   core architectural divergence — BOOM remains the OoO scalar host and scheduler,
-   while RVV arithmetic executes on the attached in-order coprocessor.
+   unit (VPU) that owns the vector lanes/ALU datapath. The vector **register file lives in
+   BOOM** (banked, see the Register Files section); the coprocessor reads and writes it
+   through the CII as a client — it does not own it. This is the core architectural
+   divergence — BOOM remains the OoO scalar host, scheduler, and VRF owner, while RVV
+   arithmetic executes on the attached in-order coprocessor.
 
 Memory (LSU)
    Extended. The scalar LDQ/STQ, store-to-load forwarding, and 3-stage D$ pipeline
-   (``s0/s1/s2``) are reused. |caracal| adds **out-of-order vector load/store**:
-   vector memory uop's (``IQ_V_LOAD/IQ_V_STORE``) carry the statically-decoded access
-   descriptor (``v_eew``, ``mop``, ``nf``, unit-stride/strided/indexed/segment flags
-   from ``VLSDecode``) and generate element/segment accesses against the same D$
-   port, ordered through the existing LSU disambiguation machinery.
+   (``s0/s1/s2``) are reused. |caracal| adds **out-of-order vector load/store**: vector
+   memory uop's (``IQ_V_LOAD/IQ_V_STORE``) carry the statically-decoded access descriptor
+   (``v_eew``, ``mop``, ``nf``, unit-stride/strided/indexed/segment flags from ``VLSDecode``)
+   and generate element/segment accesses that are buffered in dedicated vector address/data
+   queues. Those accesses share the D$ with scalar memory ops via a **priority round-robin
+   arbiter** (scalar-priority floor + anti-starvation, also gating the LCAM and TLB ports),
+   and are ordered against scalar loads/stores by **bidirectional cross-queue disambiguation**
+   — vector element addresses are routed through the LCAM in both directions. A Load Coalescing
+   Buffer assembles per-element responses into one VRF write per destination register, and
+   per-element progress tracking makes faults precise (``vstart``). See the Loadstore chapter.
 
 Writeback
    Extended. Scalar results write back to the INT/FP regfiles exactly as in
@@ -132,7 +143,7 @@ Writeback
 
 Commit
    Reuses |boom| v4's ROB unchanged in structure. The ROB entry's ``dst_rtype`` was
-   widened to 3 bits (``exu/rob.scala``) to encode ``RT_VEC``, so vector uop's commit
+   widened to 4 bits (``exu/rob.scala``) to encode ``RT_VEC``, so vector uop's commit
    in program order through the same head-pointer/exception machinery as scalar
    ops. Precise vector state (``vtype``/``vl``) is recovered on redirect/exception via
    the per-uop ``vconfig`` snapshot rather than a separate rollback path.

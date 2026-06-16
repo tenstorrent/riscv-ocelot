@@ -12,3 +12,6 @@ lib
 /out/
 util/csmith/output/
 util/csmith/csmith/
+*/env/
+*/_build/
+*.DS_Store

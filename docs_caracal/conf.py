@@ -35,7 +35,6 @@ exclude_patterns = [
     '_build',
     '.venv',
     'env',
-    'caracal-architecture.rst',
     'README',
     'Thumbs.db',
     '.DS_Store',

@@ -46,7 +46,7 @@ super-scalar decoder support is also maintained.
    * - ELEN
      - 64
    * - Supported SEW(s)
-     - 4, 8, 16, 32, 64
+     - 8, 16, 32, 64
    * - Supported LMUL(s)
      - ALL
    * - Vector regfile depth
@@ -81,22 +81,31 @@ Mapper to allocate PRN vector register groups.
 We introduce a new unit called **Vector Config Unit**. The VCFG keeps a local copy 
 of the VTYPE and VL values set by a vset instruction, so that dependent, subsequent 
 instructions can know the most recent value of vset and be included in the uOP. 
-The VCFG will also store performance counters and other related CSRs for vector 
-instructions. The VCFG must also handle NxWide instruction decoder width, and 
-handle the case where there are more than 1 vset instruction in a instruction bundle, 
-the newest vset is used.
+The VCFG will also store performance counters and other related CSRs for vector
+instructions. The VCFG must also handle NxWide instruction decoder width. When more than
+one vset instruction appears in a single decode bundle, the selection is **per lane**: each
+vector uOP uses the **nearest preceding** vset in program order within the bundle (a prefix
+select across the lanes), not simply the globally newest one. For example in
+``[vsetvli, vadd, vsetivli, vadd]`` the first ``vadd`` uses the ``vsetvli`` config and the
+second uses the ``vsetivli`` config.
 
 **vsetivli** is the best case instruction as the VTYPE and VL is an immediate value 
 and can be immediately decoded and stored in the VCFG for decoding of subsequent vector instructions.
 
 **vsetvli** is the most common case where VTYPE is an immediate but VL is supplied 
 by a integer source register. In this case the decoder does not need to stall or wait 
-for VL instead the uOP VL type is marked as a register, and the scalar value is 
-resolved when the vector uOP enters the scalar scheduler.
+for VL instead the uOP VL type is marked as a register, and the scalar value is
+resolved at the issue stage by the VL Broadcast Unit (VLBU). Once vl is resolved
+it is broadcast to the vectro config unit to be used by later vector instructions
+that rely on it.
 
 **vsetvl** is a special case as both the VTYPE and VL is a scalar source operand instead
-of an immediate encoded in the instruction. In this case the newer vector uOP cannot 
-continue to be issued as the VTYPE value is needed by the next pipeline stage. 
+of an immediate encoded in the instruction. In this case the newer vector uOP cannot
+continue to be issued as the VTYPE value is needed by the next pipeline stage. Concretely, the
+vector mapper needs VTYPE to derive EMUL and allocate the correct number of vector PRNs per group;
+this is why **vsetvli** (VTYPE immediate, EMUL known at decode) need not serialize, while
+**vsetvl** (VTYPE from a register) must.
+
 To solve this issue we re-use the |boom| ``is_unique`` feature, and mark vsetvl as a unique
 instruction. This forces all instructions in the BOOM pipeline to complete before vsetvl 
 can be issued by the decoder. This allows the scalar instructions that calculate the vtype 
@@ -104,3 +113,31 @@ and VL value to complete, and the VCSRU reads this value and updates its local c
 VL and use it for subsequent vector uOP decoding.
 
 This does result in poorer performance for this instruction, but this is acceptable as this vsetvl instruction type is not common.
+
+VL delivery — VL is just an integer register
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+There is no separate VL physical-register namespace. The VL value lives in an **ordinary integer
+physical register** — the integer destination of the VL-producing instruction — written back by the
+integer EU like any scalar result. Two pieces make this usable downstream:
+
+- **Current-VL-PRN tracker.** A 1-entry tracker in rename records the integer destination PRN of the
+  most recent VL-producing instruction. Every younger vector uOP carries that PRN as an **implicit
+  integer source operand** (``pvl``); it is read/woken on the **integer** wakeup network like any
+  other scalar feeder (see the Vector Issue Slot). The tracker is **branch-snapshotted per ``br_tag``
+  and restored on mispredict**, exactly like the integer map table, so a vset on a squashed path does
+  not corrupt the VL mapping of the surviving path.
+- **VLBU capture.** When the integer EU writes back that PRN, the VL Broadcast Unit (VLBU) snoops the
+  integer writeback **data** lane and captures the VL value into every waiting vector issue slot whose
+  ``pvl`` matches, clearing ``pvl_busy``. No separate broadcast bus is added.
+
+Because VL is an integer destination, a destination PRN is **always allocated** for the VL value —
+**even when ``rd == x0``** — so the value remains tappable by the VLBU. The four ``vsetvli`` sub-cases
+follow directly:
+
+- ``rs1 != x0`` → VL = min(rs1, VLMAX); register-sourced, delivered by the VLBU.
+- ``rs1 == x0, rd != x0`` → VL = VLMAX; statically known, but still written to the integer dest PRN
+  (the slot may pre-load it from the ``VConfig`` snapshot rather than wait on the VLBU).
+- ``rs1 == x0, rd == x0`` → **keep VL unchanged**; this is *not* a VL producer, so the current-VL-PRN
+  tracker is left untouched and younger uOPs keep the existing ``pvl``.
+- Otherwise (``rd == x0`` with a VL change) a destination PRN is still allocated to hold VL.

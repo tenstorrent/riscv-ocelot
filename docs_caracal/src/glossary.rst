@@ -28,18 +28,23 @@ Glossary
       Vector LS AGEN stage. These are memory operations that are at the vector
       element granularity level.
 
-   Scalar Scheduler
-      The first of |caracal|'s two issue pipeline stages. Behaves like stock
-      |boom| issue: every issue queue (scalar **and** vector) holds its uOP and
-      waits for only its **scalar** register operands to become available. For an
-      :term:`OP.v` this resolves scalar feeders such as the VLS base
-      address/stride and the register-sourced ``VL``.
+   Scheduler
+      |caracal|'s **single** age-ordered issue stage. The scalar queues
+      (``IQ_MEM``/``IQ_UNQ``/``IQ_ALU``/``IQ_FP``) are unchanged from |boom|;
+      |caracal| adds three vector queues (``IQ_V_LOAD``/``IQ_V_STORE``/``IQ_V_ALU``).
+      An :term:`OP.v` occupies **one** slot and is granted **once**, when **all** of
+      its operands are ready — scalar feeders (base/stride, ``VL``) matched on the
+      integer network and vector registers (``pvs*``, mask ``pvm``) matched on the
+      vector network. Only the ``IQ_V_*`` queues connect to the vector wakeup
+      network; the scalar queues listen only to the existing integer/FP networks.
 
-   Vector Scheduler
-      The second of |caracal|'s two issue pipeline stages. Contains only the
-      three vector issue queues (``IQ_V_LOAD``/``IQ_V_STORE``/``IQ_V_ALU``); holds
-      :term:`OP.v`'s and waits for only their **vector** register operands
-      (``pvs*``, mask ``pvm``) to become available before issuing.
+   VLBU
+      VL Broadcast Unit — the special unit that delivers the resolved ``VL``
+      **value** to waiting vector issue slots. It taps the integer writeback data
+      lane and, when a slot's VL physical register (``pvl``) matches the writeback
+      ``pdst``, writes the VL value into the slot (not just a readiness bit) and
+      clears its busy bit. Distinct from the decode-time Vector Config Unit, which
+      snapshots ``vtype``/``vl`` for statically-known cases.
 
    AGEN
       Address generation — the functional-unit operation (``FC_AGEN``) that
