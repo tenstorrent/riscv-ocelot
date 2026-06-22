@@ -43,14 +43,6 @@ Glossary
       vector network. Only the ``IQ_V_*`` queues connect to the vector wakeup
       network; the scalar queues listen only to the existing integer/FP networks.
 
-   VLBU
-      VL Broadcast Unit — the special unit that delivers the resolved ``VL``
-      **value** to waiting vector issue slots. It taps the integer writeback data
-      lane and, when a slot's VL physical register (``pvl``) matches the writeback
-      ``pdst``, writes the VL value into the slot (not just a readiness bit) and
-      clears its busy bit. Distinct from the decode-time Vector Config Unit, which
-      snapshots ``vtype``/``vl`` for statically-known cases.
-
    AGEN
       Address generation — the functional-unit operation (``FC_AGEN``) that
       computes a memory access's effective address in the LSU path. In |caracal|

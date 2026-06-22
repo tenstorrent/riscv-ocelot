@@ -123,7 +123,7 @@ To bridge this, |caracal| adds a **Load Coalescing Buffer (LCB)** in front of th
    so the single VRF write leaves no stale bytes.
 5. The LCB also owns the **per-group PRN-done count** (target = the destination-group size from
    ``v_emul``/``v_seg_nf``). When the **last** destination PRN of the group is written, it emits
-   **one group-done** carrying the group-base PRN. That single event is what the ROB, the vector
+   **one group-done** carrying the group's member-PRN vector. That single event is what the ROB, the vector
    Busy Table, and the vector wakeup network all consume (see :ref:`group-done-wb` and
    :ref:`group-done wakeup <group-done>`) — there is no per-PRN ROB writeback or per-PRN vector wakeup. The
    intermediate per-PRN VRF writes are visible only to the regfile.
@@ -161,12 +161,12 @@ instead VL is trimmed to ``i`` and the instruction completes with the elements i
 
 ``vleff`` is decoded as a **unique instruction** (``is_unique``, like ``vsetvl``) so it is the only
 in-flight op when it resolves and it can update VL without racing younger uOPs. It is also a
-**VL producer**: on completion it writes the final element count to its integer VL destination PRN
+**VL producer**: on completion it writes the final element count to its VL register-file destination
 — the full VL if no fault occurred, or ``i`` if element ``i > 0`` faulted — exactly as a vset writes
-VL. That value is **broadcast to the VLBU** and updates the VCFG mirror / architectural ``vl`` CSR,
-so the current-VL-PRN tracker and any dependent vector uOPs pick up the (possibly trimmed) VL through
-the same path as a vset. Only the element-0 fault raises ``rob_exception``; the ``i > 0`` case clears
-no architectural state beyond trimming VL.
+VL. That write wakes ``pvl`` in dependent vector slots on the VL wakeup network like any vset, so they
+pick up the (possibly trimmed) VL through the normal ``pvl`` path, and the architectural ``vl`` CSR is
+updated at commit. Only the element-0 fault raises ``rob_exception``; the ``i > 0`` case clears no
+architectural state beyond trimming VL.
 
 
 .. _mem-order:

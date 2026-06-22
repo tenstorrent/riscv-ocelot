@@ -6,6 +6,10 @@ Issue
 .. |boom| replace:: BOOM
 .. |isa| replace:: RV64GC
 
+.. figure:: ../figures/dispatch_issue.png
+   :align: center
+
+   Overview of Dispatch and Issue Stages.
 
 Dispatch Stage
 --------------
@@ -30,34 +34,30 @@ resources — so shared handling applies only to vector load/store.
 
 The two halves occupy two issue slots but share **one ROB entry**, which stays busy until both
 halves report — tracked by the ROB's **1-bit "other half pending" flag** (see the ROB
-Completion-tracking section), not a counter. The halves
-rendezvous on a **TVRB tag** — a temp identifier from a namespace separate from the main vector PRNs
-(see the Temporary Register Buffer section) — carried in the ``OP.v``'s ``vsrc`` field, so the temp
-can never alias an architectural vector register.
+Completion-tracking section), not a counter. The halves rendezvous on the ``pvtmp`` group in the
+VRF (allocated by the vector mapper, see CII Shared Instruction Mapping): the producer writes it as
+a destination and the consumer reads it as a source, woken by ``pvtmp``'s group-done on the vector
+wakeup network like any vector operand.
 
 The wakeup conditions differ for the two halves:
 
 Segmented Load
 ^^^^^^^^^^^^^^
 
-1. A segmented load is a shared instruction where the load unit must use the ``vsrc`` PRN as
-   the destination *temporary* register, broadcast and buffered only within the bypass
-   network (TVRB).
-2. For a segmented load the LSU does **not** update the VPRF.
-3. A segmented load is selected for issue to the LSU when all of its vector source operands
-   are available.
+1. The LSU treats ``pvtmp`` as its **destination** group and writes the loaded data into it.
+2. The LSU is selected for issue when all of its vector source operands are available.
+3. ``pvtmp``'s group-done wakes the coprocessor, which reads ``pvtmp``, transposes, and writes
+   ``pvdest``.
 
 
 Segmented Store
 ^^^^^^^^^^^^^^^
 
-1. A segmented store is a shared instruction where the store unit must use the ``vsrc`` PRN
-   as the source *temporary* register, broadcast and buffered only within the bypass network
-   (TVRB).
-2. For a segmented store the LSU does **not** read from the VPRF.
-3. A segmented store is selected for issue to the LSU when the bypass network wakes the
-   instruction in the vector store IQ and broadcasts that the ``vsrc`` is available in the
-   Temporary Register Buffer.
+1. The coprocessor treats ``pvtmp`` as its **destination** group and writes the transposed data
+   into it.
+2. ``pvtmp``'s group-done wakes the store IQ slot.
+3. The LSU treats ``pvtmp`` as its **source** group, reads it from the VRF, and writes memory once
+   committed.
 
 The Issue/Scheduling Stage
 --------------------------
@@ -85,13 +85,16 @@ matches across spaces never collide. |caracal| preserves this partitioning:
 - The scalar queues (``IQ_MEM``/``IQ_UNQ``/``IQ_ALU``/``IQ_FP``) are **bit-identical** to
   |boom| — they connect only to the existing integer/FP wakeup networks.
 - **Only the three ``IQ_V_*`` queues connect to the vector wakeup network** (driven by
-  **group-done** events — one per completed destination group, carrying the group-base PRN;
-  see :ref:`group-done wakeup <group-done>`). The network is *not* driven by per-PRN writebacks, so a vector slot
-  matches one base PRN per source group. Each queue also connects to whichever scalar networks
-  supply its scalar feeders:
+  **group-done** events — one per completed destination group, each carrying the completing group's
+  full member-PRN vector; see :ref:`group-done wakeup <group-done>`). A vector slot matches its
+  source members against that vector. Each queue also connects to whichever scalar networks supply
+  its scalar feeders:
 
-  - The **integer** network — for the base address, stride, ``.vx`` scalar operand, and the
-    VL physical register (all GPR-sourced). Needed by **all three** vector queues.
+  - The **integer** network — for the base address, stride, and ``.vx`` scalar operand
+    (GPR-sourced). Needed by **all three** vector queues.
+  - The **VL** network — for ``pvl`` (its own register space, see :ref:`vl-vtype-rename`).
+    Needed by **all three** vector queues. (``vtype`` is not woken — it rides the ``VConfig``
+    snapshot.)
   - The **FP** network — for the scalar-FP source of ``.vf`` vector floating-point ops and
     ``vfmv.*.f``. Needed by **``IQ_V_ALU`` only**; ``IQ_V_LOAD``/``IQ_V_STORE`` need no FP
     network because vector memory addressing uses only GPRs.
@@ -107,18 +110,18 @@ Only the ``IQ_V_*`` slots are extended; scalar slots are unchanged. A vector slo
 **superset slot** that tracks both operand classes:
 
 - **Scalar feeders**: the base address, stride, and any ``.vx`` integer operand (reusing the
-  existing ``prs1``/``prs2`` operand slots) plus the VL physical register ``pvl`` — all matched
-  against the **integer** wakeup network. Vector floating-point ALU ops (``.vf`` forms and
-  ``vfmv.*.f``) additionally source one scalar **FP** register, matched against the **FP**
-  wakeup network; this applies to ``IQ_V_ALU`` only.
+  existing ``prs1``/``prs2`` operand slots) matched against the **integer** wakeup network, plus
+  ``pvl`` matched on the **VL** network (its own register space; ``vtype`` is not an operand —
+  it rides the ``VConfig`` snapshot). Vector floating-point ALU ops (``.vf`` forms and
+  ``vfmv.*.f``) additionally source one scalar **FP** register, matched against the **FP** wakeup
+  network; this applies to ``IQ_V_ALU`` only.
 - **Vector operands**, matched against the **vector** wakeup network: ``pvs1``/``pvs2``/
-  ``pvs3`` and the mask ``pvm`` (V0), each with its own busy bit. Each of these is a **single
-  group-base PRN**, not an 8-PRN group expanded into the slot: because a vector register group
-  completes atomically via **group-done** (see :ref:`group-done wakeup <group-done>`), one busy bit and **one
-  wakeup comparator per source** suffice — the slot matches the group-base PRN against the
-  group-done broadcast's base PRN. A vector slot therefore costs the same number of wakeup
-  comparators as a scalar slot (4 vector + the integer/FP feeders), **not** ``4 × EMUL``. This
-  is what keeps the vector issue slot from becoming the area/timing pole of the design.
+  ``pvs3`` and the mask ``pvm`` (V0). Each source group holds its **member PRNs** (up to ``EMUL``),
+  each with its own busy bit; the slot matches every member against the group-done's member-PRN
+  vector and **AND**\ s them into a per-operand group-ready bit, woken only when the last member is
+  ready (see :ref:`group-done wakeup <group-done>`). This per-member match — not a single
+  base comparator — is the area/timing cost of the vector slot, and is unavoidable because a source
+  group may be a sub-range of, or fragmented across, larger destination groups.
 
 An ``OP.v`` asserts ``request`` only when **all** of its operands — scalar and vector — are
 ready:
@@ -136,33 +139,20 @@ the OP.v is masked (encoded ``vm`` bit clear). Unmasked ops leave ``pvm`` don't-
 stale mask preg is never waited on.
 
 
-VL Broadcast Unit
------------------
+VL delivery
+-----------
 
-VL must be resolved before a vector load/store can crack into element accesses in the
-Vector AGEN stage (see :ref:`vector-agen`). VL is delivered at the issue stage by a new
-special unit, the **VL Broadcast Unit (VLBU)**.
+VL is a source operand in its **own register space** (see :ref:`vl-vtype-rename`), always renamed
+into the VL RF — there is no decode-time VL value. ``pvl`` is woken on the **VL** wakeup network like
+any operand — a plain readiness wakeup, no value capture in the slot — and the value is read from the
+VL RF at execute, when the Vector AGEN cracks the ``OP.v`` into element accesses. (``vtype`` is not
+an issue operand — it rides the ``VConfig`` snapshot from decode.)
 
-An ordinary wakeup only flips a readiness bit. The VLBU is different: it must deliver the VL
-**value** into the slot, because the AGEN needs the element count, not just readiness. The
-VLBU taps the **integer writeback data lane** and, for every waiting vector slot whose VL
-physical register ``pvl`` matches the writeback's ``pdst``, it writes the VL value into the
-slot's captured-VL field and clears ``pvl_busy`` in the same cycle.
-
-Three delivery cases cover all of the vset variants:
-
-1. **Statically known VL** (``vsetivli``, and ``vsetvli`` with ``rs1 = x0``): VL is known at
-   decode. The slot enters with ``pvl_busy = false`` and its captured VL pre-loaded from the
-   ``OP.v`` ``VConfig`` snapshot taken by the Vector Config Unit (see
-   :ref:`vector-rvv-decode`).
-2. **Register-sourced VL** (``vsetvli`` with ``rs1 != x0``): the producing scalar
-   instruction writes the VL value through the normal integer writeback; the VLBU captures
-   that value into the slot and clears ``pvl_busy`` the same cycle.
-3. **vsetvl** (VTYPE and VL both from registers): the instruction is serialized via
-   |boom|'s ``is_unique`` mechanism (see :ref:`vector-rvv-decode`), so VL is resolved before
-   any dependent vector ``OP.v`` dispatches; the slot is pre-loaded as in case 1.
-
-Once VL is captured, the ``OP.v`` carries it into the Vector AGEN stage.
+- **vsetivli**: VL is immediate — the VCFG writes the VL RF in the front-end (no EU); ``pvl`` may
+  already be ready when the consumer dispatches.
+- **vsetvli / vsetvl**: executed on an **integer ALU EU** (woken by ``rs1``/``rs2`` on the integer
+  network); the ALU's VL writeback targets the VL RF and wakes ``pvl``. ``vsetvl`` is additionally
+  ``is_unique`` (see :ref:`vector-rvv-decode`).
 
 
 
@@ -175,8 +165,8 @@ The single-stage approach with extended vector slots offers the following benefi
 
 1. **The scalar datapath is untouched.** Only the ``IQ_V_*`` queues are extended and connect
    to the vector wakeup network; the scalar queues are bit-identical to |boom|.
-2. **The VL scalar value is resolved at issue** by the VL Broadcast Unit and carried into the
-   AGEN stage.
+2. **VL is an ordinary integer operand** — woken like any scalar feeder and read from the integer
+   RF/bypass by the vector EU at execute.
 3. **A vector ``OP.v`` is allocated and selected once.** There is no second issue stage, so
    there is no double allocation, no second priority-encoder select, and no cross-queue
    kill/replay to keep consistent.

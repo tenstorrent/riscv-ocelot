@@ -43,7 +43,9 @@ The following table shows which modules have been modified to support RVV1.0 ins
    * - Decode / Rename
      - Extended
    * - Integer execution
-     - Unchanged
+     - Extended (``usingRVV``): the integer ALU EU also executes ``vsetvli``/``vsetvl``, computing
+       VL (and VTYPE for ``vsetvl``) and writing the VL RF + VL wakeup network. Bit-identical to
+       |boom| when ``usingRVV`` is off.
    * - FP execution
      - Unchanged
    * - Vector (RVV) execution
@@ -80,24 +82,28 @@ Decode
    (``VDecode``) recognizes RVV opcodes (``v_legal`` gate in ``exu/decode.scala``) and
    populates the new vector ``MicroOp`` fields — ``is_vec``, the logical vector
    specifiers (``lvs1/lvs2/lvs3/lvd/lvm``), and the ``vconfig`` snapshot
-   (``vstart/vl/vtype`` mirror) in ``common/micro-op.scala``. The **Vector Config
-   Unit (VCFG)** keeps the running ``vtype``/``vl`` mirror so younger vector uop's
-   snapshot it into their ``vconfig`` without a CSR read. The three vset forms differ:
-   ``vsetivli`` (all-immediate) and ``vsetvli`` (vtype immediate) update the mirror at
-   decode; ``vsetvli``'s register-sourced VL is delivered later, at issue, by the VL
-   Broadcast Unit (VLBU); ``vsetvl`` (both vtype and VL from registers) is serialized via
-   |boom|'s ``is_unique`` so the mirror is correct before younger vector uop's decode
+   (``vtype``) in ``common/micro-op.scala``. The **Vector Config
+   Unit (VCFG)** keeps the running ``vtype`` mirror so younger vector uop's
+   snapshot it (and derive ``EMUL``) without a CSR read; it does **not** mirror ``vl``.
+   VL is renamed into the VL register file and delivered to consumers via ``pvl`` (read at
+   execute), for **all** vset forms — ``vsetivli`` and ``vsetvli`` (``rs1=x0``) compute VL from
+   the immediate/VLMAX and write the VL RF just like register-sourced ``vsetvli``. ``vsetvl``
+   (both vtype and VL from registers) is serialized via
+   |boom|'s ``is_unique`` so the vtype mirror is correct before younger vector uop's decode
    (the mapper needs vtype→EMUL). Decode also sets the ``iq_type`` routing bits for the
    new vector issue queues (``IQ_V_LOAD/IQ_V_STORE/IQ_V_ALU``, widened in
    ``common/consts.scala``).
 
 Rename
    Extended. The scalar integer/FP map tables, free lists, and busy tables are
-   the |boom| v4 design unchanged. |caracal| adds a third register class — ``RT_VEC``
-   (``common/consts.scala``) — and a vector physical register file
-   (``numVecPhysRegs``, default 128) renamed alongside INT and FP, mapping the
-   logical ``lvs*/lvd/lvm`` specifiers to physical ``pvs*/pvdest/pvm``. Vector ops
-   allocate ROB entries through the same path as scalar ops.
+   the |boom| v4 design **unchanged** — integer rename is not modified. |caracal| adds a
+   third register class — ``RT_VEC`` (``common/consts.scala``) — and a vector physical
+   register file (``numVecPhysRegs``, default 128) renamed alongside INT and FP, mapping the
+   logical ``lvs*/lvd/lvm`` specifiers to physical ``pvs*/pvdest/pvm``. ``VL`` is renamed into
+   **its own register file** (default 64) with its own map table, free list, busy table, wakeup
+   network, and commit logic (see the VL Rename section); the VL value is not held in the integer
+   RF. ``VTYPE`` is **not** renamed — it rides the VCFG ``vtype`` mirror / ``VConfig`` snapshot.
+   Vector ops allocate ROB entries through the same path as scalar ops.
 
 Dispatch (Rename2)
    Reuses |boom| v4's dispatcher unchanged. Dispatch routes purely on the
@@ -114,12 +120,20 @@ Issue
 Register Read
    Extended. Integer and FP read out of their existing regfiles unchanged.
    Vector-ALU and vector-load/store uop's read their operands (``pvs1/pvs2/pvs3``,
-   mask ``pvm``) from the vector register file through dedicated read ports; the
-   bypass network for scalar results is unchanged.
+   mask ``pvm``) from the vector register file through dedicated read ports. Every
+   vector EU also reads ``VL`` from the **VL register file** (``pvl``), takes ``vtype`` from
+   the uop's ``VConfig`` snapshot, reads ``vstart``/``vxrm`` from the CSR file, and has a read
+   port into the **integer register file and integer bypass network** for its remaining scalar
+   feeders — base address, stride, and the ``.vx`` operand. The scalar bypass network is
+   otherwise unchanged.
 
 Execute
-   New (vector) / unchanged (scalar). The integer ALUs, mul/div, branch unit, and
-   FPU are the |boom| v4 functional units, untouched. Vector arithmetic is **not**
+   New (vector) / mostly-unchanged (scalar). The mul/div, branch unit, and FPU are the
+   |boom| v4 functional units, untouched. The integer ALU EU is **extended (gated by
+   ``usingRVV``)** to execute ``vsetvli``/``vsetvl``: it computes VL (and VTYPE for ``vsetvl``)
+   from its integer source(s) and, for these uops, its writeback targets the **VL RF** and drives
+   the VL wakeup network (and updates the VCFG ``vtype`` mirror for ``vsetvl``). With ``usingRVV``
+   off the ALU is bit-identical to |boom|. Vector arithmetic is **not**
    executed on a BOOM EU: vector-ALU uop's are issued in program order over the
    **Tenstorrent Custom Instruction Interface (tt_CII)** to an in-order vector
    unit (VPU) that owns the vector lanes/ALU datapath. The vector **register file lives in

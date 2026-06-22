@@ -40,20 +40,18 @@ class DebugMicroOp(val coreMaxAddrBits: Int, val xLen: Int, val vLen: Int, val l
 }
 
 /**
- * Caracal vector configuration snapshot (the vcsr state) carried per-uop.
- * Filled at decode/crack time from the cracker's architectural vtype/vl mirror.
+ * Caracal vtype snapshot carried per-uop, filled at decode from the VCFG vtype mirror.
+ * This is the vtype state only. NOT snapshotted here: VL (renamed into the VL register
+ * file, read via pvl at execute) and vstart/vxrm/vxsat/vcsr (live in the CSR file, read
+ * at execute).
  */
 class VConfig(implicit p: Parameters) extends BoomBundle
 {
-  val vstart = UInt(vecVLSz.W)
-  val vl     = UInt(vecVLSz.W)
   val vlmax  = UInt(vecVLSz.W)
   val vsew   = UInt(3.W)
   val vlmul  = UInt(3.W)   // signed (fractional LMUL encoded), 3 bits per spec
   val vma    = Bool()      // mask agnostic
   val vta    = Bool()      // tail agnostic
-  val vxrm   = UInt(2.W)   // fixed-point rounding mode
-  val vxsat  = Bool()      // fixed-point saturation flag
 }
 
 class MicroOp(implicit p: Parameters) extends BoomBundle
@@ -169,7 +167,22 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val pvdest           = UInt(vecPregSz.W)
   val stale_pvdest     = UInt(vecPregSz.W)
   val pvm              = UInt(vecPregSz.W)        // V0 mask physical preg
-  val pvl              = UInt(maxPregSz.W)        // integer preg carrying VL
+
+  // VL is renamed into its OWN register file (not the integer RF). pvl indexes the
+  // VL RF. No stale field: the single-architectural-register space lets commit free
+  // the outgoing committed pointer directly. Read by every vector EU on the VL read
+  // port. VTYPE is not renamed -- it rides the VConfig snapshot (VCFG vtype mirror).
+  val pvl              = UInt(vlPregSz.W)         // VL register-file index
+
+  // Shared-instruction (segmented LS) intermediate temp vector group. Allocated
+  // from the MAIN vector free list by the vector mapper when is_shared, and lives
+  // in the VRF like any vector group (there is no separate TVRB). Up to EMUL valid
+  // members; freed at commit and reclaimed on branch-mispredict via the normal
+  // free-list paths. One half (producer) writes it as a destination, the other
+  // half (consumer) reads it as a source — see midcore.rst Segmented Load/Store.
+  val is_shared        = Bool()
+  val pvtmp            = Vec(8, UInt(vecPregSz.W))
+
   val pvs1_busy        = Bool()
   val pvs2_busy        = Bool()
   val pvs3_busy        = Bool()
@@ -201,10 +214,6 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   // Segment load/store fields.
   val v_seg_nf         = UInt(3.W)               // number of fields (NF), 1..8
   val v_seg_idx        = UInt(3.W)               // which field this sub-uop handles
-
-  // True when VL is determined at decode (vsetivli, or const after broadcast);
-  // false while waiting on a renamed scalar to deliver VL.
-  val vl_is_known      = Bool()
 
   // Predication
   def is_br            = br_type.isOneOf(B_NE, B_EQ, B_GE, B_GEU, B_LT, B_LTU)

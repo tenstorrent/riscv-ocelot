@@ -11,25 +11,25 @@ This document will review how edge-cases and complex instructions are handled by
 
 
 
-Segemented Load Stores (Shared Instruction)
+Segmented Load Stores (Shared Instruction)
 -------------------------------------------
 
-Segmented Load Stores is the only instruction that currently uses the temporary vector register
-file. These instructions are marked is_shared, and split into two halves. One half is executed
-by the load store unit to move data to/from memory, anf the other half by the co-processor
-to transpose the data.
+Segmented Load Stores is the only instruction that currently uses an intermediate temp vector group
+(``pvtmp``) in the VRF. These instructions are marked is_shared, and split into two halves. One half
+is executed by the load store unit to move data to/from memory, and the other half by the co-processor
+to transpose the data; they hand off through ``pvtmp``.
 
 
 
 VL == 0
 -------
 
-If the VL is known at decode stage either as a immediate value or as a cached vl
-value from a prior vset instruction. It can be immediately squashed, and not be issued to the
-next stage.
+VL is only known at decode for the **immediate-AVL** form (``vsetivli`` with AVL ``= 0``): such a
+``vsetivli``/dependent can be detected and the dependent squashed at decode without reaching issue.
+For all other forms VL is not known at decode (it is renamed into the VL register file), so a
+``VL = 0`` op reaches issue, where ``pvl`` resolves to 0.
 
-If the vl is not known at decode stage and is resolved in the ``IQ_V_*`` because it was a scalar
-register source dependency, the ``OP.v`` cannot be squashed at decode and reaches issue. With
+When the ``OP.v`` reaches issue with ``VL = 0``, it cannot have been squashed at decode. With
 ``VL = 0`` **no element is active**, so nothing executes — but the freshly-allocated ``pvdest``
 group still has to be made architecturally correct before the entry can commit, because a new
 physical group was renamed for it. Two cases, gated on ``vta``:

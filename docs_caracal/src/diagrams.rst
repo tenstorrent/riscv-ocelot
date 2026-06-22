@@ -32,5 +32,26 @@ Pipeline Overview
    The Caracal pipeline, note greyed area are identical to BOOMv4.
 
 
+Vector Mapper Overview
+======================
 
+.. figure:: ../figures/vector_mapper.png
+   :align: center
 
+   Overview of Vector Mapper Stage.
+
+Dispatch Issue Overview
+=======================
+
+.. figure:: ../figures/dispatch_issue.png
+   :align: center
+
+   Overview of Dispatch and Issue Stages.
+
+Execution Overview
+==================
+
+.. figure:: ../figures/execution_stage.png
+   :align: center
+
+   Overview of Execution Stage.

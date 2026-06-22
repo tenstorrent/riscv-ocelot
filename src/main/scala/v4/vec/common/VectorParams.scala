@@ -17,6 +17,7 @@ package boom.v4.vec.common
 case class VectorParams(
   vLen: Int = 256,
   numVecPhysRegisters: Int = 128,            // bump after perf tuning (issue 7)
+  numVlPhysRegisters: Int = 64,              // VL register file depth (own rename space)
   numVecLoadQueueEntries: Int = 64,          // single LMUL=8 NF=8 inst should fit (issue 8)
   numVecStoreQueueEntries: Int = 64,
   numDecodeToCrackerBufferEntries: Int = 4,  // small -- cracker is now wide (issue 5)

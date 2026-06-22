@@ -84,7 +84,6 @@ object VDecode
       uop.dst_rtype    := Mux(vset.rd_is_x0, RT_ZERO, RT_FIX)
       uop.lrs1_rtype   := Mux(vset.is_vsetivli || vset.rs1_is_x0, RT_ZERO, RT_FIX)
       uop.lrs2_rtype   := Mux(vset.is_vsetvl, RT_FIX, RT_X)   // vsetvl reads rs2 (vtype)
-      uop.vl_is_known  := vset.vl_is_known
       // Snapshot the immediate vtype into this uop's vconfig (valid for
       // vsetvli/vsetivli). vsetvl gets vtype from rs2 at execute (Step 3/6).
       uop.vconfig.vsew  := vset.vsew
@@ -103,7 +102,6 @@ object VDecode
       // Static load/store fields (cracker fills v_emul / vconfig later).
       uop.v_eew      := ls.v_eew
       uop.v_seg_nf   := ls.nf
-      uop.vl_is_known := false.B   // data ops: VL comes from the governing vset
 
       // Vector mask: lvm = v0 (logical 0); masked when the vm bit is clear.
       uop.lvm := 0.U

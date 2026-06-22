@@ -40,7 +40,6 @@ class VsetInfo(implicit p: Parameters) extends BoomBundle
   val rs1_is_x0   = Bool()
   val avl_imm     = UInt(5.W)     // zimm[4:0] AVL (vsetivli only)
   val vtype_imm   = UInt(11.W)    // vtype immediate (vsetvli: inst[30:20], vsetivli: inst[29:20])
-  val vl_is_known = Bool()        // resulting VL statically known at decode
   // vtype fields decoded from vtype_imm (valid only when vtype is immediate).
   val vsew        = UInt(3.W)
   val vlmul       = UInt(3.W)
@@ -80,11 +79,9 @@ object VsetDecode
     info.vma   := info.vtype_imm(7)
 
     // Resulting VL statically known at decode:
-    //  - vsetivli            : AVL + vtype both immediate          -> known
-    //  - vsetvli, rs1==x0    : VL=VLMAX (rd!=x0) or unchanged (rd==x0) -> known
-    //  - vsetvli, rs1!=x0    : VL=min(rs1,VLMAX), needs renamed rs1 -> not known
-    //  - vsetvl              : vtype from rs2, dynamic             -> not known
-    info.vl_is_known := is_vsetivli || (is_vsetvli && info.rs1_is_x0)
+    // VL is always renamed into the VL register file and read via pvl at execute;
+    // there is no decode-time "VL known" fast path. (vsetivli/vsetvli rs1==x0 still
+    // compute VL from the immediate/VLMAX, but the producer writes it to the VL RF.)
     info
   }
 }

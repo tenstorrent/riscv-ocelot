@@ -18,8 +18,15 @@ The execution of vector instructions is split into 3 streams:
 3. Vector Stores
    
 Vector instruction OP.v's may execute out-of-order relative to program order, but must always execute atomically
-and in element order. Shared instructions require more than 1 EU to activate and share temporary results through 
-vector bypass networks TVRB_RF.
+and in element order. Shared instructions require more than 1 EU to activate and hand off intermediate results
+through a temp vector group (``pvtmp``) in the VRF — one half writes it, the other reads it.
+
+
+.. figure:: ../figures/execution_stage.png
+   :align: center
+
+   Overview of Vector Mapper Stage.
+
 
 
 Vector LS AGEN stage
@@ -150,6 +157,6 @@ This SPEC is Work In Progress. The main features should include:
 
 1. Implement a PULL model of execution where the CoProcessor must request register operands.
 2. In-order execution of dispatched instructions.
-3. Usage of temporary registers, for intermediate values.
+3. Usage of intermediate temp vector groups (``pvtmp`` in the VRF) for shared-instruction handoff.
 4. Extensible interface for custom instructions.
 5. Ability of CII to access register file for reads and writes.
