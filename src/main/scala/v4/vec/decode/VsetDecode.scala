@@ -14,8 +14,9 @@
 // vset-class instructions are *scalar* integer uops -- they read rs1 (AVL) and
 // (vsetvl) rs2 (vtype), and write rd (= new VL). They are NOT is_vec uops routed
 // to a vector queue. Their job, beyond writing rd, is to update vtype/vl: the
-// cracker mirror (Step 3) and architectural CSR (Step 6) consume this info, and
-// the cracker-broadcast / vsetvl sentinel mechanism (Step 3) handles delivery.
+// VConfigUnit (VCFG) speculative vtype mirror and architectural CSR (Step 6)
+// consume this info, and the VCFG handles delivery to younger vector uops. The
+// vsetvl serialization (is_unique) lets the VCFG mirror update land safely.
 // Step 2 only does decode-stage recognition + field extraction.
 
 package boom.v4.vec.decode

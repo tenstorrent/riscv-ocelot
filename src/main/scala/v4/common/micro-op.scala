@@ -151,6 +151,12 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   //------------------------------------------------------------------------
   val is_vec           = Bool()                  // top-level "is this a vector uop?" gate
 
+  // vset-class decode classification (Step 2). These flag the three vset forms;
+  // a vset uop flows through the scalar pipeline (not is_vec) and updates VCFG.
+  val is_vsetivli      = Bool()                  // vsetivli: imm AVL + imm vtype
+  val is_vsetvli       = Bool()                  // vsetvli:  rs1 AVL + imm vtype
+  val is_vsetvl        = Bool()                  // vsetvl:   rs1 AVL + rs2 vtype
+
   // Vector logical registers (only used Decode->Rename). lvm is the V0 mask reg
   // (0 when masked). lvd is the vector destination logical reg.
   val lvs1             = UInt(vecLregSz.W)
@@ -159,8 +165,8 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val lvd              = UInt(vecLregSz.W)
   val lvm              = UInt(vecLregSz.W)
 
-  // Vector physical registers (post-rename). pvl is an INTEGER preg holding VL
-  // when not statically known (sized to the integer preg space).
+  // Vector physical registers (post-rename). pvl (declared below) indexes the
+  // VL register file -- not the integer preg space.
   val pvs1             = UInt(vecPregSz.W)
   val pvs2             = UInt(vecPregSz.W)
   val pvs3             = UInt(vecPregSz.W)
@@ -196,6 +202,11 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val v_eew            = UInt(3.W)
   val v_emul           = UInt(3.W)
 
+  // Arithmetic op shape (Step 2 decode).
+  val v_unmasked       = Bool()                  // vm bit == 1 (op is unmasked)
+  val v_widen          = Bool()                  // widening arith / dest-EEW = 2*SEW
+  val v_narrow         = Bool()                  // narrowing arith / source-EEW = 2*SEW
+
   // nOP.v element/segment cursor. Caracal does NOT crack in the frontend: an
   // OP.v stays a single uop through rename/ROB/issue (atomic LMUL/EMUL group
   // rename). These fields are populated only when the Vector LS AGEN expands an
@@ -206,10 +217,6 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val v_split_last     = Bool()
   val v_split_idx      = UInt(vecSplitSz.W)
   val v_split_total    = UInt(vecSplitSz.W)
-
-  // Monotonic id of the governing vset-class uop (VL-resolution / VCFG mirror
-  // bookkeeping; VL itself is delivered by the VLBU off the integer writeback).
-  val vsetvl_id        = UInt(vsetvlIdSz.W)
 
   // Segment load/store fields.
   val v_seg_nf         = UInt(3.W)               // number of fields (NF), 1..8

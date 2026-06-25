@@ -373,10 +373,9 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val vecLregSz       = 5                                          // 32 architectural vector regs v0..v31
   val maxVecVL        = vecVLen                                    // max VL in elements (SEW=8, LMUL=8 => vLen)
   val vecVLSz         = log2Ceil(maxVecVL + 1)                     // bits to hold a VL value (0..maxVecVL)
-  val vsetvlIdSz      = 3                                          // monotonic vset id (8 outstanding)
-  // RVV 1.0 constrains EMUL*NF <= 8, so max sub-uops per arch inst = 8; split
-  // index/total range 0..8 inclusive => log2Ceil(9) = 4 bits.
-  val vecSplitSz      = log2Ceil(vectorParams.crackerWidth + 1) max log2Ceil(9)
+  // RVV 1.0 constrains EMUL*NF <= 8, so the nOP.v split cursor counts up to 8
+  // elements/segments. Index/total range 0..8 inclusive => log2Ceil(9) = 4 bits.
+  val vecSplitSz      = log2Ceil(8 + 1)
 
   require (numIntPhysRegs >= (32 + coreWidth))
   require (numFpPhysRegs >= (32 + coreWidth))

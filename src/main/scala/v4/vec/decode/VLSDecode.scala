@@ -13,10 +13,10 @@
 // only-first). These are all known at decode without vtype.
 //
 // NOTE: EMUL (= LMUL * EEW/SEW) and the per-uop vconfig snapshot depend on the
-// *current vtype*, which is tracked by the cracker's architectural mirror
-// (Step 3), not known at decode. So this object does NOT compute v_emul -- the
-// cracker fills it. The full address-generation decode (ports, strides) is the
-// Step 8 VecLsDecode port; this is only the decode-stage classification.
+// *current vtype*, which is tracked by the VConfigUnit (VCFG) vtype mirror, not
+// known at decode. So this object does NOT compute v_emul -- the VCFG / core-level
+// EMUL derivation fills it. The full address-generation decode (ports, strides)
+// is the Step 8 VecLsDecode port; this is only the decode-stage classification.
 
 package boom.v4.vec.decode
 
@@ -54,6 +54,8 @@ class VLSInfo(implicit p: Parameters) extends BoomBundle
   val mop        = UInt(2.W)
   val lumop      = UInt(5.W)
   val nf         = UInt(3.W)   // NF field (0 => 1 field); seg count = nf+1
+  val mew        = Bool()      // memory extended width bit (inst[28]); mew=1 => EEW=128 (reserved in M1)
+  val eew_unsup  = Bool()      // mew=1 selects EEW=128, unsupported in Caracal M1
   val vm         = Bool()      // 1 = unmasked, 0 = masked (read v0)
   val is_indexed = Bool()
   val is_strided = Bool()
@@ -89,8 +91,17 @@ object VLSDecode
 
     info.is_load  := opcode === OP_LOAD_FP
     info.is_store := opcode === OP_STORE_FP
-    // EEW encoding lives in the low two width bits; mew (inst[14]) must be 0 in
-    // RVV 1.0 for the 8/16/32/64 widths we support in Goal 1.
+    // For vector memory ops the encoded EEW = {mew, width[1:0]}, where width is
+    // funct3 inst[14:12] and mew is inst[28] (NOT inst[14] -- that earlier comment
+    // was wrong). Caracal M1 supports only SEW 8/16/32/64, i.e. mew=0; mew=1 selects
+    // EEW=128, which is reserved/unsupported here. We capture the low two width bits
+    // as v_eew (0=8b,1=16b,2=32b,3=64b) and flag mew=1 as unsupported rather than
+    // silently treating it as a 64b op. The illegal-instruction path is owned by
+    // decode.scala (not this object); eew_unsup surfaces the condition for it / the
+    // VCFG to act on.
+    val mew = inst(28)
+    info.mew       := mew
+    info.eew_unsup := mew
     info.v_eew    := Cat(0.U(1.W), f3(1, 0))
     info.mop      := inst(27, 26)
     info.lumop    := inst(24, 20)
