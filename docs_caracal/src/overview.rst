@@ -113,8 +113,11 @@ Dispatch (Rename2)
 Issue
    Extended. The age-ordered issue-unit logic is reused; |caracal| instantiates
    additional vector issue queues (``IQ_V_LOAD``, ``IQ_V_STORE``, ``IQ_V_ALU``)
-   alongside the scalar ``IQ_MEM/IQ_UNQ/IQ_ALU/IQ_FP``. The wakeup/select policy is
-   the same; only the queue set and operand-readiness tracking are widened to
+   alongside the scalar ``IQ_MEM/IQ_UNQ/IQ_ALU/IQ_FP``. ``IQ_V_LOAD``/``IQ_V_STORE``
+   stay **age-ordered collapsing** (vector memory is OoO); ``IQ_V_ALU`` is instead an
+   **in-order, non-speculative FIFO** — like RoCC it feeds the in-order CII coprocessor in program
+   order and only issues instructions **past the PNR** (known-safe, guaranteed to commit), so the CII
+   needs no branch-kill/replay. Only the queue set and operand-readiness tracking are widened to
    cover vector physical registers.
 
 Register Read

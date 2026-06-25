@@ -34,14 +34,15 @@ Glossary
       They are *not* frontend-cracker state.
 
    Scheduler
-      |caracal|'s **single** age-ordered issue stage. The scalar queues
+      |caracal|'s **single** issue stage. The scalar queues
       (``IQ_MEM``/``IQ_UNQ``/``IQ_ALU``/``IQ_FP``) are unchanged from |boom|;
       |caracal| adds three vector queues (``IQ_V_LOAD``/``IQ_V_STORE``/``IQ_V_ALU``).
-      An :term:`OP.v` occupies **one** slot and is granted **once**, when **all** of
-      its operands are ready — scalar feeders (base/stride, ``VL``) matched on the
-      integer network and vector registers (``pvs*``, mask ``pvm``) matched on the
-      vector network. Only the ``IQ_V_*`` queues connect to the vector wakeup
-      network; the scalar queues listen only to the existing integer/FP networks.
+      ``IQ_V_LOAD``/``IQ_V_STORE`` (and the scalar queues) are **age-ordered collapsing**
+      (grant oldest-ready); ``IQ_V_ALU`` is an **in-order, non-speculative FIFO** that feeds the
+      in-order CII in program order and only issues instructions **past the PNR** (RoCC-style). An :term:`OP.v` occupies **one** slot and is granted **once**, when
+      **all** of its operands are ready — scalar feeders (base/stride/``.vx``) on the integer
+      network, ``pvl`` on the VL network, and vector registers (``pvs*``, mask ``pvm``) on the
+      vector network. Only the ``IQ_V_*`` queues connect to the vector wakeup network.
 
    AGEN
       Address generation — the functional-unit operation (``FC_AGEN``) that

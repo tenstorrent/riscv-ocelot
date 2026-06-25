@@ -119,10 +119,18 @@ generate per-element memeory accesses sequentially.
 CII Vector Co-processor
 -----------------------
 
-The vector Coprocessor (VPU) will be issued instructions from the CII IQ. These instructions
-include all vector arithmetic, reduction, permutation, and shared instructions such as segmented LS.
-The VPU will reuse the Baby RISCV Vector Unit from bobtail, with modifications to implement the CII interface.
-Improvements from the previous generation include a data transpose unit to support segmented LS.
+The vector Coprocessor (VPU) will be issued instructions from the CII IQ (``IQ_V_ALU``). These
+instructions include all vector arithmetic, reduction, permutation, and shared instructions such as
+segmented LS. The VPU will reuse the Baby RISCV Vector Unit from bobtail, with modifications to
+implement the CII interface. Improvements from the previous generation include a data transpose unit
+to support segmented LS.
+
+Like |boom|'s **RoCC** interface, the CII IQ issues to the VPU **only instructions that are
+non-speculative** — its in-order-FIFO head is granted only once it is **past the PNR** (older than
+``rob_pnr_idx``, guaranteed to commit) **and** its operands are ready, **in program order** (see the
+Issue/Scheduling Stage). Consequently the in-order VPU never has to undo speculative work: it needs
+**no branch-kill or replay** path, because anything dispatched over the CII will commit. Squashed
+``IQ_V_ALU`` entries are dropped from the FIFO before they ever issue.
 
 Performance: in-order vector arithmetic is a deliberate trade-off
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

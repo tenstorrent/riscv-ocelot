@@ -193,11 +193,11 @@ Recovery is then identical in shape to the RMT (see :ref:`snapshots`):
      - committed VCFG shadow
      - 1 cycle, parallel to ``map_table := com_map_table``
 
-Because the mirror physically lives a stage ahead of ``br_tag`` allocation (decode vs.
-rename), the snapshot is written from the **delayed** ``br_tag`` that reaches the mapper
-stage — the same delayed-``br_tag`` path used for the vector RMT snapshot (see
-:ref:`rename-twostage`) — so the snapshotted value reflects all ``vset*`` updates older than
-the branch in program order.
+The mirror lives at decode, a stage ahead of ``br_tag`` allocation (which happens at the
+single-cycle rename, see :ref:`rename-stage`). The per-``br_tag`` snapshot is therefore sourced from
+the **branch's carried ``vconfig``** — the nearest-preceding-``vset`` value from the per-lane prefix
+select — captured on the same ``ren_br_tags`` event as the RMT snapshots, so it reflects all
+``vset*`` updates older than the branch in program order without any delayed-``br_tag`` path.
 
 VL delivery — VL lives in its own register file
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

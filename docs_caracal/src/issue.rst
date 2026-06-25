@@ -67,11 +67,31 @@ Like |boom|, |caracal| uses split issue queues. The scalar queues — ``IQ_MEM``
 vector queues: ``IQ_V_LOAD``, ``IQ_V_STORE``, and ``IQ_V_ALU``. Each vector IQ may hold
 any datatype.
 
-All queues — scalar and vector — issue in a **single** age-ordered scheduling stage.
-|caracal| does **not** add a second issue stage. A vector ``OP.v`` occupies exactly one
-issue slot in one queue and is granted **once**, when all of its operands (scalar feeders
-and vector registers) are ready. This reuses |boom|'s age-ordered collapsing Issue Queue
-and its priority-encoder select unchanged.
+All queues issue in a **single** scheduling stage; |caracal| does **not** add a second issue
+stage, and a vector ``OP.v`` occupies exactly one issue slot in one queue and is granted **once**,
+when all of its operands (scalar feeders and vector registers) are ready. The *selection policy*,
+however, differs by queue:
+
+- **``IQ_MEM``/``IQ_UNQ``/``IQ_ALU``/``IQ_FP`` and ``IQ_V_LOAD``/``IQ_V_STORE``** reuse |boom|'s
+  **age-ordered collapsing** Issue Queue and its priority-encoder select unchanged — they grant the
+  **oldest *ready*** entry and may skip a not-ready older entry (out-of-order issue among ready ops).
+  This is correct for vector loads/stores because the V-LSU is out-of-order.
+- **``IQ_V_ALU`` is an in-order, non-speculative FIFO**, **not** age-ordered. It feeds the
+  **in-order CII coprocessor**, and — like |boom|'s **RoCC** interface — only issues instructions
+  that are **known-safe and non-speculative**, in program order. It presents only its **oldest
+  (head)** entry to the CII and grants it only when **all** of:
+
+  1. the head's operands are ready (vector issue slot wakeup), **and**
+  2. the head is **past the PNR** — its ROB entry is older than ``rob.io.rob_pnr_idx`` (see the ROB
+     Point-of-No-Return logic), i.e. guaranteed to commit and no longer squashable.
+
+  A younger ready op **never** bypasses the head; if the head is not ready *or* still speculative,
+  the queue stalls. This delivers arithmetic ``OP.v``'s to the CII **in program order and only once
+  non-speculative** (see :ref:`vector-execution`). The payoff mirrors RoCC: the in-order coprocessor
+  **never** has to handle a branch-kill or replay of an in-flight op — anything it receives will
+  commit. On a mispredict, squashed ``IQ_V_ALU`` entries are simply dropped from the FIFO before they
+  ever issue. The cost is latency: a vector arithmetic op cannot start on the CII until older
+  branches have resolved and older loads have disambiguated (the PNR has swept past it).
 
 
 Wakeup Networks
@@ -130,6 +150,11 @@ ready:
 
    request := slot_valid && !iw_issued && scalar_operands_ready && vector_operands_ready
 
+For **``IQ_V_ALU``** the head additionally gates on being non-speculative (RoCC-style), so its grant
+is ``request && head && is_older(rob_idx, rob_pnr_idx)`` — see the in-order, non-speculative FIFO
+in the Issue/Scheduling Stage. ``IQ_V_LOAD``/``IQ_V_STORE`` do not gate on the PNR (vector memory may
+issue speculatively; the LSU handles ordering/replay and stores write memory only post-commit).
+
 For vector **stores** the existing mem-slot AGEN/DGEN split is extended: the
 data-generation (DGEN) path is gated on the vector store-data operand ``pvs3`` (matched on
 the vector network) rather than on ``prs2`` as in the scalar mem slot.
@@ -165,12 +190,14 @@ The single-stage approach with extended vector slots offers the following benefi
 
 1. **The scalar datapath is untouched.** Only the ``IQ_V_*`` queues are extended and connect
    to the vector wakeup network; the scalar queues are bit-identical to |boom|.
-2. **VL is an ordinary integer operand** — woken like any scalar feeder and read from the integer
-   RF/bypass by the vector EU at execute.
+2. **VL is an operand in its own register space** — ``pvl`` is woken on the VL network and the value
+   is read from the VL RF by the vector EU at execute (see :ref:`vl-vtype-rename`).
 3. **A vector ``OP.v`` is allocated and selected once.** There is no second issue stage, so
    there is no double allocation, no second priority-encoder select, and no cross-queue
    kill/replay to keep consistent.
-4. **Enables a detached CII co-processor**, with temporary registers and shared instructions
-   dispatched at grant time.
+4. **Enables a detached in-order CII co-processor.** ``IQ_V_ALU`` is a **program-order,
+   non-speculative FIFO** (not age-ordered): like RoCC it issues only instructions **past the PNR**
+   (known-safe), in program order, so the in-order CII never needs branch-kill/replay. Segmented-LS
+   shared instructions rendezvous via the ``pvtmp`` group.
 5. **Cracking of vector instructions in the frontend is unnecessary**, made possible by the
    atomic LMUL vector mapper and AGEN-time element cracking.

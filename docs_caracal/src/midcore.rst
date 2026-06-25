@@ -9,11 +9,24 @@ Midcore
 The Rename Stage
 ----------------
 
-The Rename Stage is extended to support vector register renaming. For vector instructions the rename stage is split into two pipeline stages **Scalar Mapping/Rename** and **Vector Mapping/Rename**.
+The Rename Stage is extended to support vector register renaming in a **single pipeline stage**.
+For a vector instruction the scalar (INT/FP) rename and the vector group rename run **in parallel
+in the same cycle** — they target independent register spaces, free lists, and busy tables, so
+neither depends on the other for a given ``OP.v``. There is **no** separate vector-mapping pipeline
+stage and **no** 1-cycle-delayed pipeline register: the whole dispatch group (scalar and vector)
+emerges from rename together, in one cycle.
 
-In the scalar mapping the original |boom| implementation is unchanged, there still exists a integer rename_stage and fp_rename_stage. Scalar instructions may enter the rename stage and be dispatched normally to the scalar instruction queues.
+On the scalar side the original |boom| implementation is unchanged — the integer ``rename_stage`` and
+``fp_rename_stage`` still rename scalar destinations/sources to INT/FP PRNs for both scalar and
+vector uops (e.g. a vector load's base/stride, a ``.vx``/``.vf`` operand). In parallel, the vector
+mapper renames the vector group (``lvd``/``lvs*``/``lvm`` → ``pvdest``/``pvs*``/``pvm``) and the VL
+mapper renames VL into the VL register file. The combined rename cycle is therefore the *max* of the
+scalar and vector-group rename latencies, not their sum — the cost of folding the vector group
+mapper (EMUL-wide group read, up to-8-PRN allocation, per-member bypass) onto the rename critical
+path, in exchange for dropping the second stage and all of its alignment machinery.
 
-Vector instructions will also enter the rename_stage and fp_rename_stage and have any scalar destination or source registers assigned a int or fp PRN. For vsetivl the VL register will require a integer PRN to be allocated for the VL value; younger vector uOPs carry it as an ordinary integer source operand (``pvl``) and read it from the integer RF/bypass at execute.
+For ``vset`` the VL value is renamed into the **VL register file** (its own space); younger vector
+uOPs carry ``pvl`` (a VL-RF index) and read VL from the VL RF at execute (see :ref:`vl-vtype-rename`).
 
 
 
@@ -26,50 +39,43 @@ Vector instructions will also enter the rename_stage and fp_rename_stage and hav
 
 
 
-.. _rename-twostage:
+.. _rename-stage:
 
-Dispatch-group atomicity across the two stages
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Single-stage rename: reservation and dispatch-group atomicity
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Because vector mapping takes an extra cycle, a vector ``OP.v`` reaches dispatch one cycle after a
-scalar uop in the same dispatch group. |caracal| does **not** insert a 1-cycle bubble on the scalar
-path to re-align them. Instead it decouples the three things that the rename→dispatch boundary
-normally does in one cycle — ROB allocation, IQ-slot write, and branch snapshot — and lets the
-vector-specific two of them slip a cycle, while the in-order one stays put:
+Because scalar and vector rename run **in parallel in one cycle**, the whole dispatch group reaches
+dispatch together — there is no cross-group skew to reconcile, no 1-cycle bubble, and no delayed
+pipeline register. Everything the rename→dispatch boundary does happens atomically, in program
+order, in that single cycle:
 
-- **Scalar Mapping (cycle 1)** allocates the ROB entry in program order — for both scalar and vector
-  uops — and assigns the ``br_tag`` and any scalar PRNs. ROB allocation is the only thing that
-  *must* be in program order, and it stays exactly as in |boom|: the dispatch group reserves its ROB
-  entries atomically and in order. Scalar uops in the group also write their issue-queue slots this
-  cycle and may begin issuing immediately.
-- **Vector Mapping (cycle 2)** fills the vector-specific metadata (``pvdest``, the ``EMUL`` stale
-  group, ``pvs*``/``pvm``, ``v_emul``, etc.) into the **already-allocated** ROB entry **and** writes
-  the vector ``OP.v``'s issue-queue slot. A vector ``OP.v`` therefore enters its ``IQ_V_*`` queue one
-  cycle behind its scalar group-mates. This is harmless: its ROB entry already exists (program order
-  preserved), and a vector slot cannot be granted before its operands are renamed anyway, so the
-  one-cycle-later slot write is never on the critical issue path. Scalar dispatch throughput is
-  unaffected — only the vector lane is delayed, and only by one cycle.
+- **ROB allocation** — one entry per uop (one per ``OP.v``), reserved in program order for the whole
+  group, exactly as in |boom|.
+- **LDQ/STQ slot reservation** — every memory uop, including each vector load/store ``OP.v`` (a
+  **single** LDQ or STQ entry), claims its slot at the in-order ``ldq_tail`` / ``stq_tail`` this
+  cycle, with ``ldq_idx``/``stq_idx`` written into the ``OP.v`` as the program-age stamp for
+  cross-queue disambiguation. The per-element addresses/data are produced later at the Vector LS
+  AGEN/DGEN (they live in the SSI/US queues, not the LDQ/STQ entry); only the *slot* is reserved here.
+- **``br_tag`` allocation and branch snapshots** — taken on the ``ren_br_tags`` event this cycle.
+- **Register rename (parallel)** — scalar INT/FP PRNs from the unchanged ``rename_stage`` /
+  ``fp_rename_stage``, the vector group (``pvdest``/``pvs*``/``pvm`` + the ``EMUL`` ``stale_pvdest``
+  group + ``v_emul``) from the vector mapper, and ``pvl`` from the VL mapper — all in the same cycle.
+- **Issue-queue slot write** — every uop (scalar and vector) writes its IQ slot this cycle; no uop
+  lags its group-mates.
 
-**Branch-snapshot alignment (the subtle part).** The scalar/integer/FP RMTs are snapshotted on the
-``ren_br_tags`` event in cycle 1. The **vector** RMT and the :ref:`VCFG mirror <vector-rvv-decode>`
-update a cycle later, so snapshotting them off the *same* cycle-1 event would capture state from the
-wrong cycle. |caracal| instead snapshots the vector RMT and the VCFG mirror off a **1-cycle-delayed
-``br_tag``** — the ``ren_br_tags`` valid/tag pipelined into the vector-mapping stage. Concretely:
+**Branch snapshots are simple again.** Since the vector RMT, the VL map table, and the
+:ref:`VCFG mirror <vector-rvv-decode>` all update in the *same* cycle as the scalar RMT, they are
+snapshotted on the **same ``ren_br_tags`` event** as the scalar RMT — there is **no** delayed-``br_tag``
+path. On ``brupdate.b2.mispredict`` the vector RMT / VL map table / VCFG mirror restore from
+``br_snapshots(br_tag)`` / ``vcfg_snapshots(br_tag)`` in lockstep with the scalar RMT, all indexed by
+the same ``br_tag``. (The VCFG mirror is decode-stage state, so its per-``br_tag`` snapshot is sourced
+from the branch's carried ``vconfig`` — the nearest-preceding-``vset`` value from the per-lane prefix
+select — so it reflects the state as-of the branch.)
 
-- When branch *B* in a dispatch group is assigned ``br_tag = t`` in cycle 1, any vector ``OP.v`` older
-  than *B* in that group performs its vector remap in cycle 2.
-- The vector RMT snapshot for tag *t* is written in cycle 2 from the delayed ``br_tag``, **after**
-  those older vector remaps have landed in the vector ``map_table``. The snapshot therefore captures
-  the correct "state as of *B*" — younger-than-*B* vector remaps have not yet been applied (they are
-  in the next group, a later cycle).
-- On ``brupdate.b2.mispredict`` the vector RMT and VCFG mirror restore from
-  ``br_snapshots(br_tag)`` / ``vcfg_snapshots(br_tag)`` exactly as the scalar RMT does — the
-  one-cycle-delayed *write* does not change the *restore* path; both reads are indexed by the same
-  ``br_tag`` the mispredict carries.
-
-The only ordering constraint is that the vector metadata write and the delayed snapshot both land
-before the entry can issue, which they always do since vector mapping is exactly one cycle behind ROB
-allocation. No scalar bubble is inserted and dispatch-group integrity is preserved.
+This combining is the source of the simplification: ROB allocation, LDQ/STQ reservation, and branch
+snapshotting are all done once, in order, in the single rename cycle — no split, no re-alignment, no
+delayed snapshot. The trade-off is purely timing: the vector group mapper now sits on the rename
+critical path (in parallel with scalar rename, so cost = the slower of the two, not the sum).
 
 Rename Map Table (RMT)
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -90,7 +96,7 @@ The vector mapper extends the existing RenameStage implementation to support vec
 
 .. note::
 
-   The Vector Mapper should also get the old stale vdest group and update the OP.v ``stale_pvdest`` field — a ``Vec`` of up to ``EMUL`` stale PRNs, not a single reg, since a vector dest renames a whole group. This will assist in handling tail undisturbed instructions and lets commit free the entire stale group. This stale-group capture happens in the cycle-2 vector-metadata fill into the ROB entry (see :ref:`rename-twostage`).
+   The Vector Mapper should also get the old stale vdest group and update the OP.v ``stale_pvdest`` field — a ``Vec`` of up to ``EMUL`` stale PRNs, not a single reg, since a vector dest renames a whole group. This will assist in handling tail undisturbed instructions and lets commit free the entire stale group. This stale-group capture happens in the single rename cycle, in parallel with scalar rename (see :ref:`rename-stage`).
 
 The vector mapper adds 1 feature:
 
@@ -248,10 +254,11 @@ mirror and the per-uOP ``VConfig`` snapshot; only ``VL`` gets a register file.)
 
 - **Map table** — a current-PRN pointer (the renamed ``VL``), branch-snapshotted per ``br_tag`` and
   restored on mispredict; restored from a committed pointer on exception/flush. This *replaces* the
-  old current-VL-PRN tracker. Because VL is renamed in the cycle-2 vector-map stage, its snapshot is
-  written off the **1-cycle-delayed ``br_tag``** (the same delayed path as the vector RMT and VCFG
-  mirror, see :ref:`rename-twostage`); a ``vset``→dependent pair in one dispatch group uses the
-  in-bundle prefix bypass so the dependent picks up the just-renamed ``pvl``.
+  old current-VL-PRN tracker. VL is renamed in the **single rename cycle** (in parallel with scalar
+  and vector-group rename, see :ref:`rename-stage`), so its snapshot is taken on the same
+  ``ren_br_tags`` event as the other RMTs — no delayed-``br_tag`` path; a ``vset``→dependent pair in
+  one dispatch group uses the in-bundle prefix bypass so the dependent picks up the just-renamed
+  ``pvl``.
 - **Free list** — 64-bit free vector; a producer allocates a fresh PRN.
 - **Busy table** — one bit per PRN; set on allocation, cleared by the producer's VL writeback.
 - **Wakeup network** — a dedicated ``VL`` network; vector issue slots match ``pvl`` on it (see the
