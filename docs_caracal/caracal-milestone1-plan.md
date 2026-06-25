@@ -34,24 +34,29 @@ Whenever you are uncertain about implementation details and planning, ask/prompt
       cd /root/my-chipyard/sims/vcs
       ./run_regr_rvv_scalar.sh MediumBoomV4VectorConfig
       ```
-   e. **Vector vset + load/store regression** — required from Step 10 (Unified LSU) onward and on any later step that can touch the vector LS datapath. Earlier steps may skip (e); (a)–(d) and (f) still apply:
-      ```bash
-      cd /root/my-chipyard/sims/vcs
-      ./run_regr.sh tests_regr/vset_loadstore_tests.txt MediumBoomV4VectorConfig
-      ```
+   e. **Vector regression — gated in two phases.** Run in order; the L/S phase may not start until the vset smoke passes:
+      - **(e1) `vset` smoke test** — required from **Step 9 (Integer ALU EU for `vset`) onward**. A single ELF that exercises `vsetivli`/`vsetvli`/`vsetvl` and reads back `vl`/`vtype` (via `csrr`) must PASS **before** any load/store test is attempted — `vset` is the prerequisite for every vector LS test, so prove it in isolation first:
+        ```bash
+        cd /root/my-chipyard/sims/vcs
+        ./run_regr.sh tests/rvv/vset_test/vset_test.elf MediumBoomV4VectorConfig
+        ```
+      - **(e2) `vset` + load/store regression** — required from **Step 11 (Unified LSU) onward** and on any later step that can touch the vector LS datapath. Gated behind (e1) passing:
+        ```bash
+        cd /root/my-chipyard/sims/vcs
+        ./run_regr.sh tests_regr/vset_loadstore_tests.txt MediumBoomV4VectorConfig
+        ```
+      Earlier steps may skip (e); (a)–(d) and (f) still apply.
    f. **Baseline `usingRVV=false` is bit-identical to pre-Caracal v4.** Elaborate `MediumBoomV4Config` (vector mixin not applied); RTL diff against the pre-Caracal v4 baseline must be empty.
    g. The step's listed step-specific verification artifacts pass.
 
    Don't merge a step branch into `Caracal/addvector` until (a)–(g) are all green.
 
-10. **Unit-test convention — one folder per test, single shared SBT project.** Unit-level testbenches live in `generators/boom/src/tests/<TestName>/`, each folder with a `<TestName>Spec.scala` (package `boom.v4.vec.<area>`) and a `run.sh`. Use the in-tree Chisel testing API (`chiseltest`/`ChiselSim`) with the **Verilator** backend. Register `src/tests/` as an extra test source root once in `build.sbt`/`build.sc`. Add a unit test **only when** the module can't be exercised through the e2e regressions; prefer extending the e2e suite.
+10. **No unit tests — module `printf` tracing instead.** |caracal| does **not** add unit-level testbenches: no `generators/boom/src/tests/`, no `chiseltest`/`ChiselSim`, no per-module `*Spec.scala`/`run.sh`, no extra test source root. Every module is validated **only** through the end-to-end VCS+Whisper regressions (rule 11) plus the per-step gate (9). To make those runs debuggable, **every new vec module emits guarded `printf` trace statements** so a single instruction can be followed stage-by-stage through the simulation log:
 
-    ```bash
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "$(git rev-parse --show-toplevel)/generators/boom"
-    exec sbt -batch "Test/testOnly boom.v4.vec.<area>.<TestName>Spec"
-    ```
+    - **Gated, off by default.** All trace prints are conditioned on a debug signal (a `vecTrace` plusarg / `DEBUG`-style `Bool`), so production RTL — and the `usingRVV=false` bit-identical baseline (9f) — are unaffected.
+    - **Tagged for correlation.** Each line carries the module name and the uop's `rob_idx` (plus, for vector ops, `pvdest`/`pvl`/`vl`/`v_emul` as relevant) so events from different stages line up with each other and with the Whisper cosim trace, and are greppable.
+    - **One line per key event** per stage, e.g.: decode (`opcode → is_vec`/`iq_type`/`v_eew`/`v_emul`), VCFG (`vtype`/`vl` update), mapper (group alloc `pvdest[*]`, stale group, non-whole-group counter), VL rename (`pvl`), issue (grant, operands-ready, PNR-pass for `IQ_V_ALU`), AGEN/DGEN (per-`nOP.v` element/PRN/offset), LCB (per-PRN fill, group-done), ROB (alloc/commit/group-done/`vstart`).
+    - **These prints are the per-step (9g) artifact:** a step is "done" when its module's trace shows the expected instruction flow in the (9d)/(9e) logs (cross-checked against Whisper).
 
 11. **End-to-end ELF-test convention.** Every test that runs a real RISC-V ELF must go through VCS with the Whisper cosim sidecar — never Verilator. The two regression scripts in (9d)/(9e) are the only sanctioned ELF harnesses; new ELFs are appended to `sims/vcs/tests_regr/*.txt`. Whisper cosim catches per-instruction functional divergence.
 
@@ -86,7 +91,7 @@ Whenever you are uncertain about implementation details and planning, ask/prompt
 - `parameters.scala` — add `enableVector`/`vector: Option[VectorParams]` to `BoomCoreParams`; derive `usingRVV`; derive `numVecPhysRegs`/`vecPregSz`, `numVlPhysRegs`/`vlPregSz`, `vecVLen`, `vecLregSz`, `maxVecVL`/`vecVLSz`. **Do not** alter any `require()` yet.
 - `config-mixins.scala` — `class WithVector extends Config(...)` setting `enableVector=true`, `vector=Some(VectorParams())`; `WithNSmallBoomsVector`; Mega overrides (`vecIssueGrantWidth=2`, `dcacheArbiterMode="dual-dynamic"`).
 
-**Verification (9g).** Add Chipyard configs `MediumBoomV4VectorConfig` (= `MediumBoomV4Config + WithVector`) and `MegaBoomV4VectorConfig` so later steps' (9c)/(9d)/(9e) have valid CONFIGs. No unit tests — exercised by the (9c) build.
+**Verification (9g).** Add Chipyard configs `MediumBoomV4VectorConfig` (= `MediumBoomV4Config + WithVector`) and `MegaBoomV4VectorConfig` so later steps' (9c)/(9d)/(9e) have valid CONFIGs. No trace yet (scaffolding only) — exercised by the (9c) build.
 
 ---
 
@@ -108,7 +113,7 @@ Whenever you are uncertain about implementation details and planning, ask/prompt
   - Segment fields `v_seg_nf`/`v_seg_idx`.
 - `consts.scala` — `RT_VEC`; widen `iq_type` one-hot Vec to `IQ_SZ = 7` and add `IQ_V_LOAD/IQ_V_STORE/IQ_V_ALU = 4/5/6`.
 
-**Verification (9g).** `MicroOpWidth` unit test asserting `MicroOp().getWidth` matches expected. **Risk:** the `*_rtype` widening ripples — audit every `*_rtype === RT_*` site; (9d) is load-bearing.
+**Verification (9g).** Bundle-only change — no trace. Exercised by the (9c) elaboration. **Risk:** the `*_rtype` widening ripples — audit every `*_rtype === RT_*` site; (9d) is load-bearing.
 
 ---
 
@@ -130,7 +135,7 @@ Whenever you are uncertain about implementation details and planning, ask/prompt
 
 **Spec refs.** `frontend.rst` (Vector Decode, VSET Special Handling, VCFG Mirror Recovery, Explicit vector-CSR accesses).
 
-**Verification (9g).** `VDecode` unit test on golden bit-patterns: `vsetivli`, `vsetvli`, `vsetvl`, `vle32.v`, `vse64.v`, `vlseg3e8.v`, `vlsseg2e16.v`, `vluxei8.v`, `vadd.vv`, and widening `vwadd.vv` (cover `v_eew`/`v_emul`). **Risk:** widening/narrowing EEW is where bugs hide.
+**Verification (9g).** `VDecode`/`VsetDecode`/VCFG emit a per-uop trace (`opcode → is_vec`/`iq_type`/`v_eew`/`v_emul`, and `vtype`/`vl` mirror updates); confirm the expected decode for `vsetivli`/`vsetvli`/`vsetvl`/`vle32.v`/`vse64.v`/`vlseg3e8.v`/`vluxei8.v`/`vadd.vv`/widening `vwadd.vv` in the (9d) log (cross-checked vs Whisper). **Risk:** widening/narrowing EEW is where bugs hide — make sure the trace prints `v_eew`/`v_emul` for those.
 
 ---
 
@@ -145,7 +150,7 @@ Whenever you are uncertain about implementation details and planning, ask/prompt
 
 **Spec refs.** `midcore.rst` (Rename Map Table, LMUL Tag checker, Free List, Busy Table, `group-done`); `vector_mapper` figure.
 
-**Verification (9g).** `VecMapTable` test: EMUL-wide group read returns correct mappings under a fragmented table; whole-group checker flags non-whole. `VecFreeList` test: non-contiguous 8-PRN alloc, branch reclaim, stale-group dealloc. `VecBusyTable` test: set 8 members, group-done clears, group-ready asserts only on last member; sub-range read of a larger group waits then wakes.
+**Verification (9g).** The mapper emits a per-`OP.v` trace: the allocated `pvdest[*]` group + stale group, the EMUL-wide source group reads, the non-whole-group counter, and (Busy Table) per-member set / group-done clear / group-ready-on-last-member. Confirm a vector op's group alloc and a sub-range consumer waking on group-done in the (9e) log. (No standalone unit test — driven by the e2e regressions.)
 
 ---
 
@@ -167,7 +172,7 @@ Whenever you are uncertain about implementation details and planning, ask/prompt
 
 **Spec refs.** `midcore.rst` (`rename-stage`, `vl-vtype-rename`); `frontend.rst` (VL delivery, VCFG Mirror Recovery).
 
-**Verification (9g).** `VecRenameStage` test: group alloc/free, branch snapshot/restore (same-cycle `br_tag`), mixed scalar+vector dispatch-group integrity (whole group renames in one cycle). `VlRename` test: `pvl` advance, commit frees outgoing pointer, mispredict restore.
+**Verification (9g).** `VecRenameStage`/`VlRename` emit a trace: per-`OP.v` group alloc and `pvl` assignment, branch snapshot/restore events (same-cycle `br_tag`), and commit frees (stale group / outgoing VL pointer). Confirm a mixed scalar+vector dispatch group renames in one cycle and a mispredict restores the maps, in the (9e) log.
 
 ---
 
@@ -185,7 +190,7 @@ Whenever you are uncertain about implementation details and planning, ask/prompt
 
 **Spec refs.** `midcore.rst` (ROB Completion-tracking, Commit, Precise exceptions).
 
-**Verification (9g).** `RobVecWb` test: a vector load's single group-done clears the entry; `stale_pvdest` group flows to dealloc on commit; shared-instruction entry waits for both halves.
+**Verification (9g).** The ROB emits a trace per vector entry: alloc, the single group-done clearing `rob_bsy`, `stale_pvdest` group dealloc on commit, the shared-instruction both-halves wait, and `vstart`/CSR writes. Confirm a vector load commits on one group-done and a segmented LS waits for both halves, in the (9e) log.
 
 ---
 
@@ -208,7 +213,7 @@ Whenever you are uncertain about implementation details and planning, ask/prompt
 
 **Spec refs.** `issue.rst` (Issue/Scheduling, Wakeup Networks, Vector Issue Slot); `dispatch_issue` figure.
 
-**Verification (9g).** `DispatchRouting` (vle/vse/vadd route correctly; shared → two queues); `VecIssueOrder` (age order with grant width 1); `VecSlotWakeup` (per-member group-ready; sub-range wake).
+**Verification (9g).** Dispatch + the vector slots emit a trace: `iq_type` routing (vle/vse/vadd → V_LOAD/V_STORE/V_ALU; shared → two queues), per-slot operand-ready / grant, and for `IQ_V_ALU` the in-order head + PNR-pass. Confirm correct routing and age-ordered grant (and `IQ_V_ALU` granting only past-PNR) in the (9d)/(9e) logs.
 
 ---
 
@@ -220,7 +225,7 @@ Whenever you are uncertain about implementation details and planning, ask/prompt
 
 **Files modified.** `core.scala` — instantiate between issue and the V-LSU.
 
-**Verification (9g).** `VecLsDecode` parity test vs. a checked-in golden `ConfigInfo` for unit-stride/strided/indexed/segment/masked.
+**Verification (9g).** `VecLsDecode` emits a trace of the decoded `ConfigInfo` (mop/stride/`nf`/EEW/access-class) per issued LS uop; confirm correct fields for unit-stride/strided/indexed/segment/masked in the (9e) log (cross-checked vs Whisper / the bobtail reference).
 
 ---
 
@@ -236,11 +241,32 @@ Whenever you are uncertain about implementation details and planning, ask/prompt
 
 **Spec refs.** `midcore.rst` (Register Files, VRF port table); `case_study.rst` (VL==0 group copy).
 
-**Verification (9g).** `VecRegFile` test: deterministic writes/reads across index 0/mid/max; concurrent ports; read-during-write behavior pinned. `VlRegFile` test: multi-source writes, `pvl` reads.
+**Verification (9g).** The VRF/VL RF emit a trace on each write/read port (PRN index, port, group member); confirm load writebacks (W0) and VL-RF writes land at the expected PRNs in the (9e)/(e1) logs. Read-during-write behavior is pinned in the spec, not unit-tested.
 
 ---
 
-## Step 9 — Vector LS AGEN stage (two-stage)
+## Step 9 — Integer ALU EU extension for `vset` (+ `vset` smoke test)
+
+**Scope.** Extend the integer ALU EU (gated by `usingRVV`) to execute `vsetvli`/`vsetvl`, completing the `vset` path **end-to-end so it can be verified in isolation, before any load/store**. (`vsetivli` is already front-end/VCFG from Step 2; this step adds the register-sourced forms.)
+
+**Why this comes before the LSU.** `vset` is the prerequisite for *every* vector load/store (you must set `vtype`/`vl` before a `vle`/`vse`), so it must be proven working before the LSU's L/S regression. Its full path is now in place: decode + VCFG (Step 2), VL rename (Step 4), ROB commit-time `vtype`/`vl` CSR write (Step 5), VRF/VL RF (Step 8), and the integer-ALU execution added here. `vsetvli`/`vsetvl` ride the **scalar** integer issue queue and execute on the int ALU EU (they carry no vector register operands), so this step does not depend on the AGEN/LSU.
+
+**Files modified.**
+- `exu/execution-units/*` (integer ALU) — for a `vset` uop: read `rs1` (and `rs2` for `vsetvl`) from the integer RF/bypass, compute `VL = min(rs1, VLMAX)` (and VTYPE for `vsetvl`), and on writeback **target the VL RF** + drive the **VL wakeup network** (and update the VCFG `vtype` mirror for `vsetvl` under `is_unique`). When `rd != x0`, also write `rd` normally. Bit-identical to BOOM when `usingRVV=false`.
+- `core.scala` — wire the ALU's VL-RF write port + VL-wakeup driver.
+
+**Spec refs.** `frontend.rst` (Where each vset executes); `overview.rst` (Execute / Integer execution row).
+
+**Verification (9g).** The **(e1) `vset` smoke test** is the gate for this step and **must PASS before Step 11's (e2) L/S regression**:
+```bash
+cd /root/my-chipyard/sims/vcs
+./run_regr.sh tests/rvv/vset_test/vset_test.elf MediumBoomV4VectorConfig
+```
+It exercises `vsetivli`/`vsetvli`/`vsetvl` and reads back `vl`/`vtype` via `csrr` (committed CSR values), proving `vset` works end-to-end — VCFG `vtype` mirror, VL-RF write, and commit-time CSR update — **independent of the LSU**. The int ALU EU emits a `vset` trace (computed `vl`/`vtype`, VL-RF write) so the smoke run is debuggable. Do not start Step 11 until this is green.
+
+---
+
+## Step 10 — Vector LS AGEN stage (two-stage)
 
 **Scope.** Crack L/S `OP.v` into `nOP.v` at element/segment granularity; track dest/src PRN + offset.
 
@@ -248,19 +274,19 @@ Whenever you are uncertain about implementation details and planning, ask/prompt
 - `Vec{Load,Store}Packer.scala`, `Vec{Load,Store}Skipper.scala`, `Vec{Load,Store}Walker.scala` — the Packer/Skipper/Walker generators.
 - `VecAgenStage1.scala` (`ld_vAGEN_1`/`st_vagen_1`): **Skipper + Walker only**. SSI (strided/indexed/segmented) expanded to `nOP.v` here; unit-stride encoded as a **single** `nOP.v` (base, stride, `is_unit_stride`).
 - `VecDgen.scala` (`st_vDGEN`): reads VRF (vector src) or INT/FP RF (scalar src, e.g. `vfmul.vf`); SSI per-element ELEN, unit-stride whole VLEN.
-- The stage-2 Packer lives at the LSU queues (Step 10), expanding the unit-stride `nOP.v` per-element just-in-time.
+- The stage-2 Packer lives at the LSU queues (Step 11), expanding the unit-stride `nOP.v` per-element just-in-time.
 
 **Files modified.** `core.scala` — wire issue → `VecLsDecode` → AGEN.
 
 **Spec refs.** `execution.rst` (Vector LS AGEN, Vector DGEN); `execution_stage` figure.
 
-**Verification (9g).** Covered by the (9e) LSU regression at Step 10; add a generator-parity unit test only if a path can't be reached e2e.
+**Verification (9g).** The AGEN/DGEN emit a per-`nOP.v` trace (element index, PRN + offset, address, access class); confirm the expected element stream for a unit-stride and an indexed op in the (e2) log. Covered e2e by the Step 11 LSU regression.
 
 ---
 
-## Step 10 — Unified LSU (Chisel ports of bobtail VPU memory primitives)
+## Step 11 — Unified LSU (Chisel ports of bobtail VPU memory primitives)
 
-**Scope.** The largest step: vector load/store path end-to-end. References `bobtail:tt_lq.sv`/`tt_store_buffer.sv`/`tt_mem.sv`/`tt_memop_fsm.sv`/`tt_idxldst_fsm.sv`/`tt_mask_fsm.sv`.
+**Scope.** The largest step: vector load/store path end-to-end. **Prerequisite: the Step 9 (e1) `vset` smoke test is green.** References `bobtail:tt_lq.sv`/`tt_store_buffer.sv`/`tt_mem.sv`/`tt_memop_fsm.sv`/`tt_idxldst_fsm.sv`/`tt_mask_fsm.sv`.
 
 **Files created (under `vec/lsu/`).**
 - Vector address/data queues: `ld_SSI_ADDR_Q`, `st_SSI_ADDR_Q`/`st_SSI_DATA_Q` (ELEN-wide), `ld_US_ADDR_Q`, `st_US_ADDR_Q`/`st_US_DATA_Q` (VLEN-wide). SSI sized to the worst-case single-store element count (`ssiQueueEntries`, default 512); stores back-pressure the vAGEN when full.
@@ -278,27 +304,13 @@ Whenever you are uncertain about implementation details and planning, ask/prompt
 
 **Spec refs.** `loadstore.rst` (entire), `overview.rst` (Memory).
 
-**Verification (9e + 9g).** Sub-step gating mirrors the spec:
-- **10a** LQ/SQ/AGU + unit-stride (`single` arbiter) — unit-stride PASS subset.
-- **10b** strided + indexed.
-- **10c** segment (LSU memory-movement half; transpose deferred — gate only the memory portion).
-- **10d** mask + whole-register + mask-load + fault-only-first (`vleff`); add `vsetvl` coverage ELFs.
-- **10e** Mega + `dual-dynamic` arbiter + cross-LSU snoop under 2-lane traffic.
-All ELF runs via VCS+Whisper (rule 11). **Risk:** largest step — split as above; 10a is the minimum viable deliverable.
-
----
-
-## Step 11 — Integer ALU EU extension for `vset`
-
-**Scope.** Extend the integer ALU EU (gated by `usingRVV`) to execute `vsetvli`/`vsetvl`.
-
-**Files modified.**
-- `exu/execution-units/*` (integer ALU) — for a `vset` uop: read `rs1` (and `rs2` for `vsetvl`) from the integer RF/bypass, compute `VL = min(rs1, VLMAX)` (and VTYPE for `vsetvl`), and on writeback **target the VL RF** + drive the **VL wakeup network** (and update the VCFG `vtype` mirror for `vsetvl` under `is_unique`). When `rd != x0`, also write `rd` normally. Bit-identical to BOOM when `usingRVV=false`.
-- `core.scala` — wire the ALU's VL-RF write port + VL-wakeup driver.
-
-**Spec refs.** `frontend.rst` (Where each vset executes); `overview.rst` (Execute / Integer execution row).
-
-**Verification (9g).** Covered by the (9e) vset regression; add an ALU-EU unit test if a path is unreachable e2e.
+**Verification (9e2 + 9g).** The (e1) `vset` smoke must already pass. Sub-step gating then mirrors the spec:
+- **11a** LQ/SQ/AGU + unit-stride (`single` arbiter) — unit-stride PASS subset.
+- **11b** strided + indexed.
+- **11c** segment (LSU memory-movement half; transpose deferred — gate only the memory portion).
+- **11d** mask + whole-register + mask-load + fault-only-first (`vleff`); add `vsetvl` coverage ELFs.
+- **11e** Mega + `dual-dynamic` arbiter + cross-LSU snoop under 2-lane traffic.
+All ELF runs via VCS+Whisper (rule 11). The V-LSU modules emit trace (LCB per-PRN fill + group-done, per-element address/disambiguation, store drain, fence handshake) so an element stream can be followed and lined up against Whisper. **Risk:** largest step — split as above; 11a is the minimum viable deliverable.
 
 ---
 
@@ -309,7 +321,7 @@ All ELF runs via VCS+Whisper (rule 11). **Risk:** largest step — split as abov
 **Files modified.**
 - `core.scala` — `IQ_V_ALU` grant tied off (`issueWidth=0` in Milestone-1 mode via an `enableVectorArith` sub-flag, default off). Hard `assert(!iq_v_alu.iss_valid)`.
 
-**Verification (9g).** (9d) scalar regression (no vector arith queued for scalar workloads) and (9e) LS regression stay green. A single-`vadd.vv` sanity ELF may be added expecting the tie-off assertion.
+**Verification (9g).** (9d) scalar regression (no vector arith queued for scalar workloads) and the (e2) LS regression stay green. A single-`vadd.vv` sanity ELF may be added expecting the tie-off assertion.
 
 ---
 
@@ -337,7 +349,7 @@ All ELF runs via VCS+Whisper (rule 11). **Risk:** largest step — split as abov
 - All vector load/store ISA tests pass Whisper cosim at LMUL ≤ 8.
 - Atomic mapper handles widening (`vw*`) and segment LS group sizing; `vstart` precise on element faults.
 - `usingRVV=false` RTL diff vs pre-Caracal v4 is empty.
-- All per-folder unit tests pass under their `run.sh` and in aggregate `sbt test`.
+- Every implemented module emits its gated `printf` trace (off by default), and the expected instruction flow — decode → mapper/VL rename → issue → AGEN → LCB/group-done → ROB commit — is visible and self-consistent (and consistent with Whisper) in the (9d)/(9e) simulation logs.
 
 ---
 
@@ -364,11 +376,12 @@ All ELF runs via VCS+Whisper (rule 11). **Risk:** largest step — split as abov
 | VL correctness | VL renamed into its own RF; producers VCFG / int-ALU-EU / LSU(`vleff`); explicit vector-CSR `is_unique` |
 | `vstart` trap-resume coherence | `vstart` lives in the CSR file, read at execute (not snapshotted); set precisely on trap, cleared at commit |
 | Segmented-LS temp lifetime | `pvtmp` is an ordinary VRF group from the main free list; freed at commit, reclaimed on branch — no TVRB, no free-on-consume |
-| RVWMO scalar↔vector ordering | Bidirectional cross-LSU snoop + memory-dependency speculation + fence-drains-both (Step 10) |
+| RVWMO scalar↔vector ordering | Bidirectional cross-LSU snoop + memory-dependency speculation + fence-drains-both (Step 11) |
 | D$ / LCAM / TLB contention | `DcacheArbiter` priority-round-robin; `single` (Medium) / `dual-dynamic` (Mega) |
 | Vector memory bandwidth ceiling | `lsuWidth × ELEN` is the cap; recommend Large/Mega; counters in Step 14; wide port is Milestone 2 |
 | `IQ_V_ALU` accidentally issuing | Hard assertion in Step 12 |
-| Largest-step risk (Unified LSU) | Split 10a–10e; 10a (unit-stride, single arbiter) is minimum viable |
+| Largest-step risk (Unified LSU) | Split 11a–11e; 11a (unit-stride, single arbiter) is minimum viable |
+| `vset` not proven before L/S bring-up | Step 9 lands the integer-ALU `vset` execution and gates on the **(e1) `vset` smoke test** (`tests/rvv/vset_test/vset_test.elf`) before any Step 11 L/S regression |
 
 ---
 
@@ -385,8 +398,8 @@ All ELF runs via VCS+Whisper (rule 11). **Risk:** largest step — split as abov
 | 6 | `issue/VecIssueSlot.scala`, `issue/VecIssueUnit.scala` |
 | 7 | `lsu/VecLsDecode.scala`, `lsu/ConfigInfo.scala` |
 | 8 | `regfile/VecRegFile.scala`, `regfile/VlRegFile.scala` |
-| 9 | `lsu/VecAgenStage1.scala`, `lsu/VecDgen.scala`, `lsu/Vec{Load,Store}{Packer,Skipper,Walker}.scala` |
-| 10 | `lsu/VecLoadCoalescingBuffer.scala`, `lsu/CrossLsuSnoop.scala`, `lsu/DcacheArbiter.scala`, vector address/data queues, FSMs (`VecMemopFsm`/`VecIdxLsFsm`/`VecMaskFsm`) |
+| 10 | `lsu/VecAgenStage1.scala`, `lsu/VecDgen.scala`, `lsu/Vec{Load,Store}{Packer,Skipper,Walker}.scala` |
+| 11 | `lsu/VecLoadCoalescingBuffer.scala`, `lsu/CrossLsuSnoop.scala`, `lsu/DcacheArbiter.scala`, vector address/data queues, FSMs (`VecMemopFsm`/`VecIdxLsFsm`/`VecMaskFsm`) |
 
 **Modified (baseline files — kept minimal):**
 
@@ -398,7 +411,7 @@ All ELF runs via VCS+Whisper (rule 11). **Risk:** largest step — split as abov
 | `v4/common/micro-op.scala` | 1 | vector fields (`is_vec`, `pvs*`, `pvl`, `pvtmp`, `VConfig` vtype-only, nOP.v cursor) |
 | `v4/exu/decode.scala` | 2 | hook `VDecode`/`VLSDecode`/`VsetDecode`; vector-CSR `is_unique` |
 | `v4/exu/dispatch.scala` | 6 | route to `IQ_V_*`; dual-route shared instructions |
-| `v4/exu/rob.scala` | 5, 10 | `dst_rtype`, group-done completion, stale-group free, CSR/vstart writes, fence handshake |
-| `v4/exu/execution-units/*` (int ALU) | 11 | execute `vsetvli`/`vsetvl` → VL RF (gated `usingRVV`) |
+| `v4/exu/rob.scala` | 5, 11 | `dst_rtype`, group-done completion, stale-group free, CSR/vstart writes, fence handshake |
+| `v4/exu/execution-units/*` (int ALU) | 9 | execute `vsetvli`/`vsetvl` → VL RF (gated `usingRVV`) |
 | `v4/exu/core.scala` | 3,4,5,6,7,8,9,10,11,12,13 | top-level wiring of every new module; single-stage parallel scalar+vector rename |
-| `v4/lsu/lsu.scala` | 10 | single-entry vector LDQ/STQ, cross-LSU snoop, arbiter |
+| `v4/lsu/lsu.scala` | 11 | single-entry vector LDQ/STQ, cross-LSU snoop, arbiter |
