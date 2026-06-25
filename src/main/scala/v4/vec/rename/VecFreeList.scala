@@ -67,7 +67,14 @@ class VecFreeList(override val coreWidth: Int, val commitWidth: Int, val numPreg
     val initial_allocation = Input(UInt(numPregs.W))
 
     // Per-uop group allocation requests / responses (combinational).
+    // `reqs(w).valid` is the fire-INDEPENDENT allocation REQUEST: it drives the
+    // prefix-sum (sel_off), the reserve check, and alloc_groups(w).valid
+    // (AVAILABILITY). It must NOT depend on dec_fire/dis_fire, otherwise the
+    // availability output feeds the rename-stall cone back into dec_fire and
+    // creates a combinational loop. State consumption (free_list update) is gated
+    // separately by `fire` below.
     val reqs         = Input (Vec(coreWidth, new VecAllocReq))
+    val fire         = Input (Vec(coreWidth, Bool()))
     val alloc_groups = Output(Vec(coreWidth, new VecAllocResp))
 
     // Stale groups returned by the ROB at commit.
@@ -182,8 +189,13 @@ class VecFreeList(override val coreWidth: Int, val commitWidth: Int, val numPreg
 
     val have_all = have_dest.reduce(_ && _) && have_tmp.reduce(_ && _)
 
+    // AVAILABILITY (drives ren_stalls in the caller): fire-INDEPENDENT -- only
+    // req.valid + the free-list state (have_all) + reserve_ok.
     io.alloc_groups(w).valid := req.valid && have_all && reserve_ok
-    sel_fire(w)              := io.alloc_groups(w).valid
+    // CONSUMPTION gate (drives free_list update / br snapshots): fire-gated.
+    // Everything downstream of sel_fire (per_uop_alloc, sel_mask, alloc_masks,
+    // free_list, br_alloc_lists) thus only fires when the lane actually fires.
+    sel_fire(w)              := io.alloc_groups(w).valid && io.fire(w)
   }
 
   // --------------------------------------------------------------------------

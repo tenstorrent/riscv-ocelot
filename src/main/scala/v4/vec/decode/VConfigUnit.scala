@@ -58,6 +58,9 @@ class VConfigUnitIO(implicit p: Parameters) extends BoomBundle
   // Per-lane output: effective vtype for this lane (nearest preceding in-bundle vset, else mirror).
   val lane_vtype    = Output(Vec(coreWidth, new VConfig))
 
+  // Speculative mirror exposed to core.scala (Step 4) to drive br_carried_vtype(0).
+  val spec_vtype_out = Output(new VConfig)
+
   // Branch snapshot -- driven from the SAME ren_br_tags event the scalar RMT uses.
   val ren_br_tags      = Input(Vec(coreWidth + 1, Valid(UInt(brTagSz.W))))
   val br_carried_vtype = Input(Vec(coreWidth + 1, new VConfig)) // per-slot prefix-select value the branch "sees"
@@ -119,6 +122,9 @@ class VConfigUnit(implicit p: Parameters) extends BoomModule
   for (i <- 0 until coreWidth) {
     io.lane_vtype(i) := prefix(i)
   }
+
+  // Expose the speculative mirror so core.scala can drive br_carried_vtype(0).
+  io.spec_vtype_out := spec_vtype
 
   // --------------------------------------------------------------------------
   // Branch snapshots -- same enableSuperscalarSnapshots / Mux1H pattern as the

@@ -189,6 +189,20 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val is_shared        = Bool()
   val pvtmp            = Vec(8, UInt(vecPregSz.W))
 
+  // Atomic EMUL-group rename. The vector mapper renames whole NON-CONTIGUOUS
+  // EMUL groups, so a single pvdest/pvsN cannot represent the group. These hold
+  // the full allocated/stale/source groups; the base-only fields above carry
+  // member 0 (pvdest == pvdest_grp(0), pvsN == pvsN_grp(0)) for trace and
+  // base-only consumers. The *_mask fields mark valid members (= memberMask(v_emul)).
+  val pvdest_grp       = Vec(8, UInt(vecPregSz.W))  // full allocated dest group; pvdest == pvdest_grp(0)
+  val pvdest_grp_mask  = UInt(8.W)                   // valid members (= memberMask(v_emul))
+  val stale_pvdest_grp = Vec(8, UInt(vecPregSz.W))  // full stale dest group (freed at commit)
+  val pvs1_grp         = Vec(8, UInt(vecPregSz.W))  // source group reads (pvsN == pvsN_grp(0))
+  val pvs2_grp         = Vec(8, UInt(vecPregSz.W))
+  val pvs3_grp         = Vec(8, UInt(vecPregSz.W))
+  val pvtmp_mask       = UInt(8.W)                   // valid members of pvtmp (segmented LS)
+  val is_vleff         = Bool()                      // fault-only-first load (VL producer; Step 11)
+
   val pvs1_busy        = Bool()
   val pvs2_busy        = Bool()
   val pvs3_busy        = Bool()

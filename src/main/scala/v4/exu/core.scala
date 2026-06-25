@@ -45,6 +45,8 @@ import freechips.rocketchip.trace.{TraceCoreIngress, TraceCoreInterface, TraceCo
 import boom.v4.common._
 import boom.v4.ifu.{GlobalHistory, HasBoomFrontendParameters}
 import boom.v4.util._
+import boom.v4.vec.decode.VConfigUnit
+import boom.v4.vec.rename.{VecRenameStage, VlRename}
 
 /**
  * Top level core object that connects the Frontend to the rest of the pipeline.
@@ -125,6 +127,16 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   val pred_rename_stage = Module(new PredRenameStage(coreWidth, 1))
   val imm_rename_stage  = Module(new ImmRenameStage(coreWidth, numImmReaders)) // wakeup ports used when insts read imm
   val rename_stages     = Seq(rename_stage, pred_rename_stage, imm_rename_stage) ++ (if (usingFPU) Seq(fp_rename_stage) else Nil)
+
+  // Caracal vector rename (Step 4): VConfig mirror + vector-group rename + VL rename.
+  // Instantiated in parallel with scalar rename. NOT added to rename_stages (the
+  // scalar drive loop is left byte-identical). All wiring is gated by usingRVV so
+  // the vector-OFF RTL is unchanged (gate 9f).
+  val vconfig_unit     = if (usingRVV) Some(Module(new VConfigUnit)) else None
+  val vec_rename_stage = if (usingRVV) {
+    Some(Module(new VecRenameStage(coreWidth, numVecPhysRegs, coreWidth, 1)))
+  } else None
+  val vl_rename        = if (usingRVV) Some(Module(new VlRename(coreWidth, numVlPhysRegs, 3))) else None
 
   val mem_iss_unit     = IssueUnit(memIssueParam, numIntWakeups, false, false)
   val unq_iss_unit     = IssueUnit(unqIssueParam, numIntWakeups, false, false)
@@ -655,6 +667,129 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   branch_mask_full := dec_brmask_logic.io.is_full
 
   //-------------------------------------------------------------
+  // Caracal vector decode-stage config (VCFG) + lane_vtype merge + v_emul derive.
+  // Gated by usingRVV (gate 9f). Runs after dec_uops are finalized (br_tag/br_mask
+  // set above) so the merged vtype/v_emul flow into rename below.
+  //-------------------------------------------------------------
+  if (usingRVV) {
+    val vcfg = vconfig_unit.get
+
+    // D.7 -- rebuild the same Vec(coreWidth+1, Valid(brTag)) the scalar RMT builds
+    // internally (rename-stage.scala:117-118): from dis_fire + the dispatched uop's
+    // allocate_brtag + br_tag. Slot 0 is the incoming (no-branch) slot.
+    val vec_br_tags = Wire(Vec(coreWidth + 1, Valid(UInt(brTagSz.W))))
+    vec_br_tags(0).valid := false.B
+    vec_br_tags(0).bits  := 0.U
+    for (w <- 0 until coreWidth) {
+      vec_br_tags(w + 1).valid := dis_fire(w) && dis_uops(w).allocate_brtag
+      vec_br_tags(w + 1).bits  := dis_uops(w).br_tag
+    }
+
+    // D.2 -- VCFG wiring.
+    for (w <- 0 until coreWidth) {
+      vcfg.io.dec_valids(w)    := dec_valids(w)
+      vcfg.io.dec_is_vset(w)   := dec_uops(w).is_vsetivli || dec_uops(w).is_vsetvli || dec_uops(w).is_vsetvl
+      vcfg.io.dec_imm_vtype(w) := dec_uops(w).is_vsetivli || dec_uops(w).is_vsetvli
+      vcfg.io.dec_vtype_in(w)  := dec_uops(w).vconfig
+      vcfg.io.dec_uop_id(w)    := dec_uops(w).debug_inst // trace tag (best-effort; rob_idx not yet known)
+    }
+    vcfg.io.ren_br_tags    := vec_br_tags
+    vcfg.io.brupdate       := brupdate
+    vcfg.io.rollback       := rob.io.rollback
+    vcfg.io.com_vset_valid := false.B    // ROB commit -> vtype shadow update arrives in Step 5
+    vcfg.io.com_vtype      := DontCare
+    vcfg.io.vec_trace      := false.B    // Step-9 enables the vecTrace plusarg
+    // br_carried_vtype: slot 0 sees the speculative mirror; slot w+1 sees lane w's
+    // effective (nearest-preceding-vset) vtype.
+    vcfg.io.br_carried_vtype(0) := vcfg.io.spec_vtype_out
+    for (w <- 0 until coreWidth) {
+      vcfg.io.br_carried_vtype(w + 1) := vcfg.io.lane_vtype(w)
+    }
+
+    // Merge lane_vtype into vector DATA ops so the mapper derives the right EMUL.
+    // last-connect-wins: only overwrites the vconfig of is_vec lanes.
+    for (w <- 0 until coreWidth) {
+      when (dec_uops(w).is_vec) {
+        dec_uops(w).vconfig := vcfg.io.lane_vtype(w)
+      }
+    }
+
+    // D.3 -- derive the 3-bit dest EMUL (encoding 0..3 = m1..m8; fractional/<=m1 -> 0).
+    //   emul_log2 = lmul_log2 + (EEW_log2 - SEW_log2)  for vector load/store
+    //             = lmul_log2 + 1                       for widening arith
+    //             = lmul_log2                           for normal/narrowing arith
+    // then clamp to [0,3]. Only magnitude matters for member sizing, so a fractional
+    // LMUL (vlmul 4..7) collapses to lmul_log2 = 0.
+    for (w <- 0 until coreWidth) {
+      when (dec_uops(w).is_vec) {
+        val vt        = dec_uops(w).vconfig // already merged with lane_vtype above
+        val sew_log2  = vt.vsew.asSInt        // 3-bit, SEW = 8 << vsew
+        val eew_log2  = dec_uops(w).v_eew.asSInt
+        // vtype LMUL encoding: 0..3 = m1..m8 (log2 = 0..3); 5,6,7 = mf8,mf4,mf2;
+        // anything >= 4 collapses to single-member -> lmul_log2 = 0.
+        val lmul_log2 = Mux(vt.vlmul < 4.U, vt.vlmul.asSInt, 0.S)
+        val is_ls     = dec_uops(w).iq_type(IQ_V_LOAD) || dec_uops(w).iq_type(IQ_V_STORE)
+        val emul_log2 = Mux(is_ls, lmul_log2 + (eew_log2 - sew_log2),
+                        Mux(dec_uops(w).v_widen, lmul_log2 + 1.S,
+                                                 lmul_log2))
+        // clamp to [0,3]
+        val clamped = Mux(emul_log2 < 0.S, 0.S,
+                      Mux(emul_log2 > 3.S, 3.S, emul_log2))
+        dec_uops(w).v_emul := clamped.asUInt(2, 0)
+      }
+    }
+
+    // D.4 -- drive VecRenameStage + VlRename. Every input port MUST be driven.
+    val vrs = vec_rename_stage.get
+    val vlr = vl_rename.get
+
+    vrs.io.dec_fire    := dec_fire
+    vrs.io.dec_valids  := dec_valids   // fire-independent valid; breaks ren_stalls->dec_fire loop
+    vrs.io.dec_uops    := dec_uops
+    vrs.io.ren_br_tags := vec_br_tags
+    vrs.io.brupdate    := brupdate
+    vrs.io.rollback    := rob.io.rollback
+    vrs.io.kill        := io.ifu.redirect_flush
+    vrs.io.dis_fire    := dis_fire
+    vrs.io.dis_ready   := dis_ready
+    vrs.io.com_valids  := rob.io.commit.valids
+    vrs.io.vec_trace   := false.B    // Step-9 enables the vecTrace plusarg
+    for (w <- 0 until coreWidth) {
+      vrs.io.dec_uop_id(w) := dec_uops(w).debug_inst
+    }
+    // Commit/wakeup inputs stubbed until Step 5/8 (drive valids false, bits DontCare).
+    vrs.io.com_remap   := DontCare
+    vrs.io.com_dealloc := DontCare
+    for (w <- 0 until coreWidth) {
+      vrs.io.com_remap(w).valid   := false.B
+      vrs.io.com_dealloc(w).valid := false.B
+    }
+    vrs.io.wakeups := DontCare
+    for (k <- 0 until vrs.io.wakeups.length) {
+      vrs.io.wakeups(k).valid := false.B
+    }
+
+    vlr.io.dec_fire    := dec_fire
+    vlr.io.dec_valids  := dec_valids   // fire-independent valid; breaks ren_stalls->dec_fire loop
+    vlr.io.dec_uops    := dec_uops
+    vlr.io.ren_br_tags := vec_br_tags
+    vlr.io.brupdate    := brupdate
+    vlr.io.rollback    := rob.io.rollback
+    vlr.io.kill        := io.ifu.redirect_flush
+    vlr.io.com_valids  := rob.io.commit.valids
+    vlr.io.vec_trace   := false.B    // Step-9 enables the vecTrace plusarg
+    for (w <- 0 until coreWidth) {
+      vlr.io.dec_uop_id(w)    := dec_uops(w).debug_inst
+      vlr.io.com_is_vlprod(w) := false.B    // ROB commit -> VL free arrives in Step 5
+      vlr.io.com_pvl(w)       := 0.U
+    }
+    vlr.io.wakeups := DontCare
+    for (k <- 0 until vlr.io.wakeups.length) {
+      vlr.io.wakeups(k).valid := false.B
+    }
+  }
+
+  //-------------------------------------------------------------
   //-------------------------------------------------------------
   // **** Register Rename Stage ****
   //-------------------------------------------------------------
@@ -724,6 +859,53 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     dis_uops(w).ppred_busy := p_uop.ppred_busy && dis_uops(w).is_sfb_shadow
 
     ren_stalls(w) := rename_stage.io.ren_stalls(w) || f_stall || p_stall || imm_stall
+  }
+
+  //-------------------------------------------------------------
+  // Caracal vector dis_uops assembly + ren_stalls fold (Step 4).
+  // Gated by usingRVV (gate 9f). Placed AFTER the scalar dis_uops / ren_stalls
+  // blocks so last-connect-wins overrides the vector fields for is_vec uops. The
+  // scalar prs1/prs2/prs3/pdst Mux is intentionally NOT touched -- a vector op's
+  // scalar base/stride still take prs1/prs2 from the int-rename Mux.
+  //-------------------------------------------------------------
+  if (usingRVV) {
+    for (w <- 0 until coreWidth) {
+      val v_uop  = vec_rename_stage.get.io.ren2_uops(w)
+      val vl_uop = vl_rename.get.io.ren2_uops(w)
+
+      // D.5 -- vector group/source/dest fields from the vector mapper + VL rename.
+      when (dis_uops(w).is_vec) {
+        dis_uops(w).pvdest           := v_uop.pvdest
+        dis_uops(w).pvdest_grp       := v_uop.pvdest_grp
+        dis_uops(w).pvdest_grp_mask  := v_uop.pvdest_grp_mask
+        dis_uops(w).stale_pvdest     := v_uop.stale_pvdest
+        dis_uops(w).stale_pvdest_grp := v_uop.stale_pvdest_grp
+        dis_uops(w).pvs1             := v_uop.pvs1
+        dis_uops(w).pvs1_grp         := v_uop.pvs1_grp
+        dis_uops(w).pvs2             := v_uop.pvs2
+        dis_uops(w).pvs2_grp         := v_uop.pvs2_grp
+        dis_uops(w).pvs3             := v_uop.pvs3
+        dis_uops(w).pvs3_grp         := v_uop.pvs3_grp
+        dis_uops(w).pvm              := v_uop.pvm
+        dis_uops(w).pvtmp            := v_uop.pvtmp
+        dis_uops(w).pvtmp_mask       := v_uop.pvtmp_mask
+        dis_uops(w).pvs1_busy        := v_uop.pvs1_busy
+        dis_uops(w).pvs2_busy        := v_uop.pvs2_busy
+        dis_uops(w).pvs3_busy        := v_uop.pvs3_busy
+        dis_uops(w).pvm_busy         := v_uop.pvm_busy
+        dis_uops(w).pvl              := vl_uop.pvl
+        dis_uops(w).pvl_busy         := vl_uop.pvl_busy
+        dis_uops(w).v_emul           := v_uop.v_emul
+      }
+
+      // D.6 -- fold the vector rename stalls into the per-lane ren_stalls. Re-list
+      // the scalar stage stalls (rather than reading ren_stalls(w), which would be a
+      // combinational self-loop x := x || y) and OR in the vector terms. Mirrors the
+      // scalar assignment at the top of this section; last-connect-wins overrides it.
+      ren_stalls(w) := rename_stage.io.ren_stalls(w) || fp_rename_stage.io.ren_stalls(w) ||
+                       pred_rename_stage.io.ren_stalls(w) || imm_rename_stage.io.ren_stalls(w) ||
+                       vec_rename_stage.get.io.ren_stalls(w) || vl_rename.get.io.ren_stalls(w)
+    }
   }
 
   //-------------------------------------------------------------

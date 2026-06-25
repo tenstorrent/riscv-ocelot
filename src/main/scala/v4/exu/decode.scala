@@ -616,6 +616,16 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
     uop.iq_type(IQ_V_LOAD)  := false.B
     uop.iq_type(IQ_V_STORE) := false.B
     uop.iq_type(IQ_V_ALU)   := false.B
+    // Default the vector classification bits to false for EVERY uop (the fetch
+    // buffer inits MicroOp to DontCare, and VDecode only runs on legal vector
+    // insts). Step-4 consumers gate on these bits alone (dis_uops vector
+    // override, VlRename VL-producer detection), so an undriven scalar uop must
+    // not float here. VDecode.decode re-asserts them for recognized vector ops.
+    uop.is_vec      := false.B
+    uop.is_vsetivli := false.B
+    uop.is_vsetvli  := false.B
+    uop.is_vsetvl   := false.B
+    uop.is_vleff    := false.B
     when (VDecode.isLegal(inst)) {
       VDecode.decode(uop, inst)
     }
