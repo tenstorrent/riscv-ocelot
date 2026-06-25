@@ -626,6 +626,7 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
     uop.is_vsetvli  := false.B
     uop.is_vsetvl   := false.B
     uop.is_vleff    := false.B
+    uop.is_shared   := false.B   // segmented-LS temp-group flag; set in Step 11, default off
     when (VDecode.isLegal(inst)) {
       VDecode.decode(uop, inst)
     }

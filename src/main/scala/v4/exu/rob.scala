@@ -33,6 +33,7 @@ import freechips.rocketchip.util._
 
 import boom.v4.common._
 import boom.v4.util._
+import boom.v4.vec.rename.{VecGroupDealloc, VecRemapReq}
 
 /**
  * IO bundle to interact with the ROB
@@ -68,6 +69,10 @@ class RobIo(
 
   // Unbusying ports for stores.
   val lsu_clr_bsy      = Input(Vec(coreWidth, Valid(UInt(robAddrSz.W))))
+
+  // Vector group-done completion ports (Caracal). One group-done per OP.v clears
+  // rob_bsy single-shot; member-PRN clears go to the vector BusyTable, not here.
+  val vec_clr_bsy      = if (usingRVV) Some(Input(Vec(numVecWbPorts, Valid(UInt(robAddrSz.W))))) else None
 
   // Port for unmarking loads/stores as speculation hazards..
   val lsu_clr_unsafe   = Input(Vec(lsuWidth, Valid(UInt(robAddrSz.W))))
@@ -121,6 +126,18 @@ class CommitSignals(implicit p: Parameters) extends BoomBundle
   val debug_insts = Vec(retireWidth, UInt(32.W))
 
   val debug_wdata = Vec(retireWidth, UInt(xLen.W))
+
+  // Caracal commit-free outputs (gate 9f). Driven from the full rob_uop at commit;
+  // consumed by VecRenameStage / VlRename / VConfigUnit. csr_* exposed for Step 9.
+  val vec_dealloc     = if (usingRVV) Some(Vec(retireWidth, new boom.v4.vec.rename.VecGroupDealloc)) else None
+  val vec_remap       = if (usingRVV) Some(Vec(retireWidth, new boom.v4.vec.rename.VecRemapReq)) else None
+  val vl_is_vlprod    = if (usingRVV) Some(Vec(retireWidth, Bool())) else None
+  val vl_com_pvl      = if (usingRVV) Some(Vec(retireWidth, UInt(vlPregSz.W))) else None
+  val vcfg_vset_valid = if (usingRVV) Some(Vec(retireWidth, Bool())) else None
+  val vcfg_vtype      = if (usingRVV) Some(Vec(retireWidth, new VConfig)) else None
+  // exposed for Step 9 (architectural vtype/vl CSR write); NOT connected to csr in Step 5:
+  val csr_vset_valid  = if (usingRVV) Some(Vec(retireWidth, Bool())) else None
+  val csr_vconfig     = if (usingRVV) Some(Vec(retireWidth, new VConfig)) else None
 }
 
 /**
@@ -372,6 +389,9 @@ class Rob(
     val rob_val       = RegInit(VecInit(Seq.fill(numRobRows){false.B}))
     val rob_bsy       = Reg(Vec(numRobRows, Bool()))
     val rob_unsafe    = Reg(Vec(numRobRows, Bool()))
+    // Caracal: a shared (segmented) vector op produces two group-done events; the
+    // first only clears this pending flag, the second clears rob_bsy. (gate 9f)
+    val rob_other_half_pending = if (usingRVV) Some(Reg(Vec(numRobRows, Bool()))) else None
     val rob_uop       = Reg(Vec(numRobRows, new MicroOp()))
     val rob_exception = Reg(Vec(numRobRows, Bool()))
     val rob_predicated = Reg(Vec(numRobRows, Bool())) // Was this instruction predicated out?
@@ -394,6 +414,7 @@ class Rob(
       rob_predicated(rob_tail)   := false.B
       rob_fflags(rob_tail).valid := false.B
       rob_fflags(rob_tail).bits  := 0.U
+      if (usingRVV) { rob_other_half_pending.get(rob_tail) := io.enq_uops(w).is_shared }
 
       assert (rob_val(rob_tail) === false.B, "[rob] overwriting a valid entry.")
       assert ((io.enq_uops(w).rob_idx >> log2Ceil(coreWidth)) === rob_tail)
@@ -439,6 +460,26 @@ class Rob(
       }
     }
 
+    // Caracal vector group-done clears rob_bsy single-shot (no per-entry counter).
+    // For shared (segmented) ops the first group-done only drops the pending flag.
+    // Does NOT clear rob_unsafe (LSU safety is Step 11; reuse lsu_clr_unsafe). (gate 9f)
+    if (usingRVV) {
+      for (clr <- io.vec_clr_bsy.get) {
+        when (clr.valid && MatchBank(GetBankIdx(clr.bits))) {
+          val cidx = GetRowIdx(clr.bits)
+          when (!rob_uop(cidx).is_shared) {
+            rob_bsy(cidx) := false.B
+          } .otherwise {
+            when (rob_other_half_pending.get(cidx)) {
+              rob_other_half_pending.get(cidx) := false.B
+            } .otherwise {
+              rob_bsy(cidx) := false.B
+            }
+          }
+        }
+      }
+    }
+
 
     //-----------------------------------------------------
     // Exceptions
@@ -471,6 +512,31 @@ class Rob(
     io.commit.arch_valids(w) := will_commit(w) && !rob_predicated(rob_head)
     io.commit.uops(w)        := compact_to_uop(rob_compact_uop_bypassed(w), rob_uop(rob_head))
     io.commit.debug_insts(w) := rob_debug_inst_rdata(w)
+
+    // Caracal commit-free outputs. The compact uop lacks the group fields, so read the
+    // FULL rob_uop(rob_head) for bank w (same head/bank indexing as io.commit.uops(w)
+    // above -- each bank w owns its own rob_uop reg vector). (gate 9f)
+    if (usingRVV) {
+      val u = rob_uop(rob_head)
+      val v_commit = will_commit(w) && u.is_vec && u.dst_rtype === RT_VEC
+      io.commit.vec_dealloc.get(w).valid  := v_commit
+      io.commit.vec_dealloc.get(w).prn    := u.stale_pvdest_grp
+      io.commit.vec_dealloc.get(w).mask   := u.pvdest_grp_mask
+      io.commit.vec_remap.get(w).valid    := v_commit
+      io.commit.vec_remap.get(w).ldst     := u.lvd
+      io.commit.vec_remap.get(w).pdst     := u.pvdest_grp
+      io.commit.vec_remap.get(w).v_emul   := u.v_emul
+
+      val vlprod = will_commit(w) && (u.is_vsetivli || u.is_vsetvli || u.is_vsetvl || (u.is_vec && u.is_vleff))
+      io.commit.vl_is_vlprod.get(w) := vlprod
+      io.commit.vl_com_pvl.get(w)   := u.pvl
+
+      val vset_c = will_commit(w) && (u.is_vsetivli || u.is_vsetvli || u.is_vsetvl)
+      io.commit.vcfg_vset_valid.get(w) := vset_c
+      io.commit.vcfg_vtype.get(w)      := u.vconfig
+      io.commit.csr_vset_valid.get(w)  := vset_c
+      io.commit.csr_vconfig.get(w)     := u.vconfig
+    }
 
     // We unbusy branches in b1, but its easier to mark the taken/provider src in b2,
     // when the branch might be committing

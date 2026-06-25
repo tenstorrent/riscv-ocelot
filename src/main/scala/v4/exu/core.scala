@@ -696,8 +696,12 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vcfg.io.ren_br_tags    := vec_br_tags
     vcfg.io.brupdate       := brupdate
     vcfg.io.rollback       := rob.io.rollback
-    vcfg.io.com_vset_valid := false.B    // ROB commit -> vtype shadow update arrives in Step 5
-    vcfg.io.com_vtype      := DontCare
+    // ROB commit -> vtype shadow update (Step 5). Collapse the per-lane commit Vec to
+    // the single VConfigUnit port, taking the YOUNGEST committing vset (vsetivli/vsetvli
+    // aren't is_unique, so 2 can commit/cycle; highest committing lane wins).
+    val vset_oh = rob.io.commit.vcfg_vset_valid.get
+    vcfg.io.com_vset_valid := vset_oh.reduce(_ || _)
+    vcfg.io.com_vtype      := PriorityMux(vset_oh.reverse, rob.io.commit.vcfg_vtype.get.reverse)
     vcfg.io.vec_trace      := false.B    // Step-9 enables the vecTrace plusarg
     // br_carried_vtype: slot 0 sees the speculative mirror; slot w+1 sees lane w's
     // effective (nearest-preceding-vset) vtype.
@@ -757,13 +761,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     for (w <- 0 until coreWidth) {
       vrs.io.dec_uop_id(w) := dec_uops(w).debug_inst
     }
-    // Commit/wakeup inputs stubbed until Step 5/8 (drive valids false, bits DontCare).
-    vrs.io.com_remap   := DontCare
-    vrs.io.com_dealloc := DontCare
-    for (w <- 0 until coreWidth) {
-      vrs.io.com_remap(w).valid   := false.B
-      vrs.io.com_dealloc(w).valid := false.B
-    }
+    // Commit-free path (Step 5): map-table remap + free-list dealloc from the ROB.
+    vrs.io.com_remap   := rob.io.commit.vec_remap.get
+    vrs.io.com_dealloc := rob.io.commit.vec_dealloc.get
+    // Wakeups remain stubbed until Step 8 (group-done from the vector EUs).
     vrs.io.wakeups := DontCare
     for (k <- 0 until vrs.io.wakeups.length) {
       vrs.io.wakeups(k).valid := false.B
@@ -780,12 +781,19 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vlr.io.vec_trace   := false.B    // Step-9 enables the vecTrace plusarg
     for (w <- 0 until coreWidth) {
       vlr.io.dec_uop_id(w)    := dec_uops(w).debug_inst
-      vlr.io.com_is_vlprod(w) := false.B    // ROB commit -> VL free arrives in Step 5
-      vlr.io.com_pvl(w)       := 0.U
+      vlr.io.com_is_vlprod(w) := rob.io.commit.vl_is_vlprod.get(w)    // ROB commit -> VL free (Step 5)
+      vlr.io.com_pvl(w)       := rob.io.commit.vl_com_pvl.get(w)
     }
     vlr.io.wakeups := DontCare
     for (k <- 0 until vlr.io.wakeups.length) {
       vlr.io.wakeups(k).valid := false.B
+    }
+
+    // ROB vector group-done completion ports: no completion source until Step 11
+    // (LSU/CII). Tie off valid so the commit-free path stays dormant in Step 5.
+    rob.io.vec_clr_bsy.get := DontCare
+    for (k <- 0 until rob.io.vec_clr_bsy.get.length) {
+      rob.io.vec_clr_bsy.get(k).valid := false.B
     }
   }
 

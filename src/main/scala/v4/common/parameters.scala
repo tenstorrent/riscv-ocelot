@@ -370,6 +370,9 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val vecPregSz       = log2Ceil(numVecPhysRegs)                   // bits to index a vector preg
   val numVlPhysRegs   = vectorParams.numVlPhysRegisters            // VL register file depth (default 64)
   val vlPregSz        = log2Ceil(numVlPhysRegs)                    // bits to index a VL preg
+  // Vector group-done completion ports into the ROB (one group-done per OP.v clears
+  // rob_bsy single-shot). Tied off in core for Step 5, so the value is non-critical.
+  val numVecWbPorts   = if (usingRVV) 1 else 0
   val vecLregSz       = 5                                          // 32 architectural vector regs v0..v31
   val maxVecVL        = vecVLen                                    // max VL in elements (SEW=8, LMUL=8 => vLen)
   val vecVLSz         = log2Ceil(maxVecVL + 1)                     // bits to hold a VL value (0..maxVecVL)
