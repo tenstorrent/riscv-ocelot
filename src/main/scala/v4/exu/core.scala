@@ -47,6 +47,7 @@ import boom.v4.ifu.{GlobalHistory, HasBoomFrontendParameters}
 import boom.v4.util._
 import boom.v4.vec.decode.VConfigUnit
 import boom.v4.vec.rename.{VecRenameStage, VlRename}
+import boom.v4.vec.regfile.{VecRegFile, VlRegFile}
 
 /**
  * Top level core object that connects the Frontend to the rest of the pipeline.
@@ -137,6 +138,15 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     Some(Module(new VecRenameStage(coreWidth, numVecPhysRegs, coreWidth, 1)))
   } else None
   val vl_rename        = if (usingRVV) Some(Module(new VlRename(coreWidth, numVlPhysRegs, 3))) else None
+
+  // Caracal vector register files (Step 8): the vector physical register file
+  // (8R/4W, VLEN-wide with per-64b write mask) and the VL physical register
+  // file (6R/3W). Both are DORMANT here -- producers (Step 9 register-write)
+  // and consumers (Step 11 register-read) are not wired yet. Gated by usingRVV
+  // so the vector-OFF RTL is byte-identical (gate 9f). All inputs are tied off
+  // below; read_ports.data outputs are left dangling (legal in Chisel).
+  val vec_regfile = if (usingRVV) Some(Module(new VecRegFile(8, 4))) else None
+  val vl_regfile  = if (usingRVV) Some(Module(new VlRegFile(6, 3)))  else None
 
   val mem_iss_unit     = IssueUnit(memIssueParam, numIntWakeups, false, false)
   val unq_iss_unit     = IssueUnit(unqIssueParam, numIntWakeups, false, false)
@@ -1300,6 +1310,30 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
       iss_unit.io.vec_wakeup_ports.foreach { p => p.valid := false.B; p.bits := DontCare }
       iss_unit.io.vl_wakeup_ports.foreach  { p => p.valid := false.B; p.bits := DontCare }
     }
+  }
+
+  // ----------------------------------------------------------------
+  // Caracal (Step 8): tie off the vector + VL register files DORMANT. No
+  // producers (Step 9 reg-write) or consumers (Step 11 reg-read) exist yet, so
+  // every input must be driven (Chisel errors otherwise). Writes are held
+  // invalid; read addresses are 0. read_ports.data outputs are left dangling
+  // (no consumer yet -- legal in Chisel). All gated by usingRVV so vector-OFF
+  // RTL is byte-identical (gate 9f).
+  if (usingRVV) {
+    vec_regfile.get.io.write_ports.foreach { w =>
+      w.valid     := false.B
+      w.bits.addr := 0.U
+      w.bits.data := 0.U
+      w.bits.mask := 0.U
+    }
+    vec_regfile.get.io.read_ports.foreach { r => r.addr := 0.U }
+
+    vl_regfile.get.io.write_ports.foreach { w =>
+      w.valid     := false.B
+      w.bits.addr := 0.U
+      w.bits.data := 0.U
+    }
+    vl_regfile.get.io.read_ports.foreach { r => r.addr := 0.U }
   }
 
   //-------------------------------------------------------------
