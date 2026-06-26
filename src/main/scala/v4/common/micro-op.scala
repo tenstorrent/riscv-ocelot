@@ -54,6 +54,19 @@ class VConfig(implicit p: Parameters) extends BoomBundle
   val vta    = Bool()      // tail agnostic
 }
 
+/**
+ * Vset writeback response, produced by the int-ALU vset path and consumed by the
+ * ROB (vl/vtype stash for architectural commit) and core. Defined here in
+ * boom.v4.common so the EU, ROB, and core all import it from the same place.
+ */
+class VsetWbResp(implicit p: Parameters) extends BoomBundle
+{
+  val rob_idx  = UInt(robAddrSz.W)
+  val vl_value = UInt(vecVLSz.W)
+  val vtype    = new VConfig          // runtime-decoded vtype (vsetvl) or immediate (vsetvli)
+  val pvl      = UInt(vlPregSz.W)
+}
+
 class MicroOp(implicit p: Parameters) extends BoomBundle
   with freechips.rocketchip.rocket.constants.MemoryOpConstants
   with freechips.rocketchip.rocket.constants.ScalarOpConstants
@@ -179,6 +192,8 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   // the outgoing committed pointer directly. Read by every vector EU on the VL read
   // port. VTYPE is not renamed -- it rides the VConfig snapshot (VCFG vtype mirror).
   val pvl              = UInt(vlPregSz.W)         // VL register-file index
+
+  val vl_value         = UInt(vecVLSz.W)          // computed VL (rd value); architectural vl CSR at commit
 
   // Shared-instruction (segmented LS) intermediate temp vector group. Allocated
   // from the MAIN vector free list by the vector mapper when is_shared, and lives

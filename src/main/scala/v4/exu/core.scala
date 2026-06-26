@@ -161,6 +161,14 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   val vstore_iss_unit = if (usingRVV) Some(boom.v4.vec.issue.VecIssueUnit(vStoreIssueParam.get, numIntWakeups)) else None
   val valu_iss_unit   = if (usingRVV) Some(boom.v4.vec.issue.VecIssueUnit(vAluIssueParam.get,   numIntWakeups)) else None
 
+  // Caracal (Step 9): collapse the per-ALU-lane vset writeback responses into a single
+  // Valid[VsetWbResp]. Exactly one ALU lane (the int ALU carrying the vset FU) produces a
+  // valid response per cycle, so OR-ing valids and Mux1H-ing the bits is exact. This wire
+  // is the producer for the ROB vl/vtype stash, the VL-RF write, and the VL wakeup. It is
+  // driven at the ALU-resp consumption site below and read in the regfile/rename/issue
+  // tie-off blocks. Gated by usingRVV so the vector-OFF RTL is byte-identical (gate 9f).
+  val vset_wb = if (usingRVV) Some(Wire(Valid(new boom.v4.common.VsetWbResp))) else None
+
   val dispatcher       = Module(new BasicDispatcher)
   val iregfileBankedWriteArray = Seq.fill(lsuWidth + 1) { None } ++ ((0 until aluWidth).map { w => if (enableColumnALUWrites) Some(w) else None })
   val iregfile         = Module(new BankedRF(
@@ -804,10 +812,15 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
       vlr.io.com_is_vlprod(w) := rob.io.commit.vl_is_vlprod.get(w)    // ROB commit -> VL free (Step 5)
       vlr.io.com_pvl(w)       := rob.io.commit.vl_com_pvl.get(w)
     }
+    // VL wakeup (Step 9): the int-ALU vset write is the sole VL producer. Drive wakeup
+    // port 0 from the collapsed vset response (pvl just written into the VL-RF); other
+    // wakeup ports stay invalid. This clears pvl_busy for younger vector consumers.
     vlr.io.wakeups := DontCare
     for (k <- 0 until vlr.io.wakeups.length) {
       vlr.io.wakeups(k).valid := false.B
     }
+    vlr.io.wakeups(0).valid    := vset_wb.get.valid
+    vlr.io.wakeups(0).bits.pvl := vset_wb.get.bits.pvl
 
     // ROB vector group-done completion ports: no completion source until Step 11
     // (LSU/CII). Tie off valid so the commit-free path stays dormant in Step 5.
@@ -1202,6 +1215,61 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   require (wu_idx == numIntWakeups)
   require (wb_idx == numIrfWritePorts)
 
+  // ----------------------------------------------------------------
+  // Caracal (Step 9): collapse the int-ALU vset writeback responses. Each ALUExeUnit
+  // exposes io_vset_wb (Option[Valid[VsetWbResp]], present iff usingRVV). Only the lane
+  // running the vset FU asserts valid in a given cycle, so OR the valids and Mux1H the
+  // bits across lanes. Gated by usingRVV; .get is safe inside the gate.
+  if (usingRVV) {
+    val vset_valids = alu_exe_units.map(_.io_vset_wb.get.valid)
+    vset_wb.get.valid := vset_valids.reduce(_ || _)
+    vset_wb.get.bits  := Mux1H(vset_valids, alu_exe_units.map(_.io_vset_wb.get.bits))
+    assert(PopCount(VecInit(vset_valids).asUInt) <= 1.U, "more than one ALU lane produced a vset writeback")
+
+    // ROB vl/vtype stash port (Input Vec(coreWidth, Valid[VsetWbResp])). The int ALU maps to
+    // lane 0; the rob_idx inside the response selects the ROB row, so the lane index is only a
+    // structural port assignment. Drive every lane: lane 0 = collapsed vset, others invalid.
+    for (w <- 0 until coreWidth) {
+      if (w == 0) {
+        rob.io.vset_wb.get(0) := vset_wb.get
+      } else {
+        rob.io.vset_wb.get(w).valid := false.B
+        rob.io.vset_wb.get(w).bits  := DontCare
+      }
+    }
+
+    // ----------------------------------------------------------------
+    // Caracal (Step 9): architectural vconfig write into the rocket CSRFile. With Option A
+    // (usingVector=true when usingRVV), csr.io.vector is Some(...). The ROB drives per-lane
+    // commit signals; collapse them to the YOUNGEST committing vset (vsetivli/vsetvli are
+    // not is_unique, so up to retireWidth can commit/cycle -- highest committing lane wins),
+    // mirroring the VCFG com wiring above. Every INPUT sub-field of io.vector is driven.
+    val csr_vec      = csr.io.vector.get
+    val csr_vset_oh  = rob.io.commit.csr_vset_valid.get
+    val win_vcfg     = PriorityMux(csr_vset_oh.reverse, rob.io.commit.csr_vconfig.get.reverse)
+    val win_vl       = PriorityMux(csr_vset_oh.reverse, rob.io.commit.csr_vl.get.reverse)
+
+    csr_vec.set_vconfig.valid    := csr_vset_oh.reduce(_ || _)
+    csr_vec.set_vconfig.bits.vl  := win_vl
+    // Bit-exact bridge BOOM VConfig -> rocket VType. The rocket VType packs (MSB..LSB):
+    //   {vill, reserved, vma, vta, vsew[2:0], vlmul_sign, vlmul_mag[1:0]}
+    // so its low byte == {vma, vta, vsew[2:0], vlmul[2:0]} -- exactly the vtype immediate
+    // byte. Reconstruct via VType.fromUInt on the packed byte Cat(vma, vta, vsew, vlmul);
+    // for a legal config fromUInt leaves vill=0/reserved=0 and copies the fields verbatim,
+    // so set_vconfig.bits.vtype.asUInt's low byte round-trips the original immediate.
+    //   e32/m1/ta/ma -> vsew=2(010), vlmul=0(000), vta=1, vma=1
+    //   => Cat(1,1,010,000) = 0b11010000 = 0xD0  (matches the smoke's `bne t1, 0xD0`).
+    val packed_vtype = Cat(win_vcfg.vma, win_vcfg.vta, win_vcfg.vsew, win_vcfg.vlmul)
+    csr_vec.set_vconfig.bits.vtype := freechips.rocketchip.rocket.VType.fromUInt(packed_vtype, true)
+
+    // Remaining io.vector INPUT fields: no architectural vstart/vxsat update from the vset
+    // path. (set_vstart/set_vconfig are Flipped(Valid), set_vs_dirty/set_vxsat are Input Bool.)
+    csr_vec.set_vstart.valid := false.B
+    csr_vec.set_vstart.bits  := 0.U
+    csr_vec.set_vs_dirty     := false.B
+    csr_vec.set_vxsat        := false.B
+  }
+
   // arb stage guarantees 1 preg writer per cycle
   val pregfile_write_valids = alu_exe_units.map(u => u.io_alu_resp.valid && u.io_alu_resp.bits.uop.is_sfb_br)
   assert(PopCount(pregfile_write_valids) <= 1.U)
@@ -1306,9 +1374,13 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
       // No grant squash source yet.
       iss_unit.io.squash_grant := false.B
 
-      // TIE OFF the vector + VL wakeup networks (sources not wired until later).
+      // TIE OFF the vector wakeup network (group-done source not wired until later).
       iss_unit.io.vec_wakeup_ports.foreach { p => p.valid := false.B; p.bits := DontCare }
+      // VL wakeup (Step 9): drive port 0 from the int-ALU vset response so pvl_busy clears
+      // for vector consumers waiting on this VL producer; other ports stay invalid.
       iss_unit.io.vl_wakeup_ports.foreach  { p => p.valid := false.B; p.bits := DontCare }
+      iss_unit.io.vl_wakeup_ports(0).valid    := vset_wb.get.valid
+      iss_unit.io.vl_wakeup_ports(0).bits.pvl := vset_wb.get.bits.pvl
     }
   }
 
@@ -1328,11 +1400,18 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     }
     vec_regfile.get.io.read_ports.foreach { r => r.addr := 0.U }
 
+    // VL-RF write ports: tie off all, then un-stub W1 (the int-ALU vset writer). The int ALU
+    // is the SOLE VL-RF writer for all three vset forms (vsetvl/vsetvli/vsetivli) -- this
+    // avoids the vsetivli double-write that a separate VCFG W0 path would cause; W0/W2 stay
+    // tied off. addr = pvl (renamed VL phys reg), data = computed vl_value.
     vl_regfile.get.io.write_ports.foreach { w =>
       w.valid     := false.B
       w.bits.addr := 0.U
       w.bits.data := 0.U
     }
+    vl_regfile.get.io.write_ports(1).valid     := vset_wb.get.valid
+    vl_regfile.get.io.write_ports(1).bits.addr := vset_wb.get.bits.pvl
+    vl_regfile.get.io.write_ports(1).bits.data := vset_wb.get.bits.vl_value
     vl_regfile.get.io.read_ports.foreach { r => r.addr := 0.U }
   }
 

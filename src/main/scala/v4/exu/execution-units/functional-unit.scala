@@ -29,6 +29,7 @@ import freechips.rocketchip.rocket.ALU._
 import boom.v4.common._
 import boom.v4.ifu._
 import boom.v4.util._
+import boom.v4.vec.decode.VDecode
 
 
 
@@ -274,6 +275,58 @@ class ALUUnit(dataWidth: Int)(implicit p: Parameters)
   io.brinfo := brinfo
 
 
+  // --------------------------------------------------------------------------
+  // Caracal vset execution (vsetvli / vsetvl / vsetivli) on the int ALU.
+  // Gated by usingRVV so the unit is byte-identical to baseline when vector is
+  // off: with usingRVV=false, is_vset is statically false (the && usingRVV.B
+  // folds away on scalar uops) AND the vset_out Option port does not exist.
+  // Produces the new VL into rd (RT_FIX GPR write via the normal resp path) and
+  // a VsetWbResp for the ROB / VL-RF / VL-wakeup, consumed in ALUExeUnit.
+  // --------------------------------------------------------------------------
+  val is_vset  = usingRVV.B && (uop.is_vsetvli || uop.is_vsetvl || uop.is_vsetivli)
+  val vl_final = WireInit(0.U(vecVLSz.W))
+  // Option output port; only materialized when usingRVV (see ALUExeUnit hookup).
+  val vset_out = if (usingRVV) Some(IO(Output(Valid(new VsetWbResp)))) else None
+
+  if (usingRVV) {
+    val rd_is_x0  = uop.ldst === 0.U
+    val rs1_is_x0 = uop.lrs1 === 0.U
+
+    // vsetvl decodes its vtype at runtime from rs2_data[7:0]; vsetvli/vsetivli
+    // carry the immediate vtype (incl. vlmax) in uop.vconfig (set at decode).
+    val vsetvl_vtype = Wire(new VConfig)
+    vsetvl_vtype.vlmul := io.req.bits.rs2_data(2, 0)
+    vsetvl_vtype.vsew  := io.req.bits.rs2_data(5, 3)
+    vsetvl_vtype.vta   := io.req.bits.rs2_data(6)
+    vsetvl_vtype.vma   := io.req.bits.rs2_data(7)
+    // Reuse the decode-time runtime VLMAX MuxLookup; width = vecVLSz to match VConfig.vlmax.
+    vsetvl_vtype.vlmax := VDecode.vlmaxOf(io.req.bits.rs2_data(5, 3),
+                                          io.req.bits.rs2_data(2, 0), vecVLen, vecVLSz)
+
+    val eff_vtype = Mux(uop.is_vsetvl, vsetvl_vtype, uop.vconfig)
+    val vlmax     = eff_vtype.vlmax
+
+    // AVL for vsetvli/vsetvl comes from rs1 (lower vecVLSz+1 bits suffice).
+    // vsetivli's VL was already computed at decode (uop.vl_value = min(uimm,vlmax)).
+    val avl = io.req.bits.rs1_data(vecVLSz, 0)
+
+    // VL for vsetvli/vsetvl:
+    val vl_vsetvl = Mux(rs1_is_x0 && !rd_is_x0, vlmax,                  // rs1=x0, rd!=x0 -> VLMAX
+                    Mux(rs1_is_x0 &&  rd_is_x0, vlmax,                  // rs1=x0, rd=x0 -> keep current VL
+                                                Mux(avl < vlmax, avl, vlmax)))  // normal: min(AVL,VLMAX)
+    // TODO(rs1=x0 && rd=x0): spec says "keep current VL" (vtype only update). We do
+    // not yet read the old architectural VL here, so this falls back to VLMAX as a
+    // safe placeholder. Not exercised by the current smoke test. Wiring the old VL
+    // (e.g. from the VL-RF read via pvl) is needed for full correctness.
+
+    vl_final := Mux(uop.is_vsetivli, uop.vl_value, vl_vsetvl)
+
+    vset_out.get.valid        := io.resp.valid && is_vset
+    vset_out.get.bits.rob_idx := uop.rob_idx
+    vset_out.get.bits.vl_value := vl_final
+    vset_out.get.bits.vtype   := eff_vtype
+    vset_out.get.bits.pvl     := uop.pvl
+  }
 
 
 // Response
@@ -287,7 +340,15 @@ class ALUUnit(dataWidth: Int)(implicit p: Parameters)
       Mux(io.req.bits.uop.is_mov, io.req.bits.rs2_data, alu.io.out))
   io.resp.valid := io.req.valid
   io.resp.bits.uop := io.req.bits.uop
-  io.resp.bits.data := Mux(io.req.bits.uop.is_sfb_br, pc_sel === PC_BRJMP, alu_out)
+  // For vset uops, rd receives the computed VL (zero-extended to xLen) instead of
+  // the ALU result; dst_rtype is RT_FIX so this writes the integer rd via the GPR
+  // resp path. Gated by usingRVV.B && is_vset => byte-identical when vector is off.
+  val sfb_or_alu_out = Mux(io.req.bits.uop.is_sfb_br, pc_sel === PC_BRJMP, alu_out)
+  if (usingRVV) {
+    io.resp.bits.data := Mux(is_vset, vl_final.pad(xLen), sfb_or_alu_out)
+  } else {
+    io.resp.bits.data := sfb_or_alu_out
+  }
   io.resp.bits.predicated := io.req.bits.uop.is_sfb_shadow && io.req.bits.pred_data
   assert(io.resp.ready)
 

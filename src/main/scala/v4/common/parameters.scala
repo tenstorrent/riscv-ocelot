@@ -151,6 +151,24 @@ case class BoomCoreParams(
   val useZbb = true
   val useZbs = true
 
+  // Vector (Caracal Goal 1) — Option A: tie rocketchip's useVector to enableVector
+  // for the vector configs. This reverses the earlier "keep useVector=false" stance
+  // (see usingRVV comment in HasBoomCoreParameters) for vector builds only: with
+  // useVector=true, rocketchip's CSRFile provides the vl/vtype/vlenb CSRs and a
+  // writable mstatus.VS, which Caracal relies on. When enableVector=false everything
+  // below resolves to 0/false, so rocketchip's usingVector-gated require()s are
+  // skipped and the RTL is byte-identical to the baseline (gate 9f).
+  // Member kinds match CoreParams exactly: useVector is a `val`; vLen/eLen/vfLen/
+  // vMemDataBits are `def`s.
+  override val useVector = enableVector
+  override def vLen = vector.map(_.vLen).getOrElse(0)
+  override def eLen = if (enableVector) 64 else 0
+  override def vfLen = 0
+  // Keep vMemDataBits = 0: it must NOT inflate coreDataBits (= xLen max fLen max
+  // vMemDataBits) above the D$ rowBits(64) (rocket require(rowBits >= coreDataBits)).
+  // Caracal M1 reuses the scalar 64-bit D$ port (DMEM_WIDTH = coreDataBits = 64).
+  override def vMemDataBits = 0
+
   override def customCSRs(implicit p: Parameters) = new BoomCustomCSRs
 }
 

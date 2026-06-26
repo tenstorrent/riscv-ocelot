@@ -207,6 +207,25 @@ object VDecode
       // the rs2 vtype (its vconfig here is don't-care).
       uop.vconfig.vlmax := vlmaxOf(vset.vsew, vset.vlmul, params.vecVLen,
                                    uop.vconfig.vlmax.getWidth)
+      // Step 9: vsetivli is fully front-end-resolved -- both AVL (zimm[4:0]) and
+      // VTYPE are immediate, so VL = min(AVL, VLMAX) is known at DECODE. We compute
+      // it here into uop.vl_value; it is the source of truth for both the rd write
+      // and the commit CSR (the int-ALU still dispatches to compute rd but its
+      // VL-RF write is suppressed by the EU agent -- VCFG/front-end owns VL for
+      // vsetivli). vsetvli/vsetvl have a register AVL (and vsetvl a register VTYPE),
+      // so their VL is NOT known here -- the int-ALU computes vl_value at execute;
+      // we leave vl_value at its default 0 for those forms.
+      //   VLMAX is uop.vconfig.vlmax (just assigned above, == vlmaxOf(...)).
+      //   avl_imm is the 5-bit zimm[4:0] from VsetDecode (vset.avl_imm); zero-extend
+      //   it to vecVLSz before the min. min via Mux(avl < vlmax, avl, vlmax).
+      val avl_imm_zext = Cat(0.U((uop.vl_value.getWidth - vset.avl_imm.getWidth).W),
+                             vset.avl_imm)
+      when (vset.is_vsetivli) {
+        uop.vl_value := Mux(avl_imm_zext < uop.vconfig.vlmax, avl_imm_zext, uop.vconfig.vlmax)
+      } .otherwise {
+        // vsetvli/vsetvl: int-ALU writes vl_value at execute; default to 0 here.
+        uop.vl_value := 0.U
+      }
     } .otherwise {
       // Vector data op (load / store / arith).
       uop.is_vec := true.B

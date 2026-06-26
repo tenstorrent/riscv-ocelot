@@ -74,6 +74,13 @@ class RobIo(
   // rob_bsy single-shot; member-PRN clears go to the vector BusyTable, not here.
   val vec_clr_bsy      = if (usingRVV) Some(Input(Vec(numVecWbPorts, Valid(UInt(robAddrSz.W))))) else None
 
+  // Vset writeback ports (Caracal, Step 9). One per issue/ALU lane (coreWidth); core
+  // drives the int-ALU lane valid when a vsetvl{,i,ivli} writes back, rest invalid.
+  // Carries the execute-time-resolved vl_value + vtype, stashed into the ROB entry so
+  // the commit-time architectural vtype/vl CSR write has them (vsetvl's vtype is only
+  // known at execute). (gate 9f)
+  val vset_wb          = if (usingRVV) Some(Input(Vec(coreWidth, Valid(new boom.v4.common.VsetWbResp)))) else None
+
   // Port for unmarking loads/stores as speculation hazards..
   val lsu_clr_unsafe   = Input(Vec(lsuWidth, Valid(UInt(robAddrSz.W))))
 
@@ -138,6 +145,8 @@ class CommitSignals(implicit p: Parameters) extends BoomBundle
   // exposed for Step 9 (architectural vtype/vl CSR write); NOT connected to csr in Step 5:
   val csr_vset_valid  = if (usingRVV) Some(Vec(retireWidth, Bool())) else None
   val csr_vconfig     = if (usingRVV) Some(Vec(retireWidth, new VConfig)) else None
+  // Step 9: committing entry's stashed VL value; core drives csr.io.vector.set_vconfig.
+  val csr_vl          = if (usingRVV) Some(Vec(retireWidth, UInt(vecVLSz.W))) else None
 }
 
 /**
@@ -480,6 +489,21 @@ class Rob(
       }
     }
 
+    // Caracal vset writeback stash (Step 9). When the int-ALU resolves a
+    // vsetvl{,i,ivli}, write the computed vl_value + resolved vtype back into the
+    // stored uop so the commit-time architectural CSR write reads them. Overwrites the
+    // decode don't-care vconfig for vsetvl; harmless for vsetvli/vsetivli (same value).
+    // Same bank/row indexing as the wb_resps rob_bsy clear above. (gate 9f)
+    if (usingRVV) {
+      for (vw <- io.vset_wb.get) {
+        when (vw.valid && MatchBank(GetBankIdx(vw.bits.rob_idx))) {
+          val ridx = GetRowIdx(vw.bits.rob_idx)
+          rob_uop(ridx).vl_value := vw.bits.vl_value
+          rob_uop(ridx).vconfig  := vw.bits.vtype
+        }
+      }
+    }
+
 
     //-----------------------------------------------------
     // Exceptions
@@ -536,6 +560,7 @@ class Rob(
       io.commit.vcfg_vtype.get(w)      := u.vconfig
       io.commit.csr_vset_valid.get(w)  := vset_c
       io.commit.csr_vconfig.get(w)     := u.vconfig
+      io.commit.csr_vl.get(w)          := u.vl_value
     }
 
     // We unbusy branches in b1, but its easier to mark the taken/provider src in b2,
