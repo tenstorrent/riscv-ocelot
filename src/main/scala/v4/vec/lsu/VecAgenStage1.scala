@@ -8,13 +8,12 @@
 //------------------------------------------------------------------------------
 //
 // `VecAgenStage1(isStore)` is the ONE parameterized router around the already-
-// ported Skipper + Walker FSMs. It mirrors the bobtail loadgen/storegen router
-// (reference/vec-lsgen/{loadgen,storegen}.scala): latch a `ConfigInfo`, route it
-// to the sub-FSM that handles the access type, and mux the sub-FSMs' packet
-// outputs into one. Differences vs the reference:
-//   - the PACKING (unit-stride Packer) and BYPASS routes are DROPPED. Unit-stride
-//     is folded into the Walker for now; a dedicated Step-11 stage-2 Packer will
-//     take it over (see the routing comment below).
+// ported Packer + Skipper + Walker FSMs. It mirrors the bobtail loadgen/storegen
+// router (reference/vec-lsgen/{loadgen,storegen}.scala): latch a `ConfigInfo`,
+// route it to the sub-FSM that handles the access type, and mux the sub-FSMs'
+// packet outputs into one. It faithfully mirrors the reference's full 5-state
+// FSM (IDLE/BYPASS/PACKING/SKIPPING/WALKING) and its start-mux / output-mux /
+// bypass_packet. Differences vs the reference:
 //   - after selecting the output packet, the architectural `v_reg` the FSM drives
 //     is remapped to the renamed physical PRN (`pdst`/`pdst_member` for loads,
 //     `pvs3`/`pvs3_member` for stores) off `uop.pvdest_grp`/`uop.pvs3_grp`, since
@@ -59,25 +58,39 @@ extends BoomModule with VecLsConstants {
   // sub-FSMs see a stable config for the whole run, and pick which sub-gen owns
   // the access while IDLE (from io.start.bits) vs while running (from start_q).
   object State extends ChiselEnum {
-    val IDLE, SKIPPING, WALKING = Value
+    val IDLE, BYPASS, PACKING, SKIPPING, WALKING = Value
   }
   val state   = RegInit(State.IDLE)
   val start_q = RegInit(0.U.asTypeOf(new ConfigInfo))
 
   val config_info = Mux((state === State.IDLE), io.start.bits, start_q)
 
-  // ======== Routing predicates (mirror loadgen/storegen, Packer/BYPASS dropped) ========
-  // skipable: non-indexed masked LS -> Skipper.
-  // walkable: everything else (indexed, or unmasked strided/unit-stride) -> Walker.
-  // Step 11: dedicated unit-stride Packer fast-path; Walker covers it for now.
-  val skipable = (config_info.is_mask && !config_info.is_index)
-  val walkable = !(config_info.is_mask && !config_info.is_index)
+  // ======== Routing predicates (mirror loadgen/storegen, all 5 routes) ========
+  // bypassable: vl == 0 (or vstart >= vl) -> BYPASS (single fake last packet).
+  // packable:   good unit/strided segment -> Packer (unit-stride fast-path).
+  // skipable:   non-indexed masked LS     -> Skipper.
+  // walkable:   everything else           -> Walker.
+  // priority: bypassable > packable > skipable > walkable.
+  val bypassable = (config_info.vl === 0.U) || (config_info.vstart >= config_info.vl)
+  val packable   = config_info.is_good_stride && config_info.is_good_seg
+  val skipable   = (config_info.is_mask && !config_info.is_index)
+  val walkable   = !(config_info.is_mask && !config_info.is_index)
 
   // chicken bit (mirror reference): don't pack across segments
   val use_seg_constraint = (config_info.seg_count > 1.U)
 
   if (isStore) {
     // ============================================================ STORES
+
+    // --- packer ---
+    val packer = Module(new VecStorePacker)
+    packer.io.start.bits           := config_info
+    packer.io.use_seg_constraint   := use_seg_constraint
+    packer.io.kill                 := io.kill
+    packer.io.store_packet.ready   := io.store_nop.get.ready
+    // store-data: forward straight through (inactive one's read_bytes/read_all ignored)
+    packer.io.vdb_data.valid_bytes := io.vdb_data.get.valid_bytes
+    packer.io.vdb_data.data        := io.vdb_data.get.data
 
     // --- skipper ---
     val skipper = Module(new VecStoreSkipper)
@@ -87,7 +100,6 @@ extends BoomModule with VecLsConstants {
     skipper.io.mask.mask_data      := io.mask_idx.data(MASK_W - 1, 0)
     skipper.io.kill                := io.kill
     skipper.io.store_packet.ready  := io.store_nop.get.ready
-    // store-data: forward straight through (inactive one's read_bytes/read_all ignored)
     skipper.io.vdb_data.valid_bytes := io.vdb_data.get.valid_bytes
     skipper.io.vdb_data.data        := io.vdb_data.get.data
 
@@ -104,21 +116,56 @@ extends BoomModule with VecLsConstants {
     walker.io.vdb_data.valid_bytes := io.vdb_data.get.valid_bytes
     walker.io.vdb_data.data        := io.vdb_data.get.data
 
-    // ---- start mux (drop PACKING/BYPASS; unit-stride routes to walker) ----
-    when (skipable) {
+    // ---- start mux (priority: bypassable > packable > skipable > walkable) ----
+    when (bypassable) {
+      packer.io.start.valid  := false.B
+      skipper.io.start.valid := false.B
+      walker.io.start.valid  := false.B
+    } .elsewhen (packable) {
+      packer.io.start.valid  := io.start.valid
+      skipper.io.start.valid := false.B
+      walker.io.start.valid  := false.B
+    } .elsewhen (skipable) {
+      packer.io.start.valid  := false.B
       skipper.io.start.valid := io.start.valid
       walker.io.start.valid  := false.B
     } .elsewhen (walkable) {
+      packer.io.start.valid  := false.B
       skipper.io.start.valid := false.B
       walker.io.start.valid  := io.start.valid
     } .otherwise {
+      packer.io.start.valid  := false.B
       skipper.io.start.valid := false.B
       walker.io.start.valid  := false.B
     }
 
+    // ---- bypass packet (vl == 0): single fake last packet, no real access ----
+    val bypass_packet = Wire(new VecStoreNop)
+    bypass_packet.addr        := config_info.base_addr
+    bypass_packet.data        := 0.U
+    bypass_packet.mem_size    := 0.U
+    bypass_packet.is_fake     := true.B
+    bypass_packet.misaligned  := false.B
+    bypass_packet.last        := true.B
+    bypass_packet.uop         := config_info.uop
+    bypass_packet.pvs3        := 0.U
+    bypass_packet.pvs3_member := 0.U
+
     // ---- output mux (only one sub-gen is active per access) ----
     val out = io.store_nop.get
-    when (state === State.SKIPPING) {
+    when (state === State.BYPASS) {
+      io.start.ready             := false.B
+      io.vdb_data.get.read_bytes := 0.U
+      io.vdb_data.get.read_all   := false.B
+      out.valid                  := true.B
+      out.bits                   := bypass_packet
+    } .elsewhen (state === State.PACKING) {
+      io.start.ready             := packer.io.start.ready
+      io.vdb_data.get.read_bytes := packer.io.vdb_data.read_bytes
+      io.vdb_data.get.read_all   := packer.io.vdb_data.read_all
+      out.valid                  := packer.io.store_packet.valid
+      out.bits                   := packer.io.store_packet.bits
+    } .elsewhen (state === State.SKIPPING) {
       io.start.ready             := skipper.io.start.ready
       io.vdb_data.get.read_bytes := skipper.io.vdb_data.read_bytes
       io.vdb_data.get.read_all   := skipper.io.vdb_data.read_all
@@ -133,9 +180,11 @@ extends BoomModule with VecLsConstants {
     } .otherwise {
       // IDLE: transparent to start.ready, no output
       io.start.ready             := PriorityMux(Seq(
-        (skipable) -> skipper.io.start.ready,
-        (walkable) -> walker.io.start.ready,
-        (true.B)   -> false.B
+        (bypassable) -> true.B,
+        (packable)   -> packer.io.start.ready,
+        (skipable)   -> skipper.io.start.ready,
+        (walkable)   -> walker.io.start.ready,
+        (true.B)     -> false.B
       ))
       io.vdb_data.get.read_bytes := 0.U
       io.vdb_data.get.read_all   := false.B
@@ -151,15 +200,18 @@ extends BoomModule with VecLsConstants {
     out.bits.pvs3        := start_q.uop.pvs3_grp(0)
 
     // ---- gen_active ----
-    io.gen_active := skipper.io.gen_active || walker.io.gen_active
+    io.gen_active := (state === State.BYPASS) ||
+                     packer.io.gen_active || skipper.io.gen_active || walker.io.gen_active
 
     // ---- state machine (mirror reference) ----
     when (state === State.IDLE) {
       when (io.start.fire) {
         state := PriorityMux(Seq(
-          (skipable) -> State.SKIPPING,
-          (walkable) -> State.WALKING,
-          (true.B)   -> State.IDLE
+          (bypassable) -> State.BYPASS,
+          (packable)   -> State.PACKING,
+          (skipable)   -> State.SKIPPING,
+          (walkable)   -> State.WALKING,
+          (true.B)     -> State.IDLE
         ))
         start_q := io.start.bits
       }
@@ -175,6 +227,15 @@ extends BoomModule with VecLsConstants {
 
   } else {
     // ============================================================ LOADS
+
+    // --- packer ---
+    val packer = Module(new VecLoadPacker)
+    packer.io.start.bits         := config_info
+    packer.io.use_seg_constraint := use_seg_constraint
+    packer.io.mask.valid         := io.mask_idx.valid
+    packer.io.mask.mask_data     := io.mask_idx.data(MASK_W - 1, 0)
+    packer.io.kill               := io.kill
+    packer.io.load_packet.ready  := io.load_nop.get.ready
 
     // --- skipper ---
     val skipper = Module(new VecLoadSkipper)
@@ -196,21 +257,58 @@ extends BoomModule with VecLsConstants {
     walker.io.kill                := io.kill
     walker.io.load_packet.ready   := io.load_nop.get.ready
 
-    // ---- start mux (drop PACKING/BYPASS; unit-stride routes to walker) ----
-    when (skipable) {
+    // ---- start mux (priority: bypassable > packable > skipable > walkable) ----
+    when (bypassable) {
+      packer.io.start.valid  := false.B
+      skipper.io.start.valid := false.B
+      walker.io.start.valid  := false.B
+    } .elsewhen (packable) {
+      packer.io.start.valid  := io.start.valid
+      skipper.io.start.valid := false.B
+      walker.io.start.valid  := false.B
+    } .elsewhen (skipable) {
+      packer.io.start.valid  := false.B
       skipper.io.start.valid := io.start.valid
       walker.io.start.valid  := false.B
     } .elsewhen (walkable) {
+      packer.io.start.valid  := false.B
       skipper.io.start.valid := false.B
       walker.io.start.valid  := io.start.valid
     } .otherwise {
+      packer.io.start.valid  := false.B
       skipper.io.start.valid := false.B
       walker.io.start.valid  := false.B
     }
 
+    // ---- bypass packet (vl == 0): single fake last packet, no real access ----
+    val bypass_packet = Wire(new VecLoadNop)
+    bypass_packet.addr        := config_info.base_addr
+    bypass_packet.v_reg       := config_info.base_v_reg
+    bypass_packet.el_id       := 0.U
+    bypass_packet.el_off      := 0.U
+    bypass_packet.el_count    := config_info.vl // should be 0 if bypassable
+    bypass_packet.mask_data   := 0.U
+    bypass_packet.mask_valid  := false.B
+    bypass_packet.is_fake     := true.B
+    bypass_packet.misaligned  := false.B
+    bypass_packet.last        := true.B
+    bypass_packet.dir         := false.B
+    bypass_packet.is_fof      := config_info.is_fof
+    bypass_packet.uop         := config_info.uop
+    bypass_packet.pdst        := 0.U
+    bypass_packet.pdst_member := 0.U
+
     // ---- output mux (only one sub-gen is active per access) ----
     val out = io.load_nop.get
-    when (state === State.SKIPPING) {
+    when (state === State.BYPASS) {
+      io.start.ready := false.B
+      out.valid      := true.B
+      out.bits       := bypass_packet
+    } .elsewhen (state === State.PACKING) {
+      io.start.ready := packer.io.start.ready
+      out.valid      := packer.io.load_packet.valid
+      out.bits       := packer.io.load_packet.bits
+    } .elsewhen (state === State.SKIPPING) {
       io.start.ready := skipper.io.start.ready
       out.valid      := skipper.io.load_packet.valid
       out.bits       := skipper.io.load_packet.bits
@@ -220,9 +318,11 @@ extends BoomModule with VecLsConstants {
       out.bits       := walker.io.load_packet.bits
     } .otherwise {
       io.start.ready := PriorityMux(Seq(
-        (skipable) -> skipper.io.start.ready,
-        (walkable) -> walker.io.start.ready,
-        (true.B)   -> false.B
+        (bypassable) -> true.B,
+        (packable)   -> packer.io.start.ready,
+        (skipable)   -> skipper.io.start.ready,
+        (walkable)   -> walker.io.start.ready,
+        (true.B)     -> false.B
       ))
       out.valid := false.B
       out.bits  := DontCare
@@ -236,15 +336,18 @@ extends BoomModule with VecLsConstants {
     out.bits.pdst        := start_q.uop.pvdest_grp(pdst_member(2, 0))
 
     // ---- gen_active ----
-    io.gen_active := skipper.io.gen_active || walker.io.gen_active
+    io.gen_active := (state === State.BYPASS) ||
+                     packer.io.gen_active || skipper.io.gen_active || walker.io.gen_active
 
     // ---- state machine (mirror reference) ----
     when (state === State.IDLE) {
       when (io.start.fire) {
         state := PriorityMux(Seq(
-          (skipable) -> State.SKIPPING,
-          (walkable) -> State.WALKING,
-          (true.B)   -> State.IDLE
+          (bypassable) -> State.BYPASS,
+          (packable)   -> State.PACKING,
+          (skipable)   -> State.SKIPPING,
+          (walkable)   -> State.WALKING,
+          (true.B)     -> State.IDLE
         ))
         start_q := io.start.bits
       }
