@@ -141,6 +141,16 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   val mem_iss_unit     = IssueUnit(memIssueParam, numIntWakeups, false, false)
   val unq_iss_unit     = IssueUnit(unqIssueParam, numIntWakeups, false, false)
   val alu_iss_unit     = IssueUnit(aluIssueParam, numIntWakeups, enableColumnALUIssue, enableALUSingleWideDispatch)
+
+  // Caracal vector issue units (Step 6): three DORMANT vector issue queues
+  // (V_LOAD / V_STORE / V_ALU). Gated by usingRVV so the vector-OFF RTL is
+  // byte-identical (gate 9f). .get is safe because v*IssueParam is Some iff
+  // usingRVV (see parameters.scala require). All inputs are driven below;
+  // fu_types=0 and tied-off wakeups keep them from ever granting.
+  val vload_iss_unit  = if (usingRVV) Some(boom.v4.vec.issue.VecIssueUnit(vLoadIssueParam.get,  numIntWakeups)) else None
+  val vstore_iss_unit = if (usingRVV) Some(boom.v4.vec.issue.VecIssueUnit(vStoreIssueParam.get, numIntWakeups)) else None
+  val valu_iss_unit   = if (usingRVV) Some(boom.v4.vec.issue.VecIssueUnit(vAluIssueParam.get,   numIntWakeups)) else None
+
   val dispatcher       = Module(new BasicDispatcher)
   val iregfileBankedWriteArray = Seq.fill(lsuWidth + 1) { None } ++ ((0 until aluWidth).map { w => if (enableColumnALUWrites) Some(w) else None })
   val iregfile         = Module(new BankedRF(
@@ -1034,6 +1044,13 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
       alu_iss_unit.io.dis_uops <> dispatcher.io.dis_uops(i)
     } else if (issueParams(i).iqType == IQ_UNQ) {
       unq_iss_unit.io.dis_uops <> dispatcher.io.dis_uops(i)
+    } else if (issueParams(i).iqType == IQ_V_LOAD) {
+      // Caracal (Step 6): only present when usingRVV, so .get is safe.
+      vload_iss_unit.get.io.dis_uops <> dispatcher.io.dis_uops(i)
+    } else if (issueParams(i).iqType == IQ_V_STORE) {
+      vstore_iss_unit.get.io.dis_uops <> dispatcher.io.dis_uops(i)
+    } else if (issueParams(i).iqType == IQ_V_ALU) {
+      valu_iss_unit.get.io.dis_uops <> dispatcher.io.dis_uops(i)
     } else {
       require(false)
     }
@@ -1246,6 +1263,44 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   mem_iss_unit.io.iss_uops zip mem_exe_units map { case (i, u) => u.io_iss_uop := i }
   alu_iss_unit.io.iss_uops zip alu_exe_units map { case (i, u) => u.io_iss_uop := i }
   unq_iss_unit.io.iss_uops zip unq_exe_units map { case (i, u) => u.io_iss_uop := i }
+
+  // ----------------------------------------------------------------
+  // Caracal (Step 6): wire the three vector issue units DORMANT. Mirrors the
+  // scalar common wiring above. Every input is driven (Chisel errors otherwise).
+  // fu_types=0 (per issue port) and all-invalid wakeup networks guarantee no
+  // grant -> the units never issue. iss_uops outputs are left dangling: there is
+  // no consumer yet (LSU in Step 11, CII in Step 12), which is legal in Chisel.
+  // All gated by usingRVV so vector-OFF RTL is byte-identical (gate 9f).
+  if (usingRVV) {
+    for (iss_unit <- Seq(vload_iss_unit.get, vstore_iss_unit.get, valu_iss_unit.get)) {
+      // Mirror the exact RHS expressions the scalar units are given.
+      iss_unit.io.tsc_reg        := debug_tsc_reg
+      iss_unit.io.brupdate       := brupdate
+      iss_unit.io.flush_pipeline := RegNext(rob.io.flush.valid)
+      iss_unit.io.child_rebusys  := alu_exe_units.map(_.io_child_rebusy).reduce(_|_)
+
+      // INT feeders (base / stride / .vx scalar operands).
+      iss_unit.io.wakeup_ports := int_wakeups
+
+      // No predicate consumer (mirror scalar mem/unq units).
+      iss_unit.io.pred_wakeup_port.valid := false.B
+      iss_unit.io.pred_wakeup_port.bits  := DontCare
+
+      // SNI gating (used by IQ_V_ALU; ignored by the LS collapsing units).
+      iss_unit.io.rob_pnr_idx := rob.io.rob_pnr_idx
+      iss_unit.io.rob_head    := rob.io.rob_head_idx
+
+      // DORMANCY: no vector EU exists yet -> never advertise any ready FU.
+      iss_unit.io.fu_types.foreach(_.foreach(_ := false.B))
+
+      // No grant squash source yet.
+      iss_unit.io.squash_grant := false.B
+
+      // TIE OFF the vector + VL wakeup networks (sources not wired until later).
+      iss_unit.io.vec_wakeup_ports.foreach { p => p.valid := false.B; p.bits := DontCare }
+      iss_unit.io.vl_wakeup_ports.foreach  { p => p.valid := false.B; p.bits := DontCare }
+    }
+  }
 
   //-------------------------------------------------------------
   //-------------------------------------------------------------

@@ -23,6 +23,9 @@ case class VectorParams(
   numVecTmpGroups: Int = 4,                  // pvtmp headroom: in-flight shared-inst temp vector groups
   ssiQueueEntries: Int = 512,                // worst-case single-store element count (VLEN/8 * LMUL=8)
   lcbEntries: Int = 8,                       // VLEN-wide load assembly (load-combine buffer) entries
+  vecLoadIssueEntries:  Int = 8,             // vector issue-queue slot counts; distinct from the
+  vecStoreIssueEntries: Int = 8,             // LSU numVec{Load,Store}QueueEntries (those are the
+  vecAluIssueEntries:   Int = 8,             // post-issue address/data queues, these are pre-issue slots)
   vecIssueGrantWidth: Int = 1,               // FU-pipeline-in-order: 1 on Medium, lift to 2 on Mega
   dcacheArbiterMode: String = "single",      // "single" (Goal 1 default) | "dual-dynamic" (Mega)
   vecScalarSnoopEnable: Boolean = false,     // turn on with dual-dynamic arbiter (issue 9)

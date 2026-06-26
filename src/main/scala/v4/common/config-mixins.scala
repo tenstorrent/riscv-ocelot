@@ -34,7 +34,15 @@ class WithVector(vector: VectorParams = VectorParams()) extends Config((site, he
   case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
     case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
       enableVector = true,
-      vector = Some(vector)
+      vector = Some(vector),
+      // Append the three vector issue queues ONLY here (vector mixin), so scalar
+      // configs keep their exactly-four issueParams untouched (gate 9f). One IQ
+      // each for vector load / store / ALU; dispatchWidth = decodeWidth satisfies
+      // BasicDispatcher's require and HasBoomCoreParameters' dispatchWidth<=coreWidth.
+      issueParams = tp.tileParams.core.issueParams ++ Seq(
+        IssueParams(issueWidth = vector.vecIssueGrantWidth, numEntries = vector.vecLoadIssueEntries,  iqType = IQ_V_LOAD,  dispatchWidth = tp.tileParams.core.decodeWidth),
+        IssueParams(issueWidth = vector.vecIssueGrantWidth, numEntries = vector.vecStoreIssueEntries, iqType = IQ_V_STORE, dispatchWidth = tp.tileParams.core.decodeWidth),
+        IssueParams(issueWidth = vector.vecIssueGrantWidth, numEntries = vector.vecAluIssueEntries,   iqType = IQ_V_ALU,   dispatchWidth = tp.tileParams.core.decodeWidth))
     )))
     case other => other
   }

@@ -274,10 +274,22 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   require (issueParams.count(_.iqType == IQ_ALU) == 1)
   require (issueParams.count(_.iqType == IQ_UNQ) == 1)
 
+  // Caracal vector issue queues: exactly one of each iff usingRVV, zero otherwise
+  // (gate 9f: scalar builds must keep the four-entry issueParams untouched).
+  require (issueParams.count(_.iqType == IQ_V_LOAD)  == (if (usingRVV) 1 else 0))
+  require (issueParams.count(_.iqType == IQ_V_STORE) == (if (usingRVV) 1 else 0))
+  require (issueParams.count(_.iqType == IQ_V_ALU)   == (if (usingRVV) 1 else 0))
+
   val unqIssueParam = issueParams.find(_.iqType == IQ_UNQ).get
   val aluIssueParam = issueParams.find(_.iqType == IQ_ALU).get
   val memIssueParam = issueParams.find(_.iqType == IQ_MEM).get
   val fpIssueParam  = issueParams.find(_.iqType == IQ_FP ).get
+
+  // Option-typed: None on scalar builds, so we never .get on a missing queue.
+  // core.scala consumes these inside if(usingRVV) with .get.
+  val vLoadIssueParam  = issueParams.find(_.iqType == IQ_V_LOAD)
+  val vStoreIssueParam = issueParams.find(_.iqType == IQ_V_STORE)
+  val vAluIssueParam   = issueParams.find(_.iqType == IQ_V_ALU)
 
   require(unqIssueParam.issueWidth == 1)
   val aluWidth = aluIssueParam.issueWidth
@@ -373,6 +385,8 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   // Vector group-done completion ports into the ROB (one group-done per OP.v clears
   // rob_bsy single-shot). Tied off in core for Step 5, so the value is non-critical.
   val numVecWbPorts   = if (usingRVV) 1 else 0
+  val numVecWakeupPorts = if (usingRVV) numVecWbPorts else 0   // VECTOR network (group-done; LCB/CII)
+  val numVlWakeupPorts  = if (usingRVV) 1 else 0               // VL network (vset/vleff writeback)
   val vecLregSz       = 5                                          // 32 architectural vector regs v0..v31
   val maxVecVL        = vecVLen                                    // max VL in elements (SEW=8, LMUL=8 => vLen)
   val vecVLSz         = log2Ceil(maxVecVL + 1)                     // bits to hold a VL value (0..maxVecVL)
