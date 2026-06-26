@@ -1268,6 +1268,23 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     csr_vec.set_vstart.bits  := 0.U
     csr_vec.set_vs_dirty     := false.B
     csr_vec.set_vxsat        := false.B
+
+    // ---- Caracal vector-CSR waveform taps (dontTouch so they survive opt). ----
+    // Search these names in Verdi/DVE. Architectural readback (== `csrr vl/vtype/
+    // vstart/vxrm`); these mirror rocket CSRFile reg_vconfig/reg_vstart/reg_vxrm.
+    val vec_arch_vl     = dontTouch(WireInit(csr_vec.vconfig.vl))
+    val vec_arch_vtype  = dontTouch(WireInit(csr_vec.vconfig.vtype.asUInt))
+    val vec_arch_vstart = dontTouch(WireInit(csr_vec.vstart))
+    val vec_arch_vxrm   = dontTouch(WireInit(csr_vec.vxrm))
+    // Commit-time vset write into the CSR (pulses for one cycle when a vset retires):
+    val vec_set_valid   = dontTouch(WireInit(csr_vec.set_vconfig.valid))
+    val vec_set_vl      = dontTouch(WireInit(win_vl))
+    val vec_set_vtype   = dontTouch(WireInit(packed_vtype))
+    // Physical/renamed VL produced by the int-ALU vset (before commit): which VL preg
+    // (pvl) and the VL value written into the VlRegFile.
+    val vec_pvl         = dontTouch(WireInit(vset_wb.get.bits.pvl))
+    val vec_pvl_value   = dontTouch(WireInit(vset_wb.get.bits.vl_value))
+    val vec_pvl_wr      = dontTouch(WireInit(vset_wb.get.valid))
   }
 
   // arb stage guarantees 1 preg writer per cycle
@@ -1413,6 +1430,61 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vl_regfile.get.io.write_ports(1).bits.addr := vset_wb.get.bits.pvl
     vl_regfile.get.io.write_ports(1).bits.data := vset_wb.get.bits.vl_value
     vl_regfile.get.io.read_ports.foreach { r => r.addr := 0.U }
+  }
+
+  //-------------------------------------------------------------
+  // Caracal (Step 10): Vector LS AGEN, instantiated DORMANT. The cracking path
+  // (VecLsDecode -> VecAgenStage1{load,store} + VecDgen) is wired so every input
+  // is driven and the dangling vector-LS issue iss_uops finally have a consumer,
+  // but the AGEN output nop.ready is held false so the FSMs never leave IDLE and
+  // nothing is cracked. No vector register-read path exists yet (Step 11), so the
+  // operand/vl/vstart feeds are 0 and VecDgen's VRF read is tied off. The unit-
+  // stride fast-path Packer and the unified LSU consumer arrive in Step 11. All
+  // gated by usingRVV so vector-OFF RTL stays byte-identical (gate 9f).
+  if (usingRVV) {
+    val vec_ls_decode  = Module(new boom.v4.vec.lsu.VecLsDecode)
+    val vec_agen_load  = Module(new boom.v4.vec.lsu.VecAgenStage1(isStore = false))
+    val vec_agen_store = Module(new boom.v4.vec.lsu.VecAgenStage1(isStore = true))
+    val vec_dgen       = Module(new boom.v4.vec.lsu.VecDgen)
+    val vec_agen_kill  = RegNext(rob.io.flush.valid)
+
+    // Feed VecLsDecode from the LS issue units' iss_uops(0) (dangling until now).
+    // Both LS queues are dormant (never grant), so these are always invalid; the
+    // OR/Mux just gives each a reader and a deterministic dec input.
+    val vld_iss = vload_iss_unit.get.io.iss_uops(0)
+    val vst_iss = vstore_iss_unit.get.io.iss_uops(0)
+    vec_ls_decode.io.in.valid    := vld_iss.valid || vst_iss.valid
+    vec_ls_decode.io.in.uop      := Mux(vld_iss.valid, vld_iss.bits, vst_iss.bits)
+    vec_ls_decode.io.in.rs1_data := 0.U
+    vec_ls_decode.io.in.rs2_data := 0.U
+    vec_ls_decode.io.in.vl       := 0.U
+    vec_ls_decode.io.in.vstart   := 0.U
+
+    // Load AGEN: start from decode (is_load); output ready held false (DORMANT).
+    vec_agen_load.io.start.valid      := vec_ls_decode.io.out.valid && vec_ls_decode.io.out.is_load
+    vec_agen_load.io.start.bits       := vec_ls_decode.io.out.dec_info
+    vec_agen_load.io.kill             := vec_agen_kill
+    vec_agen_load.io.mask_idx.valid   := false.B
+    vec_agen_load.io.mask_idx.data    := 0.U
+    vec_agen_load.io.load_nop.get.ready := false.B
+
+    // Store AGEN: start from decode (!is_load); output ready held false (DORMANT).
+    vec_agen_store.io.start.valid      := vec_ls_decode.io.out.valid && !vec_ls_decode.io.out.is_load
+    vec_agen_store.io.start.bits       := vec_ls_decode.io.out.dec_info
+    vec_agen_store.io.kill             := vec_agen_kill
+    vec_agen_store.io.mask_idx.valid   := false.B
+    vec_agen_store.io.mask_idx.data    := 0.U
+    vec_agen_store.io.store_nop.get.ready := false.B
+
+    // Store-data handshake: store AGEN (consumer) <> VecDgen (producer).
+    vec_agen_store.io.vdb_data.get <> vec_dgen.io.vdb_data
+
+    // VecDgen dormant inputs: no store ever starts; no VRF read path yet.
+    vec_dgen.io.start.valid        := false.B
+    vec_dgen.io.start.bits         := DontCare
+    vec_dgen.io.kill               := vec_agen_kill
+    vec_dgen.io.vrf_read.resp_data := 0.U
+    vec_dgen.io.scalar_data        := 0.U
   }
 
   //-------------------------------------------------------------
