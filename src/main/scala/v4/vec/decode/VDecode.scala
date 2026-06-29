@@ -156,8 +156,11 @@ object VDecode
     // Fully own iq_type for every recognized RVV uop: the scalar decode derives
     // iq_type bits 0..3 from cs.fu_code, which is a don't-care default for these
     // instructions (they aren't in the scalar tables). Clear all, then set the
-    // one correct bit below. Likewise clear the scalar load/store-queue flags --
-    // vector memory ops use the V-LSU, never the scalar LDQ/STQ.
+    // one correct bit below. Default the LDQ/STQ flags off here; the is_mem block
+    // below sets them for vector loads/stores -- a vector memory op occupies ONE
+    // entry in the EXISTING scalar LDQ/STQ (Step 11a.2, "reuse scalar LDQ/STQ"):
+    // that entry is the instruction's ordering + commit placeholder, while the
+    // cracked 64b beats live in VecLSU's separate beat queue.
     for (i <- 0 until IQ_SZ) { uop.iq_type(i) := false.B }
     uop.uses_ldq := false.B
     uop.uses_stq := false.B
@@ -260,6 +263,17 @@ object VDecode
       uop.lvm := 0.U
 
       when (is_mem) {
+        // Step 11a.2: vector memory ops carry FC_AGEN so the V-LOAD / V-STORE
+        // issue units can match them against the fu_types core.scala advertises
+        // (these uops never reach a scalar EU, so the bit is isolated to the
+        // vector queues). Clear the scalar-default fu_code first, then set AGEN.
+        for (i <- 0 until FC_SZ) { uop.fu_code(i) := false.B }
+        uop.fu_code(FC_AGEN) := true.B
+        // Reuse the scalar LDQ/STQ: a vector load occupies one LDQ entry, a
+        // vector store one STQ entry (ordering + commit placeholder). VecLSU
+        // pulses ld_done/st_clr_bsy to write back that single entry once.
+        uop.uses_ldq := ls.is_load
+        uop.uses_stq := ls.is_store
         // F3: mew=1 selects EEW=128, reserved/unsupported in Caracal M1. ls.eew_unsup
         // surfaces this; the illegal-instruction path is owned by decode.scala. We do
         // NOT silently treat mew=1 as a 64b op -- v_eew above uses only width[1:0],

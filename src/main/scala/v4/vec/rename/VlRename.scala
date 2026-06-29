@@ -341,9 +341,24 @@ class VlRename(plWidth: Int, numVlPhysRegs: Int, numWbPorts: Int)(implicit p: Pa
     val read_pvl  = prefix(w)
     val read_busy = busy_table(read_pvl) && !clear_mask(read_pvl)
 
+    // Intra-bundle producer->consumer dependency: if an OLDER lane in this same
+    // bundle is a VL producer that fired, prefix(w) bypassed to its freshly
+    // ALLOCATED pvl -- which is necessarily busy (the producer hasn't written
+    // back yet, and busy_table's set_mask is registered so it does not yet show).
+    // Without this a consumer in the same bundle as its vset would see pvl_busy=0
+    // and issue BEFORE the VL-RF write -> stale/garbage vl. Mirrors prefix's
+    // is_vl_producer_fire bypass condition.
+    val older_inbundle_vl_prod =
+      if (w == 0) false.B else (0 until w).map(is_vl_producer_fire(_)).reduce(_ || _)
+
     val out = WireInit(io.dec_uops(w))
-    out.pvl      := read_pvl
-    out.pvl_busy := io.dec_uops(w).is_vec && read_busy
+    // A VL PRODUCER (vsetvl*) carries its newly-ALLOCATED pvl as its dest, so its
+    // VL writeback (vset_wb.pvl -> VL-RF write + the VL wakeup) lands on the same
+    // PRN that younger CONSUMERS read (prefix(w)). A consumer carries the read pvl.
+    // Without this, the producer wrote VL-RF[prefix] while consumers read
+    // VL-RF[alloc] -> consumers got a stale/garbage vl.
+    out.pvl      := Mux(is_vl_producer_req(w), alloc_pvl(w), read_pvl)
+    out.pvl_busy := io.dec_uops(w).is_vec && (read_busy || older_inbundle_vl_prod)
     io.ren2_uops(w) := GetNewUopAndBrMask(out, io.brupdate)
   }
 

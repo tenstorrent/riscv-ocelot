@@ -471,18 +471,23 @@ class Rob(
 
     // Caracal vector group-done clears rob_bsy single-shot (no per-entry counter).
     // For shared (segmented) ops the first group-done only drops the pending flag.
-    // Does NOT clear rob_unsafe (LSU safety is Step 11; reuse lsu_clr_unsafe). (gate 9f)
+    // Step 11a.2: the vector group-done also clears rob_unsafe -- a completed
+    // vector load/store is safe (M1 has no late mem-ordering kill), so the PNR can
+    // advance past it. Without this rob_unsafe stays set and the PNR invariant
+    // (rob.scala assert ~872) eventually trips. (gate 9f)
     if (usingRVV) {
       for (clr <- io.vec_clr_bsy.get) {
         when (clr.valid && MatchBank(GetBankIdx(clr.bits))) {
           val cidx = GetRowIdx(clr.bits)
           when (!rob_uop(cidx).is_shared) {
-            rob_bsy(cidx) := false.B
+            rob_bsy(cidx)    := false.B
+            rob_unsafe(cidx) := false.B
           } .otherwise {
             when (rob_other_half_pending.get(cidx)) {
               rob_other_half_pending.get(cidx) := false.B
             } .otherwise {
-              rob_bsy(cidx) := false.B
+              rob_bsy(cidx)    := false.B
+              rob_unsafe(cidx) := false.B
             }
           }
         }

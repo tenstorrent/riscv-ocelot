@@ -79,3 +79,74 @@ High confidence scalar stays green: appended-last priority (compile-time), vecto
 beats don't touch scalar agen/dgen, per-entry bits written once. Watch: TLB-arb
 (now used), LCAM range registration for disambiguation vs younger scalar stores,
 and the Option-IO must elaborate to an identical port list when off.
+
+## IMPLEMENTATION STATUS (load path landed; functional vle pending operand-read)
+
+Decomposed into two gated sub-steps. **Sub-step A is DONE and ELABORATES/builds**
+(MediumBoomV4VectorConfig simv built clean, no comb cycle). Sub-step B (the
+operand read + issue un-tie + e2e test) is the remaining work for a functional vle.
+
+### Key design CORRECTIONS vs the frozen doc above (discovered during impl)
+- **Reuse the scalar LDQ/STQ (frozen doc was RIGHT here).** A vector load occupies
+  ONE entry in the existing scalar LDQ, a store one STQ entry -- the architectural
+  instruction's ordering + commit placeholder. There is NO vector-dedicated
+  LDQ/STQ; the cracked 64b beats are VecLSU's separate beat queue and never take
+  LDQ/STQ slots. (An earlier impl pass mis-read the Step-2 `uses_ldq := false` line
+  as a constraint and routed completion purely through the ROB busy clear -- that
+  was WRONG and is reverted.) Fix: VDecode now sets `uses_ldq := ls.is_load` /
+  `uses_stq := ls.is_store` for vector mem ops. Completion on the last beat is DUAL:
+    * `ld_done` (ldq_idx) -> LSU writes the placeholder LDQ entry's
+      executed/succeeded ONCE (never re-armed) -> retires at the ROB head.
+    * `clr_rob` (rob_idx) -> `rob.io.vec_clr_bsy(0)` clears rob_bsy (a RT_VEC load
+      has NO iresp writeback to clear it) + `VecGroupDone` (prn) -> vec-rename
+      wakeup(0) + vec-issue vec_wakeup(0) clear the dest-group busy bits.
+  `VecDmemIO` = {req, resp, nack, ld_done}. The beat uop sent to the dcache keeps
+  `uses_ldq=false` (it is a nano-op, not an LDQ op; resp routing keys on is_vec).
+  The placeholder LDQ entry's `addr.valid` is never set (the vle never goes through
+  scalar agen), so it stays invisible to the scalar wakeup/disambiguation pickers
+  (which all require addr.valid) -- full LCAM address registration for RVWMO
+  disambiguation is post-M1.
+- **M1 bare-mode: vec beat EA is PHYSICAL, no TLB.** riscv-tests are identity-
+  mapped, so `can_fire_vec_load` uses DC only (uses_tlb=false, uses_lcam=false),
+  appended LAST in the `lsu_sched` chain. (The doc's "MUST use TLB" correction is
+  a post-M1 refinement for page-crossing/paged mode.)
+- **Beat == one 64b VRF lane.** DMEM_WIDTH=64b, so each VecLoadNop beat carries
+  <=8 valid bytes = exactly one 64b dest lane (aligned base). The LCB writes one
+  VRF lane per beat (no 256b accumulator); placement = `el_id<<eew` (dst byte),
+  `el_off` (src byte off within the beat), `el_count<<eew` (nbytes) -> per-lane
+  byte->lane mask. Partial-lane tail / straddling misaligned base = post-M1.
+- **comb-cycle gotcha (hit + fixed):** `group_done` MUST derive only from the
+  registered `cur` beat, never combinationally from `load_nop` -- else
+  issue.vec_wakeup -> iss_uops -> decode -> AGEN -> load_nop -> group_done loops.
+  Fake/bypass beats finalize one cycle later in a dedicated `sFin` state.
+
+### Sub-step A -- LANDED (elaborates + builds; bit-identical pending verify)
+- NEW `v4/vec/lsu/VecLSU.scala`: `VecDmemReq`/`VecDmemResp`/`VecDmemIO` bundles +
+  `VecLSU` serial beat FSM (sIdle/sFin/sReq/sResp). Instantiates the LCB.
+- NEW `v4/vec/lsu/VecLoadCoalescingBuffer.scala`: per-beat lane write + group_done.
+- `lsu/lsu.scala` gated edits (all `if (usingRVV)` / Option -> identity when off):
+  LSUCoreIO.vec_dmem Option bundle; will_fire/can_fire_vec_load Options; appended
+  `lsu_sched` vec term; dmem_req vec branch; resp routing (`resp_is_vec` guard +
+  vec_dmem.resp drive); nack routing (`nack_is_vec` guard + vec_dmem.nack);
+  vec_dmem.req.ready drive; `ld_done` -> ldq_executed/ldq_will_succeed write.
+- `vec/decode/VDecode.scala`: vector mem uops carry `fu_code(FC_AGEN)` (so the
+  V-LOAD/V-STORE issue units match them) AND `uses_ldq := is_load` /
+  `uses_stq := is_store` (occupy a scalar LDQ/STQ entry).
+- `exu/core.scala`: top-level `vec_lsu` Option; group_done -> vrs.wakeups(0) +
+  vec issue vec_wakeup_ports(0); clr_rob -> rob.vec_clr_bsy(0); AGEN load_nop ->
+  VecLSU.load_nop; VecLSU.dmem <> io.lsu.vec_dmem; VecLSU.vrf_write -> vec_regfile
+  write port 0.
+
+### Sub-step B -- REMAINING for a functional vle (next session)
+1. **Operand read** (the blocker): VecLsDecode.io.in feeds are still STUBBED
+   (rs1_data/rs2_data/vl/vstart = 0 in core.scala ~1473). Need: rs1 base from a
+   NEW usingRVV-gated integer-regfile read port (bump `numIrfLogicalReadPorts`,
+   wire arb_read_reqs/rrd_read_resps -- 2-stage banked read w/ ready), vl from a
+   VlRegFile read (pvl), vstart from CSR. Drive off the granted vload iss_uop.
+2. **Un-tie the V-LOAD grant**: advertise `vload_iss_unit.io.fu_types(0)(FC_AGEN)`
+   gated on `!vec_lsu.busy` (REGISTERED -> no comb loop), so a vle grants only
+   when VecLSU is idle (iss_uops is Valid/fire-and-forget -> must not drop).
+3. **e2e vle test** (like the vset smoke) -> gate e2 vs Whisper.
+4. Re-verify: scalar 9/9 + MediumBoomV4Config bit-identical.
+Then Step 11a.2-store (vse): vec_dmem.store_ack + st_clr_bsy, STQ-commit drain,
+VecDgen VRF read, the store-side picker guards (lsu.scala 609/1089).

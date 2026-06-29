@@ -114,7 +114,9 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
 
 
   val numIrfWritePorts        = aluWidth + lsuWidth + 1
-  val numIrfLogicalReadPorts  = all_exe_units.map(_.nReaders).reduce(_+_)
+  // +1 dedicated integer-RF read port for the vector LS base-address read when
+  // usingRVV (Step 11a.2). Gated -> the vector-OFF RF is unchanged (bit-identical).
+  val numIrfLogicalReadPorts  = all_exe_units.map(_.nReaders).reduce(_+_) + (if (usingRVV) 1 else 0)
 
   val numIntWakeups           = coreWidth + lsuWidth + 1
   val numFpWakeupPorts        = fp_pipeline.io.wakeups.length
@@ -145,8 +147,22 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   // and consumers (Step 11 register-read) are not wired yet. Gated by usingRVV
   // so the vector-OFF RTL is byte-identical (gate 9f). All inputs are tied off
   // below; read_ports.data outputs are left dangling (legal in Chisel).
-  val vec_regfile = if (usingRVV) Some(Module(new VecRegFile(8, 4))) else None
+  // numDebugReadPorts = coreWidth * MAX_MEMBERS: a combinational readback of each
+  // committing vector op's full dest group, for the cosim commit trace (Step 11a.2).
+  val vec_regfile = if (usingRVV) Some(Module(new VecRegFile(8, 4, coreWidth * boom.v4.vec.rename.VecEmul.MAX_MEMBERS))) else None
   val vl_regfile  = if (usingRVV) Some(Module(new VlRegFile(6, 3)))  else None
+
+  // Caracal vector LSU (Step 11a.2): unit-stride vle beat engine. Declared at
+  // top level so the completion datapath (group-done -> vec rename / issue
+  // wakeups + rob.vec_clr_bsy) and the dcache / VRF / AGEN wiring can all
+  // reference it across the (separate) usingRVV blocks below. Gated by usingRVV.
+  val vec_lsu = if (usingRVV) Some(Module(new boom.v4.vec.lsu.VecLSU)) else None
+
+  // Caracal vector LS register-read stage (Step 11a.2, sub-step B): reads the
+  // vle base address (rs1) from a dedicated integer-RF read port + vl from the
+  // VL-RF, then drives VecLsDecode/AGEN. Top-level so the arb/rrd stages can wire
+  // its dedicated iregfile read port. Gated by usingRVV.
+  val vec_ls_rr = if (usingRVV) Some(Module(new boom.v4.vec.lsu.VecLSRegRead)) else None
 
   val mem_iss_unit     = IssueUnit(memIssueParam, numIntWakeups, false, false)
   val unq_iss_unit     = IssueUnit(unqIssueParam, numIntWakeups, false, false)
@@ -775,9 +791,18 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     val vrs = vec_rename_stage.get
     val vlr = vl_rename.get
 
-    vrs.io.dec_fire    := dec_fire
-    vrs.io.dec_valids  := dec_valids   // fire-independent valid; breaks ren_stalls->dec_fire loop
-    vrs.io.dec_uops    := dec_uops
+    // Step 11a.2 FIX: the scalar RenameStage has a ren1->ren2 pipeline register
+    // (its io.ren2_uops are REGISTERED and its alloc happens at ren2 = dis_fire).
+    // VecRenameStage is single-stage (combinational off its dec_uops), so feeding
+    // it the dec-stage uops made its outputs a CYCLE AHEAD of the dispatched
+    // (registered) scalar uop -- the vec fields (pvdest/stale) then reflected the
+    // NEXT cycle's dec_uop (a bubble: lvd=0 -> readGroup(0)=identity stale ->
+    // double-free; pvdest = next free-list candidate). Drive it from the scalar
+    // rename's REGISTERED ren2 outputs + dis_fire so it allocates/reads in lockstep
+    // with dispatch.
+    vrs.io.dec_fire    := dis_fire
+    vrs.io.dec_valids  := rename_stage.io.ren2_mask
+    vrs.io.dec_uops    := rename_stage.io.ren2_uops
     vrs.io.ren_br_tags := vec_br_tags
     vrs.io.brupdate    := brupdate
     vrs.io.rollback    := rob.io.rollback
@@ -787,20 +812,26 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vrs.io.com_valids  := rob.io.commit.valids
     vrs.io.vec_trace   := false.B    // Step-9 enables the vecTrace plusarg
     for (w <- 0 until coreWidth) {
-      vrs.io.dec_uop_id(w) := dec_uops(w).debug_inst
+      vrs.io.dec_uop_id(w) := rename_stage.io.ren2_uops(w).debug_inst
     }
     // Commit-free path (Step 5): map-table remap + free-list dealloc from the ROB.
     vrs.io.com_remap   := rob.io.commit.vec_remap.get
     vrs.io.com_dealloc := rob.io.commit.vec_dealloc.get
-    // Wakeups remain stubbed until Step 8 (group-done from the vector EUs).
+    // Step 11a.2: the vector LSU group-done is the first real busy-clear source.
+    // Drive wakeup port 0 from VecLSU.group_done (clears dest-group busy in the
+    // vector busy table); remaining ports stay invalid until the CII (Goal 2).
     vrs.io.wakeups := DontCare
     for (k <- 0 until vrs.io.wakeups.length) {
       vrs.io.wakeups(k).valid := false.B
     }
+    vrs.io.wakeups(0) := vec_lsu.get.io.group_done
 
-    vlr.io.dec_fire    := dec_fire
-    vlr.io.dec_valids  := dec_valids   // fire-independent valid; breaks ren_stalls->dec_fire loop
-    vlr.io.dec_uops    := dec_uops
+    // Step 11a.2 FIX (same ren2 alignment as vrs above): drive VlRename from the
+    // scalar rename's REGISTERED ren2 outputs + dis_fire so the VL alloc/read is
+    // in lockstep with dispatch (was a cycle ahead off dec_uops).
+    vlr.io.dec_fire    := dis_fire
+    vlr.io.dec_valids  := rename_stage.io.ren2_mask
+    vlr.io.dec_uops    := rename_stage.io.ren2_uops
     vlr.io.ren_br_tags := vec_br_tags
     vlr.io.brupdate    := brupdate
     vlr.io.rollback    := rob.io.rollback
@@ -808,7 +839,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vlr.io.com_valids  := rob.io.commit.valids
     vlr.io.vec_trace   := false.B    // Step-9 enables the vecTrace plusarg
     for (w <- 0 until coreWidth) {
-      vlr.io.dec_uop_id(w)    := dec_uops(w).debug_inst
+      vlr.io.dec_uop_id(w)    := rename_stage.io.ren2_uops(w).debug_inst
       vlr.io.com_is_vlprod(w) := rob.io.commit.vl_is_vlprod.get(w)    // ROB commit -> VL free (Step 5)
       vlr.io.com_pvl(w)       := rob.io.commit.vl_com_pvl.get(w)
     }
@@ -822,12 +853,15 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vlr.io.wakeups(0).valid    := vset_wb.get.valid
     vlr.io.wakeups(0).bits.pvl := vset_wb.get.bits.pvl
 
-    // ROB vector group-done completion ports: no completion source until Step 11
-    // (LSU/CII). Tie off valid so the commit-free path stays dormant in Step 5.
+    // ROB vector group-done completion ports (Step 11a.2): VecLSU clears the
+    // completing vle's rob_bsy via port 0 (rob_idx-based); other ports stay
+    // invalid until the CII (Goal 2). This is the commit path for vector loads
+    // (they hold no LDQ entry -- VDecode sets uses_ldq=false).
     rob.io.vec_clr_bsy.get := DontCare
     for (k <- 0 until rob.io.vec_clr_bsy.get.length) {
       rob.io.vec_clr_bsy.get(k).valid := false.B
     }
+    rob.io.vec_clr_bsy.get(0) := vec_lsu.get.io.clr_rob
   }
 
   //-------------------------------------------------------------
@@ -937,6 +971,17 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
         dis_uops(w).pvl              := vl_uop.pvl
         dis_uops(w).pvl_busy         := vl_uop.pvl_busy
         dis_uops(w).v_emul           := v_uop.v_emul
+      }
+
+      // VL PRODUCERS (vsetvl*) are scalar (is_vec=false), so the is_vec merge
+      // above skips them -- but they allocate a VL dest pvl in VlRename. Give them
+      // that pvl so the int-ALU's vset writeback (vset_out.bits.pvl := uop.pvl,
+      // functional-unit.scala) lands on the VL-RF entry that younger vector
+      // consumers read (Step 11a.2). Without this the producer's pvl stayed 0
+      // while consumers read the freshly-allocated pvl -> stale/garbage vl.
+      val is_vl_prod = dis_uops(w).is_vsetivli || dis_uops(w).is_vsetvli || dis_uops(w).is_vsetvl
+      when (is_vl_prod) {
+        dis_uops(w).pvl := vl_uop.pvl
       }
 
       // D.6 -- fold the vector rename stalls into the per-lane ren_stalls. Re-list
@@ -1391,14 +1436,22 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
       // No grant squash source yet.
       iss_unit.io.squash_grant := false.B
 
-      // TIE OFF the vector wakeup network (group-done source not wired until later).
+      // Vector wakeup network: port 0 carries the VecLSU group-done so a younger
+      // vector op waiting on this load's dest group is woken (Step 11a.2). Other
+      // ports stay invalid until the CII (Goal 2).
       iss_unit.io.vec_wakeup_ports.foreach { p => p.valid := false.B; p.bits := DontCare }
+      iss_unit.io.vec_wakeup_ports(0) := vec_lsu.get.io.group_done
       // VL wakeup (Step 9): drive port 0 from the int-ALU vset response so pvl_busy clears
       // for vector consumers waiting on this VL producer; other ports stay invalid.
       iss_unit.io.vl_wakeup_ports.foreach  { p => p.valid := false.B; p.bits := DontCare }
       iss_unit.io.vl_wakeup_ports(0).valid    := vset_wb.get.valid
       iss_unit.io.vl_wakeup_ports(0).bits.pvl := vset_wb.get.bits.pvl
     }
+    // Step 11a.2 (sub-step B): UN-TIE the V-LOAD grant. Advertise FC_AGEN on issue
+    // port 0 only when the whole vector-LS pipe is idle (VecLSRegRead.fu_ready is
+    // registered -> no comb loop with the grant). vle uops carry fu_code(FC_AGEN).
+    // vstore / valu stay tied off (no consumer yet).
+    vload_iss_unit.get.io.fu_types(0)(FC_AGEN) := vec_ls_rr.get.io.fu_ready
   }
 
   // ----------------------------------------------------------------
@@ -1448,25 +1501,32 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     val vec_dgen       = Module(new boom.v4.vec.lsu.VecDgen)
     val vec_agen_kill  = RegNext(rob.io.flush.valid)
 
-    // Feed VecLsDecode from the LS issue units' iss_uops(0) (dangling until now).
-    // Both LS queues are dormant (never grant), so these are always invalid; the
-    // OR/Mux just gives each a reader and a deterministic dec input.
-    val vld_iss = vload_iss_unit.get.io.iss_uops(0)
-    val vst_iss = vstore_iss_unit.get.io.iss_uops(0)
-    vec_ls_decode.io.in.valid    := vld_iss.valid || vst_iss.valid
-    vec_ls_decode.io.in.uop      := Mux(vld_iss.valid, vld_iss.bits, vst_iss.bits)
-    vec_ls_decode.io.in.rs1_data := 0.U
-    vec_ls_decode.io.in.rs2_data := 0.U
-    vec_ls_decode.io.in.vl       := 0.U
-    vec_ls_decode.io.in.vstart   := 0.U
+    // Step 11a.2 (sub-step B): the V-LOAD grant flows through VecLSRegRead, which
+    // reads rs1 (base) from a dedicated int-RF port + vl from the VL-RF, then
+    // drives VecLsDecode. (Stores stay dormant: vstore never grants yet.)
+    vec_ls_rr.get.io.iss             := vload_iss_unit.get.io.iss_uops(0)
+    vec_ls_rr.get.io.vl_data         := vl_regfile.get.io.read_ports(0).data
+    vec_ls_rr.get.io.agen_active     := vec_agen_load.io.gen_active
+    vec_ls_rr.get.io.lsu_busy        := vec_lsu.get.io.busy
+    vec_ls_rr.get.io.agen_start_fire := vec_agen_load.io.start.fire
+    vec_ls_rr.get.io.kill            := vec_agen_kill
+    vl_regfile.get.io.read_ports(0).addr := vec_ls_rr.get.io.vl_addr
 
-    // Load AGEN: start from decode (is_load); output ready held false (DORMANT).
+    vec_ls_decode.io.in.valid    := vec_ls_rr.get.io.dec.valid
+    vec_ls_decode.io.in.uop      := vec_ls_rr.get.io.dec.uop
+    vec_ls_decode.io.in.rs1_data := vec_ls_rr.get.io.dec.rs1_data
+    vec_ls_decode.io.in.rs2_data := 0.U          // unit-stride: rs2 unused (implied stride)
+    vec_ls_decode.io.in.vl       := vec_ls_rr.get.io.dec.vl
+    vec_ls_decode.io.in.vstart   := vec_ls_rr.get.io.dec.vstart
+
+    // Load AGEN: start from decode (is_load). Step 11a.2: the cracked beat stream
+    // now feeds VecLSU instead of being tied off.
     vec_agen_load.io.start.valid      := vec_ls_decode.io.out.valid && vec_ls_decode.io.out.is_load
     vec_agen_load.io.start.bits       := vec_ls_decode.io.out.dec_info
     vec_agen_load.io.kill             := vec_agen_kill
     vec_agen_load.io.mask_idx.valid   := false.B
     vec_agen_load.io.mask_idx.data    := 0.U
-    vec_agen_load.io.load_nop.get.ready := false.B
+    vec_lsu.get.io.load_nop <> vec_agen_load.io.load_nop.get
 
     // Store AGEN: start from decode (!is_load); output ready held false (DORMANT).
     vec_agen_store.io.start.valid      := vec_ls_decode.io.out.valid && !vec_ls_decode.io.out.is_load
@@ -1485,6 +1545,17 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vec_dgen.io.kill               := vec_agen_kill
     vec_dgen.io.vrf_read.resp_data := 0.U
     vec_dgen.io.scalar_data        := 0.U
+
+    // VecLSU <-> scalar LSU dedicated vector dcache port + kill.
+    vec_lsu.get.io.dmem <> io.lsu.vec_dmem.get
+    vec_lsu.get.io.kill := vec_agen_kill
+
+    // VecLSU writes the destination VRF group, one 64b lane per beat. Drive the
+    // VRF write port 0 (last-connect-wins over the Step-8 tie-off above).
+    vec_regfile.get.io.write_ports(0).valid     := vec_lsu.get.io.vrf_write.valid
+    vec_regfile.get.io.write_ports(0).bits.addr := vec_lsu.get.io.vrf_write.bits.addr
+    vec_regfile.get.io.write_ports(0).bits.data := vec_lsu.get.io.vrf_write.bits.data
+    vec_regfile.get.io.write_ports(0).bits.mask := vec_lsu.get.io.vrf_write.bits.mask
   }
 
   //-------------------------------------------------------------
@@ -1500,6 +1571,12 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     }
     immregfile.io.arb_read_reqs(w) <> unit.io_arb_immrf_req
     unit.io_arb_rebusys := io.lsu.iwakeups
+  }
+  // Step 11a.2: the vector LS base-address read claims the dedicated last int-RF
+  // logical read port (added to numIrfLogicalReadPorts under usingRVV).
+  if (usingRVV) {
+    iregfile.io.arb_read_reqs(arb_idx) <> vec_ls_rr.get.io.irf_req
+    arb_idx += 1
   }
   require(arb_idx == numIrfLogicalReadPorts)
   for ((unit, w) <- (alu_exe_units).zipWithIndex) {
@@ -1523,6 +1600,11 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     }
     unit.io_rrd_immrf_resp := immregfile.io.rrd_read_resps(w)
     unit.io_rrd_irf_bypasses := int_bypasses
+  }
+  // Step 11a.2: vector LS base-address read response from the dedicated port.
+  if (usingRVV) {
+    vec_ls_rr.get.io.irf_resp := iregfile.io.rrd_read_resps(rd_idx)
+    rd_idx += 1
   }
   require (rd_idx == numIrfLogicalReadPorts)
   for ((unit, w) <- alu_exe_units.zipWithIndex) {
@@ -1902,6 +1984,33 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
 
 
   //-------------------------------------------------------------
+  // Caracal (Step 11a.2): commit-time vector readback for the cosim arch checker.
+  // The cosim reads a committed vector op's result from commit.uops[w].
+  // debug_vec_{wdata,wmask} (core_harness.v), NOT from the VRF. Populate it by
+  // reading vec_regfile[pvdest_grp] for each committing vector dest op via the
+  // combinational debug read ports. wmask = pvdest_grp_mask (valid members).
+  //-------------------------------------------------------------
+  val dbg_vec_wdata = Wire(Vec(coreWidth, UInt(((vLen * 8).max(1)).W)))
+  val dbg_vec_wmask = Wire(Vec(coreWidth, UInt(8.W)))
+  dbg_vec_wdata.foreach(_ := 0.U)
+  dbg_vec_wmask.foreach(_ := 0.U)
+  if (usingRVV) {
+    val MM = boom.v4.vec.rename.VecEmul.MAX_MEMBERS
+    for (w <- 0 until coreWidth) {
+      val rmp = rob.io.commit.vec_remap.get(w)
+      val dea = rob.io.commit.vec_dealloc.get(w)
+      for (m <- 0 until MM) {
+        vec_regfile.get.io.debug_read_ports(w * MM + m).addr := rmp.pdst(m)
+      }
+      // member m occupies debug_vec_wdata[vLen*m +: vLen]; Cat puts the first
+      // element at the MSB, so reverse to land member 0 in the low bits.
+      dbg_vec_wdata(w) := Cat((0 until MM).reverse.map(m =>
+        vec_regfile.get.io.debug_read_ports(w * MM + m).data))
+      dbg_vec_wmask(w) := Mux(rmp.valid, dea.mask, 0.U)
+    }
+  }
+
+  //-------------------------------------------------------------
   //-------------------------------------------------------------
   // **** Connect debugging harness for DV COSIM bridge ****
   //-------------------------------------------------------------
@@ -1950,8 +2059,13 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
           harness_2.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
           harness_2.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
           harness_2.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
-          harness_2.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU yet
-          harness_2.io.commit.uops(w).debug_vec_wmask := 0.U
+          if (usingRVV) {  // Step 11a.2: committed vector result, read back from the VRF
+            harness_2.io.commit.uops(w).debug_vec_wdata := dbg_vec_wdata(w)
+            harness_2.io.commit.uops(w).debug_vec_wmask := dbg_vec_wmask(w)
+          } else {
+            harness_2.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU
+            harness_2.io.commit.uops(w).debug_vec_wmask := 0.U
+          }
        }
      } else if (coreParams.retireWidth == 3) {
        val harness_3 = Module(new BoomCoreHarnessWrapper_3(coreParams.vLen.max(64)))  // safe min for no-VPU configs

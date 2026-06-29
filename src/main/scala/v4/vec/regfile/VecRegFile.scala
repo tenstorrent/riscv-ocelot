@@ -27,7 +27,7 @@ import boom.v4.common._
 // writes; reads always return the full vecVLen-bit register. Forwarding/bypass is
 // handled by the vec bypass network, not here -- matching scalar FullyPortedRF timing
 // (registered read address, no same-cycle write-forward).
-class VecRegFile(numReadPorts: Int = 8, numWritePorts: Int = 4)(implicit p: Parameters) extends BoomModule
+class VecRegFile(numReadPorts: Int = 8, numWritePorts: Int = 4, numDebugReadPorts: Int = 0)(implicit p: Parameters) extends BoomModule
 {
   val io = IO(new BoomBundle {
     val read_ports = Vec(numReadPorts, new Bundle {
@@ -39,6 +39,14 @@ class VecRegFile(numReadPorts: Int = 8, numWritePorts: Int = 4)(implicit p: Para
       val data = UInt(vecVLen.W)
       val mask = UInt((vecVLen / 64).W)
     })))
+    // COMBINATIONAL debug-only read ports (no RegNext): used by the cosim commit
+    // trace to read back a committed vector op's dest group the SAME cycle it
+    // commits, so the loaded/computed result is visible to the arch checker.
+    // Not synthesized for real hardware; present only when numDebugReadPorts > 0.
+    val debug_read_ports = Vec(numDebugReadPorts, new Bundle {
+      val addr = Input(UInt(vecPregSz.W))
+      val data = Output(UInt(vecVLen.W))
+    })
   })
 
   val nLanes = vecVLen / 64 // 4 lanes of 64b for VLEN=256
@@ -50,6 +58,11 @@ class VecRegFile(numReadPorts: Int = 8, numWritePorts: Int = 4)(implicit p: Para
   // Registered read address, no same-cycle write-forward (mirror FullyPortedRF, regfile.scala:206).
   for (r <- 0 until numReadPorts) {
     io.read_ports(r).data := vrf(RegNext(io.read_ports(r).addr)).asUInt
+  }
+
+  // Combinational debug reads (cosim commit trace).
+  for (r <- 0 until numDebugReadPorts) {
+    io.debug_read_ports(r).data := vrf(io.debug_read_ports(r).addr).asUInt
   }
 
   // Per-lane masked write (mirror FullyPortedRF write, regfile.scala:208).
