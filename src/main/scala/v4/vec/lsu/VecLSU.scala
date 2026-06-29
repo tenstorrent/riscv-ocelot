@@ -65,18 +65,21 @@ class VecDmemResp(implicit p: Parameters) extends BoomBundle with VecLsConstants
   * ld_done in (VecLSU -> LSU: write the placeholder LDQ entry's exec/succ once). */
 class VecDmemIO(implicit p: Parameters) extends BoomBundle with VecLsConstants
 {
-  val req     = Flipped(DecoupledIO(new VecDmemReq))    // VecLSU -> LSU
-  val resp    = Valid(new VecDmemResp)                  // LSU -> VecLSU
-  val nack    = Valid(new VecDmemResp)                  // LSU -> VecLSU
-  val ld_done = Flipped(Valid(UInt((1 + ldqAddrSz).W))) // VecLSU -> LSU (ldq idx)
+  val req       = Flipped(DecoupledIO(new VecDmemReq))    // VecLSU -> LSU
+  val resp      = Valid(new VecDmemResp)                  // LSU -> VecLSU (load data)
+  val nack      = Valid(new VecDmemResp)                  // LSU -> VecLSU
+  val store_ack = Valid(new VecDmemResp)                  // LSU -> VecLSU (store committed to D$)
+  val ld_done   = Flipped(Valid(UInt((1 + ldqAddrSz).W))) // VecLSU -> LSU (ldq idx, write exec/succ once)
+  val st_done   = Flipped(Valid(UInt((1 + stqAddrSz).W))) // VecLSU -> LSU (stq idx, mark succeeded once)
 }
 
 class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
   with MemoryOpConstants
 {
   val io = IO(new Bundle {
-    // cracked unit-stride beats from VecAgenStage1(load)
-    val load_nop = Flipped(DecoupledIO(new VecLoadNop))
+    // cracked unit-stride beats from VecAgenStage1(load) / VecAgenStage1(store)
+    val load_nop  = Flipped(DecoupledIO(new VecLoadNop))
+    val store_nop = Flipped(DecoupledIO(new VecStoreNop))
     // dedicated vector dcache port (flipped LSU view)
     val dmem     = Flipped(new VecDmemIO)
     // VecRegFile write port (one lane per beat)
@@ -96,24 +99,31 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
   // ---- coalescing buffer: maps each beat to a VRF lane write + group_done ----
   val lcb = Module(new VecLoadCoalescingBuffer)
 
+  // Load states (sReq/sResp) and store states (sSReq/sSAck); sFin finalizes a
+  // fake/bypass beat (load or store) one cycle later off the registered beat.
   object State extends ChiselEnum {
-    val sIdle, sReq, sResp, sFin = Value
+    val sIdle, sReq, sResp, sFin, sSReq, sSAck = Value
   }
   val state      = RegInit(State.sIdle)
-  val cur        = Reg(new VecLoadNop)       // latched current beat
-  val grp_active = RegInit(false.B)          // a vle group is in progress
+  val cur        = Reg(new VecLoadNop)       // latched current LOAD beat
+  val curs       = Reg(new VecStoreNop)      // latched current STORE beat
+  val grp_active = RegInit(false.B)          // a vec mem group is in progress
+  val is_store   = RegInit(false.B)          // current group is a store (vs load)
 
   // byte-width per element (EEW), encoded log2 in the uop.
   def eewEnc(uop: MicroOp): UInt = uop.v_eew(1, 0)
 
   // ---- defaults ----
   io.load_nop.ready      := false.B
+  io.store_nop.ready     := false.B
   io.dmem.req.valid      := false.B
   io.dmem.req.bits       := DontCare
   io.clr_rob.valid       := false.B
   io.clr_rob.bits        := cur.uop.rob_idx
   io.dmem.ld_done.valid  := false.B
   io.dmem.ld_done.bits   := cur.uop.ldq_idx
+  io.dmem.st_done.valid  := false.B
+  io.dmem.st_done.bits   := curs.uop.stq_idx
 
   // ---- LCB start: latch dest group descriptor on the first beat of a group ----
   val start_grp = io.load_nop.fire && !grp_active
@@ -140,46 +150,82 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
     lcb.io.beat.bits.last     := nop.last
   }
 
-  // ---- request payload for the current beat ----
-  val beat_uop = WireInit(cur.uop)
-  beat_uop.is_vec     := true.B
-  beat_uop.uses_ldq   := false.B            // no scalar LDQ entry; ROB-busy completion
-  beat_uop.uses_stq   := false.B
-  beat_uop.dst_rtype  := RT_VEC
-  beat_uop.mem_cmd    := M_XRD               // doubleword load
-  beat_uop.mem_size   := 3.U                 // 64b
-  io.dmem.req.bits.addr    := cur.addr & ~(7.U(coreMaxAddrBits.W))   // align down to 8B
-  io.dmem.req.bits.data    := 0.U
-  io.dmem.req.bits.uop     := beat_uop
-  io.dmem.req.bits.is_load := true.B
+  // ---- request payload: LOAD beat in sReq, STORE beat in sSReq ----
+  val ld_uop = WireInit(cur.uop)
+  ld_uop.is_vec     := true.B
+  ld_uop.uses_ldq   := false.B              // nano-op: no scalar LDQ entry
+  ld_uop.uses_stq   := false.B
+  ld_uop.dst_rtype  := RT_VEC
+  ld_uop.mem_cmd    := M_XRD                 // doubleword load
+  ld_uop.mem_size   := 3.U                   // 64b
+
+  val st_uop = WireInit(curs.uop)
+  st_uop.is_vec     := true.B
+  st_uop.uses_ldq   := false.B
+  st_uop.uses_stq   := false.B              // nano-op: not the placeholder STQ entry
+  st_uop.dst_rtype  := RT_X
+  st_uop.mem_cmd    := M_XWR                 // doubleword store
+  st_uop.mem_size   := 3.U                   // 64b
+
+  when (state === State.sSReq) {
+    io.dmem.req.bits.addr    := curs.addr & ~(7.U(coreMaxAddrBits.W))
+    io.dmem.req.bits.data    := curs.data
+    io.dmem.req.bits.uop     := st_uop
+    io.dmem.req.bits.is_load := false.B
+  } .otherwise {
+    io.dmem.req.bits.addr    := cur.addr & ~(7.U(coreMaxAddrBits.W))   // align down to 8B
+    io.dmem.req.bits.data    := 0.U
+    io.dmem.req.bits.uop     := ld_uop
+    io.dmem.req.bits.is_load := true.B
+  }
 
   // ---- FSM ----
   // NOTE: group_done / clr_rob / the LCB beat are driven ONLY from the latched
-  // `cur` (a Reg), never combinationally from io.load_nop. The vector issue unit
-  // feeds load_nop (via decode/AGEN) and consumes group_done on its wakeup port,
-  // so a combinational load_nop -> group_done path would form a cycle. Even the
-  // fake/bypass beat is finalized one cycle later in sFin, off `cur`.
+  // `cur`/`curs` (Regs), never combinationally from io.load_nop/store_nop. The
+  // vector issue units feed the nops (via decode/AGEN) and consume group_done on
+  // their wakeup ports, so a combinational nop -> group_done path would form a
+  // cycle. Even fake/bypass beats finalize one cycle later in sFin, off the Reg.
   switch (state) {
     is (State.sIdle) {
-      io.load_nop.ready := !io.kill
+      // Accept a LOAD beat (priority) or, if none, a STORE beat. Loads/stores are
+      // serial here (fu_ready gates issue on !busy), so at most one is in flight.
+      io.load_nop.ready  := !io.kill
+      io.store_nop.ready := !io.kill && !io.load_nop.valid
       when (io.load_nop.fire) {
         cur        := io.load_nop.bits
         grp_active := true.B
-        // is_fake (all-masked / el_count==0 / vl==0 bypass): no memory access,
-        // finalize from the registered beat in sFin. Otherwise issue the beat.
+        is_store   := false.B
         state := Mux(io.load_nop.bits.is_fake, State.sFin, State.sReq)
+      } .elsewhen (io.store_nop.fire) {
+        curs       := io.store_nop.bits
+        grp_active := true.B
+        is_store   := true.B
+        state := Mux(io.store_nop.bits.is_fake, State.sFin, State.sSReq)
       }
     }
 
     is (State.sFin) {
-      // registered fake/bypass beat: notify the LCB so a fake LAST finalizes.
-      driveBeat(cur, 0.U, isFake = true.B)
-      when (cur.last) {
-        io.clr_rob.valid      := true.B
-        io.clr_rob.bits       := cur.uop.rob_idx
-        io.dmem.ld_done.valid := true.B
-        io.dmem.ld_done.bits  := cur.uop.ldq_idx
-        grp_active            := false.B
+      // registered fake/bypass beat. A load also notifies the LCB so a fake LAST
+      // finalizes the group; a store has no VRF write.
+      when (!is_store) {
+        // (load fake) -- cur holds the load nop
+        driveBeat(cur, 0.U, isFake = true.B)
+        when (cur.last) {
+          io.clr_rob.valid      := true.B
+          io.clr_rob.bits       := cur.uop.rob_idx
+          io.dmem.ld_done.valid := true.B
+          io.dmem.ld_done.bits  := cur.uop.ldq_idx
+          grp_active            := false.B
+        }
+      } .otherwise {
+        // (store fake/bypass) -- curs holds the store nop
+        when (curs.last) {
+          io.clr_rob.valid      := true.B
+          io.clr_rob.bits       := curs.uop.rob_idx
+          io.dmem.st_done.valid := true.B
+          io.dmem.st_done.bits  := curs.uop.stq_idx
+          grp_active            := false.B
+        }
       }
       state := State.sIdle
     }
@@ -197,8 +243,7 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
       when (io.kill) {
         state := State.sIdle
       } .elsewhen (io.dmem.nack.valid) {
-        // retry the same beat (serial: only this beat is outstanding)
-        state := State.sReq
+        state := State.sReq                  // retry the same (single-outstanding) beat
       } .elsewhen (io.dmem.resp.valid) {
         driveBeat(cur, io.dmem.resp.bits.data, isFake = false.B)
         when (cur.last) {
@@ -206,6 +251,34 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
           io.clr_rob.bits       := cur.uop.rob_idx
           io.dmem.ld_done.valid := true.B
           io.dmem.ld_done.bits  := cur.uop.ldq_idx
+          grp_active            := false.B
+        }
+        state := State.sIdle
+      }
+    }
+
+    is (State.sSReq) {
+      io.dmem.req.valid := !io.kill
+      when (io.kill) {
+        state := State.sIdle
+      } .elsewhen (io.dmem.req.fire) {
+        state := State.sSAck
+      }
+    }
+
+    is (State.sSAck) {
+      when (io.kill) {
+        state := State.sIdle
+      } .elsewhen (io.dmem.nack.valid) {
+        state := State.sSReq                 // retry the same store beat
+      } .elsewhen (io.dmem.store_ack.valid) {
+        when (curs.last) {
+          // last store beat acked: clear the vse's rob_bsy and mark its STQ
+          // placeholder entry succeeded (so it retires at the ROB head).
+          io.clr_rob.valid      := true.B
+          io.clr_rob.bits       := curs.uop.rob_idx
+          io.dmem.st_done.valid := true.B
+          io.dmem.st_done.bits  := curs.uop.stq_idx
           grp_active            := false.B
         }
         state := State.sIdle

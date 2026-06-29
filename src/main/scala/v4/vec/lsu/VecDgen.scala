@@ -63,7 +63,7 @@ class VecDgen(implicit p: Parameters) extends BoomModule with VecLsConstants
   // member (and then the group) is exhausted.
   // ---------------------------------------------------------------------------
   object State extends ChiselEnum {
-    val sIdle, sFetch, sStream = Value
+    val sIdle, sFetch, sCap, sStream = Value
   }
   val state = RegInit(State.sIdle)
 
@@ -119,11 +119,19 @@ class VecDgen(implicit p: Parameters) extends BoomModule with VecLsConstants
     }
 
     is (State.sFetch) {
-      // Issue the registered-address read for the current member; data lands in
-      // `buf` next cycle (in sStream).
+      // Drive the registered-address read for the current member. The VRF read is
+      // registered (data = vrf[RegNext(addr)]), so the data is NOT valid until the
+      // NEXT cycle -- capture it in sCap, not here (reading resp_data now would
+      // return the previous address's stale value).
+      io.vrf_read.req_valid := true.B
+      byte_cur              := 0.U
+      state                 := State.sCap
+    }
+
+    is (State.sCap) {
+      // addr held since sFetch -> resp_data is now vrf[pvs3_grp(member_cur)].
       io.vrf_read.req_valid := true.B
       buf                   := io.vrf_read.resp_data
-      byte_cur              := 0.U
       state                 := State.sStream
     }
 

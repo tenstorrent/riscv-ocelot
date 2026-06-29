@@ -1451,7 +1451,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     // port 0 only when the whole vector-LS pipe is idle (VecLSRegRead.fu_ready is
     // registered -> no comb loop with the grant). vle uops carry fu_code(FC_AGEN).
     // vstore / valu stay tied off (no consumer yet).
-    vload_iss_unit.get.io.fu_types(0)(FC_AGEN) := vec_ls_rr.get.io.fu_ready
+    vload_iss_unit.get.io.fu_types(0)(FC_AGEN)  := vec_ls_rr.get.io.fu_ready
+    vstore_iss_unit.get.io.fu_types(0)(FC_AGEN) := vec_ls_rr.get.io.fu_ready
   }
 
   // ----------------------------------------------------------------
@@ -1501,14 +1502,18 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     val vec_dgen       = Module(new boom.v4.vec.lsu.VecDgen)
     val vec_agen_kill  = RegNext(rob.io.flush.valid)
 
-    // Step 11a.2 (sub-step B): the V-LOAD grant flows through VecLSRegRead, which
-    // reads rs1 (base) from a dedicated int-RF port + vl from the VL-RF, then
-    // drives VecLsDecode. (Stores stay dormant: vstore never grants yet.)
-    vec_ls_rr.get.io.iss             := vload_iss_unit.get.io.iss_uops(0)
+    // Step 11a.2: a V-LOAD or V-STORE grant flows through VecLSRegRead, which reads
+    // rs1 (base) from a dedicated int-RF port + vl from the VL-RF, then drives
+    // VecLsDecode. Loads and stores are serial (fu_ready gates both issue units on
+    // !pipe-busy), so at most one grant is live; vle takes priority in the Mux.
+    val vld_iss = vload_iss_unit.get.io.iss_uops(0)
+    val vst_iss = vstore_iss_unit.get.io.iss_uops(0)
+    vec_ls_rr.get.io.iss.valid       := vld_iss.valid || vst_iss.valid
+    vec_ls_rr.get.io.iss.bits        := Mux(vld_iss.valid, vld_iss.bits, vst_iss.bits)
     vec_ls_rr.get.io.vl_data         := vl_regfile.get.io.read_ports(0).data
-    vec_ls_rr.get.io.agen_active     := vec_agen_load.io.gen_active
+    vec_ls_rr.get.io.agen_active     := vec_agen_load.io.gen_active || vec_agen_store.io.gen_active
     vec_ls_rr.get.io.lsu_busy        := vec_lsu.get.io.busy
-    vec_ls_rr.get.io.agen_start_fire := vec_agen_load.io.start.fire
+    vec_ls_rr.get.io.agen_start_fire := vec_agen_load.io.start.fire || vec_agen_store.io.start.fire
     vec_ls_rr.get.io.kill            := vec_agen_kill
     vl_regfile.get.io.read_ports(0).addr := vec_ls_rr.get.io.vl_addr
 
@@ -1528,22 +1533,25 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vec_agen_load.io.mask_idx.data    := 0.U
     vec_lsu.get.io.load_nop <> vec_agen_load.io.load_nop.get
 
-    // Store AGEN: start from decode (!is_load); output ready held false (DORMANT).
+    // Store AGEN: start from decode (!is_load). Step 11a.2: cracked store beats
+    // (data filled by VecDgen) now feed VecLSU.
     vec_agen_store.io.start.valid      := vec_ls_decode.io.out.valid && !vec_ls_decode.io.out.is_load
     vec_agen_store.io.start.bits       := vec_ls_decode.io.out.dec_info
     vec_agen_store.io.kill             := vec_agen_kill
     vec_agen_store.io.mask_idx.valid   := false.B
     vec_agen_store.io.mask_idx.data    := 0.U
-    vec_agen_store.io.store_nop.get.ready := false.B
+    vec_lsu.get.io.store_nop <> vec_agen_store.io.store_nop.get
 
     // Store-data handshake: store AGEN (consumer) <> VecDgen (producer).
     vec_agen_store.io.vdb_data.get <> vec_dgen.io.vdb_data
 
-    // VecDgen dormant inputs: no store ever starts; no VRF read path yet.
-    vec_dgen.io.start.valid        := false.B
-    vec_dgen.io.start.bits         := DontCare
+    // VecDgen: start with the store's config; read the pvs3 store-data group from
+    // VecRegFile read port 1 (registered-address read mirrors VecDgen's FSM).
+    vec_dgen.io.start.valid        := vec_ls_decode.io.out.valid && !vec_ls_decode.io.out.is_load
+    vec_dgen.io.start.bits         := vec_ls_decode.io.out.dec_info
     vec_dgen.io.kill               := vec_agen_kill
-    vec_dgen.io.vrf_read.resp_data := 0.U
+    vec_regfile.get.io.read_ports(1).addr := vec_dgen.io.vrf_read.req_addr
+    vec_dgen.io.vrf_read.resp_data := vec_regfile.get.io.read_ports(1).data
     vec_dgen.io.scalar_data        := 0.U
 
     // VecLSU <-> scalar LSU dedicated vector dcache port + kill.

@@ -225,8 +225,12 @@ class VecIssueSlot(
   // requests when that half's sources are ready, plus the mask/VL gate.
   //--------------------------------------------------------------------------
   val iss_ready = scalar_operands_ready && vector_operands_ready
+  // Caracal vec store (Step 11a.2): issues ONCE (no separate scalar-style DGEN
+  // issue) -- VecDgen reads the pvs3 store-data group at issue -- so a store must
+  // ALSO wait for pvs3_ready, even on the AGEN fast path.
+  val st_data_ok = !slot_uop.uses_stq || pvs3_ready
   io.request := slot_valid && !slot_uop.iw_issued && (
-    iss_ready || ((agen_ready || dgen_ready) && pvm_ready && pvl_ready)
+    iss_ready || ((agen_ready || dgen_ready) && pvm_ready && pvl_ready && st_data_ok)
   )
 
   io.iss_uop := slot_uop

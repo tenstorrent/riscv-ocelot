@@ -1570,10 +1570,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // Caracal (Step 11a.2): vector dcache port outputs default invalid; the
   // response loop below drives resp/nack on a vector beat (top lane).
   if (usingRVV) {
-    io.core.vec_dmem.get.resp.valid := false.B
-    io.core.vec_dmem.get.resp.bits  := DontCare
-    io.core.vec_dmem.get.nack.valid := false.B
-    io.core.vec_dmem.get.nack.bits  := DontCare
+    io.core.vec_dmem.get.resp.valid      := false.B
+    io.core.vec_dmem.get.resp.bits       := DontCare
+    io.core.vec_dmem.get.nack.valid      := false.B
+    io.core.vec_dmem.get.nack.bits       := DontCare
+    io.core.vec_dmem.get.store_ack.valid := false.B
+    io.core.vec_dmem.get.store_ack.bits  := DontCare
   }
   for (w <- 0 until lsuWidth) {
     wb_slow_wakeups(w).valid := false.B
@@ -1672,7 +1674,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       }
     }
     // Handle store acks
-    when (io.dmem.store_ack(w).valid) {
+    val sack_is_vec = if (usingRVV) (io.dmem.store_ack(w).bits.uop.is_vec) else false.B
+    // Caracal: a vector store beat's ack goes to VecLSU (routed below); the vse's
+    // STQ placeholder is marked succeeded ONCE on the last beat via st_done, not
+    // here, so the scalar handler must skip per-beat acks.
+    if (usingRVV) {
+      when (io.dmem.store_ack(w).valid && sack_is_vec) {
+        io.core.vec_dmem.get.store_ack.valid     := true.B
+        io.core.vec_dmem.get.store_ack.bits.data := 0.U
+      }
+    }
+    when (io.dmem.store_ack(w).valid && !sack_is_vec) {
       stq_succeeded(io.dmem.store_ack(w).bits.uop.stq_idx) := true.B
     }
 
@@ -1761,6 +1773,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       val v_ldq_idx = io.core.vec_dmem.get.ld_done.bits
       ldq_executed    (v_ldq_idx) := true.B
       ldq_will_succeed(v_ldq_idx) := true.B
+    }
+    // Vector store completion: VecLSU pulses st_done on the last store beat; mark
+    // the vse's STQ placeholder succeeded ONCE so it retires (committed+succeeded)
+    // at the STQ head. The scalar store-commit drain self-skips it (its addr/data
+    // are never set, so can_enq_store_execute is false).
+    when (io.core.vec_dmem.get.st_done.valid) {
+      stq_succeeded(io.core.vec_dmem.get.st_done.bits) := true.B
     }
   }
 

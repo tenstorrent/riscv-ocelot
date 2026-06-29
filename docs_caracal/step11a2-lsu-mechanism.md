@@ -150,3 +150,36 @@ operand read + issue un-tie + e2e test) is the remaining work for a functional v
 4. Re-verify: scalar 9/9 + MediumBoomV4Config bit-identical.
 Then Step 11a.2-store (vse): vec_dmem.store_ack + st_clr_bsy, STQ-commit drain,
 VecDgen VRF read, the store-side picker guards (lsu.scala 609/1089).
+
+## IMPLEMENTATION STATUS -- store path LANDED (PASSES cosim)
+
+The vse (OoO unit-stride vector store) path is now functional and validated end
+to end against Whisper. What landed on top of the load path:
+
+- **VecDgen (store-data generator) un-stubbed.** It reads each `pvs3_grp` member
+  from a dedicated VecRegFile read port (`read_ports(1)`) and presents 64b slices
+  to the store AGEN. The VRF read is REGISTERED (data = vrf[RegNext(addr)]), so a
+  capture state (`sCap`) was added between `sFetch` (drive addr) and `sStream`
+  (consume `buf`): reading `resp_data` in the same cycle as driving the address
+  returned the PREVIOUS member's stale data and corrupted every store beat. Start
+  fires from decode when `!is_load`.
+- **VecLSU store beats.** Added `sSReq`/`sSAck` states: drive a `M_XWR` beat
+  (addr & ~7, data from the store_nop) onto vec_dmem, wait for `store_ack`
+  (retry on `nack`), advance. On the LAST beat: `clr_rob(rob_idx)` + `st_done(stq_idx)`.
+- **STQ placeholder retirement.** The vse holds ONE entry in the scalar STQ
+  (`uses_stq`). Per-beat acks are routed to VecLSU (`vec_dmem.store_ack`, gated by
+  `sack_is_vec` so the scalar handler skips them); the STQ entry is marked
+  `succeeded` ONCE via `st_done` so it retires (`committed && succeeded`) at the
+  STQ head. Its `addr/data` are never set, so the scalar store-commit drain
+  self-skips it.
+- **Issue un-tie for stores.** `VecIssueSlot` gates a store request on
+  `pvs3_ready` (`st_data_ok = !uses_stq || pvs3_ready`) so the store does not
+  issue before its data operand group is renamed/ready. `vec_ls_rr` is shared by
+  the V-LOAD and V-STORE issue units (load priority in the Mux);
+  `vstore_iss_unit.fu_types(0)(FC_AGEN) := vec_ls_rr.fu_ready`.
+
+Gate (all green): vse e2e (correct store data, self-check `gp=1`, 0 cosim
+mismatches), vle regression (clean tohost finish), vset smoke 16/16,
+MediumBoomV4Config bit-identical (0 non-cosmetic SV diffs -- the only
+scalar-reachable change, `store_ack && !sack_is_vec` with `sack_is_vec=false.B`,
+folds to the original gate).
