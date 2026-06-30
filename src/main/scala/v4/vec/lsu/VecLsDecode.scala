@@ -107,7 +107,12 @@ class VecLsDecode(implicit p: Parameters) extends BoomModule with VecLsConstants
 
   // ========= Whole load/store evl decode (bobtail ls_decode.scala:124-141) ==
   // evl for whole-register ops = NFIELDS * VLEN / EEW, expressed in elements.
-  val nf_wth = Cat(instNf, vlsinfo.mew, instWidth)  // {nf[2:0], mew, width[1:0]} (bobtail Cat(instNf, instElemSize))
+  // The lookup key is Cat(nf, width[2:0]) where width is the 3-bit funct3 EEW
+  // field (inst[14:12]: 000=e8,101=e16,110=e32,111=e64). The middle key bit is
+  // the width HIGH bit inst[14] (1 for e16/e32/e64), NOT the mem-extended-width
+  // bit inst[28] -- using mew here left whole_vl=0 for e16/e32/e64 (-> vl=0 ->
+  // bypass -> no load).
+  val nf_wth = Cat(instNf, io.in.uop.inst(14), instWidth)  // {nf[2:0], width[2:0]}
   val whole_vl = MuxLookup(nf_wth, 0.U)(Seq(
     0.U  -> (VLEN_BYTES.U),       // nf=0, width=00 (8b):  1*VLEN/8
     5.U  -> (VLEN_BYTES.U >> 1),  // nf=0, width=01 (16b): 1*VLEN/16
