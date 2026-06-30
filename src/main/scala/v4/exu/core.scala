@@ -1500,6 +1500,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     val vec_agen_load  = Module(new boom.v4.vec.lsu.VecAgenStage1(isStore = false))
     val vec_agen_store = Module(new boom.v4.vec.lsu.VecAgenStage1(isStore = true))
     val vec_dgen       = Module(new boom.v4.vec.lsu.VecDgen)
+    val vec_idx_gen    = Module(new boom.v4.vec.lsu.VecIdxGen)
     val vec_agen_kill  = RegNext(rob.io.flush.valid)
 
     // Step 11a.2: a V-LOAD or V-STORE grant flows through VecLSRegRead, which reads
@@ -1529,11 +1530,26 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vec_agen_load.io.start.valid      := vec_ls_decode.io.out.valid && vec_ls_decode.io.out.is_load
     vec_agen_load.io.start.bits       := vec_ls_decode.io.out.dec_info
     vec_agen_load.io.kill             := vec_agen_kill
-    // Masked LS: feed v0[MASK_W-1:0] (read in VecLSRegRead, timed with dec.valid)
-    // to the AGEN mask stream. Held valid while dec.valid; the Packer latches it
-    // on start.fire (M1: vl<=MASK_W, single chunk, so no re-request needed).
-    vec_agen_load.io.mask_idx.valid   := vec_ls_rr.get.io.dec.valid
-    vec_agen_load.io.mask_idx.data    := vec_ls_rr.get.io.dec.mask
+    // AGEN mask_idx port carries EITHER the v0 mask (masked unit/strided, single
+    // 64b chunk held valid while dec.valid) OR, for an INDEXED op, the per-element
+    // index stream from VecIdxGen ({last_index, mask_bit, index_value}). Selected
+    // by vec_idx_gen.active (true from index-fetch through the whole index stream,
+    // i.e. spanning the AGEN run -- dec.valid is only high for the decode cycle).
+    val idx_packed = Cat(vec_idx_gen.io.idx.last_index, vec_idx_gen.io.idx.mask_bit,
+                         vec_idx_gen.io.idx.index_value.asUInt)
+    // index-mode = the in-flight op is indexed. True from its DECODE cycle (so the
+    // Walker can't start on stale mask data before VecIdxGen has a real index) and
+    // through the whole index stream (vec_idx_gen.active). When index-mode but
+    // VecIdxGen hasn't reached its stream yet, idx.valid=false -> the Walker waits.
+    val idx_mode = (vec_ls_decode.io.out.valid && vec_ls_decode.io.out.dec_info.is_index) ||
+                   vec_idx_gen.io.active
+    when (idx_mode) {
+      vec_agen_load.io.mask_idx.valid := vec_idx_gen.io.idx.valid
+      vec_agen_load.io.mask_idx.data  := idx_packed
+    } .otherwise {
+      vec_agen_load.io.mask_idx.valid := vec_ls_rr.get.io.dec.valid
+      vec_agen_load.io.mask_idx.data  := vec_ls_rr.get.io.dec.mask
+    }
     vec_lsu.get.io.load_nop <> vec_agen_load.io.load_nop.get
 
     // Store AGEN: start from decode (!is_load). Step 11a.2: cracked store beats
@@ -1541,8 +1557,13 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vec_agen_store.io.start.valid      := vec_ls_decode.io.out.valid && !vec_ls_decode.io.out.is_load
     vec_agen_store.io.start.bits       := vec_ls_decode.io.out.dec_info
     vec_agen_store.io.kill             := vec_agen_kill
-    vec_agen_store.io.mask_idx.valid   := vec_ls_rr.get.io.dec.valid
-    vec_agen_store.io.mask_idx.data    := vec_ls_rr.get.io.dec.mask
+    when (idx_mode) {
+      vec_agen_store.io.mask_idx.valid := vec_idx_gen.io.idx.valid
+      vec_agen_store.io.mask_idx.data  := idx_packed
+    } .otherwise {
+      vec_agen_store.io.mask_idx.valid := vec_ls_rr.get.io.dec.valid
+      vec_agen_store.io.mask_idx.data  := vec_ls_rr.get.io.dec.mask
+    }
     vec_lsu.get.io.store_nop <> vec_agen_store.io.store_nop.get
 
     // Store-data handshake: store AGEN (consumer) <> VecDgen (producer).
@@ -1565,6 +1586,18 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     // so a masked load preserves masked-off lanes (mask-undisturbed).
     vec_regfile.get.io.read_ports(3).addr := vec_lsu.get.io.vrf_read.req_addr
     vec_lsu.get.io.vrf_read.resp_data     := vec_regfile.get.io.read_ports(3).data
+
+    // Indexed LS: VecIdxGen reads the index vector group (pvs2) from VecRegFile
+    // read port 4 and streams one signed index per element to the active AGEN's
+    // Walker (via mask_idx). Started on any indexed decode (load or store); the
+    // Walker's per-element request comes back on whichever AGEN's mask_idx.ready.
+    vec_idx_gen.io.start.valid := vec_ls_decode.io.out.valid && vec_ls_decode.io.out.dec_info.is_index
+    vec_idx_gen.io.start.bits  := vec_ls_decode.io.out.dec_info
+    vec_idx_gen.io.kill        := vec_agen_kill
+    vec_idx_gen.io.mask_in     := vec_ls_rr.get.io.dec.mask
+    vec_regfile.get.io.read_ports(4).addr := vec_idx_gen.io.vrf_read.req_addr
+    vec_idx_gen.io.vrf_read.resp_data     := vec_regfile.get.io.read_ports(4).data
+    vec_idx_gen.io.idx.ready   := vec_agen_load.io.mask_idx.ready || vec_agen_store.io.mask_idx.ready
 
     // VecLSU <-> scalar LSU dedicated vector dcache port + kill.
     vec_lsu.get.io.dmem <> io.lsu.vec_dmem.get

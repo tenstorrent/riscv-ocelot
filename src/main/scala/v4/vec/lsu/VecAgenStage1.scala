@@ -119,6 +119,8 @@ extends BoomModule with VecLsConstants {
     walker.io.index.last_index     := io.mask_idx.data(MASK_W + 1)
     walker.io.kill                 := io.kill
     walker.io.store_packet.ready   := io.store_nop.get.ready
+    // propagate the Walker's index request up to the index producer (VecIdxGen).
+    io.mask_idx.ready              := walker.io.index.ready
     walker.io.vdb_data.valid_bytes := io.vdb_data.get.valid_bytes
     walker.io.vdb_data.data        := io.vdb_data.get.data
 
@@ -262,6 +264,8 @@ extends BoomModule with VecLsConstants {
     walker.io.index.last_index    := io.mask_idx.data(MASK_W + 1)
     walker.io.kill                := io.kill
     walker.io.load_packet.ready   := io.load_nop.get.ready
+    // propagate the Walker's index request up to the index producer (VecIdxGen).
+    io.mask_idx.ready             := walker.io.index.ready
 
     // ---- start mux (priority: bypassable > packable > skipable > walkable) ----
     when (bypassable) {
@@ -378,9 +382,6 @@ extends BoomModule with VecLsConstants {
     }
   }
 
-  // ---- mask_idx: tied off at the stage level (no masked/indexed support yet) ----
-  // The sub-FSMs' mask/index .valid is wired to io.mask_idx.valid (which core.scala
-  // holds false in Step 10), keeping them quiescent. We do NOT forward the sub-FSMs'
-  // mask/index .ready up; the stage advertises not-ready so nothing is consumed.
-  io.mask_idx.ready := false.B
+  // io.mask_idx.ready is driven inside each branch above (propagating the Walker's
+  // per-element index request to the producer, VecIdxGen).
 }
