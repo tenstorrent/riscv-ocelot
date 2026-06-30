@@ -72,7 +72,13 @@ extends BoomModule with VecLsConstants {
   // walkable:   everything else           -> Walker.
   // priority: bypassable > packable > skipable > walkable.
   val bypassable = (config_info.vl === 0.U) || (config_info.vstart >= config_info.vl)
-  val packable   = config_info.is_good_stride && config_info.is_good_seg
+  // The LOAD Packer is mask-aware (emits is_fake for masked-off elements), so a
+  // masked unit-stride load stays packable. The STORE Packer has NO mask support
+  // (is_fake hardcoded false), so a masked unit-stride store must NOT pack -- it
+  // routes to the Skipper instead (which skips masked-off elements and keeps the
+  // VecDgen store-data stream in sync).
+  val packable   = config_info.is_good_stride && config_info.is_good_seg &&
+                   (if (isStore) !config_info.is_mask else true.B)
   val skipable   = (config_info.is_mask && !config_info.is_index)
   val walkable   = !(config_info.is_mask && !config_info.is_index)
 
