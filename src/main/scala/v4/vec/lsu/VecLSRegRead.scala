@@ -50,6 +50,11 @@ class VecLSRegRead(implicit p: Parameters) extends BoomModule with VecLsConstant
     val vl_addr = Output(UInt(vlPregSz.W))
     val vl_data = Input(UInt(vecVLSz.W))
 
+    // Vector mask (v0) read for masked LS: registered-address VecRegFile read of
+    // pvm. The low MASK_W bits (one bit per element) feed the AGEN mask stream.
+    val vrf_mask_addr = Output(UInt(vecPregSz.W))
+    val vrf_mask_data = Input(UInt(vecVLen.W))
+
     // pipe-busy feedback (registered) from the downstream AGEN + VecLSU.
     val agen_active = Input(Bool())
     val lsu_busy    = Input(Bool())
@@ -61,6 +66,7 @@ class VecLSRegRead(implicit p: Parameters) extends BoomModule with VecLsConstant
       val rs1_data = UInt(xLen.W)
       val vl       = UInt(vecVLSz.W)
       val vstart   = UInt(VSTART_W.W)
+      val mask     = UInt(MASK_W.W)             // v0[MASK_W-1:0], one bit per element
     })
     // AGEN.start.fire -- tells us VecLsDecode->AGEN latched this instruction.
     val agen_start_fire = Input(Bool())
@@ -82,11 +88,13 @@ class VecLSRegRead(implicit p: Parameters) extends BoomModule with VecLsConstant
   io.irf_req.valid := false.B
   io.irf_req.bits  := rr_uop.prs1
   io.vl_addr       := rr_uop.pvl
+  io.vrf_mask_addr := rr_uop.pvm                 // read v0 (registered; data valid in sRrd)
   io.dec.valid     := false.B
   io.dec.uop       := rr_uop
   io.dec.rs1_data  := io.irf_resp
   io.dec.vl        := io.vl_data
   io.dec.vstart    := 0.U                       // M1: unit-stride starts at element 0
+  io.dec.mask      := io.vrf_mask_data(MASK_W - 1, 0)
 
   switch (state) {
     is (State.sIdle) {

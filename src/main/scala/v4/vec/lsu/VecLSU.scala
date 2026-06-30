@@ -88,6 +88,14 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
       val data = UInt(vecVLen.W)
       val mask = UInt((vecVLen / 64).W)
     })
+    // VecRegFile read port for the undisturbed copy: a masked load first copies
+    // the OLD group (stale_pvdest_grp) into the new pdst group, so masked-off
+    // lanes keep their architectural value (mask-undisturbed) -- with renaming
+    // the new physical reg is otherwise uninitialized. Registered-address read.
+    val vrf_read = new Bundle {
+      val req_addr  = Output(UInt(vecPregSz.W))
+      val resp_data = Input(UInt(vecVLen.W))
+    }
     // group-done -> vec rename / issue wakeups (prn-based, from the LCB)
     val group_done = Valid(new VecGroupDone)
     // ROB busy clear -> rob.vec_clr_bsy (rob_idx-based) for the completing vle
@@ -102,13 +110,18 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
   // Load states (sReq/sResp) and store states (sSReq/sSAck); sFin finalizes a
   // fake/bypass beat (load or store) one cycle later off the registered beat.
   object State extends ChiselEnum {
-    val sIdle, sReq, sResp, sFin, sSReq, sSAck = Value
+    val sIdle, sCopyRd, sCopyWr, sReq, sResp, sFin, sSReq, sSAck = Value
   }
   val state      = RegInit(State.sIdle)
   val cur        = Reg(new VecLoadNop)       // latched current LOAD beat
   val curs       = Reg(new VecStoreNop)      // latched current STORE beat
   val grp_active = RegInit(false.B)          // a vec mem group is in progress
   val is_store   = RegInit(false.B)          // current group is a store (vs load)
+  val copy_member = RegInit(0.U(vecSplitSz.W)) // member being copied (undisturbed phase)
+
+  val nLanes      = vecVLen / 64
+  // # of valid group members to copy (contiguous EMUL group -> popcount of mask).
+  val copy_count  = PopCount(cur.uop.pvdest_grp_mask)
 
   // byte-width per element (EEW), encoded log2 in the uop.
   def eewEnc(uop: MicroOp): UInt = uop.v_eew(1, 0)
@@ -124,6 +137,7 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
   io.dmem.ld_done.bits   := cur.uop.ldq_idx
   io.dmem.st_done.valid  := false.B
   io.dmem.st_done.bits   := curs.uop.stq_idx
+  io.vrf_read.req_addr   := cur.uop.stale_pvdest_grp(copy_member)
 
   // ---- LCB start: latch dest group descriptor on the first beat of a group ----
   val start_grp = io.load_nop.fire && !grp_active
@@ -195,12 +209,42 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
         cur        := io.load_nop.bits
         grp_active := true.B
         is_store   := false.B
-        state := Mux(io.load_nop.bits.is_fake, State.sFin, State.sReq)
+        // Masked load: first copy the OLD group (mask-undisturbed) before placing
+        // beats. Only at group start (the per-group copy is one-shot). A fully
+        // unmasked load writes every lane, so no copy is needed.
+        val masked = !io.load_nop.bits.uop.v_unmasked
+        when (masked && !grp_active) {
+          copy_member := 0.U
+          state       := State.sCopyRd
+        } .otherwise {
+          state := Mux(io.load_nop.bits.is_fake, State.sFin, State.sReq)
+        }
       } .elsewhen (io.store_nop.fire) {
         curs       := io.store_nop.bits
         grp_active := true.B
         is_store   := true.B
         state := Mux(io.store_nop.bits.is_fake, State.sFin, State.sSReq)
+      }
+    }
+
+    is (State.sCopyRd) {
+      // drive the registered read of stale_pvdest_grp(copy_member); data lands
+      // next cycle (sCopyWr). req_addr is the default (stable across both states).
+      when (io.kill) { state := State.sIdle }
+      .otherwise     { state := State.sCopyWr }
+    }
+
+    is (State.sCopyWr) {
+      // resp_data = old member; write it whole (all lanes) to the new pdst member.
+      // (The write itself is driven in the vrf_write mux below.)
+      when (io.kill) {
+        state := State.sIdle
+      } .elsewhen (copy_member === (copy_count - 1.U)) {
+        // group fully copied -> now place the latched first beat.
+        state := Mux(cur.is_fake, State.sFin, State.sReq)
+      } .otherwise {
+        copy_member := copy_member + 1.U
+        state       := State.sCopyRd
       }
     }
 
@@ -291,8 +335,16 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
     grp_active := false.B
   }
 
-  // ---- VRF write + group-done from the coalescing buffer ----
-  io.vrf_write  := lcb.io.vrf_write
+  // ---- VRF write: the undisturbed copy (sCopyWr) writes a whole old member to
+  // the new pdst member (all lanes); otherwise the LCB's per-beat lane write. ----
+  when (state === State.sCopyWr) {
+    io.vrf_write.valid     := !io.kill
+    io.vrf_write.bits.addr := cur.uop.pvdest_grp(copy_member)
+    io.vrf_write.bits.data := io.vrf_read.resp_data
+    io.vrf_write.bits.mask := ~0.U(nLanes.W)            // all lanes (full member copy)
+  } .otherwise {
+    io.vrf_write := lcb.io.vrf_write
+  }
   io.group_done := lcb.io.group_done
 
   io.busy := grp_active || (state =/= State.sIdle)

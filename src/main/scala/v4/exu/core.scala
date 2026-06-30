@@ -1529,8 +1529,11 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vec_agen_load.io.start.valid      := vec_ls_decode.io.out.valid && vec_ls_decode.io.out.is_load
     vec_agen_load.io.start.bits       := vec_ls_decode.io.out.dec_info
     vec_agen_load.io.kill             := vec_agen_kill
-    vec_agen_load.io.mask_idx.valid   := false.B
-    vec_agen_load.io.mask_idx.data    := 0.U
+    // Masked LS: feed v0[MASK_W-1:0] (read in VecLSRegRead, timed with dec.valid)
+    // to the AGEN mask stream. Held valid while dec.valid; the Packer latches it
+    // on start.fire (M1: vl<=MASK_W, single chunk, so no re-request needed).
+    vec_agen_load.io.mask_idx.valid   := vec_ls_rr.get.io.dec.valid
+    vec_agen_load.io.mask_idx.data    := vec_ls_rr.get.io.dec.mask
     vec_lsu.get.io.load_nop <> vec_agen_load.io.load_nop.get
 
     // Store AGEN: start from decode (!is_load). Step 11a.2: cracked store beats
@@ -1538,8 +1541,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vec_agen_store.io.start.valid      := vec_ls_decode.io.out.valid && !vec_ls_decode.io.out.is_load
     vec_agen_store.io.start.bits       := vec_ls_decode.io.out.dec_info
     vec_agen_store.io.kill             := vec_agen_kill
-    vec_agen_store.io.mask_idx.valid   := false.B
-    vec_agen_store.io.mask_idx.data    := 0.U
+    vec_agen_store.io.mask_idx.valid   := vec_ls_rr.get.io.dec.valid
+    vec_agen_store.io.mask_idx.data    := vec_ls_rr.get.io.dec.mask
     vec_lsu.get.io.store_nop <> vec_agen_store.io.store_nop.get
 
     // Store-data handshake: store AGEN (consumer) <> VecDgen (producer).
@@ -1553,6 +1556,15 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vec_regfile.get.io.read_ports(1).addr := vec_dgen.io.vrf_read.req_addr
     vec_dgen.io.vrf_read.resp_data := vec_regfile.get.io.read_ports(1).data
     vec_dgen.io.scalar_data        := 0.U
+
+    // Masked LS: VecRegFile read port 2 reads v0 (pvm) for the mask stream.
+    vec_regfile.get.io.read_ports(2).addr := vec_ls_rr.get.io.vrf_mask_addr
+    vec_ls_rr.get.io.vrf_mask_data        := vec_regfile.get.io.read_ports(2).data
+
+    // Undisturbed copy: VecRegFile read port 3 reads the OLD group (stale_pvdest)
+    // so a masked load preserves masked-off lanes (mask-undisturbed).
+    vec_regfile.get.io.read_ports(3).addr := vec_lsu.get.io.vrf_read.req_addr
+    vec_lsu.get.io.vrf_read.resp_data     := vec_regfile.get.io.read_ports(3).data
 
     // VecLSU <-> scalar LSU dedicated vector dcache port + kill.
     vec_lsu.get.io.dmem <> io.lsu.vec_dmem.get
