@@ -1520,7 +1520,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vec_ls_decode.io.in.valid    := vec_ls_rr.get.io.dec.valid
     vec_ls_decode.io.in.uop      := vec_ls_rr.get.io.dec.uop
     vec_ls_decode.io.in.rs1_data := vec_ls_rr.get.io.dec.rs1_data
-    vec_ls_decode.io.in.rs2_data := 0.U          // unit-stride: rs2 unused (implied stride)
+    vec_ls_decode.io.in.rs2_data := vec_ls_rr.get.io.dec.rs2_data   // stride (vlse/vsse)
     vec_ls_decode.io.in.vl       := vec_ls_rr.get.io.dec.vl
     vec_ls_decode.io.in.vstart   := vec_ls_rr.get.io.dec.vstart
 

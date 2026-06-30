@@ -64,6 +64,7 @@ class VecLSRegRead(implicit p: Parameters) extends BoomModule with VecLsConstant
       val valid    = Bool()
       val uop      = new MicroOp()
       val rs1_data = UInt(xLen.W)
+      val rs2_data = UInt(xLen.W)               // stride (vlse/vsse); ignored otherwise
       val vl       = UInt(vecVLSz.W)
       val vstart   = UInt(VSTART_W.W)
       val mask     = UInt(MASK_W.W)             // v0[MASK_W-1:0], one bit per element
@@ -74,24 +75,36 @@ class VecLSRegRead(implicit p: Parameters) extends BoomModule with VecLsConstant
     val kill = Input(Bool())
   })
 
+  // rs1 (base) and rs2 (stride) are read serially on the single dedicated int-RF
+  // port: sReq1 reads rs1, sReq2 reads rs2. rs1's data lands the cycle after its
+  // read fires (= the first sReq2 cycle), latched into rs1_q; rs2's data lands in
+  // sRrd. Serial avoids a 2nd int-RF read port (no regfile resize) and the arb
+  // bank-conflict timing of two parallel reads.
   object State extends ChiselEnum {
-    val sIdle, sReq, sRrd = Value
+    val sIdle, sReq1, sReq2, sRrd = Value
   }
   val state  = RegInit(State.sIdle)
   val rr_uop = Reg(new MicroOp)
+  val rs1_q  = Reg(UInt(xLen.W))
 
   // pipe idle => safe to grant another vle. All terms are registered.
   val pipe_idle = (state === State.sIdle) && !io.agen_active && !io.lsu_busy
   io.fu_ready := pipe_idle && !io.kill
 
+  // latch rs1 the cycle its data is valid (one cycle after sReq1 fired).
+  when (RegNext(state === State.sReq1 && io.irf_req.fire, false.B)) {
+    rs1_q := io.irf_resp
+  }
+
   // defaults
   io.irf_req.valid := false.B
-  io.irf_req.bits  := rr_uop.prs1
+  io.irf_req.bits  := Mux(state === State.sReq2, rr_uop.prs2, rr_uop.prs1)
   io.vl_addr       := rr_uop.pvl
   io.vrf_mask_addr := rr_uop.pvm                 // read v0 (registered; data valid in sRrd)
   io.dec.valid     := false.B
   io.dec.uop       := rr_uop
-  io.dec.rs1_data  := io.irf_resp
+  io.dec.rs1_data  := rs1_q
+  io.dec.rs2_data  := io.irf_resp                // rs2 data is live in sRrd
   io.dec.vl        := io.vl_data
   io.dec.vstart    := 0.U                       // M1: unit-stride starts at element 0
   io.dec.mask      := io.vrf_mask_data(MASK_W - 1, 0)
@@ -100,21 +113,29 @@ class VecLSRegRead(implicit p: Parameters) extends BoomModule with VecLsConstant
     is (State.sIdle) {
       when (io.iss.valid && pipe_idle) {
         rr_uop := io.iss.bits
-        state  := State.sReq
+        state  := State.sReq1
       }
     }
-    is (State.sReq) {
-      // drive the int-RF arb read + the VL-RF read address; advance when the
-      // arbitrated read is accepted (data then lands next cycle).
+    is (State.sReq1) {
+      // read rs1 (base). VL-RF + mask reads run in parallel (addrs held from now).
       io.irf_req.valid := true.B
       when (io.kill) {
         state := State.sIdle
-      } .elsewhen (io.irf_req.ready) {
+      } .elsewhen (io.irf_req.fire) {
+        state := State.sReq2
+      }
+    }
+    is (State.sReq2) {
+      // read rs2 (stride). rs1 data was latched into rs1_q this cycle.
+      io.irf_req.valid := true.B
+      when (io.kill) {
+        state := State.sIdle
+      } .elsewhen (io.irf_req.fire) {
         state := State.sRrd
       }
     }
     is (State.sRrd) {
-      // both reads' data are valid now -> present the decoded instruction.
+      // all reads' data valid now -> present the decoded instruction.
       io.dec.valid := !io.kill
       when (io.kill) {
         state := State.sIdle
