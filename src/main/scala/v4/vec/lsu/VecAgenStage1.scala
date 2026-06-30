@@ -303,6 +303,7 @@ extends BoomModule with VecLsConstants {
     bypass_packet.uop         := config_info.uop
     bypass_packet.pdst        := 0.U
     bypass_packet.pdst_member := 0.U
+    bypass_packet.tail_undist := false.B          // set by the remap below
 
     // ---- output mux (only one sub-gen is active per access) ----
     val out = io.load_nop.get
@@ -340,6 +341,15 @@ extends BoomModule with VecLsConstants {
     val pdst_member = (out.bits.v_reg - start_q.base_v_reg)(vecSplitSz - 1, 0)
     out.bits.pdst_member := pdst_member
     out.bits.pdst        := start_q.uop.pvdest_grp(pdst_member(2, 0))
+
+    // ---- tail-undisturbed flag (group property) ----
+    // The dest group holds (members * VLEN_BYTES) bytes; the load writes
+    // (vl << eew_enc) bytes. If it writes fewer, the unwritten TAIL lanes must
+    // keep their old value -> VecLSU does a stale_pvdest group-copy first. vl==0
+    // (bypass) also lands here (0 < capacity) -> whole group undisturbed.
+    val grp_bytes = PopCount(start_q.uop.pvdest_grp_mask) << log2Ceil(VLEN_BYTES).U
+    val ld_bytes  = start_q.vl << start_q.eew_enc
+    out.bits.tail_undist := ld_bytes < grp_bytes
 
     // ---- gen_active ----
     io.gen_active := (state === State.BYPASS) ||

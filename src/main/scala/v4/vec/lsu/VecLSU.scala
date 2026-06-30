@@ -209,11 +209,12 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
         cur        := io.load_nop.bits
         grp_active := true.B
         is_store   := false.B
-        // Masked load: first copy the OLD group (mask-undisturbed) before placing
-        // beats. Only at group start (the per-group copy is one-shot). A fully
-        // unmasked load writes every lane, so no copy is needed.
-        val masked = !io.load_nop.bits.uop.v_unmasked
-        when (masked && !grp_active) {
+        // Copy the OLD group first when masked-off OR tail lanes won't be written
+        // (mask-/tail-undisturbed), so those lanes keep their architectural value
+        // rather than the uninitialized new physical reg. One-shot at group start;
+        // a full unmasked load writes every lane, so no copy (and no stale read).
+        val needs_copy = (!io.load_nop.bits.uop.v_unmasked) || io.load_nop.bits.tail_undist
+        when (needs_copy && !grp_active) {
           copy_member := 0.U
           state       := State.sCopyRd
         } .otherwise {

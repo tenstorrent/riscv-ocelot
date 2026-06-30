@@ -239,6 +239,7 @@ extends BoomModule with VecLsConstants {
   // Caracal physical-PRN fields (filled by downstream remap; default 0 here)
   io.load_packet.bits.pdst        := 0.U
   io.load_packet.bits.pdst_member := 0.U
+  io.load_packet.bits.tail_undist := false.B   // group property set by the AGEN remap
 
   // ======== Vstart Handling ========
   // need to re-align dmem offset to the new address after vstart

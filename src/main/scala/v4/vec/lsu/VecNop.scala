@@ -53,6 +53,10 @@ class VecLoadNop(implicit p: Parameters) extends BoomBundle with VecLsConstants
   // --- Caracal physical resolution (filled by the AGEN remap; 0 while dormant) ---
   val pdst        = UInt(vecPregSz.W)    // resolved member PRN this packet writes
   val pdst_member = UInt(vecSplitSz.W)   // which dest group member (0..7)
+  // group property (set by the AGEN remap): the load does NOT fill the whole dest
+  // register group (vl<capacity, or vl==0), so the unwritten TAIL lanes must keep
+  // their old value (undisturbed) -- VecLSU does the stale_pvdest group-copy.
+  val tail_undist = Bool()
 }
 
 /** One cracked store micro-op (element or packed segment).
