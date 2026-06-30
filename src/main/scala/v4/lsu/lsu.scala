@@ -1885,6 +1885,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   // store has been committed AND successfully sent data to memory
   val stq_head_is_fence = stq_uop(stq_head).is_fence
+  // Caracal: a vector-store STQ placeholder never goes through the normal
+  // execute path (its addr/data are never set; the 64b beats drain via VecLSU's
+  // vec_dmem port). So can_enq_store_execute is false for it and stq_execute_head
+  // would NEVER advance past it -- stranding every younger scalar store (e.g. the
+  // tohost write) behind a now-freed slot. Like a fence, advance stq_execute_head
+  // when the placeholder is cleared (execute_head === stq_head here, since it
+  // could not have moved past the placeholder).
+  val stq_head_is_vec = if (usingRVV) (stq_uop(stq_head).is_vec && stq_uop(stq_head).uses_stq)
+                        else false.B
   when (stq_valid(stq_head) && stq_committed(stq_head))
   {
 
@@ -1900,7 +1909,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     stq_valid(stq_head)           := false.B
 
     stq_head := WrapIncWCarry(stq_head, numStqEntries)
-    when (stq_head_is_fence)
+    when (stq_head_is_fence || stq_head_is_vec)
     {
       stq_execute_head := WrapIncWCarry(stq_execute_head, numStqEntries)
     }
