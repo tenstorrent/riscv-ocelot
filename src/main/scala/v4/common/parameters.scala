@@ -168,6 +168,12 @@ case class BoomCoreParams(
   // vMemDataBits) above the D$ rowBits(64) (rocket require(rowBits >= coreDataBits)).
   // Caracal M1 reuses the scalar 64-bit D$ port (DMEM_WIDTH = coreDataBits = 64).
   override def vMemDataBits = 0
+  // Advertise misa.V for vector configs. rocket's default hasV = vLen>=128 &&
+  // eLen>=64 && vfLen>=64 is false here because vfLen=0 (above), which would leave
+  // the vector-capable core NOT advertising misa.V. hasV feeds ONLY the misa 'V'
+  // bit (CSR.scala isaMaskString) -- no hardware is gated on it -- so overriding
+  // it is a pure architectural-advertisement fix (matches the cosim reference).
+  override def hasV = enableVector
 
   override def customCSRs(implicit p: Parameters) = new BoomCustomCSRs
 }
