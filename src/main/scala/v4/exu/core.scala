@@ -1453,6 +1453,17 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     // vstore / valu stay tied off (no consumer yet).
     vload_iss_unit.get.io.fu_types(0)(FC_AGEN)  := vec_ls_rr.get.io.fu_ready
     vstore_iss_unit.get.io.fu_types(0)(FC_AGEN) := vec_ls_rr.get.io.fu_ready
+
+    // Step 12: IQ_V_ALU is DORMANT in Milestone 1. Vector arithmetic is decoded,
+    // renamed, and queued, but there is NO vector-ALU / CII execution unit yet
+    // (Milestone 2), so valu_iss_unit.fu_types stays 0 (above) and the queue must
+    // never grant. Assert that invariant hard: it never fires in M1 (fu_types=0),
+    // but it catches any future accidental grant/fu_types wiring immediately --
+    // otherwise a spuriously-issued vector-arith uop would silently mis-execute
+    // (no EU consumes iss_uops). A vadd/vmv in M1 therefore sits in the queue and
+    // the pipeline hangs at boom_timeout -- the expected, observable M1 outcome.
+    assert(!valu_iss_unit.get.io.iss_uops(0).valid,
+      "[Caracal M1] IQ_V_ALU issued a uop but no vector-ALU/CII execution unit exists (Milestone 2)")
   }
 
   // ----------------------------------------------------------------
