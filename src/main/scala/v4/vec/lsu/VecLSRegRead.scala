@@ -36,6 +36,9 @@ import boom.v4.common._
 
 class VecLSRegRead(implicit p: Parameters) extends BoomModule with VecLsConstants
 {
+  // matches core.scala's numIrfWritePorts = aluWidth + lsuWidth + 1.
+  val numIrfWritePorts = aluWidth + lsuWidth + 1
+
   val io = IO(new Bundle {
     // V-LOAD issue grant (Valid, fire-and-forget).
     val iss = Input(Valid(new MicroOp))
@@ -45,6 +48,17 @@ class VecLSRegRead(implicit p: Parameters) extends BoomModule with VecLsConstant
     // dedicated integer-RF read port (drive arb req; data next cycle).
     val irf_req  = DecoupledIO(UInt(log2Ceil(numIntPhysRegs).W))
     val irf_resp = Input(UInt(xLen.W))
+    // int writeback ports (same signals that write iregfile). The int RF read is
+    // a registered read of a Mem with NO read-during-write bypass, and the V-LOAD
+    // is woken SPECULATIVELY -- so a base/stride GPR produced 0-1 instrs before the
+    // vle can be written the SAME cycle this stage reads it, and the Mem returns
+    // the stale (pre-write) value. Snoop the write ports and forward on a match
+    // (timing-aligned: the Mem write and this bypass both use the write bus this
+    // cycle; the Mem only reflects it next cycle).
+    val irf_wb   = Input(Vec(numIrfWritePorts, Valid(new Bundle {
+      val addr = UInt(maxPregSz.W)                 // matches iregfile write-port addr / uop.prs1
+      val data = UInt(xLen.W)
+    })))
 
     // VL register-file read (registered address).
     val vl_addr = Output(UInt(vlPregSz.W))
@@ -91,9 +105,20 @@ class VecLSRegRead(implicit p: Parameters) extends BoomModule with VecLsConstant
   val pipe_idle = (state === State.sIdle) && !io.agen_active && !io.lsu_busy
   io.fu_ready := pipe_idle && !io.kill
 
-  // latch rs1 the cycle its data is valid (one cycle after sReq1 fired).
+  // Writeback bypass: return the write-port data instead of the (stale) Mem read
+  // when a same-cycle int writeback targets the physical reg being read. `preg`
+  // is the physical reg whose read data is landing THIS cycle (prs1 in sReq2,
+  // prs2 in sRrd -- both one cycle after their addr was driven).
+  def bypassed(preg: UInt, rf_data: UInt): UInt = {
+    val hit  = io.irf_wb.map(w => w.valid && (w.bits.addr === preg))
+    val data = Mux1H(hit, io.irf_wb.map(_.bits.data))
+    Mux(hit.reduce(_ || _), data, rf_data)
+  }
+
+  // latch rs1 the cycle its data is valid (one cycle after sReq1 fired), applying
+  // the same-cycle writeback bypass so a just-produced base is not read stale.
   when (RegNext(state === State.sReq1 && io.irf_req.fire, false.B)) {
-    rs1_q := io.irf_resp
+    rs1_q := bypassed(rr_uop.prs1, io.irf_resp)
   }
 
   // defaults
@@ -104,7 +129,7 @@ class VecLSRegRead(implicit p: Parameters) extends BoomModule with VecLsConstant
   io.dec.valid     := false.B
   io.dec.uop       := rr_uop
   io.dec.rs1_data  := rs1_q
-  io.dec.rs2_data  := io.irf_resp                // rs2 data is live in sRrd
+  io.dec.rs2_data  := bypassed(rr_uop.prs2, io.irf_resp)  // rs2 data live in sRrd
   io.dec.vl        := io.vl_data
   io.dec.vstart    := 0.U                       // M1: unit-stride starts at element 0
   io.dec.mask      := io.vrf_mask_data(MASK_W - 1, 0)

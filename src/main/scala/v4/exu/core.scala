@@ -1658,6 +1658,15 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   if (usingRVV) {
     vec_ls_rr.get.io.irf_resp := iregfile.io.rrd_read_resps(rd_idx)
     rd_idx += 1
+    // Writeback bypass: the vle is woken speculatively and this stage reads the
+    // int RF (a registered Mem read with no read-during-write bypass), so a
+    // base/stride GPR written the SAME cycle would read stale. Snoop the exact
+    // write bus that feeds iregfile so the bypass is timing-aligned with the Mem.
+    for (i <- 0 until numIrfWritePorts) {
+      vec_ls_rr.get.io.irf_wb(i).valid     := iregfile.io.write_ports(i).valid
+      vec_ls_rr.get.io.irf_wb(i).bits.addr := iregfile.io.write_ports(i).bits.addr
+      vec_ls_rr.get.io.irf_wb(i).bits.data := iregfile.io.write_ports(i).bits.data
+    }
   }
   require (rd_idx == numIrfLogicalReadPorts)
   for ((unit, w) <- alu_exe_units.zipWithIndex) {
