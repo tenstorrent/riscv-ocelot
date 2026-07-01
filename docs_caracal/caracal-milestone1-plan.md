@@ -576,8 +576,20 @@ Passing on `MediumBoomV4VectorConfig` via VCS+Whisper cosim:
   9 kernels) on the vector config.
 - `MediumBoomV4Config` bit-identical throughout.
 
-Deferred/remaining M1 items: **performance counters** (14.5) and a **docs refresh**
-(14.6). Both are additive, not correctness.
+**Performance counters (14.5) — done.** A 4th `perfEvents` EventSet (index 3,
+`usingRVV`-only) exposes 6 vector HPM events via `mhpmevent`/`mhpmcounter`: vec
+insn retire, vec ld/st retire, vec load issued, vec store issued, vec LS pipe busy,
+vset retire. Vector-off configs keep the original 3 sets (bit-identical). The
+plan's TLB-split / MSHR-policy / bandwidth-ceiling monitors are Milestone 2 (M1 vec
+LS is bare-mode DC-only, reusing the scalar D$ port — no separate vec TLB/MSHR);
+non-whole-group-read observability needs VecMapTable plumbing (M2). HPM counters are
+micro-architectural, so they are NOT cosim-comparable (a software read-back would
+mismatch Whisper under lockstep); validation is by elaboration + wiring +
+bit-identical.
+
+Remaining M1 item: a **docs refresh** (14.6) of the sister architecture doc — this
+"as-built" section serves as the plan-doc refresh; `docs/boom-v4-architecture.md`
+may still want a vector-pipeline addendum.
 
 **Known verification gap:** the Whisper cosim does NOT deeply compare vector-STORE
 memory data — a garbage vector store passes the per-instruction check and is only
