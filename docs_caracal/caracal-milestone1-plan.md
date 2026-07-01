@@ -415,3 +415,178 @@ All ELF runs via VCS+Whisper (rule 11). The V-LSU modules emit trace (LCB per-PR
 | `v4/exu/execution-units/*` (int ALU) | 9 | execute `vsetvli`/`vsetvl` → VL RF (gated `usingRVV`) |
 | `v4/exu/core.scala` | 3,4,5,6,7,8,9,10,11,12,13 | top-level wiring of every new module; single-stage parallel scalar+vector rename |
 | `v4/lsu/lsu.scala` | 11 | single-entry vector LDQ/STQ, cross-LSU snoop, arbiter |
+
+---
+
+## Implementation notes & deviations (Milestone 1 as-built)
+
+This section records what actually changed during implementation of Steps 9–14 —
+bugs found and fixed, design decisions/deviations from the plan above, and known
+gaps. All RTL changes are `usingRVV`-gated; `MediumBoomV4Config` (vector-off) stays
+byte-for-byte identical to pre-Caracal v4 (verified per-commit by re-elaborating and
+diffing gen-collateral, ignoring only `@[...]` source-locators and `$error`
+assertion-message line numbers).
+
+### Step 11 (Unified LSU) — as-built scope
+
+Delivered end-to-end (execute + Whisper cosim + scalar bit-identical), all on
+`MediumBoomV4VectorConfig`:
+
+- **11a unit-stride** vle/vse, incl. **LMUL>1** (multi-member groups), **masked**
+  (mask-undisturbed), **tail-undisturbed** (partial vl), and the **whole 64b lane
+  vs per-byte** write path.
+- **11b strided** (vlse/vsse — Packer good-stride + Walker arbitrary-stride) and
+  **indexed** (vluxei/vloxei/vsuxei/vsoxei gather/scatter).
+- **11d whole-register** (vl1re*/vs1r), **mask load/store** (vlm/vsm), **fault-
+  only-first** (vle*ff).
+
+**Deviations from the plan:**
+
+1. **REUSE the scalar LDQ/STQ (plan was right; an early impl pass was wrong and was
+   reverted).** A vector load holds ONE scalar LDQ entry, a store ONE STQ entry, as
+   the ordering + commit placeholder; the cracked 64b beats are VecLSU's own queue,
+   NOT LDQ/STQ slots. `VDecode` sets `uses_ldq := is_load` / `uses_stq := is_store`.
+   Dual completion on the last beat: `ld_done`/`st_done` (writes the placeholder
+   entry succeeded ONCE, so it retires at the ROB head) AND `clr_rob` →
+   `rob.vec_clr_bsy` (a `RT_VEC` load has no iresp writeback to clear `rob_bsy`) plus
+   a `VecGroupDone` (prn) that clears the dest-group busy bits in rename/issue.
+
+2. **M1 beat EA is PHYSICAL (bare-mode), NOT virtual.** The plan anticipated the
+   Packer EA going through the TLB; M1 instead reuses the scalar 64b D$ port at
+   LOWEST priority (appended-last `lsu_sched`, DC-only, `uses_tlb=false`,
+   `uses_lcam=false`). Each 64b beat is one VRF lane. (Full virtual EA + LCAM
+   disambiguation vs younger scalar stores is post-M1.)
+
+3. **`group_done` / `clr_rob` / the LCB beat are driven from the REGISTERED beat,
+   never combinationally from `load_nop`/`store_nop`** — else
+   issue.vec_wakeup → iss_uops → decode → AGEN → nop → group_done forms a comb loop.
+   A fake/bypass beat is finalized one cycle later in a dedicated `sFin` state.
+
+4. **Tail-/mask-undisturbed needs a stale-group COPY.** With renaming, a masked or
+   partial-vl load writes a *fresh* physical dest, so the undisturbed lanes would be
+   garbage. VecLSU copies each `stale_pvdest_grp` member → `pdst_grp` member (full
+   256b) BEFORE placing beats, gated on `!v_unmasked || tail_undist`
+   (`tail_undist = loaded_bytes < group_capacity`, computed in the AGEN remap). A
+   full unmasked load skips the copy (and never reads the uninitialized stale reg).
+
+5. **Per-BYTE VRF write mask.** The VecRegFile write port masks per byte
+   (`vecVLen/8` bits), not per 64b lane — required so a sub-lane write (vlm's
+   `ceil(vl/8)` bytes, a partial tail) leaves the rest of the lane undisturbed.
+
+6. **Masked STORE routes to the Skipper, not the Packer.** The store Packer has no
+   mask support (`is_fake` hardcoded false); the store Skipper does. `packable` was
+   made to exclude masked stores (`isStore && is_mask`). Loads are unchanged (the
+   load Packer is mask-aware).
+
+7. **Masked/indexed operands are read late, in `VecLSRegRead`.** The mask (v0) and
+   the index vector (vs2 → `pvs2`) are read from dedicated VecRegFile read ports in
+   the operand-read stage and streamed to the AGEN; a new `VecIdxGen` module
+   serializes the index vector into per-element signed offsets for the Walker.
+
+8. **`vleff` is a plain load in M1.** M1 bare-mode addressing cannot fault, so vleff
+   can never trim vl → it behaves as a normal vle that leaves vl unchanged, which is
+   architecturally correct for M1 and matches Whisper. It is deliberately NOT marked
+   a VL producer (the `is_vleff` producer hooks in VlRename/ROB stay dormant); the
+   fault-trim path is Milestone 2 (needs faults = the TLB/virtual addressing).
+
+9. **Segment LS (11c) is Milestone-2-blocked.** Caracal segment LS is a two-half op
+   (LSU writes an intermediate `pvtmp` group; the CII coprocessor transposes
+   `pvtmp`→`pvdest`). `is_shared` stays false and the ROB waits for a second
+   group-done from the not-yet-existent CII, so full segment LS cannot complete in
+   M1. Only the memory-movement half is buildable groundwork.
+
+10. **Misaligned unit-stride deferred** (rare; needs cross-beat byte assembly the M1
+    "one beat = one clean lane" LCB does not do).
+
+### Bugs found and fixed during bring-up (not anticipated by the plan)
+
+- **VecFreeList double-free / off-by-one (Step 4/5 latent, exposed by the first
+  committing vector dest op):** the vector rename (`VecRenameStage`/`VlRename`) was
+  single-stage (combinational off `dec_uops`), a cycle AHEAD of the scalar
+  `RenameStage`'s registered ren1→ren2 pipeline (which allocates at `dis_fire`). At
+  dispatch the vec fields reflected the NEXT cycle's (bubble) uop → both ops freed
+  PRN 0. **Fix:** feed the vec renames `rename_stage.io.ren2_uops/ren2_mask` +
+  `dis_fire` so they alloc/read in lockstep with dispatch. Also `rob_unsafe` was
+  never cleared for vec ops (tripped the PNR assert) → `vec_clr_bsy` now clears it;
+  and VL producer-pvl / intra-bundle pvl-busy fixes.
+
+- **Cosim couldn't see vector results (Step 11a.2):** `harness.commit.uops[w].
+  debug_vec_wdata/wmask` were hardwired 0. Added combinational VecRegFile debug read
+  ports; the commit trace reads back `vec_regfile[vec_remap.pdst]` so the loaded
+  result is visible to the arch checker. (Debug-only; not synthesized.)
+
+- **vse teardown hang:** the vector-store STQ placeholder never executes via the
+  normal path (addr/data never set), so `can_enq_store_execute` was false for it and
+  `stq_execute_head` never advanced past it — stranding every younger scalar store
+  (incl. the HTIF tohost write) → sim ran to timeout even though the test passed.
+  **Fix:** like a fence, advance `stq_execute_head` when a committed+succeeded
+  vector-store placeholder is cleared.
+
+- **vec-LS stale scalar base/stride (prs1 RAW race):** the vector LS is woken
+  speculatively, so `VecLSRegRead`'s int-RF read fired the SAME cycle the base GPR's
+  writeback committed; the int RF is a registered `Mem` read with no read-during-
+  write bypass → stale base → wrong/zero address. Masked in every test by ≥2 instr
+  of `la→use` slack. **Fix:** `VecLSRegRead` snoops the int writeback bus and
+  forwards on a same-cycle match.
+
+- **`vsetvli` AVL > VLMAX wrapped (found by the Step-14 SEW/LMUL matrix):** the vl
+  compute truncated AVL to `vecVLSz+1` bits, so a large AVL wrapped instead of
+  saturating to VLMAX (e.g. AVL=2048 → vl=0). Breaks the canonical strip-mining
+  pattern (AVL = remaining count). **Fix:** compare the FULL-width AVL vs VLMAX.
+
+- **vec-store issue grant dropped on simultaneous load grant (Step 14):**
+  `VecLSRegRead` is a serial, fire-and-forget consumer shared by the V-LOAD and
+  V-STORE issue units with a LOAD-priority mux; when both granted the same cycle the
+  store's grant was silently lost → hang. **Fix:** the store does not advertise
+  `FC_AGEN` in a cycle the load is granting.
+
+- **back-to-back vector-store data corruption (found by the strip-mine memcpy):**
+  `VecDgen.num_members` was hardcoded 8, so after a 1-member store it streamed
+  phantom members and stalled `active`; and the vec-LS serialization did not include
+  `vec_dgen.active`, so the next store issued while VecDgen was still busy and reused
+  the previous store's stale `pvs3` → garbage. **Fix:** VecDgen completes by TOTAL
+  bytes (`vl<<eew`, handles partial members) and `agen_active` ORs `vec_dgen.active`.
+
+### CSR / misa
+
+`misa.V` is now advertised for vector configs (`override def hasV = enableVector`
+in `BoomCoreParams`; `hasV` feeds only the misa string). The Whisper cosim reference
+(`boom.json`) misa reset was corrected to match (drop the spurious `X` bit, keep
+`V`), so tests that probe `csrr misa` no longer mismatch. `misa` itself is built
+normally (not hardcoded); the missing `V` was a consequence of `vfLen=0` making the
+default `hasV = vLen>=128 && eLen>=64 && vfLen>=64` false.
+
+### Step 12 — IQ_V_ALU tie-off
+
+`IQ_V_ALU` `fu_types` stay 0 (never grants). Added the hard invariant
+`assert(!valu_iss_unit.iss_uops(0).valid)` to catch any future accidental grant
+wiring. A vector-arith op (vadd/vmv) in M1 is decoded/renamed/queued but never
+executes → the pipeline hangs at `boom_timeout` (the observable, expected M1
+outcome; there is no clean fail-fast without false-firing on a squashed speculative
+op). Milestone 2 attaches the CII and gates this behind an `enableVectorArith` flag.
+
+### Verification (Step 14) — status
+
+Passing on `MediumBoomV4VectorConfig` via VCS+Whisper cosim:
+- Full **SEW {8,16,32,64} × LMUL {1,2,4,8}** unit-stride vle/vse matrix (16 tests).
+- **Strip-mined memcpy** (AVL > VLMAX loop, vl = 4,4,2).
+- unit-stride / strided / indexed / whole-register / mask-load / vleff, ± mask,
+  tail-undisturbed (the `ms11*` + `ms14*` suites in `tests_regr/vset_loadstore_tests.txt`).
+- **vset smoke** (16 configs) and **scalar perf** regression (`run_regr_rvv_scalar.sh`,
+  9 kernels) on the vector config.
+- `MediumBoomV4Config` bit-identical throughout.
+
+Deferred/remaining M1 items: **performance counters** (14.5) and a **docs refresh**
+(14.6). Both are additive, not correctness.
+
+**Known verification gap:** the Whisper cosim does NOT deeply compare vector-STORE
+memory data — a garbage vector store passes the per-instruction check and is only
+caught by a subsequent scalar load-back (this is how the back-to-back store-data bug
+above was found). A memory-compare cosim hook is a recommended follow-on.
+
+### Old bring-up tests that legitimately fail in M1
+
+`tests_regr/vset_loadstore_tests.txt` also lists older `ms2/ms4/ms5` bring-up tests
+and `stress_seg`. These use vector ARITHMETIC (`vmv`, etc.) or segment LS, so they
+hang/fail in M1 by design (IQ_V_ALU tied off; segment transpose is M2). Only the
+`ms11*`/`ms14*` section is the validated Caracal M1 LSU suite.
