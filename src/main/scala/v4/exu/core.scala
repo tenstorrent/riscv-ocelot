@@ -330,6 +330,29 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   //-------------------------------------------------------------
   // Uarch Hardware Performance Events (HPEs)
 
+  // Caracal Step 14.5: vector performance-monitor events. Added ONLY for usingRVV
+  // (a 4th EventSet), so a vector-off config keeps the original 3 sets and is
+  // byte-identical. Event hits are lazy closures evaluated at csr.io.counters below,
+  // referencing the vec modules / rob commit (all defined above). Software selects
+  // them via mhpmevent (set index 3) and reads mhpmcounter. Coarse (<=1 hit/cycle
+  // via orR), sufficient for M1 observability. The plan's TLB-split / MSHR-policy /
+  // bandwidth monitors are Milestone 2 (M1 vec LS is bare-mode, DC-only, reusing
+  // the scalar 64b D$ port -- no separate vec TLB/MSHR to count); non-whole-group
+  // reads need VecMapTable observability plumbing (M2).
+  val vecPerfSets: Seq[freechips.rocketchip.rocket.EventSet] = if (usingRVV) Seq(
+    new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
+      ("vec insn retire",  () => (0 until retireWidth).map(w =>
+        rob.io.commit.arch_valids(w) && rob.io.commit.uops(w).is_vec).reduce(_ || _)),
+      ("vec ld/st retire", () => (0 until retireWidth).map(w =>
+        rob.io.commit.arch_valids(w) && rob.io.commit.uops(w).is_vec &&
+        (rob.io.commit.uops(w).uses_ldq || rob.io.commit.uops(w).uses_stq)).reduce(_ || _)),
+      ("vec load issued",  () => vload_iss_unit.get.io.iss_uops(0).valid),
+      ("vec store issued", () => vstore_iss_unit.get.io.iss_uops(0).valid),
+      ("vec LS pipe busy", () => vec_lsu.get.io.busy),
+      ("vset retire",      () => (0 until retireWidth).map(w =>
+        rob.io.commit.csr_vset_valid.get(w)).reduce(_ || _)))))
+    else Seq()
+
   val perfEvents = new freechips.rocketchip.rocket.EventSets(Seq(
     new freechips.rocketchip.rocket.EventSet((mask, hits) => (mask & hits).orR, Seq(
       ("exception", () => rob.io.com_xcpt.valid),
@@ -353,7 +376,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
       ("D$ release",  () => io.lsu.perf.release),
       ("ITLB miss",   () => io.ifu.perf.tlbMiss),
       ("DTLB miss",   () => io.lsu.perf.tlbMiss),
-      ("L2 TLB miss", () => io.ptw.perf.l2miss)))))
+      ("L2 TLB miss", () => io.ptw.perf.l2miss))))
+    ++ vecPerfSets)
   val csr = Module(new freechips.rocketchip.rocket.CSRFile(perfEvents, boomParams.customCSRs.decls, roccCSRs.flatten))
   csr.io.inst foreach { c => c := DontCare }
   csr.io.rocc_interrupt := io.rocc.interrupt
