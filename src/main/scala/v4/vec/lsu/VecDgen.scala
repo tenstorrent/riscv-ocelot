@@ -75,15 +75,20 @@ class VecDgen(implicit p: Parameters) extends BoomModule with VecLsConstants
   val buf        = Reg(UInt(VLEN.W))                 // current 256b group member
   val byte_cur   = RegInit(0.U(log2Ceil(VLEN_BYTES + 1).W)) // byte offset within `buf`
   val member_cur = RegInit(0.U(vecSplitSz.W))        // which pvs3_grp member (0..7)
+  val bytes_done = RegInit(0.U(vecVLSz.W + 3))       // total store bytes streamed so far
 
   dontTouch(state)
   dontTouch(byte_cur)
   dontTouch(member_cur)
+  dontTouch(bytes_done)
 
-  // Number of valid members in the group (group is up to 8 members). Derived
-  // from the latched uop's pvs3 group; default to 1 so we never stream forever.
-  // Step-11: refine against pvs3_grp_mask / v_emul member mask.
-  val num_members = 8.U
+  // Total bytes this store must stream = vl * EEW-bytes. Completion is by TOTAL
+  // bytes, NOT by a fixed member count: a store may span a partial last 256b
+  // member (vl not a whole-member multiple), and must finish exactly when its
+  // data is exhausted -- otherwise VecDgen stalls active and the NEXT store
+  // reuses this store's stale start_q/pvs3 (garbage store data in back-to-back
+  // stores, e.g. a strip-mined memcpy). Members advance on 256b boundaries.
+  val total_bytes = (start_q.vl << start_q.eew_enc)
 
   // ---------------------------------------------------------------------------
   // Defaults (every output driven on every path).
@@ -114,6 +119,7 @@ class VecDgen(implicit p: Parameters) extends BoomModule with VecLsConstants
         start_q    := io.start.bits
         byte_cur   := 0.U
         member_cur := 0.U
+        bytes_done := 0.U
         state      := State.sFetch
       }
     }
@@ -145,15 +151,15 @@ class VecDgen(implicit p: Parameters) extends BoomModule with VecLsConstants
                           Mux(io.vdb_data.read_bytes > avail_bytes, avail_bytes, io.vdb_data.read_bytes))
       when (io.vdb_data.read_all || io.vdb_data.read_bytes =/= 0.U) {
         val next_byte = byte_cur + req_bytes
-        when (next_byte >= VLEN_BYTES.U) {
+        val next_done = bytes_done + req_bytes
+        bytes_done := next_done
+        when (next_done >= total_bytes) {
+          state := State.sIdle              // whole store's data streamed out
+        } .elsewhen (next_byte >= VLEN_BYTES.U) {
           // Current 256b member exhausted -- advance to the next group member.
-          val next_member = member_cur + 1.U
-          when (next_member >= num_members) {
-            state := State.sIdle              // whole group streamed out
-          } .otherwise {
-            member_cur := next_member
-            state      := State.sFetch
-          }
+          member_cur := member_cur + 1.U
+          byte_cur   := 0.U
+          state      := State.sFetch
         } .otherwise {
           byte_cur := next_byte
         }
@@ -168,5 +174,6 @@ class VecDgen(implicit p: Parameters) extends BoomModule with VecLsConstants
     state      := State.sIdle
     byte_cur   := 0.U
     member_cur := 0.U
+    bytes_done := 0.U
   }
 }

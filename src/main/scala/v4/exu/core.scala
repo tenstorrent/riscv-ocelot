@@ -1533,7 +1533,14 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vec_ls_rr.get.io.iss.valid       := vld_iss.valid || vst_iss.valid
     vec_ls_rr.get.io.iss.bits        := Mux(vld_iss.valid, vld_iss.bits, vst_iss.bits)
     vec_ls_rr.get.io.vl_data         := vl_regfile.get.io.read_ports(0).data
-    vec_ls_rr.get.io.agen_active     := vec_agen_load.io.gen_active || vec_agen_store.io.gen_active
+    // Serialize the vector-LS pipe: the next op must not issue until BOTH AGENs
+    // AND VecDgen (store-data generator) are idle. Including vec_dgen.active is
+    // required -- otherwise a back-to-back store issues while VecDgen is still
+    // streaming the previous store, VecDgen's start doesn't fire (not sIdle), and
+    // it reuses the previous store's stale pvs3 -> garbage store data.
+    vec_ls_rr.get.io.agen_active     := vec_agen_load.io.gen_active ||
+                                        vec_agen_store.io.gen_active ||
+                                        vec_dgen.io.active
     vec_ls_rr.get.io.lsu_busy        := vec_lsu.get.io.busy
     vec_ls_rr.get.io.agen_start_fire := vec_agen_load.io.start.fire || vec_agen_store.io.start.fire
     vec_ls_rr.get.io.kill            := vec_agen_kill
