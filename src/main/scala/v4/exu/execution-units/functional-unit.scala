@@ -306,14 +306,18 @@ class ALUUnit(dataWidth: Int)(implicit p: Parameters)
     val eff_vtype = Mux(uop.is_vsetvl, vsetvl_vtype, uop.vconfig)
     val vlmax     = eff_vtype.vlmax
 
-    // AVL for vsetvli/vsetvl comes from rs1 (lower vecVLSz+1 bits suffice).
+    // AVL for vsetvli/vsetvl comes from rs1. Use the FULL register width for the
+    // VLMAX comparison: truncating to vecVLSz+1 bits made a large AVL WRAP (e.g.
+    // AVL=2048 -> low bits 0 -> min(0,VLMAX)=vl=0) instead of saturating to VLMAX.
+    // A strip-mining loop routinely passes AVL >> VLMAX expecting vl=VLMAX. The
+    // selected value min(AVL,VLMAX) <= VLMAX so it fits in vecVLSz bits.
     // vsetivli's VL was already computed at decode (uop.vl_value = min(uimm,vlmax)).
-    val avl = io.req.bits.rs1_data(vecVLSz, 0)
+    val avl = io.req.bits.rs1_data
 
     // VL for vsetvli/vsetvl:
     val vl_vsetvl = Mux(rs1_is_x0 && !rd_is_x0, vlmax,                  // rs1=x0, rd!=x0 -> VLMAX
                     Mux(rs1_is_x0 &&  rd_is_x0, vlmax,                  // rs1=x0, rd=x0 -> keep current VL
-                                                Mux(avl < vlmax, avl, vlmax)))  // normal: min(AVL,VLMAX)
+                                                Mux(avl < vlmax, avl(vecVLSz - 1, 0), vlmax)))  // min(AVL,VLMAX)
     // TODO(rs1=x0 && rd=x0): spec says "keep current VL" (vtype only update). We do
     // not yet read the old architectural VL here, so this falls back to VLMAX as a
     // safe placeholder. Not exercised by the current smoke test. Wiring the old VL
