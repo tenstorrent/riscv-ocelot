@@ -82,11 +82,11 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
     val store_nop = Flipped(DecoupledIO(new VecStoreNop))
     // dedicated vector dcache port (flipped LSU view)
     val dmem     = Flipped(new VecDmemIO)
-    // VecRegFile write port (one lane per beat)
+    // VecRegFile write port (per-byte write enable)
     val vrf_write = Valid(new Bundle {
       val addr = UInt(vecPregSz.W)
       val data = UInt(vecVLen.W)
-      val mask = UInt((vecVLen / 64).W)
+      val mask = UInt((vecVLen / 8).W)             // per-BYTE write enable
     })
     // VecRegFile read port for the undisturbed copy: a masked load first copies
     // the OLD group (stale_pvdest_grp) into the new pdst group, so masked-off
@@ -342,7 +342,7 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
     io.vrf_write.valid     := !io.kill
     io.vrf_write.bits.addr := cur.uop.pvdest_grp(copy_member)
     io.vrf_write.bits.data := io.vrf_read.resp_data
-    io.vrf_write.bits.mask := ~0.U(nLanes.W)            // all lanes (full member copy)
+    io.vrf_write.bits.mask := ~0.U((vecVLen / 8).W)    // all bytes (full member copy)
   } .otherwise {
     io.vrf_write := lcb.io.vrf_write
   }

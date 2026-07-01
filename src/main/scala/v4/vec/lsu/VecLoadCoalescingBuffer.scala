@@ -59,11 +59,11 @@ class VecLoadCoalescingBuffer(implicit p: Parameters) extends BoomModule with Ve
       val last     = Bool()                                     // last beat of the group
     }))
     val kill = Input(Bool())
-    // VecRegFile write port (lane-masked)
+    // VecRegFile write port (per-byte write enable)
     val vrf_write = Valid(new Bundle {
       val addr = UInt(vecPregSz.W)
       val data = UInt(vecVLen.W)
-      val mask = UInt(nLanes.W)
+      val mask = UInt((vecVLen / 8).W)
     })
     // group-done pulse on the last beat
     val group_done = Valid(new VecGroupDone)
@@ -84,14 +84,15 @@ class VecLoadCoalescingBuffer(implicit p: Parameters) extends BoomModule with Ve
   // valid bytes shifted to the LSB, then up to their destination byte offset.
   val src_aligned = b.data >> (b.src_off << 3)
   val placed      = (src_aligned << (b.dst_byte << 3))(vecVLen - 1, 0)
-  // byte-granular write mask, collapsed to one bit per 64b lane.
+  // per-byte write mask: nbytes valid bytes starting at dst_byte. Passed straight
+  // to the VecRegFile (per-byte write), so a sub-lane beat (mask load, partial
+  // tail) writes exactly its bytes and leaves the rest of the lane undisturbed.
   val byte_mask   = (((1.U << b.nbytes) - 1.U) << b.dst_byte)(vecVLen / 8 - 1, 0)
-  val lane_mask   = VecInit((0 until nLanes).map(l => byte_mask(8 * l + 7, 8 * l) =/= 0.U)).asUInt
 
   io.vrf_write.valid     := real && !io.kill
   io.vrf_write.bits.addr := b.pdst
   io.vrf_write.bits.data := placed
-  io.vrf_write.bits.mask := lane_mask
+  io.vrf_write.bits.mask := byte_mask
 
   // ---- group-done on the last beat ----
   io.group_done.valid     := io.beat.valid && b.last && !io.kill
