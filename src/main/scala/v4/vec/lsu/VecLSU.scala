@@ -137,7 +137,7 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
   io.dmem.ld_done.bits   := cur.uop.ldq_idx
   io.dmem.st_done.valid  := false.B
   io.dmem.st_done.bits   := curs.uop.stq_idx
-  io.vrf_read.req_addr   := cur.uop.stale_pvdest_grp(copy_member)
+  io.vrf_read.req_addr   := cur.uop.stale_pvdest_grp(copy_member(2, 0))  // member 0..7
 
   // ---- LCB start: latch dest group descriptor on the first beat of a group ----
   val start_grp = io.load_nop.fire && !grp_active
@@ -340,7 +340,7 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
   // the new pdst member (all lanes); otherwise the LCB's per-beat lane write. ----
   when (state === State.sCopyWr) {
     io.vrf_write.valid     := !io.kill
-    io.vrf_write.bits.addr := cur.uop.pvdest_grp(copy_member)
+    io.vrf_write.bits.addr := cur.uop.pvdest_grp(copy_member(2, 0))  // member 0..7
     io.vrf_write.bits.data := io.vrf_read.resp_data
     io.vrf_write.bits.mask := ~0.U((vecVLen / 8).W)    // all bytes (full member copy)
   } .otherwise {
