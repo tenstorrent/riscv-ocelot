@@ -1451,8 +1451,18 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     // port 0 only when the whole vector-LS pipe is idle (VecLSRegRead.fu_ready is
     // registered -> no comb loop with the grant). vle uops carry fu_code(FC_AGEN).
     // vstore / valu stay tied off (no consumer yet).
+    // VecLSRegRead is a SERIAL, fire-and-forget consumer shared by the V-LOAD and
+    // V-STORE issue units, and it picks LOAD-priority (iss.bits Mux). If both units
+    // grant the SAME cycle, the store's grant is silently dropped -> the store's
+    // issue slot marks it issued but it never reaches the AGEN -> its ROB entry
+    // never completes -> pipeline hang. (Timing-dependent: a large-AVL vsetvli
+    // shifts the vl-producer wakeup so the load+store granted the same cycle.)
+    // Fix: the store does NOT advertise FC_AGEN in a cycle the load is granting, so
+    // the two never grant simultaneously. No comb loop: the load's grant depends on
+    // its own fu_types (= fu_ready) and slot, not on the store.
     vload_iss_unit.get.io.fu_types(0)(FC_AGEN)  := vec_ls_rr.get.io.fu_ready
-    vstore_iss_unit.get.io.fu_types(0)(FC_AGEN) := vec_ls_rr.get.io.fu_ready
+    vstore_iss_unit.get.io.fu_types(0)(FC_AGEN) := vec_ls_rr.get.io.fu_ready &&
+                                                   !vload_iss_unit.get.io.iss_uops(0).valid
 
     // Step 12: IQ_V_ALU is DORMANT in Milestone 1. Vector arithmetic is decoded,
     // renamed, and queued, but there is NO vector-ALU / CII execution unit yet
