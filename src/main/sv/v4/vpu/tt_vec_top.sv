@@ -1,8 +1,35 @@
-// See LICENSE.TT for license details.
+/*************************************************************************
+ *
+ * Tenstorrent CONFIDENTIAL
+ * __________________
+ *
+ *  Tenstorrent Inc.
+ *  All Rights Reserved.
+ *
+ * NOTICE:  All information contained herein is, and remains
+ * the property of Tenstorrent Inc.  The intellectual
+ * and technical concepts contained
+ * herein are proprietary to Tenstorrent Inc.
+ * and may be covered by U.S., Canadian and Foreign Patents,
+ * patents in process, and are protected by trade secret or copyright law.
+ * Dissemination of this information or reproduction of this material
+ * is strictly forbidden unless prior written permission is obtained
+ * from Tenstorrent Inc.
+ */
+/*
+  File Name: tt_vec_top.sv
+  Author: ading
+  Date Created: 7/2026
+  Description: 
+    Top Level module for the VPU. Connected to host via the tt_CII, and execute only arithmetic/
+    datapath vector insturctions. 
+ */
+
+
 `include "autogen_defines.h"
 `include "briscv_defines.h"
 `include "tt_briscv_pkg.svh"
-module tt_vec #(
+module tt_vec_top #(
   parameter
     VLEN=256,
     XLEN=64
@@ -931,34 +958,7 @@ module tt_vec #(
    wire       fp16_on_fp32_phase = i_id_vec_autogen.wdeop         &&
                                    i_id_vec_autogen.replay_cnt[0];
 
-        //VFP32/VFP16 lanes
-       // tt_vfp_array vfp_array
-       //(
-       //.i_clk                 (i_clk), 
-       //.i_reset_n             (i_reset_n),
-       //.i_id_vfp_ex0_rts      (i_id_vex_rts & i_id_vec_autogen.vfp_rf_rd_op_valid  & ~i_id_vec_autogen.out_from_vec_int), // set for valid vfp instructions that are executed in fp side.
-       //.i_id_vfp_autogen      (i_id_vec_autogen),
-       //.i_rddata              ({src3_0a[VLEN-1:0],src2_0a[VLEN-1:0],src1_mux_0a[VLEN-1:0]}),
-       //.i_vm0                 (vm0_muxed_0a & vl_muxed_0a),
-       //.i_reduct_wdeop        (reduct_wdeop_0a),
-       //.i_lmul_cnt            (lmul_cnt_1a),
-       //.i_prod                (mulsum_1a),
-       //.i_sew                 (i_csr.v_vsew[1:0]),
-       //.i_rs1                 (reg_p0[4:0]), //,,
-       //.i_rs2                 (reg_p1[4:0]),
-       //.i_rs3                 (reg_p2[4:0]),
-       //          
-       //.i_fp16_on_fp32_phase  (fp16_on_fp32_phase),
-       //
-       //.o_result                 (fwrdata_1a),
-       //.o_result_valid           (fwren_1a),
-       //.o_result_hole_valid      (vfp_hole_vld_1a),
-       //.o_result_ooo_data_valid  (fwren_2a),
-       //.o_result_ooo_data        (fwrdata_2a),
 
-       //.o_vfp_exc_update         (o_vfp_exc_update)
-       //          
-       // );
   tt_vfp_unit #(
     .NUM_LANE(VLEN/64)
   ) vfp (
@@ -1041,19 +1041,7 @@ module tt_vec #(
        .o_busy          (o_vex_div_busy)
    );
 
-   
-   //Note these inputs are 0a and outputs are 2a...
-   /*tt_vec_idp AUTO_TEMPLATE (
-    //.i_\(.*\)_\(.*?\)a      (\1_@"(+ 0 @)"a[]),
-    //.o_slide\(.*\)           (),
-    .i_iterate_cnt_\(.*?\)   (tot_iterate_cnt_\1[]),
-    .i_\(.*\)                 (\1[]),
-    .o_\(.*\)                 (\1[]),
-    .i_clk                    (i_clk),
-    .i_v_vm_0a		      (i_v_vm),
-     
-    .i_id_replay_0a           (i_id_replay),
-    )*/
+
 
   tt_vec_idp #(
     .VLEN(VLEN),
@@ -1150,9 +1138,6 @@ module tt_vec #(
     /*AUTOINST*/
   );
 
-endmodule // tt_vec
-// Local Variables:
-// verilog-library-directories:(".")
-// verilog-library-extensions:(".sv" ".h" ".v")
-// End:
+endmodule // tt_vec_top
+
 
