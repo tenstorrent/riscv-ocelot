@@ -77,7 +77,7 @@ class VecIdxGen(implicit p: Parameters) extends BoomModule with VecLsConstants
   // ---- defaults ----
   io.start.ready        := state === State.sIdle
   io.vrf_read.req_valid := false.B
-  io.vrf_read.req_addr  := start_q.uop.pvs2_grp(member)
+  io.vrf_read.req_addr  := start_q.uop.pvs2_grp(member(2, 0))  // member 0..7
   io.active             := state =/= State.sIdle
   io.idx.valid          := false.B
   // signed index: low MASK_W bits of the selected lane (e64 -> exactly the index).

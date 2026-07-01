@@ -90,7 +90,7 @@ class VecDgen(implicit p: Parameters) extends BoomModule with VecLsConstants
   // ---------------------------------------------------------------------------
   io.start.ready          := state === State.sIdle
   io.vrf_read.req_valid   := false.B
-  io.vrf_read.req_addr    := start_q.uop.pvs3_grp(member_cur)
+  io.vrf_read.req_addr    := start_q.uop.pvs3_grp(member_cur(2, 0))  // member 0..7
   io.active               := state =/= State.sIdle
   io.vdb_data.valid_bytes := 0.U
   io.vdb_data.data        := 0.U
