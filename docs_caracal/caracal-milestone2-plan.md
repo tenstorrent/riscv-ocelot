@@ -680,14 +680,18 @@ real ``tt_cii`` credit relay, issues ``vadd.vv v3,v2,v1`` (SEW=32, LMUL=1, vl=8,
 serves the coprocessor's four source-operand requests, and checks the writeback. The full
 loop runs end-to-end — issue → prefetch operands into staging → ``tt_id`` decode →
 ``tt_vec`` compute → writeback — and returns the correct per-lane sums with the correct CII
-``tag``. The **member walk is verified across a 10-config matrix** (``+OP_SEL`` ×
+``tag``. The **member walk is verified across a 17-config matrix** (``+OP_SEL`` ×
 ``+LMUL_LOG2``): ``vadd.vv`` normal (LMUL 1/2/4/8), ``vwaddu.vv`` widening (LMUL 1/2/4 → dst
-2/4/8 members), and ``vnsrl.wv`` narrowing (LMUL 1/2/4, 2·NM-member wide source → NM dst
-members) — all return the correct per-member results with the right ``wb_dst_offset`` and
-``last`` on the final member (LMUL=8 exercises 25 requests through the 16-deep credit FIFO via
-the interleaved drain). C5 is intentionally a no-op on the coprocessor (host drops killed-tag
-writebacks). Remaining: C6 (host↔coproc integration + Whisper cosim), scalar src/dst paths,
-and broader instruction coverage (FP, reductions, masked, fixed-point, ``.vx``/``.vi``).
+2/4/8 members), ``vnsrl.wv`` narrowing (LMUL 1/2/4, 2·NM-member wide source → NM dst members),
+``vadd.vv`` **masked** (LMUL 1/2/4: v0 fetched, inactive lanes keep old dest under vma=0), and
+``vadd.vx`` **scalar** (LMUL 1/2/4/8) — all return the correct per-member results with the
+right ``wb_dst_offset`` and ``last`` on the final member (LMUL=8 exercises 25 requests through
+the 16-deep credit FIFO via the interleaved drain). Scalar operands: ``.vx``/``.vf`` pull rs1
+via a ``SRC_SCALAR`` request onto ``i_if_scalar_opnd``; ``.vi`` immediates need no fetch
+(``tt_vec`` derives them). v0 fetch is gated by ``usemask || ~vm`` (masked ops or
+mask-as-operand ops like vadc/vmerge). C5 is intentionally a no-op on the coprocessor (host
+drops killed-tag writebacks). Remaining: C6 (host↔coproc integration + Whisper cosim),
+scalar-DEST paths (vmv.x.s etc.), and broader coverage (FP, reductions, fixed-point/``vxrm``).
 
 ---
 

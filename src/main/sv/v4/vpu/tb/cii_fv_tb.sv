@@ -55,11 +55,15 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
   // ---- operand data + instruction (per member, keyed by src_id+offset) ----
   logic [VLEN-1:0] vs1_mem [0:15];
   logic [VLEN-1:0] vs2_mem [0:15];
+  logic [VLEN-1:0] vs3_mem [0:15];   // old destination group (RMW / masked-undisturbed)
+  logic [VLEN-1:0] vm_mem  [0:15];   // v0 mask register
   logic [VLEN-1:0] exp_mem [0:15];
+  logic [63:0]     scalar_val;       // .vx/.vf scalar operand (SRC_SCALAR)
   logic [4:0] r_vd, r_vs1, r_vs2;
   logic [2:0] r_vlmul, r_funct3;
   logic [5:0] r_funct6;
   logic [2:0] r_vsew;
+  logic       r_vm;                  // 1 = unmasked, 0 = masked by v0
   logic [8:0] r_vl;
 
   // pack element `val` (width w bits, w in {16,32}) at global element index
@@ -76,7 +80,10 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
     void'($value$plusargs("OP_SEL=%d",    OP_SEL));
     void'($value$plusargs("LMUL_LOG2=%d", LMUL_LOG2));
     NM = 1 << LMUL_LOG2;
-    for (int k=0;k<16;k++) begin vs1_mem[k]='0; vs2_mem[k]='0; exp_mem[k]='0; end
+    for (int k=0;k<16;k++) begin
+      vs1_mem[k]='0; vs2_mem[k]='0; vs3_mem[k]='0; vm_mem[k]='0; exp_mem[k]='0;
+    end
+    scalar_val = '0; r_vm = 1'b1;
     case (OP_SEL)
       // ---- vadd.vv (normal, SEW=32) : dst NM = src NM -------------------
       1: begin  // vwaddu.vv widening: src SEW=16, dst SEW=32, dst NM = 2*NM
@@ -100,6 +107,29 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
           pack(exp_mem, g, 16, g+1);              // narrow dst = vs2>>4
         end
       end
+      3: begin  // vadd.vv MASKED (vm=0), SEW=32: inactive lanes keep old dest (vma=0)
+        r_vsew=3'd2; r_funct6=6'b000000; r_funct3=3'b000; r_vm=1'b0; // OPIVV, masked
+        r_vd=5'(NM); r_vs1=5'(2*NM); r_vs2=5'(3*NM); r_vlmul=LMUL_LOG2[2:0];
+        r_vl=9'(NM*(VLEN/32)); DST_NM = NM;
+        for (int g=0; g<NM*(VLEN/32); g++) begin
+          automatic bit active = (g % 2 == 0);      // even elements active
+          pack(vs1_mem, g, 32, g+1);
+          pack(vs2_mem, g, 32, (g+1)*10);
+          pack(vs3_mem, g, 32, 32'hD00 + g);        // old dest value
+          vm_mem[0][g] = active;                     // v0: single reg, bit g = element g
+          pack(exp_mem, g, 32, active ? (g+1)*11 : (32'hD00 + g));
+        end
+      end
+      4: begin  // vadd.vx (scalar rs1), SEW=32: dst = vs2 + x
+        r_vsew=3'd2; r_funct6=6'b000000; r_funct3=3'b100; // OPIVX
+        r_vd=5'(NM); r_vs1=5'd5 /*rs1 idx (value delivered via SRC_SCALAR)*/;
+        r_vs2=5'(3*NM); r_vlmul=LMUL_LOG2[2:0];
+        r_vl=9'(NM*(VLEN/32)); DST_NM = NM; scalar_val = 64'd100;
+        for (int g=0; g<NM*(VLEN/32); g++) begin
+          pack(vs2_mem, g, 32, (g+1)*10);
+          pack(exp_mem, g, 32, (g+1)*10 + 100);
+        end
+      end
       default: begin // vadd.vv normal SEW=32
         r_vsew=3'd2; r_funct6=6'b000000; r_funct3=3'b000; // OPIVV
         r_vd=5'(NM); r_vs1=5'(2*NM); r_vs2=5'(3*NM); r_vlmul=LMUL_LOG2[2:0];
@@ -113,8 +143,8 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
     endcase
   end
 
-  // instruction word: {funct6, vm=1, vs2, vs1, funct3, vd, opcode=OP-V}
-  wire [31:0] insn_w = {r_funct6, 1'b1, r_vs2, r_vs1, r_funct3, r_vd, 7'b1010111};
+  // instruction word: {funct6, vm, vs2, vs1, funct3, vd, opcode=OP-V}
+  wire [31:0] insn_w = {r_funct6, r_vm, r_vs2, r_vs1, r_funct3, r_vd, 7'b1010111};
 
   cii_caracal_instr_t iss_instr;
   always_comb begin
@@ -160,9 +190,12 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
       ifh.dat_valid <= 1'b0;
       if (ifh.req_valid) begin
         case (ifh.req_data[0].rsp_src_id)
-          CII_SRC_VS1: ifh.dat_data[0].rsp_dat <= vs1_mem[ifh.req_data[0].rsp_src_offset];
-          CII_SRC_VS2: ifh.dat_data[0].rsp_dat <= vs2_mem[ifh.req_data[0].rsp_src_offset];
-          default:     ifh.dat_data[0].rsp_dat <= '0;
+          CII_SRC_VS1:    ifh.dat_data[0].rsp_dat <= vs1_mem[ifh.req_data[0].rsp_src_offset];
+          CII_SRC_VS2:    ifh.dat_data[0].rsp_dat <= vs2_mem[ifh.req_data[0].rsp_src_offset];
+          CII_SRC_VS3:    ifh.dat_data[0].rsp_dat <= vs3_mem[ifh.req_data[0].rsp_src_offset];
+          CII_SRC_VM:     ifh.dat_data[0].rsp_dat <= vm_mem [ifh.req_data[0].rsp_src_offset];
+          CII_SRC_SCALAR: ifh.dat_data[0].rsp_dat <= {{(VLEN-64){1'b0}}, scalar_val};
+          default:        ifh.dat_data[0].rsp_dat <= '0;
         endcase
         ifh.dat_valid <= 1'b1;
       end

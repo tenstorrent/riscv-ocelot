@@ -184,7 +184,9 @@ module tt_vpu_cii_wrapper_top
   logic [3:0]             pf_mem;          // prefetch member index (0..NM-1)
   logic [5:0]             rcv_cnt;         // dat beats received this op
   logic [4:0]             dst_q [0:31];    // staging write addr per request (in order)
+  logic                   scl_q [0:31];    // 1 = this request's dat is the scalar operand
   logic [5:0]             dst_wr, dst_rd;  // request/receive pointers (<= 3*8+1 = 25)
+  logic [63:0]            pend_scalar;     // captured .vx/.vf scalar (-> i_if_scalar_opnd)
   logic [$clog2(CII_N_REQ_CREDITS+1)-1:0] req_credit_cnt;
   // CII writeback lookups keyed by the VPU lqid (results carry lqid): tag,
   // dst-kind, dst member offset, and the final-member (last) marker. Filled for
@@ -211,40 +213,50 @@ module tt_vpu_cii_wrapper_top
   wire       vs2_wide = id_vec_autogen.nrwop || (id_vec_autogen.wdeop && id_vec_autogen.src1hw);
   wire [4:0] dst_nm   = id_vec_autogen.wdeop ? (nmembers << 1) : nmembers;
 
+  // A .vx/.vf op replaces the vs1 vector source with a scalar (int rs1 or fp rs1);
+  // the scalar VALUE is pulled via a SRC_SCALAR request and driven onto tt_id's
+  // i_if_scalar_opnd. (.vi immediates need no fetch -- tt_vec derives them from the
+  // instruction.) v0 mask is needed when the op is masked (vm=insn[25]==0) or uses
+  // the mask as a data operand (usemask: vadc/vmerge/...).
+  wire scalar_src = id_vec_autogen.sel_scalar || id_vec_autogen.fp_sel_scalar;
+  wire vm_needed  = id_vec_autogen.usemask || ~pend_insn[25];
+
   // Source op-id + group base for the current prefetch source; VM is single-reg.
   cii_caracal_srcid_e src_id_sel;
   logic [4:0]         src_base;
   always_comb begin
     unique case (pf_src)
-      3'd0:    begin src_id_sel = CII_SRC_VS1; src_base = pend_insn[19:15]; end
+      3'd0:    begin src_id_sel = scalar_src ? CII_SRC_SCALAR : CII_SRC_VS1;
+                     src_base = pend_insn[19:15]; end
       3'd1:    begin src_id_sel = CII_SRC_VS2; src_base = pend_insn[24:20]; end
       3'd2:    begin src_id_sel = CII_SRC_VS3; src_base = pend_insn[11:7];  end
       default: begin src_id_sel = CII_SRC_VM;  src_base = 5'd0;             end
     endcase
   end
-  // members to fetch for the current source.
+  // members to fetch for the current source (scalar is a single beat).
   logic [4:0] src_nmem;
   always_comb begin
     unique case (pf_src)
-      3'd0:    src_nmem = nmembers;                        // VS1 narrow
+      3'd0:    src_nmem = scalar_src ? 5'd1 : nmembers;    // VS1 / scalar
       3'd1:    src_nmem = vs2_wide ? (nmembers << 1) : nmembers; // VS2
       3'd2:    src_nmem = dst_nm;                          // VS3 = dest group
       default: src_nmem = 5'd1;                            // VM single register
     endcase
   end
   wire [4:0] stage_addr = (pf_src == 3'd3) ? 5'd0 : (src_base + {1'b0, pf_mem});
+  // this request routes to the scalar operand latch, not the staging regfile.
+  wire       req_is_scalar = (pf_src == 3'd0) && scalar_src;
 
   // Per-op source-set pruning: fetch only the operands the op actually reads.
   // The decode read-enables are combinational (valid during prefetch): rf_rden0/1/2
-  // gate VS1/VS2/VS3, usemask gates the v0 mask (unmasked ops skip it, .vv ops with
-  // 2 sources skip VS3, etc.). A disabled source is stepped over with no request.
+  // gate VS1/VS2/VS3, and vm_needed gates v0. A disabled source is stepped over.
   logic src_en;
   always_comb begin
     unique case (pf_src)
-      3'd0:    src_en = id_vec_autogen.rf_rden0;   // VS1
+      3'd0:    src_en = id_vec_autogen.rf_rden0 || scalar_src; // VS1 or scalar rs1
       3'd1:    src_en = id_vec_autogen.rf_rden1;   // VS2
       3'd2:    src_en = id_vec_autogen.rf_rden2;   // VS3 (3rd src / RMW old-dest)
-      default: src_en = id_vec_autogen.usemask;    // VM (v0 mask)
+      default: src_en = vm_needed;                 // VM (v0 mask)
     endcase
   end
 
@@ -279,7 +291,7 @@ module tt_vpu_cii_wrapper_top
             if (pf_src==3'd3) iss_state<=S_DRAIN;
             else             pf_src<=pf_src+1'b1;
           end else if (req_credit_cnt != 0) begin      // a request is sent this cycle
-            dst_q[dst_wr[4:0]]<=stage_addr; dst_wr<=dst_wr+1'b1;
+            dst_q[dst_wr[4:0]]<=stage_addr; scl_q[dst_wr[4:0]]<=req_is_scalar; dst_wr<=dst_wr+1'b1;
             if (pf_mem == src_nmem-1'b1) begin        // last member of this source
               pf_mem <= 4'd0;
               if (pf_src==3'd3) iss_state<=S_DRAIN;    // VM was the last source
@@ -304,7 +316,11 @@ module tt_vpu_cii_wrapper_top
           end
         default: iss_state <= S_IDLE;
       endcase
-      if (cii_intf.dat_valid) begin rcv_cnt<=rcv_cnt+1'b1; dst_rd<=dst_rd+1'b1; end
+      if (cii_intf.dat_valid) begin
+        rcv_cnt<=rcv_cnt+1'b1; dst_rd<=dst_rd+1'b1;
+        // a scalar beat (.vx/.vf rs1) is latched for i_if_scalar_opnd, not staged.
+        if (scl_q[dst_rd[4:0]]) pend_scalar <= cii_intf.dat_data[0].rsp_dat[63:0];
+      end
     end
   end
 
@@ -330,7 +346,7 @@ module tt_vpu_cii_wrapper_top
   // request stream so the dat FIFO never backs up when NM*sources > credit depth);
   // write each returned beat into staging at its recorded member address.
   assign cii_intf.dat_credit  = (iss_state == S_REQ) || (iss_state == S_DRAIN);
-  assign mem_vrf_wr           = cii_intf.dat_valid;
+  assign mem_vrf_wr           = cii_intf.dat_valid && !scl_q[dst_rd[4:0]]; // scalar beat is not staged
   assign mem_vrf_wraddr       = dst_q[dst_rd[4:0]];
   assign mem_vrf_wrdata       = cii_intf.dat_data[0].rsp_dat;
 
@@ -338,7 +354,7 @@ module tt_vpu_cii_wrapper_top
   assign dispatch_sb_id       = '0;
   assign dispatch_next_senior = 1'b0;
   assign dispatch_kill        = 1'b0;
-  assign read_issue_scalar_opnd = '0;
+  assign read_issue_scalar_opnd = pend_scalar;   // .vx/.vf scalar (0 for .vv/.vi)
   assign read_issue_state       = tt_briscv_pkg::inst_state_e'(0);
   assign ex_id_rtr              = 1'b1;
   assign ex_dst_vld_1c = 1'b0; assign ex_dst_lqid_1c = '0; assign ex_fwd_data_1c = '0;
