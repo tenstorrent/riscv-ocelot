@@ -94,6 +94,51 @@ class TTCii(vLen: Int, vlSz: Int) extends BlackBox with HasBlackBoxResource
   addResource("/vsrc/tt_cii_interface.sv")
   addResource("/vsrc/tt_cii.sv")
   addResource("/vsrc/tt_cii_host_wrap.sv")
+
+  // ---- Track C (C6): the VPU coprocessor tree, instantiated inside the bridge
+  // as tt_vpu_cii_wrapper_top on iface_B. All .sv are symlinks under
+  // resources/vsrc -> the vendored sv/v4/{vpu,common} + resources/HardFloat.
+  // .svh/.h/.vi are include-only (gen-collateral incdir; filtered off the
+  // compile list -- .vi needs the common.mk patch). HardFloat modules are raw
+  // lowercase names (addRecFN, mulAddRecFN, ...) that do NOT collide with
+  // rocketchip's Chisel-mangled CamelCase HardFloat (MulAddRecFNPipe_l2_e11_s53).
+  // common util + arithmetic
+  addResource("/vsrc/tt_cam_buffer.sv"); addResource("/vsrc/tt_compare.sv")
+  addResource("/vsrc/tt_ffs.sv"); addResource("/vsrc/tt_fifo.sv")
+  addResource("/vsrc/tt_pipe_stage.sv"); addResource("/vsrc/tt_popcnt.sv")
+  addResource("/vsrc/tt_reshape.sv"); addResource("/vsrc/tt_rts_rtr_pipe_stage.sv")
+  addResource("/vsrc/tt_skid_buffer.sv")
+  addResource("/vsrc/tt_fp16_div.sv"); addResource("/vsrc/tt_fp32_div.sv")
+  addResource("/vsrc/tt_int_div_r2.sv"); addResource("/vsrc/tt_int_div_simple.sv")
+  addResource("/vsrc/VecFP16rec7.sv"); addResource("/vsrc/VecFP16rsqrt7.sv")
+  addResource("/vsrc/VecFP32rec7.sv"); addResource("/vsrc/VecFP32rsqrt7.sv")
+  // HardFloat (raw Verilog; .vi macros are include-only)
+  addResource("/vsrc/addRecFN.v"); addResource("/vsrc/compareRecFN.v")
+  addResource("/vsrc/divSqrtRecFN_small.v"); addResource("/vsrc/fNToRecFN.v")
+  addResource("/vsrc/HardFloat_primitives.v"); addResource("/vsrc/HardFloat_rawFN.v")
+  addResource("/vsrc/iNToRecFN.v"); addResource("/vsrc/isSigNaNRecFN.v")
+  addResource("/vsrc/mulAddRecFN.v"); addResource("/vsrc/mulRecFN.v")
+  addResource("/vsrc/recFNToFN.v"); addResource("/vsrc/recFNToIN.v")
+  addResource("/vsrc/recFNToRecFN.v"); addResource("/vsrc/HardFloat_specialize.v")
+  addResource("/vsrc/HardFloat_consts.vi"); addResource("/vsrc/HardFloat_localFuncs.vi")
+  addResource("/vsrc/HardFloat_specialize.vi")
+  // VPU decoder (+ .h/.svh include-only)
+  addResource("/vsrc/tt_briscv_pkg.svh")
+  addResource("/vsrc/autogen_defines.h"); addResource("/vsrc/briscv_defines.h")
+  addResource("/vsrc/autogen_riscv_imabfv.v"); addResource("/vsrc/tt_ascii_instrn_decode.sv")
+  addResource("/vsrc/tt_decoded_mux.sv"); addResource("/vsrc/tt_decoder.sv")
+  addResource("/vsrc/tt_id.sv")
+  // VPU execution units
+  addResource("/vsrc/tt_vfp_encoder_lane.sv"); addResource("/vsrc/tt_vfp_encoder.sv")
+  addResource("/vsrc/tt_vfp_ex_unit.sv"); addResource("/vsrc/tt_vfp_fma.sv")
+  addResource("/vsrc/tt_vfp_lane.sv"); addResource("/vsrc/tt_vfp_red.sv")
+  addResource("/vsrc/tt_vfp_unit.sv")
+  addResource("/vsrc/tt_vec_div_unit.sv"); addResource("/vsrc/tt_vec_iadd.sv")
+  addResource("/vsrc/tt_vec_idp.sv"); addResource("/vsrc/tt_vec_imul.sv")
+  addResource("/vsrc/tt_vec_mul_dp.sv")
+  // VPU regfile + top + CII wrapper
+  addResource("/vsrc/tt_vec_regfile.sv"); addResource("/vsrc/tt_vec_top.sv")
+  addResource("/vsrc/tt_vpu_cii_wrapper_top.sv")
 }
 
 class VecCiiHost(implicit p: Parameters) extends BoomModule

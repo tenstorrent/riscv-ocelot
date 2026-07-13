@@ -543,6 +543,22 @@ vector-*arith* instruction would issue but never retire (the null cop drops it),
 cosim awaits swapping in `tt_vpu_cii_wrapper_top` (+ its VPU SV tree on the filelist) — the
 final C6 step.
 
+**As-built — REAL VPU integrated, full VCS compile PASSES (C6 build gate).** The B0 null
+coprocessor is replaced by `tt_vpu_cii_wrapper_top #(.VLEN(CII_VLEN)) u_vpu(.cii_intf(iface_B),
+…)` on the relay's coprocessor side. The whole VPU SV tree is pulled into the build via
+`VecCiiHost` `addResource`s (symlinks under `resources/vsrc` → `sv/v4/{vpu,common}` +
+`resources/HardFloat`): 51 compiled `.v`/`.sv` (common util/arith, HardFloat, decoder,
+execution units, regfile, `tt_vec_top`, the CII wrapper) + 6 include-only `.svh`/`.h`/`.vi`.
+Two enablers: (a) HardFloat `.v` self-include their `.vi` macros via the gen-collateral incdir,
+but `.vi` had to be added to the compile-filelist exclusion in `common.mk` (local patch:
+`grep -v '…\|vi)$'`) so VCS doesn't compile the macro headers; (b) no HardFloat name collision
+(raw lowercase `mulAddRecFN` vs rocketchip's Chisel-mangled `MulAddRecFNPipe_l2_e11_s53`).
+`make CONFIG=MediumBoomV4VectorArithConfig` builds a full `simv` with **0 errors** (only benign
+interface inout-no-load warnings); the VPU + relay elaborate fully (no unresolved/blackbox
+modules). The vector-arith datapath is now structurally complete host↔VPU. Remaining:
+**functional cosim** — a vector-arith test on the `-debug` simv under Whisper (e4 / B6), the
+first true end-to-end result.
+
 ---
 
 ## Track C — Refactor the SV VPU to speak the CII (coprocessor side)

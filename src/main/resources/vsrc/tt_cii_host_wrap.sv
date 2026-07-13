@@ -149,15 +149,18 @@ module tt_cii_host_wrap
   end
   assign iface_A.wb_credit = wb_credit;
 
-  // ---- coproc side: NULL coprocessor on iface_B (B0) -----------------------
-  // TODO (Track C): replace this block with
-  //   tt_vpu_cii_wrapper_top u_vpu (.clk(clk), .reset_n(rst_n), .cii_intf(iface_B), ...);
-  // The coprocessor drives the signals the relay's host modport treats as inputs.
-  assign iface_B.iss_credit = 1'b1;                 // accept (and drop) issues
-  assign iface_B.req_valid  = 1'b0;                 // never request operands
-  assign iface_B.req_data   = '{default: '0};
-  assign iface_B.dat_credit = 1'b1;                 // accept (and drop) src-data
-  assign iface_B.wb_valid   = 1'b0;                 // never write back
-  assign iface_B.wb_data    = '{default: '0};
+  // ---- coproc side: the real VPU coprocessor on iface_B (Track C, C6) -------
+  // tt_vpu_cii_wrapper_top attaches to iface_B's coprocessor modport: it
+  // receives issues, pulls source operands, and pushes result writebacks over
+  // the four CII channels. Debug commit-trace outputs are left unconnected here
+  // (the host-side cosim trace is driven from BOOM, not this bridge).
+  tt_vpu_cii_wrapper_top #(.VLEN(CII_VLEN)) u_vpu (
+    .clk                 (clk),
+    .reset_n             (rst_n),
+    .cii_intf            (iface_B),
+    .debug_wb_vec_valid  (),
+    .debug_wb_vec_wdata  (),
+    .debug_wb_vec_wmask  ()
+  );
 
 endmodule
