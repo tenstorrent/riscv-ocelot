@@ -137,7 +137,9 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   // the vector-OFF RTL is unchanged (gate 9f).
   val vconfig_unit     = if (usingRVV) Some(Module(new VConfigUnit)) else None
   val vec_rename_stage = if (usingRVV) {
-    Some(Module(new VecRenameStage(coreWidth, numVecPhysRegs, coreWidth, 1)))
+    // numWbPorts = numVecWakeupPorts: 1 under M1 (LCB group-done only), 2 under
+    // usingVectorArith (LCB + CII group-done). Keeps vector-OFF/M1 bit-identical.
+    Some(Module(new VecRenameStage(coreWidth, numVecPhysRegs, coreWidth, numVecWakeupPorts)))
   } else None
   val vl_rename        = if (usingRVV) Some(Module(new VlRename(coreWidth, numVlPhysRegs, 3))) else None
 

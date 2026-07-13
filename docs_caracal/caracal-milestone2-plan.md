@@ -516,6 +516,21 @@ mask-logic, permutes/gathers, ± mask, LMUL ∈ {1,2,4,8}, SEW ∈ {8,16,32,64},
 VCS+Whisper cosim. Scalar (9d) and LS (e2/e3) stay green; `enableVectorArith=false`
 bit-identical.
 
+**As-built — first integrated elaboration (C6/B6 in progress).** Added
+`MediumBoomV4VectorArithConfig` (chipyard `BoomConfigs.scala`) =
+`WithVector(VectorParams(enableVectorArith = true))`. `make CONFIG=… verilog` **elaborates
+cleanly** — the first time the whole Track B host wiring (the `usingVectorArith` block in
+`core.scala`, VRF read 5/6 + write 1, VL-RF read 1, the `numVecWbPorts`/`numVecWakeupPorts`=2
+completion fan-in, `VecCiiHost` + the `TTCii` BlackBox) elaborates. `VecCiiHost.sv` and the
+`tt_cii_host_wrap.sv` bridge (via `addResource`) are emitted into gen-collateral. Bug fixed:
+`VecRenameStage` was instantiated with `numWbPorts=1` hard-coded, so `io.wakeups(1)` (the CII
+group-done port) was out of bounds — now `numVecWakeupPorts` (1 under M1 → bit-identical, 2
+under arith). **Open gap for the VCS *compile*:** only `tt_cii_host_wrap.sv` is on the sim
+file list; the modules it instantiates (`tt_cii` relay, `tt_cii_interface`, `tt_cii_channel`,
+`tt_cii_fifo`, `rv_async_rst_dff`, the `tt_cii_caracal_pkg` svh) — and, for full C6, the whole
+VPU tree — are not yet pulled into the Chipyard build. Wiring those in (and swapping the B0
+null coprocessor in the bridge for `tt_vpu_cii_wrapper_top`) is the remaining C6 work.
+
 ---
 
 ## Track C — Refactor the SV VPU to speak the CII (coprocessor side)
