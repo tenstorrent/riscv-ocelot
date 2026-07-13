@@ -531,6 +531,18 @@ file list; the modules it instantiates (`tt_cii` relay, `tt_cii_interface`, `tt_
 VPU tree — are not yet pulled into the Chipyard build. Wiring those in (and swapping the B0
 null coprocessor in the bridge for `tt_vpu_cii_wrapper_top`) is the remaining C6 work.
 
+**As-built — full VCS compile PASSES.** The TT-CII relay stack is now pulled into the build:
+`VecCiiHost` `addResource`s the five relay modules (`rv_async_rst_dff`, `tt_cii_fifo`,
+`tt_cii_channel`, `tt_cii_interface`, `tt_cii`) + `tt_cii_caracal_pkg.svh`, via symlinks under
+`resources/vsrc/` → the vendored `sv/v4/tt-cii/src` (no dup; a fresh checkout must populate the
+nested tt-cii repo). `make CONFIG=MediumBoomV4VectorArithConfig` builds a full `simv` cleanly —
+VCS binds the `TTCii` BlackBox to `tt_cii_host_wrap.sv` with matching port widths (**confirms
+the `NUM_DST_WB=2` alignment**) and resolves the whole relay stack. This simv is host + bridge
++ relay + **B0 null coprocessor**, so it validates the host-side CII path structurally; a
+vector-*arith* instruction would issue but never retire (the null cop drops it), so functional
+cosim awaits swapping in `tt_vpu_cii_wrapper_top` (+ its VPU SV tree on the filelist) — the
+final C6 step.
+
 ---
 
 ## Track C — Refactor the SV VPU to speak the CII (coprocessor side)
