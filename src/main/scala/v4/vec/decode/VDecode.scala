@@ -300,14 +300,20 @@ object VDecode
           uop.dst_rtype := RT_X
         }
       } .otherwise {
-        // Vector arithmetic (tied off in Goal 1). vd = dest, vs1/vs2 = sources.
-        // .vx/.vi variants substitute a scalar/imm for vs1; handled in Goal 2.
+        // Vector arithmetic. vd = dest, vs1/vs2 = sources.
+        // .vx/.vi variants substitute a scalar/imm for vs1; scalar operand capture
+        // + scalar-dest (vmv.x.s/vfmv.f.s/vcpop/vfirst) dst_rtype are Track B B2/B3.
         uop.lvd       := rd
         uop.dst_rtype := RT_VEC
         uop.lvs1      := rs1
         uop.lvs2      := rs2
         uop.lrs1_rtype := RT_X
         uop.lrs2_rtype := RT_X
+        // M2 Track B: carry FC_ALU so the IQ_V_ALU issue unit can match this uop
+        // against the fu_types the CII host advertises. Isolated to IQ_V_ALU (no
+        // scalar EU consumes it); M1 keeps valu fu_types=0 so it never issues.
+        for (i <- 0 until FC_SZ) { uop.fu_code(i) := false.B }
+        uop.fu_code(FC_ALU) := true.B
       }
     }
   }

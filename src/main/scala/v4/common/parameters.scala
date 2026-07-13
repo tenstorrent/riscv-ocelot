@@ -266,6 +266,9 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   // on this independent flag instead. Default off => baseline bit-identical.
   val usingRVV = boomParams.enableVector
   val vectorParams = boomParams.vector.getOrElse(VectorParams())
+  // M2 Track B/C: gates the CII coprocessor attach + IQ_V_ALU un-tie. Implies usingRVV.
+  // Default off => M1 vector-arith tie-off preserved, bit-identical.
+  val usingVectorArith = usingRVV && vectorParams.enableVectorArith
 
   //************************************
   // Functional Units
@@ -408,7 +411,9 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val vlPregSz        = log2Ceil(numVlPhysRegs)                    // bits to index a VL preg
   // Vector group-done completion ports into the ROB (one group-done per OP.v clears
   // rob_bsy single-shot). Tied off in core for Step 5, so the value is non-critical.
-  val numVecWbPorts   = if (usingRVV) 1 else 0
+  // Port 0 = VecLSU (loads). Port 1 = CII (vector arith), only under usingVectorArith
+  // so vector-arith-OFF configs keep exactly one port (M1 bit-identical).
+  val numVecWbPorts   = if (usingVectorArith) 2 else if (usingRVV) 1 else 0
   val numVecWakeupPorts = if (usingRVV) numVecWbPorts else 0   // VECTOR network (group-done; LCB/CII)
   val numVlWakeupPorts  = if (usingRVV) 1 else 0               // VL network (vset/vleff writeback)
   val vecLregSz       = 5                                          // 32 architectural vector regs v0..v31

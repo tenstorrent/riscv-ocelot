@@ -32,14 +32,9 @@ integer  e;
 always_comb begin 
     o_compare_match[ENTRIES-1:0]   = {ENTRIES{1'b0}};
     for(e=0; e<ENTRIES; e++) begin
-       o_compare_match[e] =      i_compare_enable
+       o_compare_match[e] = i_compare_enable
                             &  ( i_entry_valids[e] | i_compare_valid_mask ) 
-                            & ~(
-                                  |( 
-                                         (     i_compare_value[VALUE_WIDTH-1:0] ^ i_entry_values[e][VALUE_WIDTH-1:0]) 
-                                      &  ~i_compare_value_mask[VALUE_WIDTH-1:0]
-                                   )
-                               );
+                            & ~(|((i_compare_value[VALUE_WIDTH-1:0] ^ i_entry_values[e][VALUE_WIDTH-1:0]) &  ~i_compare_value_mask[VALUE_WIDTH-1:0]));
     end
 end
 

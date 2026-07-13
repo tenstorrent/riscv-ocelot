@@ -97,7 +97,9 @@ module tt_vec_top #(
   //From Int RF
   input [XLEN-1:0]                                    i_rf_vex_p0, //int to vrf moves; note this align with 0a, and read pre flop.
 
-  input [XLEN-1:0]                                    i_fprf_vex_p0  //fp to vrf moves; note this align with 0a, and read pre flop.                   
+  input [XLEN-1:0]                                    i_fprf_vex_p0, //fp to vrf moves; note this align with 0a, and read pre flop.
+  input                                              i_vta,  // tail-agnostic (from CII vtype; Track C C2)
+  input                                              i_vma   // mask-agnostic (from CII vtype; Track C C2)
 );
    /*AUTOWIRE*/
    // Beginning of automatic wires (for undeclared instantiated-module outputs)
@@ -429,6 +431,10 @@ module tt_vec_top #(
    assign usgn_itov_src_0a   [XLEN-1:0] = sel_imm_0a ? {{XLEN-5{     1'b0}},reg_p0[4:0]} : xorf_mv_data_0a;//i_rf_vex_p0;
    assign scalar_imm_slide_0a[XLEN-1:0] = vgatherall_0a ? inc_addrp1_0a[XLEN-1:0] : usgn_itov_src_0a[XLEN-1:0];
    logic mem_pipe_rtr_1a; assign mem_pipe_rtr_1a =  1'b1;  //MM Nov 5 2021: Remove implicit wire.
+ 
+ 
+ 
+ 
   tt_rts_rtr_pipe_stage #(
     .WIDTH(1),
     .NORTR(1)
@@ -958,7 +964,9 @@ module tt_vec_top #(
    wire       fp16_on_fp32_phase = i_id_vec_autogen.wdeop         &&
                                    i_id_vec_autogen.replay_cnt[0];
 
-
+  /////////////////////////////////////////////////////////////////////////////
+  // Instatiate the vector floating point unit
+  /////////////////////////////////////////////////////////////////////////////
   tt_vfp_unit #(
     .NUM_LANE(VLEN/64)
   ) vfp (
@@ -1017,8 +1025,8 @@ module tt_vec_top #(
        .i_lmul          (i_csr.v_lmul[2:0]),
        .i_vl            (i_csr.v_vl[7:0]),
        .i_vs1           (i_id_ex_instrn[19:15]),
-       .i_vta           (1'b0),  // TODO: Connect to vtype.vta when available (0=undisturbed, 1=agnostic)
-       .i_vma           (1'b0),  // TODO: Connect to vtype.vma when available (0=undisturbed, 1=agnostic)
+       .i_vta           (i_vta),  // from CII vtype (Track C C2): 0=undisturbed, 1=agnostic
+       .i_vma           (i_vma),  // from CII vtype (Track C C2): 0=undisturbed, 1=agnostic
 
        // Instruction decode signals
        .i_funct7        (funct7_0a[6:0]),
@@ -1041,8 +1049,15 @@ module tt_vec_top #(
        .o_busy          (o_vex_div_busy)
    );
 
+  /////////////////////////////////////////////////////////////////////////////
+  // END //Instatiate the vector floating point unit
+  /////////////////////////////////////////////////////////////////////////////
 
 
+
+  /////////////////////////////////////////////////////////////////////////////
+  // Instatiate the integer datapath unit
+  /////////////////////////////////////////////////////////////////////////////
   tt_vec_idp #(
     .VLEN(VLEN),
     .XLEN(XLEN)
@@ -1120,9 +1135,15 @@ module tt_vec_top #(
     .i_v_vm_0a		(i_v_vm),		 // Templated
     .i_sat_instrn_0a      (sat_instrn_0a)
   );        // Templated
-   
-                 
+  /////////////////////////////////////////////////////////////////////////////
+  // END //Instatiate the integer datapath unit
+  /////////////////////////////////////////////////////////////////////////////
 
+
+
+  /////////////////////////////////////////////////////////////////////////////
+  // Instatiate the vector integer multiply unit
+  /////////////////////////////////////////////////////////////////////////////                 
   tt_vec_mul_dp #(
     .VLEN(VLEN)
   ) mul_dp (
@@ -1137,6 +1158,9 @@ module tt_vec_top #(
 
     /*AUTOINST*/
   );
+  /////////////////////////////////////////////////////////////////////////////
+  // END //Instatiate the vector integer multiply unit
+  /////////////////////////////////////////////////////////////////////////////
 
 endmodule // tt_vec_top
 

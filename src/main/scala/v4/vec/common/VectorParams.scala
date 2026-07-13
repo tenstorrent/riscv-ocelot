@@ -29,5 +29,7 @@ case class VectorParams(
   vecIssueGrantWidth: Int = 1,               // FU-pipeline-in-order: 1 on Medium, lift to 2 on Mega
   dcacheArbiterMode: String = "single",      // "single" (Goal 1 default) | "dual-dynamic" (Mega)
   vecScalarSnoopEnable: Boolean = false,     // turn on with dual-dynamic arbiter (issue 9)
-  mshrAllocPolicy: String = "fair-floor"     // "fair-floor" (default) | "hard-partition" | "fcfs" (issue 10)
+  mshrAllocPolicy: String = "fair-floor",    // "fair-floor" (default) | "hard-partition" | "fcfs" (issue 10)
+  enableVectorArith: Boolean = false         // M2 Track B/C: attach the CII coprocessor and un-tie
+                                             // IQ_V_ALU. Default OFF -> M1 tie-off, bit-identical.
 )

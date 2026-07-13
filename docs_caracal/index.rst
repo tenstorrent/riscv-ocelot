@@ -57,6 +57,7 @@ vector path diverges from stock |boom| v4.
    src/midcore
    src/issue
    src/execution
+   src/cii
    src/loadstore
    src/case_study
 

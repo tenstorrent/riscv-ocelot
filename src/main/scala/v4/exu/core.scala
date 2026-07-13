@@ -158,6 +158,12 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   // reference it across the (separate) usingRVV blocks below. Gated by usingRVV.
   val vec_lsu = if (usingRVV) Some(Module(new boom.v4.vec.lsu.VecLSU)) else None
 
+  // Caracal vector-arith CII host adapter (Milestone 2, Track B). Bridges the
+  // in-order IQ_V_ALU to the SV coprocessor (VPU) via the TTCii BlackBox.
+  // Instantiated ONLY under usingVectorArith so the flag-off build is
+  // bit-identical to M1 (IQ_V_ALU stays tied off; see Step 12 assert below).
+  val vec_cii = if (usingVectorArith) Some(Module(new boom.v4.vec.cii.VecCiiHost)) else None
+
   // Caracal vector LS register-read stage (Step 11a.2, sub-step B): reads the
   // vle base address (rs1) from a dedicated integer-RF read port + vl from the
   // VL-RF, then drives VecLsDecode/AGEN. Top-level so the arb/rrd stages can wire
@@ -1496,8 +1502,13 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     // otherwise a spuriously-issued vector-arith uop would silently mis-execute
     // (no EU consumes iss_uops). A vadd/vmv in M1 therefore sits in the queue and
     // the pipeline hangs at boom_timeout -- the expected, observable M1 outcome.
-    assert(!valu_iss_unit.get.io.iss_uops(0).valid,
-      "[Caracal M1] IQ_V_ALU issued a uop but no vector-ALU/CII execution unit exists (Milestone 2)")
+    // M1-only invariant: with no CII, IQ_V_ALU must never grant. Under
+    // usingVectorArith the CII un-ties it (wired below, after the VL-RF tie-off),
+    // so the assert is disabled there.
+    if (!usingVectorArith) {
+      assert(!valu_iss_unit.get.io.iss_uops(0).valid,
+        "[Caracal M1] IQ_V_ALU issued a uop but no vector-ALU/CII execution unit exists (Milestone 2)")
+    }
   }
 
   // ----------------------------------------------------------------
@@ -1529,6 +1540,59 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vl_regfile.get.io.write_ports(1).bits.addr := vset_wb.get.bits.pvl
     vl_regfile.get.io.write_ports(1).bits.data := vset_wb.get.bits.vl_value
     vl_regfile.get.io.read_ports.foreach { r => r.addr := 0.U }
+  }
+
+  // ----------------------------------------------------------------
+  // Caracal M2 (Track B, B1): CII host adapter wiring. Gated on usingVectorArith
+  // (=> usingRVV); dead at elaboration when off, so vector-arith-OFF is
+  // bit-identical. Placed AFTER the VL-RF tie-off and the vec issue-unit fu_types
+  // zeroing so the port-1 read and the FC_ALU fu_types override win by
+  // last-connect. Operand pull (B2) + writeback/completion (B3) inputs stay tied
+  // off; the adapter's completion/writeback outputs are left unconsumed.
+  if (usingVectorArith) {
+    val cii = vec_cii.get
+    // Issue: grant stream from the in-order IQ_V_ALU + pipeline flush.
+    cii.io.iss_uop := valu_iss_unit.get.io.iss_uops(0)
+    cii.io.kill    := RegNext(rob.io.flush.valid)
+    // Un-tie IQ_V_ALU: advertise FC_ALU on issue port 0 gated by CII issue credit
+    // (cii.io.fu_rdy is registered inside VecCiiHost -> no comb loop).
+    valu_iss_unit.get.io.fu_types(0)(FC_ALU) := cii.io.fu_rdy
+    // Extended issue packet: vl from a dedicated VL-RF read port (1); vxrm/vstart
+    // from the vector CSRs; frm from fcsr.
+    vl_regfile.get.io.read_ports(1).addr := cii.io.vl_read.req_addr
+    cii.io.vl_read.resp_data := vl_regfile.get.io.read_ports(1).data
+    cii.io.csr_vxrm   := csr.io.vector.get.vxrm
+    cii.io.csr_vstart := csr.io.vector.get.vstart
+    cii.io.csr_frm    := csr.io.fcsr_rm
+    // Operand pull (B2): dedicated CII VecRegFile read ports 5,6 (registered
+    // 1-cycle read). Placed after the read-port tie-off so these win.
+    vec_regfile.get.io.read_ports(5).addr := cii.io.vrf_read(0).req_addr
+    cii.io.vrf_read(0).resp_data          := vec_regfile.get.io.read_ports(5).data
+    vec_regfile.get.io.read_ports(6).addr := cii.io.vrf_read(1).req_addr
+    cii.io.vrf_read(1).resp_data          := vec_regfile.get.io.read_ports(6).data
+    // Scalar (.vx/.vf) operand capture needs a VDecode fix (arith .vx currently
+    // sets lrs1_rtype=RT_X) + a dedicated INT/FP RF read port at issue (B2b).
+    cii.io.scalar_rs1 := 0.U
+    // Writeback (B3): vector-dest results -> VecRegFile write port 1 (verbatim;
+    // the VPU already applied vta/vma). Placed after the write-port tie-off so
+    // this wins. group_done / clr_rob / scalar_wb are consumed in B4 (needs the
+    // numVecWbPorts / numVecWakeupPorts bump) and are left unconsumed here.
+    vec_regfile.get.io.write_ports(1).valid     := cii.io.vrf_write.valid
+    vec_regfile.get.io.write_ports(1).bits.addr := cii.io.vrf_write.bits.addr
+    vec_regfile.get.io.write_ports(1).bits.data := cii.io.vrf_write.bits.data
+    vec_regfile.get.io.write_ports(1).bits.mask := cii.io.vrf_write.bits.mask
+
+    // Completion (B4): the CII owns VECTOR-network / clr_bsy port 1 (VecLSU owns
+    // port 0). group_done -> vec-rename + all three vec issue units' wakeups;
+    // clr_rob -> rob.vec_clr_bsy. Placed after the port-0 wiring so port 1 wins.
+    vec_rename_stage.get.io.wakeups(1) := cii.io.group_done
+    for (iu <- Seq(vload_iss_unit.get, vstore_iss_unit.get, valu_iss_unit.get)) {
+      iu.io.vec_wakeup_ports(1) := cii.io.group_done
+    }
+    rob.io.vec_clr_bsy.get(1) := cii.io.clr_rob
+    // scalar_wb (INT/FP RF write + scalar wakeup for vmv.x.s/vfmv.f.s/vcpop/
+    // vfirst) is wired with the scalar-dest decode/rename support (B3b); the
+    // adapter drives it but it is left unconsumed here.
   }
 
   //-------------------------------------------------------------

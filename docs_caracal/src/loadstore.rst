@@ -203,9 +203,79 @@ Granularity of the search differs by access class:
   contend for the shared LCAM through the same arbiter that gates the D$ port
   (:ref:`dcache-arbiter`), so they cannot starve scalar disambiguation.
 
+**Edge case — SSI store → younger overlapping SSI load serializes.** Store-to-load forwarding is
+**not** attempted between two SSI accesses. An SSI store generates its element addresses
+incrementally (one ``nOP.v`` at a time through the arbiter), so until the store has resolved *all*
+its active elements a younger load cannot know whether a not-yet-generated store element aliases it —
+nor which store element holds the youngest byte for an aliased address, since a later element of the
+same store may overwrite it (ordered-indexed or duplicate indices). Forwarding from a
+partially-resolved scatter is therefore unsafe. |caracal| instead **holds** a younger SSI load that
+overlaps an older in-flight SSI store until that store completes (all its elements drain), then lets
+the load read the updated cache line. Because the two element streams also share the LCAM / D$ port
+through the arbiter, the pair executes **effectively serially**. The ordering-violation replay path
+(:ref:`order-fail-replay`) remains the correctness floor if a load slips through before the
+dependence is detected; the hold simply converts a multi-element replay storm into one clean
+serialization when the overlap is known or predicted.
+
 Memory-dependency speculation (a load issuing past a store whose address is not yet known) reuses
 |boom|'s existing predictor and ordering-violation replay path, now extended to fire on the
 cross-queue matches above.
+
+.. _order-fail-replay:
+
+Ordering-Violation Replay
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When a store's address search (scalar addr-gen, or a vector store's US range / SSI per-element
+search) matches a **younger, already-executed** load, that load has speculated past the store and
+may have read stale data. |caracal| recovers with |boom|'s existing ordering-violation path — the
+same squash-and-refetch machinery a branch mispredict uses — **not** a selective replay of just the
+load and its dependents. The mechanism, and why it is correct even though the load has already
+written a physical register and possibly woken dependents:
+
+1. **Mark, don't act.** The matching search sets the load's LDQ ``order_fail`` bit. The LSU
+   broadcasts the *oldest* failing load to the ROB as a ``lxcpt`` with cause
+   ``MINI_EXCEPTION_MEM_ORDERING``; the ROB records it as an exception on that load's row but takes
+   no action yet.
+
+2. **Deferred to the ROB head.** The flush fires only when the failing load reaches the **head** of
+   the ROB. This is the load-bearing invariant: because commit is in-order and the load is then the
+   oldest instruction in the machine, **every remaining in-flight instruction is younger than the
+   load** — so all of its dependents are still un-committed and squashable. No consumer of the bad
+   value can have escaped to architectural state.
+
+3. **Mini-exception ⇒ refetch, not trap.** ``MINI_EXCEPTION_MEM_ORDERING`` is not an architectural
+   exception: it does not go to the CSR/trap vector. It produces a pipeline flush with
+   ``flush_typ = refetch`` — the frontend redirects to the failing load's **own PC** (from its
+   ``ftq_idx``/``pc_lob``), so the load re-fetches and re-executes.
+
+4. **The RF is not rolled back — renaming makes that unnecessary.** The load already wrote its result
+   into a *physical* register ``Pd``, and dependents may have consumed it. On the flush, the physical
+   RF is left untouched; instead the ROB rollback **restores the rename map to the committed
+   architectural state and returns every speculatively-allocated physical register — including
+   ``Pd`` — to the free list.** The stale value is simply orphaned: after rollback nothing maps the
+   load's logical destination to ``Pd``. On refetch the load renames to a *fresh* physical
+   destination, executes correctly (forwarding the store data from ``st_*_DATA_Q`` or reading the
+   drained cache line), and writes that register.
+
+5. **Dependents are handled by the coarse squash.** Because dependents are by definition younger than
+   the load, the flush discards the load and everything younger — ROB rows, issue queues, and the
+   pipeline — and frees their speculative physical registers in the same rollback. |caracal| does not
+   track which specific instructions consumed the poisoned result; like branch recovery, it
+   conservatively squashes all younger work, differing only in that the redirect PC is the load
+   itself (``refetch``) rather than a branch target.
+
+The window where the load writes back early and wakes dependents on bad data is therefore harmless:
+all of that work is younger than the load and still un-committed when the flush fires at the ROB
+head, so in-order commit guarantees it never reaches architectural state. The cost is purely
+performance (a full refill from the load), which is what the memory-dependency predictor exists to
+avoid by holding back loads likely to alias.
+
+For a **vector** load that order-fails, the same refetch/re-rename path applies at the granularity of
+the whole vector instruction: the single LDQ placeholder entry drives one ``lxcpt``, and on replay
+the vector op re-renames its whole destination group and re-drains its element accesses through the
+LCB (:ref:`load-coalesce`) — there is no partial-group rewind, consistent with the one-group-done
+completion model.
 
 
 .. _dcache-arbiter:
