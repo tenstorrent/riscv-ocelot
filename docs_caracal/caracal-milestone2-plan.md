@@ -492,8 +492,13 @@ LS regression stays green.
 #### Step B5 — Flush, exceptions, `vxrm`/fflags, segment-LS transpose half
 
 **Scope.** Past-PNR issue ⇒ no branch-kill of in-flight CII ops (the SV has no kill line,
-which is consistent); a full flush (`vec_agen_kill = RegNext(rob.io.flush.valid)`) quiesces
-the adapter without losing commit-bound tags. `vxrm`/`vxsat` are read from `csr.io.vector`
+which is consistent). The **coprocessor never flushes** (Track C C5): on a flush it keeps
+running accepted ops to completion. So flush handling lives entirely on the **host** — the
+adapter tracks which in-flight tags are killed (`RegNext(rob.io.flush.valid)` marks them),
+then **drops/ignores their writebacks** (and satisfies any src-data still owed with
+don't-care beats) while continuing to sink every channel beat so CII credits are returned
+and neither side stalls. A killed tag is freed from the side-table on its (dropped) `last`
+beat. `vxrm`/`vxsat` are read from `csr.io.vector`
 at issue and travel in the **extended Issue packet** (decision #3); `wb_status` fflags
 accrue at commit. For `is_shared` (segment LS), the CII drives the **second** group-done
 that clears `rob_other_half_pending` → unblocks full segment LS (M1 deviation #9).
@@ -597,14 +602,36 @@ counts, so the offset accounting must agree on both sides.
   member address** (request order), then releases the instruction to ``tt_vec`` — which
   reads the regfile via its existing ``o_iterate_addrp*`` reads, unchanged. Drive
   ``req_valid``; consume ``req_credit``/``dat_credit``.
+
+  **As-built (PREFETCH-AT-ISSUE, approach a).** C1 and C3 are merged into one FSM
+  (``S_IDLE→S_WAIT→S_REQ→S_DRAIN→S_HOLD``). Operands are decoded from the *raw* issue insn
+  (``VS1=insn[19:15]``, ``VS2=insn[24:20]``, ``VS3=insn[11:7]``, ``VM=v0``) and prefetched
+  into the staging regfile **before** the instruction is presented to ``tt_id`` (S_HOLD sets
+  ``read_valid``). This is required because ``tt_id``→``tt_vec`` is a *single* combinational
+  RTS/RTR handshake: a first design gated ``tt_id``'s accept on ``operands_ready`` and
+  **deadlocked** — ``o_id_instrn_rtr ← i_vex_id_rtr ← operands_ready ← (load done) ← (tt_id
+  accept)`` is circular. Prefetching decouples operand fetch from that handshake, so the
+  ungated handshake is restored and staging is guaranteed full before ``tt_vec``'s first
+  iterate-read. The writeback tag is keyed by ``vec_autogen.ldqid`` (the lqid ``tt_id``
+  actually assigns and echoes on the result port; ``o_id_vex_lqid`` is undriven in this
+  build). SKELETON: over-fetches all four sources at member 0 — per-op source set + EMUL
+  member walk are future work.
 - **C4 — Writeback (result ports → CII Writeback).** Collect
   ``o_vex_mem_lqdata_{1c,2c,3c,div}`` + ``lqid`` + ``lqexc`` per member; map ``lqid → tag``;
   drive ``wb_valid``/``wb_data {tag, wb_data (fully-formed, vta/vma applied),
   wb_dst_offset=member, wb_wr_en, wb_status=fp flags}``; consume ``wb_credit``. Emit exactly
   the active members. (Results go to CII; the staging regfile is not the architectural RF,
   so nothing persists across instructions there.)
-- **C5 — Kill/flush + drain.** Past-PNR issue ⇒ no architectural rollback; a flush resets
-  the wrapper FSMs + credit counters and drains in-flight beats.
+- **C5 — Kill/flush: NOT IMPLEMENTED on the coprocessor (by design).** The VPU has **no
+  flush port and no rollback machinery**. On a host redirect/flush the coprocessor simply
+  **keeps running** every instruction already accepted into the CII queues to completion —
+  it continues to drain the issue/req/dat channels, return credits, and emit writebacks as
+  normal. Correctness is the **host's** responsibility: the host **drops/ignores** the
+  writeback (and any src-data owed) for tags belonging to killed instructions, while still
+  sinking their beats so credits are returned and the channels do not stall. This is sound
+  because issue is past-PNR (decision #1) — in the common case nothing is killed anyway, and
+  a VPU-side flush would only save a few cycles of wasted compute at the cost of a
+  reset/drain FSM the coprocessor otherwise never needs. (Host side: see Track B B5.)
 - **C6 — Integration + cosim.** Wire ``tt_vpu_cii_wrapper_top`` ↔ Track B's
   ``tt_cii_host_wrap.sv`` through the CII credit relay; bring up under VCS+Whisper via the
   (e4) vector-arith regression. ``debug_wb_vec_*`` feeds the cosim commit trace.
@@ -614,6 +641,17 @@ op is RMW so ``tt_vec_top``'s dest read-back works unchanged; iterate↔offset m
 widening/narrowing must match the host's ``pvs*_grp``/``pvdest_grp`` member indexing; the
 load-phase FSM must fully stage the group (or pipeline member k+1 vs compute k) so the
 datapath is never starved when ``dat`` under-runs.
+
+**Track C verification status (as-built).** C0–C4 elaborate cleanly under VCS
+(``vpu/lint_vpu_cii.sh``) and pass a standalone functional smoke test
+(``vpu/fv_vpu_cii.sh`` + ``vpu/tb/cii_fv_tb.sv``): the tb plays the CII **host** through the
+real ``tt_cii`` credit relay, issues ``vadd.vv v3,v2,v1`` (SEW=32, LMUL=1, vl=8, unmasked),
+serves the coprocessor's four source-operand requests, and checks the writeback. The full
+loop runs end-to-end — issue → prefetch 4 operands into staging → ``tt_id`` decode →
+``tt_vec`` compute → writeback — and returns the correct per-lane sums (11,22,…,88) with the
+correct CII ``tag``. C5 is intentionally a no-op on the coprocessor (host drops killed-tag
+writebacks). C6 (host↔coproc integration + Whisper cosim) and the full EMUL member walk
+remain.
 
 ---
 

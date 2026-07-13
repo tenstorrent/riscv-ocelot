@@ -152,65 +152,108 @@ module tt_vpu_cii_wrapper_top
   // incl. popping an empty FIFO (spurious idle credits). Popping once per accept
   // keeps the return rate ~ accept rate; confirm against the host issue sender.
   // =========================================================================
-  typedef enum logic [1:0] { I_IDLE, I_WAIT, I_HOLD } iss_state_e;
+  // Approach (a): PREFETCH operands before presenting the instruction to tt_id,
+  // so no entry-handshake gate is needed (the earlier operands_ready gate
+  // deadlocked tt_id's accept through units_rtr). We decode the source regs from
+  // the raw instruction, fetch vs1/vs2/vs3/v0 into the staging regfile via CII
+  // req/dat, THEN release to tt_id -- staging is filled before tt_vec reads it.
+  //   S_IDLE(pop) -> S_WAIT(latch) -> S_REQ(send 4 reqs) -> S_DRAIN(recv 4 dat
+  //   -> staging) -> S_HOLD(rts to tt_id)
+  // SKELETON: over-fetches all 4 sources at member 0 for every op (per-op source
+  // set + EMUL member walk are future work).
+  typedef enum logic [2:0] { S_IDLE, S_WAIT, S_REQ, S_DRAIN, S_HOLD } iss_state_e;
   iss_state_e             iss_state;
-  logic                   pend_valid;
   logic [31:0]            pend_insn;
   cii_caracal_tag_t       pend_tag;
   cii_caracal_vtype_t     pend_vtype;
   logic [CII_VL_W-1:0]    pend_vl, pend_vstart;
   logic [1:0]             pend_vxrm;
   logic [2:0]             pend_frm;
+  logic [2:0]             pf_idx;          // prefetch source index (0=VS1..3=VM)
+  logic [2:0]             rcv_cnt;
+  logic [4:0]             dst_q [0:3];     // staging write addr per request (in order)
+  logic [2:0]             dst_wr, dst_rd;
+  logic [$clog2(CII_N_REQ_CREDITS+1)-1:0] req_credit_cnt;
   // CII tag + dst-kind by the VPU lqid (results carry lqid), for writeback (C4).
   cii_caracal_tag_t       tag_by_lqid     [0:7];
   cii_caracal_dst_kind_e  dstkind_by_lqid [0:7];
 
+  // Source op-id + staging address for the current prefetch index. tt_id maps
+  // rf_addrp0=insn[19:15], rf_addrp1=insn[24:20], rf_addrp2=insn[11:7]; fill
+  // staging at those so the datapath's reads hit the fetched data.
+  cii_caracal_srcid_e src_id_sel;
+  logic [4:0]         src_addr_sel;
+  always_comb begin
+    unique case (pf_idx)
+      3'd0:    begin src_id_sel = CII_SRC_VS1; src_addr_sel = pend_insn[19:15]; end
+      3'd1:    begin src_id_sel = CII_SRC_VS2; src_addr_sel = pend_insn[24:20]; end
+      3'd2:    begin src_id_sel = CII_SRC_VS3; src_addr_sel = pend_insn[11:7];  end
+      default: begin src_id_sel = CII_SRC_VM;  src_addr_sel = 5'd0;             end
+    endcase
+  end
+
+  wire req_send = (iss_state == S_REQ) && (req_credit_cnt != 0);
+
   always_ff @(posedge clk or negedge reset_n) begin
     if (!reset_n) begin
-      iss_state  <= I_IDLE;
-      pend_valid <= 1'b0;
+      iss_state<=S_IDLE; pf_idx<=3'd0; rcv_cnt<=3'd0; dst_wr<=3'd0; dst_rd<=3'd0;
+      req_credit_cnt <= CII_N_REQ_CREDITS;
     end else begin
+      if      ( cii_intf.req_credit && !req_send) req_credit_cnt <= req_credit_cnt + 1'b1;
+      else if (!cii_intf.req_credit &&  req_send) req_credit_cnt <= req_credit_cnt - 1'b1;
       case (iss_state)
-        I_IDLE: iss_state <= I_WAIT;                 // iss_credit asserted this cycle
-        I_WAIT:
+        S_IDLE: iss_state <= S_WAIT;                  // iss_credit asserted this cycle
+        S_WAIT:
           if (cii_intf.iss_valid) begin
-            pend_valid  <= 1'b1;
-            pend_insn   <= cii_intf.iss_data[0].instr.insn;
-            pend_tag    <= cii_intf.iss_data[0].tag;
-            pend_vtype  <= cii_intf.iss_data[0].instr.vtype;
-            pend_vl     <= cii_intf.iss_data[0].instr.vl;
-            pend_vstart <= cii_intf.iss_data[0].instr.vstart;
-            pend_vxrm   <= cii_intf.iss_data[0].instr.vxrm;
-            pend_frm    <= cii_intf.iss_data[0].instr.frm;
-            iss_state   <= I_HOLD;
-          end else begin
-            iss_state <= I_IDLE;                      // pop hit empty FIFO; retry
+            pend_insn<=cii_intf.iss_data[0].instr.insn; pend_tag<=cii_intf.iss_data[0].tag;
+            pend_vtype<=cii_intf.iss_data[0].instr.vtype;
+            pend_vl<=cii_intf.iss_data[0].instr.vl; pend_vstart<=cii_intf.iss_data[0].instr.vstart;
+            pend_vxrm<=cii_intf.iss_data[0].instr.vxrm; pend_frm<=cii_intf.iss_data[0].instr.frm;
+            pf_idx<=3'd0; rcv_cnt<=3'd0; dst_wr<=3'd0; dst_rd<=3'd0;
+            iss_state<=S_REQ;
+          end else iss_state<=S_IDLE;
+        S_REQ:
+          if (req_credit_cnt != 0) begin              // a request is sent this cycle
+            dst_q[dst_wr]<=src_addr_sel; dst_wr<=dst_wr+1'b1;
+            if (pf_idx==3'd3) iss_state<=S_DRAIN; else pf_idx<=pf_idx+1'b1;
           end
-        I_HOLD:
-          if (ocelot_read_req) begin                 // tt_id accepted the instruction
-            // record tag + dst-kind by the assigned lqid, for writeback (C4).
-            tag_by_lqid[id_vex_lqid]     <= pend_tag;
-            dstkind_by_lqid[id_vex_lqid] <= id_vec_autogen.scalar_dest ? CII_DST_INT : CII_DST_VEC;
-            pend_valid <= 1'b0;
-            iss_state  <= I_IDLE;
+        S_DRAIN: if (rcv_cnt==3'd4) iss_state<=S_HOLD; // all 4 operands staged
+        S_HOLD:
+          if (ocelot_read_req) begin                  // tt_id accepted the instruction
+            // key by the lqid tt_id actually assigns (vec_autogen.ldqid); it echoes
+            // back on the result port (o_id_vex_lqid is unused/undriven in this build).
+            tag_by_lqid[id_vec_autogen.ldqid]     <= pend_tag;
+            dstkind_by_lqid[id_vec_autogen.ldqid] <= id_vec_autogen.scalar_dest ? CII_DST_INT : CII_DST_VEC;
+            iss_state <= S_IDLE;
           end
-        default: iss_state <= I_IDLE;
+        default: iss_state <= S_IDLE;
       endcase
+      if (cii_intf.dat_valid) begin rcv_cnt<=rcv_cnt+1'b1; dst_rd<=dst_rd+1'b1; end
     end
   end
 
-  assign cii_intf.iss_credit = (iss_state == I_IDLE);   // one pop request per pass
-  assign read_issue_inst     = pend_insn;
-  assign read_valid          = (iss_state == I_HOLD) && pend_valid;
-  assign read_issue_sb_id    = {1'b0, pend_tag};        // sb_id[4:0], tag[3:0]
-
-  // Decoded CSR config from the issue packet (drives tt_id decode + tt_vec).
+  // issue channel (RECEIVER): one pop request per pass.
+  assign cii_intf.iss_credit = (iss_state == S_IDLE);
+  // present the operand-staged instruction to tt_id.
+  assign read_issue_inst  = pend_insn;
+  assign read_valid       = (iss_state == S_HOLD);
+  assign read_issue_sb_id = {1'b0, pend_tag};
+  // decoded CSR config from the issue packet.
   assign csr_de0.v_vsew   = pend_vtype.vsew;
   assign csr_de0.v_lmul   = pend_vtype.vlmul;
   assign csr_de0.v_vxrm   = pend_vxrm;
   assign csr_de0.v_vl     = pend_vl;
   assign csr_de0.v_vstart = pend_vstart;
   assign csr_de0.frm      = pend_frm;
+  // req channel (SENDER): lane 0 = current source request, lane 1 = NONE.
+  assign cii_intf.req_valid   = req_send;
+  assign cii_intf.req_data[0] = '{tag:pend_tag, rsp_src_id:src_id_sel,  rsp_src_offset:'0};
+  assign cii_intf.req_data[1] = '{tag:pend_tag, rsp_src_id:CII_SRC_NONE, rsp_src_offset:'0};
+  // dat channel (RECEIVER): pop while draining; write returned data into staging.
+  assign cii_intf.dat_credit  = (iss_state == S_DRAIN);
+  assign mem_vrf_wr           = cii_intf.dat_valid;
+  assign mem_vrf_wraddr       = dst_q[dst_rd];
+  assign mem_vrf_wrdata       = cii_intf.dat_data[0].rsp_dat;
 
   // ---- remaining tie-offs: legacy inputs + null req/dat/wb (real glue C2-C4) ----
   assign dispatch_sb_id       = '0;
@@ -227,84 +270,9 @@ module tt_vpu_cii_wrapper_top
   assign lq_broadside_data_valid = '0;
   assign mem_fe_lqfull           = 1'b0;
   assign mem_id_lqnxtid          = '0;
-  // =========================================================================
-  // C3: operand pull. req = SENDER (drive req_valid/req_data + a credit counter
-  // fed by req_credit). dat = RECEIVER (assert dat_credit to pop; the beat
-  // arrives registered next cycle). A load-phase FSM requests the active source
-  // members, writes returned data into the staging regfile, and gates the
-  // tt_id<->tt_vec handshake via operands_ready so compute waits for operands.
-  //
-  // !! STRUCTURAL, PENDING FUNCTIONAL SIM (host loopback): the walk below fetches
-  // member 0 of each ENABLED source as a SKELETON. The full EMUL/iterate member
-  // set, exact staging addresses (rf_addrp + iterate incr), and the gating must
-  // be validated against the datapath read sequence with the host driving the
-  // channels. This slice establishes the verified channel plumbing + staging
-  // write path + the compute gate; it is not yet functionally complete.
-  // =========================================================================
-  logic operands_ready;
-  logic id_vex_rts_g, vex_id_rtr_g;
-  logic [$clog2(CII_N_REQ_CREDITS+1)-1:0] req_credit_cnt;
-  typedef enum logic [1:0] { L_IDLE, L_REQ, L_DRAIN, L_RUN } load_state_e;
-  load_state_e            load_state;
-  logic [3:0]             src_en;            // 0=VS1,1=VS2,2=VS3,3=VM
-  cii_caracal_srcid_e     src_id   [0:3];
-  logic [4:0]             src_base [0:3];
-  logic [1:0]             req_idx;
-  logic [2:0]             exp_cnt, rcv_cnt;
-  logic [4:0]             dst_q    [0:3];
-  logic [1:0]             dst_wr, dst_rd;
-
-  always_comb begin
-    src_en[0]=id_vec_autogen.rf_rden0; src_id[0]=CII_SRC_VS1; src_base[0]=id_vec_autogen.rf_addrp0;
-    src_en[1]=id_vec_autogen.rf_rden1; src_id[1]=CII_SRC_VS2; src_base[1]=id_vec_autogen.rf_addrp1;
-    src_en[2]=id_vec_autogen.rf_rden2; src_id[2]=CII_SRC_VS3; src_base[2]=id_vec_autogen.rf_addrp2;
-    src_en[3]=id_vec_autogen.usemask;  src_id[3]=CII_SRC_VM;  src_base[3]=5'd0;
-  end
-
-  wire req_send = (load_state==L_REQ) && src_en[req_idx] && (req_credit_cnt!=0);
-
-  always_ff @(posedge clk or negedge reset_n) begin
-    if (!reset_n) begin
-      load_state<=L_IDLE; req_idx<=2'd0; exp_cnt<=3'd0; rcv_cnt<=3'd0; dst_wr<=2'd0; dst_rd<=2'd0;
-      req_credit_cnt <= CII_N_REQ_CREDITS;
-    end else begin
-      if      ( cii_intf.req_credit && !req_send) req_credit_cnt <= req_credit_cnt + 1'b1;
-      else if (!cii_intf.req_credit &&  req_send) req_credit_cnt <= req_credit_cnt - 1'b1;
-      case (load_state)
-        L_IDLE:
-          if (id_vex_rts && !operands_ready) begin
-            req_idx<=2'd0; rcv_cnt<=3'd0; dst_wr<=2'd0; dst_rd<=2'd0;
-            exp_cnt <= {2'd0,src_en[0]}+{2'd0,src_en[1]}+{2'd0,src_en[2]}+{2'd0,src_en[3]};
-            load_state<=L_REQ;
-          end
-        L_REQ:
-          if (!src_en[req_idx]) begin
-            if (req_idx==2'd3) load_state<=L_DRAIN; else req_idx<=req_idx+1'b1;
-          end else if (req_credit_cnt!=0) begin       // a req is sent this cycle
-            dst_q[dst_wr]<=src_base[req_idx]; dst_wr<=dst_wr+1'b1;
-            if (req_idx==2'd3) load_state<=L_DRAIN; else req_idx<=req_idx+1'b1;
-          end
-        L_DRAIN: if (rcv_cnt==exp_cnt) load_state<=L_RUN;
-        L_RUN:   if (!id_vex_rts) load_state<=L_IDLE;   // instruction consumed; reload next
-        default: load_state<=L_IDLE;
-      endcase
-      if (cii_intf.dat_valid) begin rcv_cnt<=rcv_cnt+1'b1; dst_rd<=dst_rd+1'b1; end
-    end
-  end
-
-  assign operands_ready = (load_state==L_RUN);
-  assign id_vex_rts_g   = id_vex_rts && operands_ready;
-  assign vex_id_rtr_g   = vex_id_rtr && operands_ready;
-
-  // req channel (SENDER): lane 0 = current request, lane 1 = NONE.
-  assign cii_intf.req_valid   = req_send;
-  assign cii_intf.req_data[0] = '{tag:pend_tag, rsp_src_id:src_id[req_idx], rsp_src_offset:'0};
-  assign cii_intf.req_data[1] = '{tag:pend_tag, rsp_src_id:CII_SRC_NONE,    rsp_src_offset:'0};
-  // dat channel (RECEIVER): pop while draining; write returned data into staging.
-  assign cii_intf.dat_credit  = (load_state==L_DRAIN);
-  assign mem_vrf_wr           = cii_intf.dat_valid;
-  assign mem_vrf_wraddr       = dst_q[dst_rd];
-  assign mem_vrf_wrdata       = cii_intf.dat_data[0].rsp_dat;
+  // (C3 operand pull is merged into the C1+C3 prefetch FSM above -- operands are
+  //  fetched into the staging regfile BEFORE the instruction is presented to
+  //  tt_id, so no operands_ready gate on the tt_id<->tt_vec handshake.)
   // =========================================================================
   // C4: writeback. wb = SENDER (drive wb_valid/wb_data + a credit counter fed by
   // wb_credit). Priority-select one of tt_vec's result ports (1c > 2c > 3c > div),
@@ -346,6 +314,7 @@ module tt_vpu_cii_wrapper_top
                        dst_kind : dstkind_by_lqid[res_lqid],
                        vxsat    : 1'b0,
                        fflags   : {res_exc.fpNV,res_exc.fpDZ,res_exc.fpOF,res_exc.fpUF,res_exc.fpNX} } };
+  assign cii_intf.wb_data[1] = '{default:'0};    // lane 1 unused (host reads lane 0)
 
   // Debug commit trace (cosim): member 0 of the dest group.
   assign debug_wb_vec_valid = wb_fire;
@@ -409,9 +378,9 @@ module tt_vpu_cii_wrapper_top
     .o_id_type                             (id_type),          
     .o_id_immed_op                         (id_immed_op),     
 
-    // Vector Interface (rtr gated by C3 operands_ready so compute waits for operands)
+    // Vector Interface (ungated: operands are prefetched into staging before issue)
     .o_id_vex_rts                          (id_vex_rts),
-    .i_vex_id_rtr                          (vex_id_rtr_g),
+    .i_vex_id_rtr                          (vex_id_rtr),
     .o_vec_autogen                         (id_vec_autogen),   
     .o_id_vex_lqid                         (id_vex_lqid), 
     .i_vex_id_incr_addrp2                  (vex_id_incr_addrp2),    
@@ -497,7 +466,7 @@ module tt_vpu_cii_wrapper_top
     .o_sat_csr             (ocelot_sat_csr),
     // ID Interface
     .o_vex_div_busy        (vex_div_busy),
-    .i_id_vex_rts          (id_vex_rts_g),   // gated by C3 operands_ready
+    .i_id_vex_rts          (id_vex_rts),   // ungated: operands prefetched into staging
     .o_vex_id_rtr          (vex_id_rtr),
     .i_id_ex_vecldst       (id_ex_vecldst),         
     .i_id_ex_instrn        (id_ex_instrn),    
@@ -517,19 +486,19 @@ module tt_vpu_cii_wrapper_top
     .i_vrf_p1_rddata       (vrf_p1_rddata),  
     .i_vrf_p2_rddata       (vrf_p2_rddata),  
     .i_vrf_vm0_rddata      (vrf_vm0_rddata),
-    // Mem Interface
-    .o_vex_mem_lqvld_1c    (vex_mem_lqvld_1c),      
-    .o_vex_mem_lqdata_1c   (vex_mem_lqdata_1c), 
-    .o_vex_mem_lqexc_1c    (vex_mem_lqexc_1c),      
-    .o_vex_mem_lqid_1c     (vex_mem_lqid_1c), 
-    .o_vex_mem_lqvld_2c    (vex_mem_lqvld_2c),      
-    .o_vex_mem_lqdata_2c   (vex_mem_lqdata_2c), 
-    .o_vex_mem_lqexc_2c    (vex_mem_lqexc_2c),      
-    .o_vex_mem_lqid_2c     (vex_mem_lqid_2c), 
-    .o_vex_mem_lqvld_3c    (vex_mem_lqvld_3c),      
-    .o_vex_mem_lqdata_3c   (vex_mem_lqdata_3c), 
-    .o_vex_mem_lqexc_3c    (vex_mem_lqexc_3c),      
-    .o_vex_mem_lqid_3c     (vex_mem_lqid_3c), 
+    // // Mem Interface
+    // .o_vex_mem_lqvld_1c    (vex_mem_lqvld_1c),      
+    // .o_vex_mem_lqdata_1c   (vex_mem_lqdata_1c), 
+    // .o_vex_mem_lqexc_1c    (vex_mem_lqexc_1c),      
+    // .o_vex_mem_lqid_1c     (vex_mem_lqid_1c), 
+    // .o_vex_mem_lqvld_2c    (vex_mem_lqvld_2c),      
+    // .o_vex_mem_lqdata_2c   (vex_mem_lqdata_2c), 
+    // .o_vex_mem_lqexc_2c    (vex_mem_lqexc_2c),      
+    // .o_vex_mem_lqid_2c     (vex_mem_lqid_2c), 
+    // .o_vex_mem_lqvld_3c    (vex_mem_lqvld_3c),      
+    // .o_vex_mem_lqdata_3c   (vex_mem_lqdata_3c), 
+    // .o_vex_mem_lqexc_3c    (vex_mem_lqexc_3c),      
+    // .o_vex_mem_lqid_3c     (vex_mem_lqid_3c), 
     // Division connections
     .o_vex_mem_lqvld_div   (vex_mem_lqvld_div),      
     .o_vex_mem_lqdata_div  (vex_mem_lqdata_div), 
