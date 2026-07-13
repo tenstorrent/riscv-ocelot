@@ -83,6 +83,16 @@ class TTCii(vLen: Int, vlSz: Int) extends BlackBox with HasBlackBoxResource
     val wb_credit     = Input(Bool())
   })
 
+  // The flatten wrapper + the TT-CII relay stack it instantiates. The .sv are
+  // symlinks under resources/vsrc -> ../sv/v4/tt-cii/src (the vendored source of
+  // truth). The .svh package is include-only (found via the gen-collateral
+  // incdir; excluded from the compile filelist). TRACK C adds the VPU tree here.
+  addResource("/vsrc/tt_cii_caracal_pkg.svh")
+  addResource("/vsrc/rv_async_rst_dff.sv")
+  addResource("/vsrc/tt_cii_fifo.sv")
+  addResource("/vsrc/tt_cii_channel.sv")
+  addResource("/vsrc/tt_cii_interface.sv")
+  addResource("/vsrc/tt_cii.sv")
   addResource("/vsrc/tt_cii_host_wrap.sv")
 }
 
