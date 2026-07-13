@@ -234,14 +234,33 @@ module tt_vpu_cii_wrapper_top
   end
   wire [4:0] stage_addr = (pf_src == 3'd3) ? 5'd0 : (src_base + {1'b0, pf_mem});
 
-  wire req_send = (iss_state == S_REQ) && (req_credit_cnt != 0);
+  // Per-op source-set pruning: fetch only the operands the op actually reads.
+  // The decode read-enables are combinational (valid during prefetch): rf_rden0/1/2
+  // gate VS1/VS2/VS3, usemask gates the v0 mask (unmasked ops skip it, .vv ops with
+  // 2 sources skip VS3, etc.). A disabled source is stepped over with no request.
+  logic src_en;
+  always_comb begin
+    unique case (pf_src)
+      3'd0:    src_en = id_vec_autogen.rf_rden0;   // VS1
+      3'd1:    src_en = id_vec_autogen.rf_rden1;   // VS2
+      3'd2:    src_en = id_vec_autogen.rf_rden2;   // VS3 (3rd src / RMW old-dest)
+      default: src_en = id_vec_autogen.usemask;    // VM (v0 mask)
+    endcase
+  end
+
+  wire req_send = (iss_state == S_REQ) && src_en && (req_credit_cnt != 0);
 
   always_ff @(posedge clk or negedge reset_n) begin
     if (!reset_n) begin
       iss_state<=S_IDLE; pf_src<=3'd0; pf_mem<=4'd0; rcv_cnt<=6'd0; dst_wr<=6'd0; dst_rd<=6'd0;
       req_credit_cnt <= CII_N_REQ_CREDITS;
     end else begin
-      if      ( cii_intf.req_credit && !req_send) req_credit_cnt <= req_credit_cnt + 1'b1;
+      // Send-credit counter: -1 per request sent, +1 per returned credit, capped
+      // at the FIFO depth. The channel returns a credit every cycle ds_credit is
+      // high (us_credit = ds_credit, ungated by an actual pop), so WITHOUT the cap
+      // the counter overflows its width and wraps to 0 -> false back-pressure.
+      if      ( cii_intf.req_credit && !req_send && req_credit_cnt != CII_N_REQ_CREDITS)
+                                                  req_credit_cnt <= req_credit_cnt + 1'b1;
       else if (!cii_intf.req_credit &&  req_send) req_credit_cnt <= req_credit_cnt - 1'b1;
       case (iss_state)
         S_IDLE: iss_state <= S_WAIT;                  // iss_credit asserted this cycle
@@ -255,7 +274,11 @@ module tt_vpu_cii_wrapper_top
             iss_state<=S_REQ;
           end else iss_state<=S_IDLE;
         S_REQ:
-          if (req_credit_cnt != 0) begin              // a request is sent this cycle
+          if (!src_en) begin                          // source unused -> skip, no request
+            pf_mem <= 4'd0;
+            if (pf_src==3'd3) iss_state<=S_DRAIN;
+            else             pf_src<=pf_src+1'b1;
+          end else if (req_credit_cnt != 0) begin      // a request is sent this cycle
             dst_q[dst_wr[4:0]]<=stage_addr; dst_wr<=dst_wr+1'b1;
             if (pf_mem == src_nmem-1'b1) begin        // last member of this source
               pf_mem <= 4'd0;
@@ -358,8 +381,12 @@ module tt_vpu_cii_wrapper_top
   logic [$clog2(CII_N_WB_CREDITS+1)-1:0] wb_credit_cnt;
   wire wb_fire = res_v && (wb_credit_cnt != 0);
   always_ff @(posedge clk or negedge reset_n) begin
+    // Cap at the FIFO depth -- see the req counter note: the channel returns a
+    // credit every cycle wb_credit is high, so an uncapped +1 wraps the counter
+    // to 0 and drops results (this dropped member 0 of a multi-beat writeback).
     if (!reset_n)                                 wb_credit_cnt <= CII_N_WB_CREDITS;
-    else if ( cii_intf.wb_credit && !wb_fire)     wb_credit_cnt <= wb_credit_cnt + 1'b1;
+    else if ( cii_intf.wb_credit && !wb_fire && wb_credit_cnt != CII_N_WB_CREDITS)
+                                                  wb_credit_cnt <= wb_credit_cnt + 1'b1;
     else if (!cii_intf.wb_credit &&  wb_fire)     wb_credit_cnt <= wb_credit_cnt - 1'b1;
   end
 

@@ -181,6 +181,7 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
       for (int k=0;k<16;k++) seen[k] <= 1'b0;
     end else if (ifh.wb_valid) begin
       automatic int m = ifh.wb_data[0].wb_dst_offset;
+      if (seen[m]) $display("[FV] DUP dst_off=%0d (member written twice)", m);
       seen[m] <= 1'b1;
       if (ifh.wb_data[0].wb_fp_flags.last) saw_last <= 1'b1;
       $display("[FV] writeback: tag=%0d dst_off=%0d last=%b wr_en=%b data=%h",

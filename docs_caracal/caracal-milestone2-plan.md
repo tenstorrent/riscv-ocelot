@@ -636,7 +636,17 @@ counts, so the offset accounting must agree on both sides.
   (``NM`` = source LMUL): VS1 = NM; VS2 = 2·NM if ``nrwop`` or (``wdeop && src1hw``) else NM;
   VS3/dest-group = ``dst_nm``; VM = 1. Result beats ``dst_nm`` = ``wdeop ? 2·NM : NM`` (widen
   dest is 2·NM members; narrow consumes the 2·NM-member wide source but writes NM dest
-  members). SKELETON remaining: over-fetches all sources (per-op source set is future work).
+  members).
+
+  **Per-op source-set pruning.** The wrapper fetches only the operands the op reads: the
+  combinational decode read-enables gate each source — ``rf_rden0/1/2`` for VS1/VS2/VS3,
+  ``usemask`` for the v0 mask. A disabled source is stepped over with no request. (Note:
+  under tail-/mask-undisturbed vtype, ``rf_rden2`` is set so the datapath reads the old dest
+  group, and that group is correctly staged.) NOTE: this exposed and fixed a latent
+  send-credit bug — the channel returns a credit every cycle ``ds_credit`` is high
+  (``us_credit = ds_credit``, ungated by an actual pop), so the coprocessor's uncapped
+  send-credit counter overflowed its width and wrapped to 0, dropping a writeback beat; the
+  req/wb counters are now capped at the FIFO depth.
 - **C4 — Writeback (result ports → CII Writeback).** Collect
   ``o_vex_mem_lqdata_{1c,2c,3c,div}`` + ``lqid`` + ``lqexc`` per member; map ``lqid → tag``;
   drive ``wb_valid``/``wb_data {tag, wb_data (fully-formed, vta/vma applied),
@@ -676,9 +686,8 @@ loop runs end-to-end — issue → prefetch operands into staging → ``tt_id`` 
 members) — all return the correct per-member results with the right ``wb_dst_offset`` and
 ``last`` on the final member (LMUL=8 exercises 25 requests through the 16-deep credit FIFO via
 the interleaved drain). C5 is intentionally a no-op on the coprocessor (host drops killed-tag
-writebacks). Remaining: C6 (host↔coproc integration + Whisper cosim), per-op source-set
-pruning, scalar src/dst paths, and broader instruction coverage (FP, reductions, masked,
-fixed-point, ``.vx``/``.vi``).
+writebacks). Remaining: C6 (host↔coproc integration + Whisper cosim), scalar src/dst paths,
+and broader instruction coverage (FP, reductions, masked, fixed-point, ``.vx``/``.vi``).
 
 ---
 
