@@ -614,8 +614,20 @@ counts, so the offset accounting must agree on both sides.
   ungated handshake is restored and staging is guaranteed full before ``tt_vec``'s first
   iterate-read. The writeback tag is keyed by ``vec_autogen.ldqid`` (the lqid ``tt_id``
   actually assigns and echoes on the result port; ``o_id_vex_lqid`` is undriven in this
-  build). SKELETON: over-fetches all four sources at member 0 — per-op source set + EMUL
-  member walk are future work.
+  build).
+
+  **Member walk (EMUL).** ``tt_id`` presents the op once, then REPLAYS it internally once
+  per LMUL member, incrementing ``rf_addrp0/1/2`` (= base+member) and ``ldqid`` (=
+  base_ldqid+member) each member; the datapath reads the staging RF at the incrementing
+  ``rf_addrp``. So the prefetch loops (source × member): it fetches members ``0..NM-1`` of
+  each VS* into staging at ``src_base+member`` (VM/v0 is a single register → member 0 only),
+  where ``NM`` = LMUL (vlmul 0/1/2/3 → 1/2/4/8; fractional → 1). ``dat_credit`` is asserted
+  throughout the request stream (not just at drain) so the dat FIFO never backs up when
+  ``sources×NM`` exceeds the credit depth (LMUL=8 issues 25 requests vs 16 credits). Each
+  member yields one result beat carrying ``ldqid=base+member``; C4 recovers ``wb_dst_offset``
+  and the ``last`` (final-member) marker from per-lqid tables that C3 fills for **all** NM
+  members at accept. SKELETON: over-fetches all sources (per-op source set is future) and
+  assumes uniform NM (widening/narrowing, where dest EMUL ≠ src EMUL, is future).
 - **C4 — Writeback (result ports → CII Writeback).** Collect
   ``o_vex_mem_lqdata_{1c,2c,3c,div}`` + ``lqid`` + ``lqexc`` per member; map ``lqid → tag``;
   drive ``wb_valid``/``wb_data {tag, wb_data (fully-formed, vta/vma applied),
@@ -647,11 +659,15 @@ datapath is never starved when ``dat`` under-runs.
 (``vpu/fv_vpu_cii.sh`` + ``vpu/tb/cii_fv_tb.sv``): the tb plays the CII **host** through the
 real ``tt_cii`` credit relay, issues ``vadd.vv v3,v2,v1`` (SEW=32, LMUL=1, vl=8, unmasked),
 serves the coprocessor's four source-operand requests, and checks the writeback. The full
-loop runs end-to-end — issue → prefetch 4 operands into staging → ``tt_id`` decode →
-``tt_vec`` compute → writeback — and returns the correct per-lane sums (11,22,…,88) with the
-correct CII ``tag``. C5 is intentionally a no-op on the coprocessor (host drops killed-tag
-writebacks). C6 (host↔coproc integration + Whisper cosim) and the full EMUL member walk
-remain.
+loop runs end-to-end — issue → prefetch operands into staging → ``tt_id`` decode →
+``tt_vec`` compute → writeback — and returns the correct per-lane sums with the correct CII
+``tag``. The **member walk is verified across LMUL 1/2/4/8** (``+LMUL_LOG2=0..3``): each run
+fetches NM members per source, computes, and returns NM writeback beats with the right
+per-member ``wb_dst_offset`` and ``last`` on the final member (LMUL=8 exercises 25 requests
+through the 16-deep credit FIFO via the interleaved drain). C5 is intentionally a no-op on
+the coprocessor (host drops killed-tag writebacks). Remaining: C6 (host↔coproc integration +
+Whisper cosim), per-op source-set pruning, widening/narrowing (dest EMUL ≠ src EMUL), scalar
+src/dst paths, and broader instruction coverage (FP, reductions, masked, fixed-point).
 
 ---
 

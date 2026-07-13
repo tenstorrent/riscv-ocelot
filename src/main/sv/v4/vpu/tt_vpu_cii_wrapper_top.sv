@@ -157,10 +157,21 @@ module tt_vpu_cii_wrapper_top
   // deadlocked tt_id's accept through units_rtr). We decode the source regs from
   // the raw instruction, fetch vs1/vs2/vs3/v0 into the staging regfile via CII
   // req/dat, THEN release to tt_id -- staging is filled before tt_vec reads it.
-  //   S_IDLE(pop) -> S_WAIT(latch) -> S_REQ(send 4 reqs) -> S_DRAIN(recv 4 dat
+  //   S_IDLE(pop) -> S_WAIT(latch) -> S_REQ(send reqs) -> S_DRAIN(recv dat
   //   -> staging) -> S_HOLD(rts to tt_id)
-  // SKELETON: over-fetches all 4 sources at member 0 for every op (per-op source
-  // set + EMUL member walk are future work).
+  //
+  // MEMBER WALK (LMUL register groups). tt_id presents the op once, then REPLAYS
+  // it internally once per member, incrementing rf_addrp0/1/2 (= base + member)
+  // and ldqid (= base_ldqid + member). Since the datapath reads the staging RF at
+  // the incrementing rf_addrp, we must stage EVERY member of each source at
+  // base+member. So the prefetch loops (source pf_src) x (member pf_mem):
+  //   VS1@insn[19:15]+m, VS2@insn[24:20]+m, VS3@insn[11:7]+m  for m in 0..NM-1,
+  //   VM (v0 mask) is a single register -> member 0 only.
+  // NM (members) = EMUL from LMUL: vlmul 0/1/2/3 => 1/2/4/8; fractional (vlmul[2])
+  // => 1. Each member yields a separate result beat carrying ldqid=base+member;
+  // C4 recovers the dst member offset + last marker from per-lqid tables filled
+  // here for all NM members. SKELETON: over-fetches all sources (per-op source
+  // set is future work) and assumes uniform NM (widening/narrowing is future).
   typedef enum logic [2:0] { S_IDLE, S_WAIT, S_REQ, S_DRAIN, S_HOLD } iss_state_e;
   iss_state_e             iss_state;
   logic [31:0]            pend_insn;
@@ -169,34 +180,43 @@ module tt_vpu_cii_wrapper_top
   logic [CII_VL_W-1:0]    pend_vl, pend_vstart;
   logic [1:0]             pend_vxrm;
   logic [2:0]             pend_frm;
-  logic [2:0]             pf_idx;          // prefetch source index (0=VS1..3=VM)
-  logic [2:0]             rcv_cnt;
-  logic [4:0]             dst_q [0:3];     // staging write addr per request (in order)
-  logic [2:0]             dst_wr, dst_rd;
+  logic [2:0]             pf_src;          // prefetch source (0=VS1,1=VS2,2=VS3,3=VM)
+  logic [3:0]             pf_mem;          // prefetch member index (0..NM-1)
+  logic [5:0]             rcv_cnt;         // dat beats received this op
+  logic [4:0]             dst_q [0:31];    // staging write addr per request (in order)
+  logic [5:0]             dst_wr, dst_rd;  // request/receive pointers (<= 3*8+1 = 25)
   logic [$clog2(CII_N_REQ_CREDITS+1)-1:0] req_credit_cnt;
-  // CII tag + dst-kind by the VPU lqid (results carry lqid), for writeback (C4).
+  // CII writeback lookups keyed by the VPU lqid (results carry lqid): tag,
+  // dst-kind, dst member offset, and the final-member (last) marker. Filled for
+  // ALL members at accept; C4 indexes by the result lqid.
   cii_caracal_tag_t       tag_by_lqid     [0:7];
   cii_caracal_dst_kind_e  dstkind_by_lqid [0:7];
+  cii_caracal_offset_t    dstoff_by_lqid  [0:7];
+  logic                   last_by_lqid    [0:7];
 
-  // Source op-id + staging address for the current prefetch index. tt_id maps
-  // rf_addrp0=insn[19:15], rf_addrp1=insn[24:20], rf_addrp2=insn[11:7]; fill
-  // staging at those so the datapath's reads hit the fetched data.
+  // Member count (EMUL) from LMUL: 1/2/4/8; fractional LMUL -> 1 register.
+  wire [3:0] nmembers = pend_vtype.vlmul[2] ? 4'd1 : (4'd1 << pend_vtype.vlmul[1:0]);
+
+  // Source op-id + group base for the current prefetch source; VM is single-reg.
   cii_caracal_srcid_e src_id_sel;
-  logic [4:0]         src_addr_sel;
+  logic [4:0]         src_base;
   always_comb begin
-    unique case (pf_idx)
-      3'd0:    begin src_id_sel = CII_SRC_VS1; src_addr_sel = pend_insn[19:15]; end
-      3'd1:    begin src_id_sel = CII_SRC_VS2; src_addr_sel = pend_insn[24:20]; end
-      3'd2:    begin src_id_sel = CII_SRC_VS3; src_addr_sel = pend_insn[11:7];  end
-      default: begin src_id_sel = CII_SRC_VM;  src_addr_sel = 5'd0;             end
+    unique case (pf_src)
+      3'd0:    begin src_id_sel = CII_SRC_VS1; src_base = pend_insn[19:15]; end
+      3'd1:    begin src_id_sel = CII_SRC_VS2; src_base = pend_insn[24:20]; end
+      3'd2:    begin src_id_sel = CII_SRC_VS3; src_base = pend_insn[11:7];  end
+      default: begin src_id_sel = CII_SRC_VM;  src_base = 5'd0;             end
     endcase
   end
+  // members to fetch for the current source: VM is one register, VS* are NM.
+  wire [3:0] src_nmem   = (pf_src == 3'd3) ? 4'd1 : nmembers;
+  wire [4:0] stage_addr = (pf_src == 3'd3) ? 5'd0 : (src_base + {1'b0, pf_mem});
 
   wire req_send = (iss_state == S_REQ) && (req_credit_cnt != 0);
 
   always_ff @(posedge clk or negedge reset_n) begin
     if (!reset_n) begin
-      iss_state<=S_IDLE; pf_idx<=3'd0; rcv_cnt<=3'd0; dst_wr<=3'd0; dst_rd<=3'd0;
+      iss_state<=S_IDLE; pf_src<=3'd0; pf_mem<=4'd0; rcv_cnt<=6'd0; dst_wr<=6'd0; dst_rd<=6'd0;
       req_credit_cnt <= CII_N_REQ_CREDITS;
     end else begin
       if      ( cii_intf.req_credit && !req_send) req_credit_cnt <= req_credit_cnt + 1'b1;
@@ -209,21 +229,32 @@ module tt_vpu_cii_wrapper_top
             pend_vtype<=cii_intf.iss_data[0].instr.vtype;
             pend_vl<=cii_intf.iss_data[0].instr.vl; pend_vstart<=cii_intf.iss_data[0].instr.vstart;
             pend_vxrm<=cii_intf.iss_data[0].instr.vxrm; pend_frm<=cii_intf.iss_data[0].instr.frm;
-            pf_idx<=3'd0; rcv_cnt<=3'd0; dst_wr<=3'd0; dst_rd<=3'd0;
+            pf_src<=3'd0; pf_mem<=4'd0; rcv_cnt<=6'd0; dst_wr<=6'd0; dst_rd<=6'd0;
             iss_state<=S_REQ;
           end else iss_state<=S_IDLE;
         S_REQ:
           if (req_credit_cnt != 0) begin              // a request is sent this cycle
-            dst_q[dst_wr]<=src_addr_sel; dst_wr<=dst_wr+1'b1;
-            if (pf_idx==3'd3) iss_state<=S_DRAIN; else pf_idx<=pf_idx+1'b1;
+            dst_q[dst_wr[4:0]]<=stage_addr; dst_wr<=dst_wr+1'b1;
+            if (pf_mem == src_nmem-1'b1) begin        // last member of this source
+              pf_mem <= 4'd0;
+              if (pf_src==3'd3) iss_state<=S_DRAIN;    // VM was the last source
+              else             pf_src<=pf_src+1'b1;
+            end else pf_mem <= pf_mem+1'b1;
           end
-        S_DRAIN: if (rcv_cnt==3'd4) iss_state<=S_HOLD; // all 4 operands staged
+        S_DRAIN: if (rcv_cnt==dst_wr) iss_state<=S_HOLD; // all requested operands staged
         S_HOLD:
           if (ocelot_read_req) begin                  // tt_id accepted the instruction
-            // key by the lqid tt_id actually assigns (vec_autogen.ldqid); it echoes
-            // back on the result port (o_id_vex_lqid is unused/undriven in this build).
-            tag_by_lqid[id_vec_autogen.ldqid]     <= pend_tag;
-            dstkind_by_lqid[id_vec_autogen.ldqid] <= id_vec_autogen.scalar_dest ? CII_DST_INT : CII_DST_VEC;
+            // fill the per-lqid writeback tables for every member. ldqid the VPU
+            // assigns (vec_autogen.ldqid) increments by 1 per member and echoes on
+            // the result port (o_id_vex_lqid is undriven in this build).
+            for (int m=0; m<8; m++)
+              if (m < nmembers) begin
+                tag_by_lqid    [(id_vec_autogen.ldqid + m) % LQ_DEPTH] <= pend_tag;
+                dstkind_by_lqid[(id_vec_autogen.ldqid + m) % LQ_DEPTH] <=
+                                  id_vec_autogen.scalar_dest ? CII_DST_INT : CII_DST_VEC;
+                dstoff_by_lqid [(id_vec_autogen.ldqid + m) % LQ_DEPTH] <= m[CII_MEMBER_W-1:0];
+                last_by_lqid   [(id_vec_autogen.ldqid + m) % LQ_DEPTH] <= (m == (nmembers-1));
+              end
             iss_state <= S_IDLE;
           end
         default: iss_state <= S_IDLE;
@@ -245,14 +276,17 @@ module tt_vpu_cii_wrapper_top
   assign csr_de0.v_vl     = pend_vl;
   assign csr_de0.v_vstart = pend_vstart;
   assign csr_de0.frm      = pend_frm;
-  // req channel (SENDER): lane 0 = current source request, lane 1 = NONE.
+  // req channel (SENDER): lane 0 = current source+member request, lane 1 = NONE.
   assign cii_intf.req_valid   = req_send;
-  assign cii_intf.req_data[0] = '{tag:pend_tag, rsp_src_id:src_id_sel,  rsp_src_offset:'0};
+  assign cii_intf.req_data[0] = '{tag:pend_tag, rsp_src_id:src_id_sel,
+                                  rsp_src_offset:pf_mem[CII_MEMBER_W-1:0]};
   assign cii_intf.req_data[1] = '{tag:pend_tag, rsp_src_id:CII_SRC_NONE, rsp_src_offset:'0};
-  // dat channel (RECEIVER): pop while draining; write returned data into staging.
-  assign cii_intf.dat_credit  = (iss_state == S_DRAIN);
+  // dat channel (RECEIVER): pop throughout fetch (drain concurrently with the
+  // request stream so the dat FIFO never backs up when NM*sources > credit depth);
+  // write each returned beat into staging at its recorded member address.
+  assign cii_intf.dat_credit  = (iss_state == S_REQ) || (iss_state == S_DRAIN);
   assign mem_vrf_wr           = cii_intf.dat_valid;
-  assign mem_vrf_wraddr       = dst_q[dst_rd];
+  assign mem_vrf_wraddr       = dst_q[dst_rd[4:0]];
   assign mem_vrf_wrdata       = cii_intf.dat_data[0].rsp_dat;
 
   // ---- remaining tie-offs: legacy inputs + null req/dat/wb (real glue C2-C4) ----
@@ -276,13 +310,16 @@ module tt_vpu_cii_wrapper_top
   // =========================================================================
   // C4: writeback. wb = SENDER (drive wb_valid/wb_data + a credit counter fed by
   // wb_credit). Priority-select one of tt_vec's result ports (1c > 2c > 3c > div),
-  // map its lqid -> CII tag + dst_kind, and emit a wb beat. fflags come from the
-  // result exception. debug_wb_vec_* mirror it for the cosim commit trace.
+  // map its lqid -> CII tag + dst_kind + dst member offset + last, and emit a wb
+  // beat. Each LMUL member produces one result beat (lqid = base_ldqid + member);
+  // the per-lqid tables filled at accept give this beat's wb_dst_offset and the
+  // last (final-member) marker. fflags come from the result exception.
+  // debug_wb_vec_* mirror it for the cosim commit trace.
   //
-  // !! STRUCTURAL, PENDING FUNCTIONAL SIM (host loopback): wb_dst_offset=0 and
-  // last=1 assume a single-member result (matches the C3 member-0 skeleton). The
-  // real per-member dst_offset + last (final member of the group) and serializing
-  // concurrent result ports into the single wb lane need sim validation.
+  // !! PENDING (skeleton): if two result ports assert the same cycle (only across
+  // different in-flight ops -- one op's members share a latency class), the
+  // priority mux drops the loser; serializing concurrent results into the single
+  // wb lane, and holding a result when wb_credit==0, need a small result buffer.
   // =========================================================================
   logic                     res_v;
   logic [VLEN-1:0]          res_data;
@@ -308,9 +345,9 @@ module tt_vpu_cii_wrapper_top
   assign cii_intf.wb_data[0] = '{
     inst_tag      : tag_by_lqid[res_lqid],
     wb_data       : res_data,
-    wb_dst_offset : '0,                          // SKELETON: member 0 (see note)
+    wb_dst_offset : dstoff_by_lqid[res_lqid],    // dest member index of this beat
     wb_wr_en      : 1'b1,
-    wb_fp_flags   : '{ last     : 1'b1,          // SKELETON: single-member
+    wb_fp_flags   : '{ last     : last_by_lqid[res_lqid],  // final member of the group
                        dst_kind : dstkind_by_lqid[res_lqid],
                        vxsat    : 1'b0,
                        fflags   : {res_exc.fpNV,res_exc.fpDZ,res_exc.fpOF,res_exc.fpUF,res_exc.fpNX} } };
@@ -486,19 +523,19 @@ module tt_vpu_cii_wrapper_top
     .i_vrf_p1_rddata       (vrf_p1_rddata),  
     .i_vrf_p2_rddata       (vrf_p2_rddata),  
     .i_vrf_vm0_rddata      (vrf_vm0_rddata),
-    // // Mem Interface
-    // .o_vex_mem_lqvld_1c    (vex_mem_lqvld_1c),      
-    // .o_vex_mem_lqdata_1c   (vex_mem_lqdata_1c), 
-    // .o_vex_mem_lqexc_1c    (vex_mem_lqexc_1c),      
-    // .o_vex_mem_lqid_1c     (vex_mem_lqid_1c), 
-    // .o_vex_mem_lqvld_2c    (vex_mem_lqvld_2c),      
-    // .o_vex_mem_lqdata_2c   (vex_mem_lqdata_2c), 
-    // .o_vex_mem_lqexc_2c    (vex_mem_lqexc_2c),      
-    // .o_vex_mem_lqid_2c     (vex_mem_lqid_2c), 
-    // .o_vex_mem_lqvld_3c    (vex_mem_lqvld_3c),      
-    // .o_vex_mem_lqdata_3c   (vex_mem_lqdata_3c), 
-    // .o_vex_mem_lqexc_3c    (vex_mem_lqexc_3c),      
-    // .o_vex_mem_lqid_3c     (vex_mem_lqid_3c), 
+    // Mem Interface
+    .o_vex_mem_lqvld_1c    (vex_mem_lqvld_1c),      
+    .o_vex_mem_lqdata_1c   (vex_mem_lqdata_1c), 
+    .o_vex_mem_lqexc_1c    (vex_mem_lqexc_1c),      
+    .o_vex_mem_lqid_1c     (vex_mem_lqid_1c), 
+    .o_vex_mem_lqvld_2c    (vex_mem_lqvld_2c),      
+    .o_vex_mem_lqdata_2c   (vex_mem_lqdata_2c), 
+    .o_vex_mem_lqexc_2c    (vex_mem_lqexc_2c),      
+    .o_vex_mem_lqid_2c     (vex_mem_lqid_2c), 
+    .o_vex_mem_lqvld_3c    (vex_mem_lqvld_3c),      
+    .o_vex_mem_lqdata_3c   (vex_mem_lqdata_3c), 
+    .o_vex_mem_lqexc_3c    (vex_mem_lqexc_3c),      
+    .o_vex_mem_lqid_3c     (vex_mem_lqid_3c), 
     // Division connections
     .o_vex_mem_lqvld_div   (vex_mem_lqvld_div),      
     .o_vex_mem_lqdata_div  (vex_mem_lqdata_div), 
