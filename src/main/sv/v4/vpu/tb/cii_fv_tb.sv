@@ -2,24 +2,28 @@
 // cii_fv_tb -- functional smoke test for the CII VPU coprocessor (Track C).
 //
 // Plays the HOST on the CII interface (through the real tt_cii credit relay):
-//   1. issues one vadd.vv at LMUL=2 (vd=v4, vs2=v6, vs1=v2, unmasked, SEW=32,
-//      vl=16) with the vtype config carried in the extended issue packet,
+//   1. issues one vector op (selectable) with the vtype config in the extended
+//      issue packet,
 //   2. serves the coprocessor's per-member source-operand requests with known
-//      per-member VS1/VS2 data (keyed by rsp_src_id + rsp_src_offset),
-//   3. captures the TWO member writeback beats and checks each equals the
-//      per-lane sum for its member, with `last` set only on the final member.
+//      per-member data (keyed by rsp_src_id + rsp_src_offset),
+//   3. captures the per-member writeback beats and checks each equals the
+//      expected result for its dest member, with `last` on the final member.
 //
-// This exercises the member walk: C1 issue -> C3 per-member operand pull ->
-// tt_vec compute (LMUL replay) -> C4 per-member writeback.
+// Exercises the member walk incl. widening/narrowing (dst EMUL != src EMUL):
+//   +OP_SEL=0  vadd.vv    normal    SEW=32, dst NM = src NM
+//   +OP_SEL=1  vwaddu.vv  widening  src SEW=16, dst SEW=32, dst NM = 2*src NM
+//   +OP_SEL=2  vnsrl.wv   narrowing dst/vs1 SEW=16, vs2 wide SEW=32 (2*NM), dst NM
+//   +LMUL_LOG2=<n>  source LMUL = 1<<n
 // ---------------------------------------------------------------------------
 `include "tt_cii_caracal_pkg.svh"
 
 module cii_fv_tb import tt_cii_caracal_pkg::*; ;
   localparam int VLEN = 256;
-  // LMUL_LOG2 selects the register-group size: 0/1/2/3 => LMUL 1/2/4/8 => NM
-  // members. Override at runtime with +LMUL_LOG2=<n>.
+
+  int OP_SEL    = 0;
   int LMUL_LOG2 = 1;
-  int NM = 2;                    // members = 1<<LMUL_LOG2 (set in initial below)
+  int NM        = 2;    // source members = 1<<LMUL_LOG2
+  int DST_NM    = 2;    // dest members (result beats)
 
   logic clk = 1'b0;
   logic rst_n = 1'b0;
@@ -48,39 +52,75 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
     .clk(clk), .reset_n(rst_n), .cii_intf(ifc),
     .debug_wb_vec_valid(dbg_v), .debug_wb_vec_wdata(dbg_d), .debug_wb_vec_wmask(dbg_m));
 
-  // ---- per-member operand data (8 x 32b lanes per member) ----
-  // NM-aligned register groups: vd = NM, vs1 = 2*NM, vs2 = 3*NM (max 4*NM-1 <= 31).
-  logic [VLEN-1:0] vs1_mem [0:7];
-  logic [VLEN-1:0] vs2_mem [0:7];
-  logic [VLEN-1:0] exp_mem [0:7];
+  // ---- operand data + instruction (per member, keyed by src_id+offset) ----
+  logic [VLEN-1:0] vs1_mem [0:15];
+  logic [VLEN-1:0] vs2_mem [0:15];
+  logic [VLEN-1:0] exp_mem [0:15];
   logic [4:0] r_vd, r_vs1, r_vs2;
-  logic [2:0] r_vlmul;
+  logic [2:0] r_vlmul, r_funct3;
+  logic [5:0] r_funct6;
+  logic [2:0] r_vsew;
   logic [8:0] r_vl;
+
+  // pack element `val` (width w bits, w in {16,32}) at global element index
+  // `idx` into arr. Part-select width must be constant, so split on w.
+  task automatic pack(ref logic [VLEN-1:0] arr [0:15], input int idx, input int w, input longint val);
+    if (w == 16) begin
+      int per = VLEN/16; arr[idx/per][(idx%per)*16 +: 16] = val[15:0];
+    end else begin
+      int per = VLEN/32; arr[idx/per][(idx%per)*32 +: 32] = val[31:0];
+    end
+  endtask
+
   initial begin
+    void'($value$plusargs("OP_SEL=%d",    OP_SEL));
     void'($value$plusargs("LMUL_LOG2=%d", LMUL_LOG2));
     NM = 1 << LMUL_LOG2;
-    for (int mm = 0; mm < NM; mm++)
-      for (int i = 0; i < 8; i++) begin
-        automatic int e = mm*8 + i + 1;         // 1..(NM*8) across the group
-        vs1_mem[mm][i*32 +: 32] = e;
-        vs2_mem[mm][i*32 +: 32] = e * 10;
-        exp_mem[mm][i*32 +: 32] = e * 11;
+    for (int k=0;k<16;k++) begin vs1_mem[k]='0; vs2_mem[k]='0; exp_mem[k]='0; end
+    case (OP_SEL)
+      // ---- vadd.vv (normal, SEW=32) : dst NM = src NM -------------------
+      1: begin  // vwaddu.vv widening: src SEW=16, dst SEW=32, dst NM = 2*NM
+        r_vsew=3'd1; r_funct6=6'b110000; r_funct3=3'b010; // OPMVV
+        r_vd=5'(4*NM); r_vs1=5'(NM); r_vs2=5'(2*NM); r_vlmul=LMUL_LOG2[2:0];
+        r_vl=9'(NM*(VLEN/16)); DST_NM = 2*NM;
+        for (int g=0; g<NM*(VLEN/16); g++) begin // narrow src elems (16b)
+          pack(vs1_mem, g, 16, g+1);
+          pack(vs2_mem, g, 16, (g+1)*10);
+        end
+        for (int g=0; g<NM*(VLEN/16); g++)        // wide dst elems (32b)
+          pack(exp_mem, g, 32, (g+1)*11);
       end
-    r_vd    = NM[4:0];
-    r_vs1   = (2*NM);
-    r_vs2   = (3*NM);
-    r_vlmul = LMUL_LOG2[2:0];
-    r_vl    = NM*8;
+      2: begin  // vnsrl.wv narrowing: dst/vs1 SEW=16, vs2 wide SEW=32 (2*NM)
+        r_vsew=3'd1; r_funct6=6'b101100; r_funct3=3'b000; // OPIVV
+        r_vd=5'(NM); r_vs1=5'(2*NM); r_vs2=5'(4*NM); r_vlmul=LMUL_LOG2[2:0];
+        r_vl=9'(NM*(VLEN/16)); DST_NM = NM;
+        for (int g=0; g<NM*(VLEN/16); g++) begin
+          pack(vs1_mem, g, 16, 4);                // narrow shift amount = 4
+          pack(vs2_mem, g, 32, (g+1) << 4);       // wide src (32b)
+          pack(exp_mem, g, 16, g+1);              // narrow dst = vs2>>4
+        end
+      end
+      default: begin // vadd.vv normal SEW=32
+        r_vsew=3'd2; r_funct6=6'b000000; r_funct3=3'b000; // OPIVV
+        r_vd=5'(NM); r_vs1=5'(2*NM); r_vs2=5'(3*NM); r_vlmul=LMUL_LOG2[2:0];
+        r_vl=9'(NM*(VLEN/32)); DST_NM = NM;
+        for (int g=0; g<NM*(VLEN/32); g++) begin
+          pack(vs1_mem, g, 32, g+1);
+          pack(vs2_mem, g, 32, (g+1)*10);
+          pack(exp_mem, g, 32, (g+1)*11);
+        end
+      end
+    endcase
   end
 
-  // vadd.vv vd, vs2, vs1 (unmasked): {f6=0,vm=1,vs2,vs1,f3=0(OPIVV),vd,op=0x57}
-  wire [31:0] vadd_insn = {6'b000000, 1'b1, r_vs2, r_vs1, 3'b000, r_vd, 7'b1010111};
+  // instruction word: {funct6, vm=1, vs2, vs1, funct3, vd, opcode=OP-V}
+  wire [31:0] insn_w = {r_funct6, 1'b1, r_vs2, r_vs1, r_funct3, r_vd, 7'b1010111};
 
   cii_caracal_instr_t iss_instr;
   always_comb begin
     iss_instr           = '0;
-    iss_instr.insn      = vadd_insn;
-    iss_instr.vtype.vsew  = 3'd2;   // SEW=32
+    iss_instr.insn      = insn_w;
+    iss_instr.vtype.vsew  = r_vsew;
     iss_instr.vtype.vlmul = r_vlmul;
     iss_instr.vtype.vta   = 1'b0;
     iss_instr.vtype.vma   = 1'b0;
@@ -110,8 +150,6 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
   end
 
   // ---- HOST: source-request receiver + data responder ----
-  // Receiver of req (assert req_credit to pop; req_valid arrives registered).
-  // For each popped request, drive the matching member's operand back on dat.
   assign ifh.req_credit = 1'b1;    // always ready to accept a request
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -121,7 +159,6 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
     end else begin
       ifh.dat_valid <= 1'b0;
       if (ifh.req_valid) begin
-        // respond to lane 0 by {source, member}; coproc drives lane 1 = NONE.
         case (ifh.req_data[0].rsp_src_id)
           CII_SRC_VS1: ifh.dat_data[0].rsp_dat <= vs1_mem[ifh.req_data[0].rsp_src_offset];
           CII_SRC_VS2: ifh.dat_data[0].rsp_dat <= vs2_mem[ifh.req_data[0].rsp_src_offset];
@@ -132,16 +169,16 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
     end
   end
 
-  // ---- HOST: writeback receiver + self-check (one beat per member) ----
+  // ---- HOST: writeback receiver + self-check (one beat per dest member) ----
   assign ifh.wb_credit = 1'b1;     // always ready to accept a writeback
   int   errors;
-  logic seen [0:7];
+  logic seen [0:15];
   logic saw_last;
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       errors   <= 0;
       saw_last <= 1'b0;
-      for (int k=0;k<8;k++) seen[k] <= 1'b0;
+      for (int k=0;k<16;k++) seen[k] <= 1'b0;
     end else if (ifh.wb_valid) begin
       automatic int m = ifh.wb_data[0].wb_dst_offset;
       seen[m] <= 1'b1;
@@ -158,15 +195,14 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
     end
   end
 
-  // ---- cycle monitor: find where the flow stalls ----
+  // ---- cycle monitor ----
   initial begin
     @(posedge rst_n);
-    for (int c = 0; c < 90; c++) begin
+    for (int c = 0; c < 120; c++) begin
       @(posedge clk);
-      $display("[MON] c=%0d iss_v=%b iss_cr=%b rd_rtr=%b rd_val=%b iss_st=%0d | pf_src=%0d pf_mem=%0d rcv=%0d req_v=%b dat_v=%b vex_rtr=%b | lqvld=%b%b%b%b",
-        c, ifh.iss_valid, ifh.iss_credit, dut.ocelot_read_req, dut.read_valid, dut.iss_state,
-        dut.pf_src, dut.pf_mem, dut.rcv_cnt, ifh.req_valid, ifh.dat_valid, dut.vex_id_rtr,
-        dut.vex_mem_lqvld_1c, dut.vex_mem_lqvld_2c, dut.vex_mem_lqvld_3c, dut.vex_mem_lqvld_div);
+      $display("[MON] c=%0d iss_st=%0d pf_src=%0d pf_mem=%0d rcv=%0d req_v=%b dat_v=%b | dst_nm=%0d lqvld=%b%b%b%b",
+        c, dut.iss_state, dut.pf_src, dut.pf_mem, dut.rcv_cnt, ifh.req_valid, ifh.dat_valid,
+        dut.dst_nm, dut.vex_mem_lqvld_1c, dut.vex_mem_lqvld_2c, dut.vex_mem_lqvld_3c, dut.vex_mem_lqvld_div);
     end
   end
 
@@ -174,17 +210,17 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
   int wb_beats;
   always_comb begin
     wb_beats = 0;
-    for (int k=0;k<NM;k++) if (seen[k]) wb_beats++;
+    for (int k=0;k<16;k++) if (seen[k]) wb_beats++;
   end
   initial begin
     rst_n = 1'b0; repeat (5) @(posedge clk); rst_n = 1'b1;
-    repeat (400) @(posedge clk);
-    if (wb_beats != NM) $display("[FV] TIMEOUT/MISSING: %0d of %0d member writebacks seen", wb_beats, NM);
-    if (wb_beats == NM && errors == 0 && saw_last)
-      $display("[FV] *** PASSED *** (%0d members)", NM);
+    repeat (500) @(posedge clk);
+    if (wb_beats != DST_NM) $display("[FV] TIMEOUT/MISSING: %0d of %0d member writebacks seen", wb_beats, DST_NM);
+    if (wb_beats == DST_NM && errors == 0 && saw_last)
+      $display("[FV] *** PASSED *** (OP_SEL=%0d, LMUL=%0d, dst_members=%0d)", OP_SEL, NM, DST_NM);
     else
-      $display("[FV] *** FAILED *** (errors=%0d, wb_beats=%0d/%0d, saw_last=%b)",
-               errors, wb_beats, NM, saw_last);
+      $display("[FV] *** FAILED *** (OP_SEL=%0d, errors=%0d, wb_beats=%0d/%0d, saw_last=%b)",
+               OP_SEL, errors, wb_beats, DST_NM, saw_last);
     $finish;
   end
 endmodule

@@ -195,7 +195,21 @@ module tt_vpu_cii_wrapper_top
   logic                   last_by_lqid    [0:7];
 
   // Member count (EMUL) from LMUL: 1/2/4/8; fractional LMUL -> 1 register.
-  wire [3:0] nmembers = pend_vtype.vlmul[2] ? 4'd1 : (4'd1 << pend_vtype.vlmul[1:0]);
+  wire [4:0] nmembers = pend_vtype.vlmul[2] ? 5'd1 : (5'd1 << pend_vtype.vlmul[1:0]);
+
+  // Widening / narrowing (decode is combinational -> valid during prefetch).
+  //   wdeop  : dest EEW = 2*SEW  -> dest EMUL = 2*NM (2*NM result beats).
+  //   nrwop  : one source (vs2) is wide 2*SEW/2*NM; dest EMUL = NM.
+  //   src1hw : in a widening .w-form, vs2 is also wide (2*NM).
+  // Per-operand member counts (see explore: Vvv src addr half-steps, wide src /
+  // dest full-step):
+  //   VS1 (narrow)      : NM
+  //   VS2               : 2*NM if (nrwop || (wdeop && src1hw)) else NM
+  //   VS3 (= dest group): dst_nm  (fetched for RMW old-dest)
+  //   VM  (v0 mask)     : 1
+  //   dst_nm (result beats) = wdeop ? 2*NM : NM.
+  wire       vs2_wide = id_vec_autogen.nrwop || (id_vec_autogen.wdeop && id_vec_autogen.src1hw);
+  wire [4:0] dst_nm   = id_vec_autogen.wdeop ? (nmembers << 1) : nmembers;
 
   // Source op-id + group base for the current prefetch source; VM is single-reg.
   cii_caracal_srcid_e src_id_sel;
@@ -208,8 +222,16 @@ module tt_vpu_cii_wrapper_top
       default: begin src_id_sel = CII_SRC_VM;  src_base = 5'd0;             end
     endcase
   end
-  // members to fetch for the current source: VM is one register, VS* are NM.
-  wire [3:0] src_nmem   = (pf_src == 3'd3) ? 4'd1 : nmembers;
+  // members to fetch for the current source.
+  logic [4:0] src_nmem;
+  always_comb begin
+    unique case (pf_src)
+      3'd0:    src_nmem = nmembers;                        // VS1 narrow
+      3'd1:    src_nmem = vs2_wide ? (nmembers << 1) : nmembers; // VS2
+      3'd2:    src_nmem = dst_nm;                          // VS3 = dest group
+      default: src_nmem = 5'd1;                            // VM single register
+    endcase
+  end
   wire [4:0] stage_addr = (pf_src == 3'd3) ? 5'd0 : (src_base + {1'b0, pf_mem});
 
   wire req_send = (iss_state == S_REQ) && (req_credit_cnt != 0);
@@ -248,12 +270,12 @@ module tt_vpu_cii_wrapper_top
             // assigns (vec_autogen.ldqid) increments by 1 per member and echoes on
             // the result port (o_id_vex_lqid is undriven in this build).
             for (int m=0; m<8; m++)
-              if (m < nmembers) begin
+              if (m < dst_nm) begin                        // dst_nm result beats
                 tag_by_lqid    [(id_vec_autogen.ldqid + m) % LQ_DEPTH] <= pend_tag;
                 dstkind_by_lqid[(id_vec_autogen.ldqid + m) % LQ_DEPTH] <=
                                   id_vec_autogen.scalar_dest ? CII_DST_INT : CII_DST_VEC;
                 dstoff_by_lqid [(id_vec_autogen.ldqid + m) % LQ_DEPTH] <= m[CII_MEMBER_W-1:0];
-                last_by_lqid   [(id_vec_autogen.ldqid + m) % LQ_DEPTH] <= (m == (nmembers-1));
+                last_by_lqid   [(id_vec_autogen.ldqid + m) % LQ_DEPTH] <= (m == (dst_nm-1));
               end
             iss_state <= S_IDLE;
           end
