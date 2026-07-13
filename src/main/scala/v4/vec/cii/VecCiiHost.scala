@@ -338,11 +338,12 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
   // =========================================================================
   bb.io.wb_credit := !io.kill                          // always ready (1-cycle processing)
   val wb_v    = bb.io.wb_valid && !io.kill
-  val wb_tag  = bb.io.wb_tag(TAG_W - 1, 0)             // NUM_DST_WB == 1 lane
+  // Host consumes wb lane 0 only (bus is NUM_DST_WB lanes wide; lane 1 unused).
+  val wb_tag  = bb.io.wb_tag(TAG_W - 1, 0)
   val wb_off  = bb.io.wb_dst_offset(MEMBER_W - 1, 0)
   val wb_datv = bb.io.wb_data(vecVLen - 1, 0)
   val wb_wren = bb.io.wb_wr_en(0)
-  val wb_st   = bb.io.wb_status.asTypeOf(new CiiWbStatus)
+  val wb_st   = bb.io.wb_status(WB_STATUS_W - 1, 0).asTypeOf(new CiiWbStatus)
   val went    = sidetable(wb_tag)
   val is_vecd = wb_st.dst_kind === CiiConsts.DST_VEC.U
 
