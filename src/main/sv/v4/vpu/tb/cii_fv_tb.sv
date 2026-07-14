@@ -71,6 +71,8 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
   task automatic pack(ref logic [VLEN-1:0] arr [0:15], input int idx, input int w, input longint val);
     if (w == 16) begin
       int per = VLEN/16; arr[idx/per][(idx%per)*16 +: 16] = val[15:0];
+    end else if (w == 64) begin
+      int per = VLEN/64; arr[idx/per][(idx%per)*64 +: 64] = val[63:0];
     end else begin
       int per = VLEN/32; arr[idx/per][(idx%per)*32 +: 32] = val[31:0];
     end
@@ -128,6 +130,16 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
         for (int g=0; g<NM*(VLEN/32); g++) begin
           pack(vs2_mem, g, 32, (g+1)*10);
           pack(exp_mem, g, 32, (g+1)*10 + 100);
+        end
+      end
+      5: begin  // vadd.vv normal SEW=64 (matches the integrated ms12 cosim test)
+        r_vsew=3'd3; r_funct6=6'b000000; r_funct3=3'b000; // OPIVV, e64
+        r_vd=5'(NM); r_vs1=5'(2*NM); r_vs2=5'(3*NM); r_vlmul=LMUL_LOG2[2:0];
+        r_vl=9'(NM*(VLEN/64)); DST_NM = NM;
+        for (int g=0; g<NM*(VLEN/64); g++) begin
+          pack(vs1_mem, g, 64, g+1);
+          pack(vs2_mem, g, 64, (g+1)*10);
+          pack(exp_mem, g, 64, (g+1)*11);
         end
       end
       default: begin // vadd.vv normal SEW=32

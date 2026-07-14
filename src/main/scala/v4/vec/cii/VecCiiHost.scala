@@ -246,7 +246,12 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
         g_uop    := io.iss_uop.bits
         g_vxrm   := io.csr_vxrm
         g_frm    := io.csr_frm
-        g_vstart := io.csr_vstart
+        // M2 stopgap: the vector vstart CSR is not yet architecturally maintained
+        // (core.scala: "no architectural vstart/vxsat update"), so csr_vstart is
+        // stale. M2 issues past-PNR and does not resume mid-instruction on a fault,
+        // so vstart is always 0 for these ops. Forcing 0 avoids a stale non-zero
+        // vstart making the VPU treat every element as pre-start (skip -> old dest).
+        g_vstart := 0.U   // was: io.csr_vstart (stale; see above)
         g_scalar := io.scalar_rs1
         g_tag    := free_tag
         istate   := IState.sEmit
