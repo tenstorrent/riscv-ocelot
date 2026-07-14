@@ -73,7 +73,9 @@ class VecBusyTable(
   // No rebusy / speculative set path (vector wakeups are non-speculative;
   // midcore.rst:516-521).
   // --------------------------------------------------------------------------
-  val set_mask = io.rebusy_reqs.map { r =>
+  // Per-lane set masks (kept separate for the older-lane same-cycle bypass below),
+  // plus the reduced set_mask that updates the (registered) busy table.
+  val set_masks = io.rebusy_reqs.map { r =>
     val dst = (0 until VecEmul.MAX_MEMBERS).map { j =>
       UIntToOH(r.pdst(j), numPregs) & Fill(numPregs, r.valid && r.mask(j))
     }.reduce(_ | _)
@@ -81,7 +83,8 @@ class VecBusyTable(
       UIntToOH(r.pdst_tmp(j), numPregs) & Fill(numPregs, r.valid && r.is_shared && r.mask_tmp(j))
     }.reduce(_ | _)
     dst | tmp
-  }.reduce(_ | _)
+  }
+  val set_mask = set_masks.reduce(_ | _)
 
   busy_table := (busy_table & ~clear_mask) | set_mask
 
@@ -89,24 +92,34 @@ class VecBusyTable(
   // Source reads: collapse the per-member busy bits of a group into one
   // group-ready ("busy") bit. Busy if ANY active member is busy. Same-cycle
   // group-done is forwarded by masking out clear_mask (so a source woken this
-  // cycle reads ready). Mirrors the scalar read at rename-busytable.scala:69-90,
-  // minus the speculative wakeup-match override (no rebusy on the vector network).
+  // cycle reads ready).
+  //
+  // OLDER-LANE SET BYPASS: a source of lane i that is (a member of) a dest group
+  // freshly allocated by an OLDER lane k<i in THIS SAME rename packet must read
+  // BUSY -- the busy-table write is registered (visible next cycle), so without
+  // this bypass a younger consumer of a same-packet producer reads not-busy and
+  // issues before the producer's result exists. (This is the RAW hazard that let
+  // a vadd read a just-loaded vreg before the vector load's VRF write landed.)
+  // olderSet(i) = OR of the older lanes' set masks; fresh dests are never woken
+  // this cycle, so it is OR'd in after the clear.
   // --------------------------------------------------------------------------
-  def groupBusy(prn: Vec[UInt], v_emul: UInt): Bool = {
+  def groupBusy(prn: Vec[UInt], v_emul: UInt, olderSet: UInt): Bool = {
     val mc = VecEmul.memberCount(v_emul)
     (0 until VecEmul.MAX_MEMBERS).map { j =>
-      (j.U < mc) && busy_table(prn(j)) && !clear_mask(prn(j))
+      (j.U < mc) && ((busy_table(prn(j)) && !clear_mask(prn(j))) || olderSet(prn(j)))
     }.reduce(_ || _)
   }
 
   for (i <- 0 until plWidth) {
-    io.busy_resps(i).pvs1_busy := groupBusy(io.ren_srcs(i).pvs1, io.ren_srcs(i).v_emul)
-    io.busy_resps(i).pvs2_busy := groupBusy(io.ren_srcs(i).pvs2, io.ren_srcs(i).v_emul)
-    io.busy_resps(i).pvs3_busy := groupBusy(io.ren_srcs(i).pvs3, io.ren_srcs(i).v_emul)
+    val olderSet = if (i == 0) 0.U(numPregs.W) else set_masks.take(i).reduce(_ | _)
+    io.busy_resps(i).pvs1_busy := groupBusy(io.ren_srcs(i).pvs1, io.ren_srcs(i).v_emul, olderSet)
+    io.busy_resps(i).pvs2_busy := groupBusy(io.ren_srcs(i).pvs2, io.ren_srcs(i).v_emul, olderSet)
+    io.busy_resps(i).pvs3_busy := groupBusy(io.ren_srcs(i).pvs3, io.ren_srcs(i).v_emul, olderSet)
     // pvm is a single PRN (always v0); it participates only when the op is masked.
     io.busy_resps(i).pvm_busy  := io.ren_srcs(i).reads_mask &&
-                                  busy_table(io.ren_srcs(i).pvm) &&
-                                  !clear_mask(io.ren_srcs(i).pvm)
+                                  (((busy_table(io.ren_srcs(i).pvm) &&
+                                     !clear_mask(io.ren_srcs(i).pvm)) ||
+                                    olderSet(io.ren_srcs(i).pvm)))
   }
 
   io.debug.busytable := busy_table
