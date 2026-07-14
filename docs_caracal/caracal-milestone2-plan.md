@@ -559,6 +559,26 @@ modules). The vector-arith datapath is now structurally complete host↔VPU. Rem
 **functional cosim** — a vector-arith test on the `-debug` simv under Whisper (e4 / B6), the
 first true end-to-end result.
 
+**As-built — FIRST FUNCTIONAL COSIM (C6/B6 bringup).** Built the `-debug` simv and ran under
+Whisper (`USE_IMAGE_WHISPER=1 make … run-binary-debug-hex`). `ms11a2_pure_vle` (vector load)
+PASSES → the arith build does not regress the general/LS path. `ms12_vadd_expecthang`
+(`vle64 v4,v8` + `vadd.vv v12,v4,v8`, the M1 "expected-hang" arith test) now **runs
+end-to-end — no hang** (issue → operand-pull → VPU compute → writeback → ROB-retire all work,
+wb lands in the correct v12). Two bugs found and one fixed:
+  1. **`vstart` (FIXED):** the vector `vstart` CSR is not architecturally maintained, so
+     `VecCiiHost` forwarded a stale `vstart=32`; `vstart>vl` made the VPU treat every element
+     as pre-start (keep old dest) → result = old dest. Fix: `VecCiiHost` forces `g_vstart=0`
+     (M2 issues past-PNR, no mid-instruction fault resume). Result now computes `p0+p1`.
+  2. **producer→consumer race (OPEN):** a `vadd` reading a just-loaded vreg via the CII can
+     read the VRF before the vector load's write lands → garbage source. NOT a stale map
+     (probe: `vle v8` pdst=33 == vadd `map(v8)`=33) and NOT a load-write gap. With `vstart`
+     fixed **+ a dependency barrier (NOPs)** the test **`*** PASSED ***`** (v8 operand=10,
+     result=11) — the first passing arith cosim; without the barrier it mismatches. Root
+     cause: the `IQ_V_ALU`/CII arith issue is not interlocked against its vector-load
+     producer's VRF write (the vec-load wakeup clears source-busy before the data is
+     readable by the CII read ports 5/6, which have no bypass). Fix (next): a source-
+     readiness interlock / delay the vec-load wakeup on the CII path until the write commits.
+
 ---
 
 ## Track C — Refactor the SV VPU to speak the CII (coprocessor side)
