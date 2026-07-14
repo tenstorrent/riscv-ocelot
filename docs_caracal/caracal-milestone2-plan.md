@@ -569,15 +569,19 @@ wb lands in the correct v12). Two bugs found and one fixed:
      `VecCiiHost` forwarded a stale `vstart=32`; `vstart>vl` made the VPU treat every element
      as pre-start (keep old dest) → result = old dest. Fix: `VecCiiHost` forces `g_vstart=0`
      (M2 issues past-PNR, no mid-instruction fault resume). Result now computes `p0+p1`.
-  2. **producer→consumer race (OPEN):** a `vadd` reading a just-loaded vreg via the CII can
-     read the VRF before the vector load's write lands → garbage source. NOT a stale map
-     (probe: `vle v8` pdst=33 == vadd `map(v8)`=33) and NOT a load-write gap. With `vstart`
-     fixed **+ a dependency barrier (NOPs)** the test **`*** PASSED ***`** (v8 operand=10,
-     result=11) — the first passing arith cosim; without the barrier it mismatches. Root
-     cause: the `IQ_V_ALU`/CII arith issue is not interlocked against its vector-load
-     producer's VRF write (the vec-load wakeup clears source-busy before the data is
-     readable by the CII read ports 5/6, which have no bypass). Fix (next): a source-
-     readiness interlock / delay the vec-load wakeup on the CII path until the write commits.
+  2. **source-readiness interlock (FIXED).** A `vadd` reading a just-loaded vreg via the CII
+     read the VRF before the vector load's write landed → garbage source (passed only with a
+     NOP barrier). Root cause: `VecBusyTable`'s source read used only the *registered*
+     `busy_table` (+ same-cycle clear) and MISSED the same-cycle *set* from an older lane in
+     the same rename packet — so when `vle v8` (older) and the `vadd` (younger) renamed
+     together, the vadd read `v8` not-busy and issued without the dependency. The vec MAP
+     table already bypasses older-lane allocations (probe: vadd `map(v8)` = `vle v8` pdst=33),
+     but the busy table did not. Fix: OR the older lanes' set masks into the lane-i source
+     read (`VecBusyTable.groupBusy`), mirroring the map-table bypass. This also explains the
+     `v4`-correct/`v8`-garbage asymmetry (`v4` in an earlier packet → busy registered;
+     `v8` same packet → missed). **`ms12_vadd_expecthang` (no barrier) now `*** PASSED ***`
+     — the first end-to-end host↔VPU vector-arith cosim with no workaround**; the NOP variant
+     and `ms11a2_pure_vle` still pass.
 
 ---
 
