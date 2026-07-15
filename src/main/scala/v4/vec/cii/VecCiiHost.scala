@@ -89,6 +89,7 @@ class TTCii(vLen: Int, vlSz: Int) extends BlackBox with HasBlackBoxResource
   // incdir; excluded from the compile filelist). TRACK C adds the VPU tree here.
   addResource("/vsrc/tt_cii_caracal_pkg.svh")
   addResource("/vsrc/rv_async_rst_dff.sv")
+  addResource("/vsrc/rv_async_rst_dff_Tdat.sv")   // typed-data DFF used by tt_cii_channel
   addResource("/vsrc/tt_cii_fifo.sv")
   addResource("/vsrc/tt_cii_channel.sv")
   addResource("/vsrc/tt_cii_interface.sv")

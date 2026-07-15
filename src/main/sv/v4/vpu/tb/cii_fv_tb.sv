@@ -192,7 +192,7 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
   end
 
   // ---- HOST: source-request receiver + data responder ----
-  assign ifh.req_credit = 1'b1;    // always ready to accept a request
+  assign ifh.req_credit = ifh.req_valid;  // updated tt_cii: return 1 credit per req consumed
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       ifh.dat_valid   <= 1'b0;
@@ -215,7 +215,7 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
   end
 
   // ---- HOST: writeback receiver + self-check (one beat per dest member) ----
-  assign ifh.wb_credit = 1'b1;     // always ready to accept a writeback
+  assign ifh.wb_credit = ifh.wb_valid;   // updated tt_cii: return 1 credit per wb consumed
   int   errors;
   logic seen [0:15];
   logic saw_last;

@@ -26,7 +26,7 @@ vcs -sverilog -full64 -nc -q -no_save +error+30 -top cii_fv_tb -o "$BUILD/simv" 
   hf_pre.sv \
   "$SV"/vpu/packages/tt_briscv_pkg.svh "$SV"/tt-cii/src/tt_cii_caracal_pkg.svh \
   $UTIL $ARITH "$HF"/*.v "$HF"/RISCV/*.v \
-  "$SV"/tt-cii/src/rv_async_rst_dff.sv "$SV"/tt-cii/src/tt_cii_fifo.sv \
+  "$SV"/tt-cii/src/rv_async_rst_dff.sv "$SV"/tt-cii/src/rv_async_rst_dff_Tdat.sv "$SV"/tt-cii/src/tt_cii_fifo.sv \
   "$SV"/tt-cii/src/tt_cii_channel.sv "$SV"/tt-cii/src/tt_cii_interface.sv "$SV"/tt-cii/src/tt_cii.sv \
   "$SV"/vpu/decoder/autogen_riscv_imabfv.v "$SV"/vpu/decoder/tt_ascii_instrn_decode.sv \
   "$SV"/vpu/decoder/tt_decoded_mux.sv "$SV"/vpu/decoder/tt_decoder.sv "$SV"/vpu/decoder/tt_id.sv \

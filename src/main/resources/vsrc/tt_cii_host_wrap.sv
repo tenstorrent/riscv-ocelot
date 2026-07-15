@@ -121,33 +121,70 @@ module tt_cii_host_wrap
   assign iface_A.iss_data[0].instr_src_valid = iss_hint;
   assign iss_credit = iface_A.iss_credit;
 
-  // Src-request (host reads req_*, drives req_credit)
-  assign req_valid = iface_A.req_valid;
-  for (genvar i = 0; i < CII_NUM_SRC_REQ; i++) begin : g_req
-    assign req_tag      [i*CII_TAG_W    +: CII_TAG_W]    = iface_A.req_data[i].tag;
-    assign req_op_id    [i*3            +: 3]            = iface_A.req_data[i].rsp_src_id;
-    assign req_op_offset[i*CII_MEMBER_W +: CII_MEMBER_W] = iface_A.req_data[i].rsp_src_offset;
-  end
-  assign iface_A.req_credit = req_credit;
+  // ---- host-side RECEIVER FIFOs (updated tt_cii: the interface no longer buffers).
+  // The host OWNS the src-request + writeback buffers. Each FIFO pushes every
+  // incoming valid beat and pops when the flat consumer (VecCiiHost) requests it
+  // via *_credit; iface_A.*_credit returns exactly one credit per pop. A
+  // *_fifo_valid reg regenerates the "assert credit -> registered valid/data"
+  // flat-port timing VecCiiHost's receive FSMs already expect (so they are
+  // unchanged). pop_data (registered) supplies the flat data one cycle after the
+  // pop, exactly as the old relay FIFO did.
+  // VCS rejects type() on an interface-instance member (hierarchical ref), so the
+  // FIFOs carry a flat bit vector sized from the package beat types (identical
+  // layout to the interface's), and pop_data is cast back to the package struct
+  // array to unpack fields.
+  localparam int REQ_BEAT_W = $bits(cii_caracal_src_req_t);
+  localparam int WB_BEAT_W  = $bits(cii_caracal_result_t);
+  logic [CII_NUM_SRC_REQ*REQ_BEAT_W-1:0] req_fifo_bits;
+  logic [CII_NUM_DST_WB *WB_BEAT_W -1:0] wb_fifo_bits;
+  cii_caracal_src_req_t [CII_NUM_SRC_REQ-1:0] req_beat;
+  cii_caracal_result_t  [CII_NUM_DST_WB-1:0]  wb_beat;
+  assign req_beat = req_fifo_bits;
+  assign wb_beat  = wb_fifo_bits;
 
-  // Src-data (host drives dat_*, reads dat_credit)
+  wire  req_fifo_empty, wb_fifo_empty;
+  wire  req_pop = req_credit && !req_fifo_empty;   // req_credit = VecCiiHost pop request
+  wire  wb_pop  = wb_credit  && !wb_fifo_empty;
+  logic req_fifo_valid, wb_fifo_valid;
+  always_ff @(posedge clk or negedge rst_n)
+    if (!rst_n) begin req_fifo_valid <= 1'b0; wb_fifo_valid <= 1'b0; end
+    else          begin req_fifo_valid <= req_pop; wb_fifo_valid <= wb_pop; end
+
+  // Src-request : host RECEIVER FIFO
+  tt_cii_fifo #(.T(logic [CII_NUM_SRC_REQ*REQ_BEAT_W-1:0]), .DEPTH(CII_N_REQ_CREDITS)) u_req_fifo (
+    .clk(clk), .rst_n(rst_n),
+    .push(iface_A.req_valid), .push_data(iface_A.req_data),
+    .pop(req_pop), .pop_data(req_fifo_bits), .full(), .empty(req_fifo_empty));
+  assign iface_A.req_credit = req_pop;                // credit return to the coprocessor
+  assign req_valid = req_fifo_valid;
+  for (genvar i = 0; i < CII_NUM_SRC_REQ; i++) begin : g_req
+    assign req_tag      [i*CII_TAG_W    +: CII_TAG_W]    = req_beat[i].tag;
+    assign req_op_id    [i*3            +: 3]            = req_beat[i].rsp_src_id;
+    assign req_op_offset[i*CII_MEMBER_W +: CII_MEMBER_W] = req_beat[i].rsp_src_offset;
+  end
+
+  // Src-data (host drives dat_*, reads dat_credit -- host is the SENDER here)
   assign iface_A.dat_valid = dat_valid;
   for (genvar j = 0; j < CII_NUM_SRC_DAT_RSP; j++) begin : g_dat
     assign iface_A.dat_data[j].rsp_dat = dat_data[j*CII_VLEN +: CII_VLEN];
   end
   assign dat_credit = iface_A.dat_credit;
 
-  // Writeback (host reads wb_*, drives wb_credit)
-  assign wb_valid = iface_A.wb_valid;
+  // Writeback : host RECEIVER FIFO
+  tt_cii_fifo #(.T(logic [CII_NUM_DST_WB*WB_BEAT_W-1:0]), .DEPTH(CII_N_WB_CREDITS)) u_wb_fifo (
+    .clk(clk), .rst_n(rst_n),
+    .push(iface_A.wb_valid), .push_data(iface_A.wb_data),
+    .pop(wb_pop), .pop_data(wb_fifo_bits), .full(), .empty(wb_fifo_empty));
+  assign iface_A.wb_credit = wb_pop;                  // credit return to the coprocessor
+  assign wb_valid = wb_fifo_valid;
   for (genvar k = 0; k < CII_NUM_DST_WB; k++) begin : g_wb
-    assign wb_tag       [k*CII_TAG_W    +: CII_TAG_W]    = iface_A.wb_data[k].inst_tag;
-    assign wb_data      [k*CII_VLEN     +: CII_VLEN]     = iface_A.wb_data[k].wb_data;
-    assign wb_dst_offset[k*CII_MEMBER_W +: CII_MEMBER_W] = iface_A.wb_data[k].wb_dst_offset;
-    assign wb_wr_en     [k]                              = iface_A.wb_data[k].wb_wr_en;
+    assign wb_tag       [k*CII_TAG_W    +: CII_TAG_W]    = wb_beat[k].inst_tag;
+    assign wb_data      [k*CII_VLEN     +: CII_VLEN]     = wb_beat[k].wb_data;
+    assign wb_dst_offset[k*CII_MEMBER_W +: CII_MEMBER_W] = wb_beat[k].wb_dst_offset;
+    assign wb_wr_en     [k]                              = wb_beat[k].wb_wr_en;
     assign wb_status[k*$bits(cii_caracal_wb_status_t) +: $bits(cii_caracal_wb_status_t)]
-                                                         = iface_A.wb_data[k].wb_fp_flags;
+                                                         = wb_beat[k].wb_status;
   end
-  assign iface_A.wb_credit = wb_credit;
 
   // ---- coproc side: the real VPU coprocessor on iface_B (Track C, C6) -------
   // tt_vpu_cii_wrapper_top attaches to iface_B's coprocessor modport: it

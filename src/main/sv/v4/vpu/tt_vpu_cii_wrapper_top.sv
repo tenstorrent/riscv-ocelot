@@ -262,6 +262,33 @@ module tt_vpu_cii_wrapper_top
 
   wire req_send = (iss_state == S_REQ) && src_en && (req_credit_cnt != 0);
 
+  // -------------------------------------------------------------------------
+  // Receiver FIFOs (updated tt_cii: the interface no longer buffers). The
+  // coprocessor OWNS the issue + src-data buffers: push every incoming valid
+  // beat, pop when consuming, and return exactly one credit (drive *_credit)
+  // per pop. tt_cii_fifo pop_data is registered (valid 1 cyc after pop), so a
+  // *_fifo_valid reg regenerates the "credit -> registered valid/data" timing
+  // the FSM below already expects.
+  // -------------------------------------------------------------------------
+  type(cii_intf.iss_data) iss_fifo_data;
+  type(cii_intf.dat_data) dat_fifo_data;
+  wire  iss_fifo_empty, dat_fifo_empty;
+  wire  iss_pop = (iss_state == S_IDLE) && !iss_fifo_empty;
+  wire  dat_pop = ((iss_state == S_REQ) || (iss_state == S_DRAIN)) && !dat_fifo_empty;
+  logic iss_fifo_valid, dat_fifo_valid;   // RegNext(pop): pop_data valid this cycle
+  always_ff @(posedge clk or negedge reset_n)
+    if (!reset_n) begin iss_fifo_valid <= 1'b0; dat_fifo_valid <= 1'b0; end
+    else          begin iss_fifo_valid <= iss_pop; dat_fifo_valid <= dat_pop; end
+
+  tt_cii_fifo #(.T(type(cii_intf.iss_data)), .DEPTH(CII_N_ISS_CREDITS)) u_iss_fifo (
+    .clk(clk), .rst_n(reset_n),
+    .push(cii_intf.iss_valid), .push_data(cii_intf.iss_data),
+    .pop(iss_pop), .pop_data(iss_fifo_data), .full(), .empty(iss_fifo_empty));
+  tt_cii_fifo #(.T(type(cii_intf.dat_data)), .DEPTH(CII_N_DAT_CREDITS)) u_dat_fifo (
+    .clk(clk), .rst_n(reset_n),
+    .push(cii_intf.dat_valid), .push_data(cii_intf.dat_data),
+    .pop(dat_pop), .pop_data(dat_fifo_data), .full(), .empty(dat_fifo_empty));
+
   always_ff @(posedge clk or negedge reset_n) begin
     if (!reset_n) begin
       iss_state<=S_IDLE; pf_src<=3'd0; pf_mem<=4'd0; rcv_cnt<=6'd0; dst_wr<=6'd0; dst_rd<=6'd0;
@@ -275,16 +302,15 @@ module tt_vpu_cii_wrapper_top
                                                   req_credit_cnt <= req_credit_cnt + 1'b1;
       else if (!cii_intf.req_credit &&  req_send) req_credit_cnt <= req_credit_cnt - 1'b1;
       case (iss_state)
-        S_IDLE: iss_state <= S_WAIT;                  // iss_credit asserted this cycle
-        S_WAIT:
-          if (cii_intf.iss_valid) begin
-            pend_insn<=cii_intf.iss_data[0].instr.insn; pend_tag<=cii_intf.iss_data[0].tag;
-            pend_vtype<=cii_intf.iss_data[0].instr.vtype;
-            pend_vl<=cii_intf.iss_data[0].instr.vl; pend_vstart<=cii_intf.iss_data[0].instr.vstart;
-            pend_vxrm<=cii_intf.iss_data[0].instr.vxrm; pend_frm<=cii_intf.iss_data[0].instr.frm;
+        S_IDLE: if (!iss_fifo_empty) iss_state <= S_WAIT;   // pop this cycle (iss_pop)
+        S_WAIT: begin                                       // popped beat now valid
+            pend_insn<=iss_fifo_data[0].instr.insn; pend_tag<=iss_fifo_data[0].tag;
+            pend_vtype<=iss_fifo_data[0].instr.vtype;
+            pend_vl<=iss_fifo_data[0].instr.vl; pend_vstart<=iss_fifo_data[0].instr.vstart;
+            pend_vxrm<=iss_fifo_data[0].instr.vxrm; pend_frm<=iss_fifo_data[0].instr.frm;
             pf_src<=3'd0; pf_mem<=4'd0; rcv_cnt<=6'd0; dst_wr<=6'd0; dst_rd<=6'd0;
             iss_state<=S_REQ;
-          end else iss_state<=S_IDLE;
+          end
         S_REQ:
           if (!src_en) begin                          // source unused -> skip, no request
             pf_mem <= 4'd0;
@@ -316,16 +342,16 @@ module tt_vpu_cii_wrapper_top
           end
         default: iss_state <= S_IDLE;
       endcase
-      if (cii_intf.dat_valid) begin
+      if (dat_fifo_valid) begin
         rcv_cnt<=rcv_cnt+1'b1; dst_rd<=dst_rd+1'b1;
         // a scalar beat (.vx/.vf rs1) is latched for i_if_scalar_opnd, not staged.
-        if (scl_q[dst_rd[4:0]]) pend_scalar <= cii_intf.dat_data[0].rsp_dat[63:0];
+        if (scl_q[dst_rd[4:0]]) pend_scalar <= dat_fifo_data[0].rsp_dat[63:0];
       end
     end
   end
 
-  // issue channel (RECEIVER): one pop request per pass.
-  assign cii_intf.iss_credit = (iss_state == S_IDLE);
+  // issue channel (RECEIVER): return 1 credit per FIFO pop.
+  assign cii_intf.iss_credit = iss_pop;
   // present the operand-staged instruction to tt_id.
   assign read_issue_inst  = pend_insn;
   assign read_valid       = (iss_state == S_HOLD);
@@ -345,10 +371,10 @@ module tt_vpu_cii_wrapper_top
   // dat channel (RECEIVER): pop throughout fetch (drain concurrently with the
   // request stream so the dat FIFO never backs up when NM*sources > credit depth);
   // write each returned beat into staging at its recorded member address.
-  assign cii_intf.dat_credit  = (iss_state == S_REQ) || (iss_state == S_DRAIN);
-  assign mem_vrf_wr           = cii_intf.dat_valid && !scl_q[dst_rd[4:0]]; // scalar beat is not staged
+  assign cii_intf.dat_credit  = dat_pop;   // return 1 credit per src-data pop
+  assign mem_vrf_wr           = dat_fifo_valid && !scl_q[dst_rd[4:0]]; // scalar beat is not staged
   assign mem_vrf_wraddr       = dst_q[dst_rd[4:0]];
-  assign mem_vrf_wrdata       = cii_intf.dat_data[0].rsp_dat;
+  assign mem_vrf_wrdata       = dat_fifo_data[0].rsp_dat;
 
   // ---- remaining tie-offs: legacy inputs + null req/dat/wb (real glue C2-C4) ----
   assign dispatch_sb_id       = '0;
