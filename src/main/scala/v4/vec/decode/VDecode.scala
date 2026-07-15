@@ -301,14 +301,26 @@ object VDecode
         }
       } .otherwise {
         // Vector arithmetic. vd = dest, vs1/vs2 = sources.
-        // .vx/.vi variants substitute a scalar/imm for vs1; scalar operand capture
-        // + scalar-dest (vmv.x.s/vfmv.f.s/vcpop/vfirst) dst_rtype are Track B B2/B3.
         uop.lvd       := rd
         uop.dst_rtype := RT_VEC
-        uop.lvs1      := rs1
         uop.lvs2      := rs2
-        uop.lrs1_rtype := RT_X
         uop.lrs2_rtype := RT_X
+        // B2b -- the vs1 field (inst[19:15]) is a SCALAR source for .vx/.vf: OPIVX/
+        // OPMVX read an integer GPR (RT_FIX), OPFVF reads an FP reg (RT_FLT). The
+        // scalar VALUE is pulled via SRC_SCALAR (host reads the INT/FP RF at issue).
+        // .vi immediates and .vv vector sources keep lvs1 (vector) / lrs1_rtype=RT_X;
+        // .vi's immediate is decoded inside the VPU from inst[19:15].
+        val f3 = inst(14,12)
+        when (f3 === OPIVX || f3 === OPMVX) {
+          uop.lrs1       := rs1
+          uop.lrs1_rtype := RT_FIX
+        } .elsewhen (f3 === OPFVX) {   // funct3=101 == OPFVF (FP scalar .vf)
+          uop.lrs1       := rs1
+          uop.lrs1_rtype := RT_FLT
+        } .otherwise {
+          uop.lvs1       := rs1
+          uop.lrs1_rtype := RT_X
+        }
         // M2 Track B: carry FC_ALU so the IQ_V_ALU issue unit can match this uop
         // against the fu_types the CII host advertises. Isolated to IQ_V_ALU (no
         // scalar EU consumes it); M1 keeps valu fu_types=0 so it never issues.

@@ -167,8 +167,11 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
     val csr_vxrm   = Input(UInt(VXRM_W.W))
     val csr_frm    = Input(UInt(FRM_W.W))
     val csr_vstart = Input(UInt(vecVLSz.W))
-    // Scalar (.vx/.vf) operand value captured at issue (from INT/FP RF bypass).
-    val scalar_rs1 = Input(UInt(xLen.W))
+    // B2b: dedicated INT-RF read of the .vx scalar rs1 at issue (mirrors
+    // VecLSRegRead). Drive the read at grant; the registered resp lands the next
+    // cycle (= the issue-emit cycle), so it feeds the side-table scalar directly.
+    val irf_req  = DecoupledIO(UInt(log2Ceil(numIntPhysRegs).W))
+    val irf_resp = Input(UInt(xLen.W))
 
     // VRF write port (vector-dest results): CII write port 1. Per-byte mask.
     val vrf_write = Valid(new Bundle {
@@ -222,7 +225,6 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
   val g_vxrm   = Reg(UInt(VXRM_W.W))
   val g_frm    = Reg(UInt(FRM_W.W))
   val g_vstart = Reg(UInt(vecVLSz.W))
-  val g_scalar = Reg(UInt(xLen.W))
   val g_tag    = Reg(UInt(TAG_W.W))
 
   // Tag free-list (1 = free): allocate at issue emit, free on the wb `last`.
@@ -241,6 +243,12 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
   // VL-RF read: present pvl at the grant cycle; data valid next cycle (sEmit).
   io.vl_read.req_addr := io.iss_uop.bits.pvl
 
+  // B2b: read the .vx integer scalar (rs1 -> prs1) from the INT RF at grant; the
+  // registered resp lands in sEmit, feeding the side-table scalar directly. Only
+  // for RT_FIX (.vx integer); .vf (RT_FLT, FP RF) is a later addition.
+  io.irf_req.valid := grant && (io.iss_uop.bits.lrs1_rtype === RT_FIX)
+  io.irf_req.bits  := io.iss_uop.bits.prs1
+
   switch (istate) {
     is (IState.sIdle) {
       when (grant) {
@@ -253,7 +261,6 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
         // so vstart is always 0 for these ops. Forcing 0 avoids a stale non-zero
         // vstart making the VPU treat every element as pre-start (skip -> old dest).
         g_vstart := 0.U   // was: io.csr_vstart (stale; see above)
-        g_scalar := io.scalar_rs1
         g_tag    := free_tag
         istate   := IState.sEmit
       }
@@ -285,7 +292,7 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
     e.pvs2_grp        := g_uop.pvs2_grp
     e.pvs3_grp        := g_uop.pvs3_grp
     e.pvm             := g_uop.pvm
-    e.scalar          := g_scalar
+    e.scalar          := io.irf_resp   // B2b: registered INT-RF read fired at grant
     e.dst_rtype       := g_uop.dst_rtype
     e.is_shared       := g_uop.is_shared
     sidetable(g_tag)  := e

@@ -116,7 +116,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   val numIrfWritePorts        = aluWidth + lsuWidth + 1
   // +1 dedicated integer-RF read port for the vector LS base-address read when
   // usingRVV (Step 11a.2). Gated -> the vector-OFF RF is unchanged (bit-identical).
-  val numIrfLogicalReadPorts  = all_exe_units.map(_.nReaders).reduce(_+_) + (if (usingRVV) 1 else 0)
+  val numIrfLogicalReadPorts  = all_exe_units.map(_.nReaders).reduce(_+_) + (if (usingRVV) 1 else 0) +
+                                (if (usingVectorArith) 1 else 0)   // B2b: CII .vx scalar read
 
   val numIntWakeups           = coreWidth + lsuWidth + 1
   val numFpWakeupPorts        = fp_pipeline.io.wakeups.length
@@ -1572,9 +1573,9 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     cii.io.vrf_read(0).resp_data          := vec_regfile.get.io.read_ports(5).data
     vec_regfile.get.io.read_ports(6).addr := cii.io.vrf_read(1).req_addr
     cii.io.vrf_read(1).resp_data          := vec_regfile.get.io.read_ports(6).data
-    // Scalar (.vx/.vf) operand capture needs a VDecode fix (arith .vx currently
-    // sets lrs1_rtype=RT_X) + a dedicated INT/FP RF read port at issue (B2b).
-    cii.io.scalar_rs1 := 0.U
+    // B2b: the CII .vx integer scalar (rs1 -> prs1) is read on the dedicated CII
+    // int-RF logical read port wired below (arb/rrd loops); cii.io.irf_req/irf_resp.
+    // (.vf FP scalar still pending an FP-RF read port.)
     // Writeback (B3): vector-dest results -> VecRegFile write port 1 (verbatim;
     // the VPU already applied vta/vma). Placed after the write-port tie-off so
     // this wins. group_done / clr_rob / scalar_wb are consumed in B4 (needs the
@@ -1749,6 +1750,11 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     iregfile.io.arb_read_reqs(arb_idx) <> vec_ls_rr.get.io.irf_req
     arb_idx += 1
   }
+  // B2b: the CII reads the .vx integer scalar (rs1) on its own int-RF logical port.
+  if (usingVectorArith) {
+    iregfile.io.arb_read_reqs(arb_idx) <> vec_cii.get.io.irf_req
+    arb_idx += 1
+  }
   require(arb_idx == numIrfLogicalReadPorts)
   for ((unit, w) <- (alu_exe_units).zipWithIndex) {
     pregfile.io.arb_read_reqs(w) <> unit.io_arb_prf_req
@@ -1785,6 +1791,11 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
       vec_ls_rr.get.io.irf_wb(i).bits.addr := iregfile.io.write_ports(i).bits.addr
       vec_ls_rr.get.io.irf_wb(i).bits.data := iregfile.io.write_ports(i).bits.data
     }
+  }
+  // B2b: CII .vx scalar read response from its dedicated logical port.
+  if (usingVectorArith) {
+    vec_cii.get.io.irf_resp := iregfile.io.rrd_read_resps(rd_idx)
+    rd_idx += 1
   }
   require (rd_idx == numIrfLogicalReadPorts)
   for ((unit, w) <- alu_exe_units.zipWithIndex) {
