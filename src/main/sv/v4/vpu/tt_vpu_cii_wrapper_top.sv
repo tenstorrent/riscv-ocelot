@@ -210,8 +210,14 @@ module tt_vpu_cii_wrapper_top
   //   VS3 (= dest group): dst_nm  (fetched for RMW old-dest)
   //   VM  (v0 mask)     : 1
   //   dst_nm (result beats) = wdeop ? 2*NM : NM.
+  // B3b: a scalar-DEST op (vmv.x.s/vcpop.m/vfirst.m) produces exactly ONE result
+  // (a single scalar into wb_data[63:0]) regardless of LMUL -- force dst_nm=1 so
+  // the lqid writeback table sets up one beat (with last=1), matching the single
+  // result tt_vec emits. Without this, LMUL>1 would expect NM beats, the `last`
+  // beat would never arrive, and the CII tag would leak.
   wire       vs2_wide = id_vec_autogen.nrwop || (id_vec_autogen.wdeop && id_vec_autogen.src1hw);
-  wire [4:0] dst_nm   = id_vec_autogen.wdeop ? (nmembers << 1) : nmembers;
+  wire [4:0] dst_nm   = id_vec_autogen.scalar_dest ? 5'd1 :
+                        (id_vec_autogen.wdeop ? (nmembers << 1) : nmembers);
 
   // A .vx/.vf op replaces the vs1 vector source with a scalar (int rs1 or fp rs1);
   // the scalar VALUE is pulled via a SRC_SCALAR request and driven onto tt_id's

@@ -129,6 +129,7 @@ class CiiTagEntry(implicit p: Parameters) extends BoomBundle
   val pvs3_grp        = Vec(CiiConsts.MAX_MEMBERS, UInt(vecPregSz.W))
   val pvm             = UInt(vecPregSz.W)
   val scalar          = UInt(xLen.W)  // captured .vx/.vf scalar operand (B2b: real value)
+  val pdst            = UInt(maxPregSz.W)  // INT phys dest for scalar-dest ops (B3b: vmv.x.s ...)
   val dst_rtype       = UInt(3.W)   // RT_VEC vs RT_FIX/RT_FLT (scalar-dest routing, B3)
   val is_shared       = Bool()      // segment-LS second group-done (B5)
 }

@@ -34,6 +34,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 
 import boom.v4.common._
+import boom.v4.exu.ExeUnitResp
 import boom.v4.vec.rename.VecGroupDone
 
 /** BlackBox over `tt_cii_host_wrap.sv`: flat host-side view of the four CII
@@ -179,12 +180,13 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
       val data = UInt(vecVLen.W)
       val mask = UInt((vecVLen / 8).W)
     })
-    // Scalar-dest results (vmv.x.s / vfmv.f.s / vcpop.m / vfirst.m).
-    val scalar_wb = Valid(new Bundle {
-      val rob_idx  = UInt(robAddrSz.W)
-      val data     = UInt(xLen.W)
-      val to_fp    = Bool()                 // false=INT RF, true=FP RF
-    })
+    // Scalar-dest results (B3b: vmv.x.s / vcpop.m / vfirst.m -> INT RF). Shaped as
+    // an ExeUnitResp so core.scala wires it straight into a dedicated INT writeback
+    // trio (iregfile write port + int wakeup + rob.wb_resps clear), exactly like an
+    // ALU/long-latency result. Always-accepting (dedicated port), so a plain Valid.
+    // The carried uop has rob_idx / pdst / dst_rtype=RT_FIX set (all the ROB +
+    // wakeup + regfile need). FP scalar-dest (vfmv.f.s) is a later addition.
+    val scalar_wb = Valid(new ExeUnitResp(xLen))
 
     // Completion: one group-done per vector-dest OP.v + a single ROB busy-clear.
     val group_done = Valid(new VecGroupDone)
@@ -293,6 +295,7 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
     e.pvs3_grp        := g_uop.pvs3_grp
     e.pvm             := g_uop.pvm
     e.scalar          := io.irf_resp   // B2b: registered INT-RF read fired at grant
+    e.pdst            := g_uop.pdst    // B3b: INT phys dest for scalar-dest ops
     e.dst_rtype       := g_uop.dst_rtype
     e.is_shared       := g_uop.is_shared
     sidetable(g_tag)  := e
@@ -420,16 +423,31 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
   io.vrf_write.bits.data := wb_datv
   io.vrf_write.bits.mask := Fill(vecVLen / 8, 1.U(1.W))   // full; VPU applied vta/vma
 
-  io.scalar_wb.valid        := wb_v && wb_wren && !is_vecd
-  io.scalar_wb.bits.rob_idx := went.rob_idx
-  io.scalar_wb.bits.data    := wb_datv(xLen - 1, 0)
-  io.scalar_wb.bits.to_fp   := wb_st.dst_kind === CiiConsts.DST_FP.U
+  // Scalar-dest (B3b): INT RF write via the dedicated wb port in core.scala. Only
+  // DST_INT is handled here; DST_FP (vfmv.f.s) is deferred (see VDecode B3b TODO).
+  // Build a minimal ExeUnitResp: the ROB/wakeup/regfile need only rob_idx, pdst,
+  // dst_rtype=RT_FIX + data. Zero the rest so no stale flags (uses_stq/br/...) leak.
+  val scl_uop = WireInit(0.U.asTypeOf(new MicroOp))
+  scl_uop.rob_idx   := went.rob_idx
+  scl_uop.pdst      := went.pdst
+  scl_uop.dst_rtype := RT_FIX
+  io.scalar_wb.valid          := wb_v && wb_wren && !is_vecd
+  io.scalar_wb.bits           := 0.U.asTypeOf(new ExeUnitResp(xLen))
+  io.scalar_wb.bits.uop       := scl_uop
+  io.scalar_wb.bits.data      := wb_datv(xLen - 1, 0)
+  io.scalar_wb.bits.predicated := false.B
+  io.scalar_wb.bits.fflags.valid := false.B
 
+  // Completion. Vector-dest completes via group_done (VRF wakeup) + clr_rob
+  // (rob.vec_clr_bsy). Scalar-dest completes via scalar_wb's dedicated wb port
+  // (which clears the ROB itself, like any INT op) -- so group_done AND clr_rob
+  // are BOTH gated on is_vecd; the scalar-dest ROB entry must NOT also be cleared
+  // by the vector clr_rob path.
   val wb_last = wb_v && wb_st.last
   io.group_done.valid     := wb_last && is_vecd
   io.group_done.bits.prn  := went.pvdest_grp
   io.group_done.bits.mask := went.pvdest_grp_mask
-  io.clr_rob.valid := wb_last
+  io.clr_rob.valid := wb_last && is_vecd
   io.clr_rob.bits  := went.rob_idx
 
   // Tag free-list update: allocate at issue emit, free on wb `last`.

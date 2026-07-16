@@ -36,8 +36,10 @@ import boom.v4.common._
 
 class VecLSRegRead(implicit p: Parameters) extends BoomModule with VecLsConstants
 {
-  // matches core.scala's numIrfWritePorts = aluWidth + lsuWidth + 1.
-  val numIrfWritePorts = aluWidth + lsuWidth + 1
+  // matches core.scala's numIrfWritePorts (incl. the +1 CII scalar-dest write port
+  // under usingVectorArith, B3b -- so a vmv.x.s result feeding a vle base address
+  // is snooped by the base-address write-bypass below).
+  val numIrfWritePorts = aluWidth + lsuWidth + 1 + (if (usingVectorArith) 1 else 0)
 
   val io = IO(new Bundle {
     // V-LOAD issue grant (Valid, fire-and-forget).

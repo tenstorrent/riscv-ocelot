@@ -113,13 +113,17 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   fp_pipeline.io.ll_wports := DontCare
 
 
-  val numIrfWritePorts        = aluWidth + lsuWidth + 1
+  // +1 dedicated INT-RF WRITE port for the CII scalar-dest writeback (B3b:
+  // vmv.x.s/vcpop.m/vfirst.m -> INT RF) when usingVectorArith. Gated -> unchanged
+  // (bit-identical) with vector-arith off.
+  val numIrfWritePorts        = aluWidth + lsuWidth + 1 + (if (usingVectorArith) 1 else 0)
   // +1 dedicated integer-RF read port for the vector LS base-address read when
   // usingRVV (Step 11a.2). Gated -> the vector-OFF RF is unchanged (bit-identical).
   val numIrfLogicalReadPorts  = all_exe_units.map(_.nReaders).reduce(_+_) + (if (usingRVV) 1 else 0) +
                                 (if (usingVectorArith) 1 else 0)   // B2b: CII .vx scalar read
 
-  val numIntWakeups           = coreWidth + lsuWidth + 1
+  // +1 INT wakeup for the CII scalar-dest writeback (B3b), pairs with the write port.
+  val numIntWakeups           = coreWidth + lsuWidth + 1 + (if (usingVectorArith) 1 else 0)
   val numFpWakeupPorts        = fp_pipeline.io.wakeups.length
 
   val numImmReaders     = aluWidth + memWidth + 1 // "Wakeup" immediates when they are read
@@ -195,7 +199,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   val vset_wb = if (usingRVV) Some(Wire(Valid(new boom.v4.common.VsetWbResp))) else None
 
   val dispatcher       = Module(new BasicDispatcher)
-  val iregfileBankedWriteArray = Seq.fill(lsuWidth + 1) { None } ++ ((0 until aluWidth).map { w => if (enableColumnALUWrites) Some(w) else None })
+  val iregfileBankedWriteArray = Seq.fill(lsuWidth + 1) { None } ++ ((0 until aluWidth).map { w => if (enableColumnALUWrites) Some(w) else None }) ++ (if (usingVectorArith) Seq(None) else Seq())
   val iregfile         = Module(new BankedRF(
     UInt(xLen.W),
     numIrfBanks,
@@ -1290,6 +1294,28 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
 
 
   }
+  // B3b: CII scalar-dest writeback (vmv.x.s/vcpop.m/vfirst.m). A dedicated,
+  // always-accepting INT writeback trio -- iregfile write + int wakeup + rob clear
+  // -- mirroring the ll_arb path. Issued past-PNR so never branch-killed (the
+  // carried uop has br_mask=0, so IsKilledByBranch is inert); the flush guard on
+  // the ROB clear matches the surrounding writebacks.
+  if (usingVectorArith) {
+    val cii_swb = vec_cii.get.io.scalar_wb
+    int_wakeups(wu_idx).valid             := cii_swb.valid && cii_swb.bits.uop.dst_rtype === RT_FIX
+    int_wakeups(wu_idx).bits.uop          := cii_swb.bits.uop
+    int_wakeups(wu_idx).bits.speculative_mask := 0.U
+    int_wakeups(wu_idx).bits.rebusy       := false.B
+    int_wakeups(wu_idx).bits.bypassable   := false.B
+    wu_idx += 1
+
+    rob.io.wb_resps(wb_idx).valid := RegNext(cii_swb.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), cii_swb.bits))
+    rob.io.wb_resps(wb_idx).bits  := RegNext(cii_swb.bits)
+
+    iregfile.io.write_ports(wb_idx).valid     := cii_swb.valid && cii_swb.bits.uop.dst_rtype === RT_FIX
+    iregfile.io.write_ports(wb_idx).bits.addr := cii_swb.bits.uop.pdst
+    iregfile.io.write_ports(wb_idx).bits.data := cii_swb.bits.data
+    wb_idx += 1
+  }
   require (wu_idx == numIntWakeups)
   require (wb_idx == numIrfWritePorts)
 
@@ -1593,9 +1619,9 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
       iu.io.vec_wakeup_ports(1) := cii.io.group_done
     }
     rob.io.vec_clr_bsy.get(1) := cii.io.clr_rob
-    // scalar_wb (INT/FP RF write + scalar wakeup for vmv.x.s/vfmv.f.s/vcpop/
-    // vfirst) is wired with the scalar-dest decode/rename support (B3b); the
-    // adapter drives it but it is left unconsumed here.
+    // scalar_wb (INT-RF write + int wakeup + rob clear for vmv.x.s/vcpop.m/
+    // vfirst.m) is consumed by the dedicated INT writeback trio above (B3b, near
+    // the alu-loop wb_idx). FP scalar-dest (vfmv.f.s) is a later addition.
   }
 
   //-------------------------------------------------------------
