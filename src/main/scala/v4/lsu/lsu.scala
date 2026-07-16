@@ -1087,6 +1087,29 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val fired_hella_incoming = RegNext(will_fire_hella_incoming)
   val fired_hella_wakeup   = RegNext(will_fire_hella_wakeup)
 
+  // Caracal Track A: a vector STORE beat drives an LCAM store-search against the
+  // LDQ (loadstore.rst "ST->LD ordering (vector store vs. any load)": each vector
+  // store address is searched against the LDQ -- scalar AND vector loads -- like a
+  // scalar store addr-gen; a match on a younger, already-executed load sets its
+  // order_fail and replays it via the existing ordering-violation path). The beat
+  // fires appended-last (so the scalar LCAM floor is preserved and the LCAM port on
+  // this lane is free), is physical + dword-aligned, and one beat covers one dword
+  // of the US range [base, base+VL*EEW) -- the per-beat searches together cover the
+  // whole range. RegNext aligns it with the fired_store_agen search timing (the
+  // LCAM uses the prior-cycle address). Only the appended-last lane can carry it.
+  val fired_vec_store = widthMap(w => if (usingRVV && w == lsuWidth-1)
+      RegNext(will_fire_vec_load.get(w) && !io.core.vec_dmem.get.req.bits.is_load)
+    else false.B)
+  // SafeRegNext (Reg(chiselTypeOf)) so the registered widths are structurally
+  // known -- IdxAgeYoungerThan asserts widthKnown on lcam_stq_idx.
+  val vec_st_paddr   = if (usingRVV) SafeRegNext(io.core.vec_dmem.get.req.bits.addr)        else 0.U
+  val vec_st_stq_idx = if (usingRVV) SafeRegNext(io.core.vec_dmem.get.req.bits.uop.stq_idx) else 0.U((1+stqAddrSz).W)
+  // beat uop for the search, forced to a full-dword (8B) mask -- conservative: any
+  // load touching this dword conflicts (over-detect -> replay, always correct).
+  val vec_st_uop     = if (usingRVV) {
+    val u = WireInit(SafeRegNext(io.core.vec_dmem.get.req.bits.uop)); u.mem_size := 3.U; u
+  } else NullMicroOp
+
   val mem_incoming_uop     = SafeRegNext(widthMap(w => UpdateBrMask(io.core.brupdate, agen(w).bits.uop)))
   val mem_ldq_incoming_e   = RegNext(widthMap(w => UpdateBrMask(io.core.brupdate, io.core.exception, ldq_incoming_e(w))))
   val mem_stq_incoming_e   = RegNext(widthMap(w => UpdateBrMask(io.core.brupdate, io.core.exception, stq_incoming_e(w))))
@@ -1156,7 +1179,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // We have the opportunity to kill a request we sent last cycle. Use it wisely!
 
   // We translated a store last cycle
-  val do_st_search = widthMap(w => (fired_store_agen(w) || fired_store_retry(w)) && !mem_tlb_miss(w))
+  // fired_vec_store is a store-search too (Track A ST->LD). It has no TLB stage
+  // (physical, bare-mode) so it is not gated by mem_tlb_miss.
+  val do_st_search = widthMap(w => ((fired_store_agen(w) || fired_store_retry(w)) && !mem_tlb_miss(w)) || fired_vec_store(w))
   // We translated a load last cycle
   val do_ld_search = widthMap(w => ((fired_load_agen(w) || fired_load_agen_exec(w) || fired_load_retry(w)) && !mem_tlb_miss(w)) ||
                      fired_load_wakeup(w))
@@ -1167,12 +1192,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // Load wakeups don't go through TLB, get it through memory
   // Load incoming and load retries go through both
 
-  val lcam_addr  = widthMap(w => Mux(fired_store_agen(w) || fired_store_retry(w) || fired_load_agen(w) || fired_load_agen_exec(w),
+  val lcam_addr  = widthMap(w => Mux(fired_vec_store(w), vec_st_paddr.asUInt.pad(paddrBits)(paddrBits-1, 0),
+                                 Mux(fired_store_agen(w) || fired_store_retry(w) || fired_load_agen(w) || fired_load_agen_exec(w),
                                      RegNext(exe_tlb_paddr(w)),
                                      Mux(fired_release(w), RegNext(io.dmem.release.bits.address),
-                                         mem_paddr(w))))
-  val lcam_uop   = widthMap(w => Mux(do_st_search(w), mem_stq_e(w).bits.uop,
-                                 Mux(do_ld_search(w), mem_ldq_e(w).bits.uop, NullMicroOp)))
+                                         mem_paddr(w)))))
+  val lcam_uop   = widthMap(w => Mux(fired_vec_store(w), vec_st_uop,
+                                 Mux(do_st_search(w), mem_stq_e(w).bits.uop,
+                                 Mux(do_ld_search(w), mem_ldq_e(w).bits.uop, NullMicroOp))))
 
   val lcam_mask  = widthMap(w => GenByteMask(lcam_addr(w), lcam_uop(w).mem_size))
   val lcam_next_stq_idx = widthMap(w => mem_ldq_e(w).bits.next_stq_idx)
@@ -1183,8 +1210,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                       Mux(fired_load_wakeup  (w), SafeRegNext(ldq_wakeup_idx),
                       Mux(fired_load_retry   (w), SafeRegNext(ldq_retry_idx), 0.U((1+ldqAddrSz).W)))))
   val lcam_stq_idx  = widthMap(w =>
+                      Mux(fired_vec_store  (w), vec_st_stq_idx.asUInt,
                       Mux(fired_store_agen (w), mem_incoming_uop(w).stq_idx,
-                      Mux(fired_store_retry(w), SafeRegNext(stq_retry_idx), 0.U((1+stqAddrSz).W))))
+                      Mux(fired_store_retry(w), SafeRegNext(stq_retry_idx), 0.U((1+stqAddrSz).W)))))
 
   // is_younger_mask(i) == 1 means i is younger than ldq_idx (ldq_idx is older than i)
   val lcam_younger_load_mask = Wire(Vec(lsuWidth, Vec(numLdqEntries, Bool())))
