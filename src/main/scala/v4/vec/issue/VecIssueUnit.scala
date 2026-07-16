@@ -265,7 +265,10 @@ class VecIssueUnitCollapsing(
   val iss_uops = Wire(Vec(issueWidth, Valid(new MicroOp)))
   for (w <- 0 until issueWidth) {
     iss_uops(w).valid := false.B
-    iss_uops(w).bits  := DontCare
+    // Zeroed (not DontCare) so a consumer that reads bits combinationally when
+    // !valid gets a defined value, never X (Track A: core.scala reads the load
+    // head's ldq_idx to gate its grant on store->load ordering).
+    iss_uops(w).bits  := 0.U.asTypeOf(new MicroOp)
   }
 
   for (i <- 0 until numIssueSlots) {
@@ -412,7 +415,7 @@ class VecAluIssueUnit(
   // successors. Each candidate must (a) be valid, (b) request, (c) be past PNR.
   for (w <- 0 until issueWidth) {
     io.iss_uops(w).valid := false.B
-    io.iss_uops(w).bits  := DontCare
+    io.iss_uops(w).bits  := 0.U.asTypeOf(new MicroOp)   // defined (not X) when !valid; see above
   }
 
   // A killed head entry must be dropped before it can block the FIFO. A global

@@ -1523,6 +1523,19 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vstore_iss_unit.get.io.fu_types(0)(FC_AGEN) := vec_ls_rr.get.io.fu_ready &&
                                                    !vload_iss_unit.get.io.iss_uops(0).valid
 
+    // Track A store->load memory ordering. The vector LDQ/STQ placeholder entries
+    // never register an address (no LCAM disambiguation for vector ops), so a
+    // vector load must not read the dcache until all its program-order-older
+    // stores have committed and drained. SQUASH the vector-load grant until then:
+    // this keeps the load OUT of the single shared vector-LS pipe (VecLSRegRead ->
+    // AGEN), so an older store can issue through that pipe and drain (a blocked
+    // load left in the pipe would starve the store -> deadlock). The load head's
+    // ldq_idx is always defined (issue unit zeroes iss_uops.bits when !valid), and
+    // squashing a non-grant is a harmless no-op. Overrides the squash_grant tied
+    // to false in the vec-issue loop above.
+    io.lsu.vec_ld_order.get.idx        := vload_iss_unit.get.io.iss_uops(0).bits.ldq_idx
+    vload_iss_unit.get.io.squash_grant := !io.lsu.vec_ld_order.get.drained
+
     // Step 12: IQ_V_ALU is DORMANT in Milestone 1. Vector arithmetic is decoded,
     // renamed, and queued, but there is NO vector-ALU / CII execution unit yet
     // (Milestone 2), so valu_iss_unit.fu_types stays 0 (above) and the queue must

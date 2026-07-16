@@ -203,6 +203,10 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
     is (State.sIdle) {
       // Accept a LOAD beat (priority) or, if none, a STORE beat. Loads/stores are
       // serial here (fu_ready gates issue on !busy), so at most one is in flight.
+      // Store->load memory ordering (Track A) is enforced UPSTREAM: a vector load's
+      // issue is squashed until all its program-order-older stores have drained
+      // (see core.scala vload squash_grant), so a load only ever reaches here once
+      // the dcache already holds those stores' data. No gate is needed at accept.
       io.load_nop.ready  := !io.kill
       io.store_nop.ready := !io.kill && !io.load_nop.valid
       when (io.load_nop.fire) {

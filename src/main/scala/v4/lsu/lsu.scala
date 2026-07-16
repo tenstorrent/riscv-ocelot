@@ -166,6 +166,16 @@ class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
   // the scalar dcache request mux at LOWEST priority so the scalar will_fire
   // schedule is unchanged by construction (compile-time scalar floor).
   val vec_dmem = if (usingRVV) Some(new boom.v4.vec.lsu.VecDmemIO) else None
+
+  // Store->load ordering query (Track A). The core presents the ldq_idx of the
+  // vector load it is about to issue; the LSU reports whether all that load's
+  // program-order-older stores have committed and drained. The core squashes the
+  // load's grant until `drained`, so a vector load never enters the shared
+  // vector-LS pipe (and never reads the dcache) ahead of an older store.
+  val vec_ld_order = if (usingRVV) Some(new Bundle {
+    val idx     = Input(UInt((1 + ldqAddrSz).W))
+    val drained = Output(Bool())
+  }) else None
 }
 
 class LSUIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
@@ -1576,6 +1586,18 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     io.core.vec_dmem.get.nack.bits       := DontCare
     io.core.vec_dmem.get.store_ack.valid := false.B
     io.core.vec_dmem.get.store_ack.bits  := DontCare
+
+    // store->load memory ordering query (Track A). The vector LDQ/STQ placeholder
+    // entries never register an address (no LCAM disambiguation for vector ops),
+    // so a vector load must not read the dcache until all its program-order-older
+    // stores have committed and drained. core.scala presents the load it is about
+    // to ISSUE (by ldq_idx) and squashes that grant until this reports drained --
+    // keeping the load out of the shared vector-LS pipe so older stores can drain.
+    // The load's older-store boundary is ldq_next_stq_idx (the STQ tail at its
+    // dispatch); every older store has left the STQ once stq_head (which only
+    // advances on committed+succeeded stores) is younger-or-equal to the boundary.
+    io.core.vec_ld_order.get.drained :=
+      IdxAgeYe(stq_head, ldq_next_stq_idx(GetRealLSQIdx(io.core.vec_ld_order.get.idx)))
   }
   for (w <- 0 until lsuWidth) {
     wb_slow_wakeups(w).valid := false.B
