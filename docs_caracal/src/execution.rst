@@ -161,10 +161,157 @@ memory-bound are the ones this trade-off disadvantages.
 Tenstorrent Custom Instruction Interface (tt_CII)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This SPEC is Work In Progress. The main features should include:
+Design goals:
 
-1. Implement a PULL model of execution where the CoProcessor must request register operands.
-2. In-order execution of dispatched instructions.
+1. A **PULL** model of execution: the coprocessor requests the register operands it needs,
+   rather than the host pushing a fixed operand set.
+2. **In-order** execution of dispatched instructions (see the trade-off above).
 3. Usage of intermediate temp vector groups (``pvtmp`` in the VRF) for shared-instruction handoff.
 4. Extensible interface for custom instructions.
-5. Ability of CII to access register file for reads and writes.
+5. The coprocessor drives all register-file reads and writes **indirectly**, through the host,
+   using abstract operand slots and member offsets — never register numbers (see
+   :ref:`cii-prn-arn`).
+
+Channel overview
+^^^^^^^^^^^^^^^^
+
+The interface is four independent, **credit-metered, unidirectional** channels (default depth
+16 credits each). The relay between host and coprocessor is pure latency pipes with no buffering;
+each channel's **receiver** owns the FIFO and returns one credit per pop. Parameters (Caracal
+sizing): ``VLEN = 256``, ``XLEN = ELEN = 64``, ``MAX_MEMBERS = 8`` (EMUL ≤ m8), 1 issue lane,
+2 source-request / source-data lanes, 2 writeback lanes, 16 in-flight ``tag``\ s.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 14 64
+
+   * - Channel
+     - Direction
+     - Payload
+   * - **Issue**
+     - host → cop
+     - ``{tag, instr}`` — the offloaded op (see :ref:`cii-issue-packet`).
+   * - **Source-Request**
+     - cop → host
+     - ``{tag, op_id, op_offset}`` — a *pull* request for one operand beat.
+   * - **Source-Data**
+     - host → cop
+     - ``{data[VLEN]}`` — one operand beat, returned **in request order**.
+   * - **Writeback**
+     - cop → host
+     - ``{tag, wb_data[VLEN], wb_dst_offset, wb_wr_en, wb_status}`` — one result beat.
+
+The ``tag`` is an **opaque 4-bit handle** allocated by the host at issue and echoed by the
+coprocessor on every request/writeback beat. It indexes the host's per-tag **side-table**
+(``tag → {rob_idx, pvdest_grp, pvdest_grp_mask, pvs1/2/3_grp, pvm, scalar, pdst, vsew,
+dst_rtype, …}``). The coprocessor treats it as an identifier only; it never inspects its contents.
+
+What the host provides
+^^^^^^^^^^^^^^^^^^^^^^
+
+**Issue channel** — for each granted ``IQ_V_ALU`` head the host emits an issue packet (below) and
+records a side-table entry keyed by the freshly-allocated ``tag``.
+
+**Source-Data channel** — the host answers each Source-Request beat with a ``VLEN`` data beat, **in
+the same order the requests arrived** (a small in-flight ordering FIFO preserves order across the
+two lanes). It resolves the request's ``op_id`` + ``op_offset`` to a source and reads it:
+
+- a **vector** slot (``VS1``/``VS2``/``VS3``/``VM``) → a registered read of the host VRF (CII read
+  ports 5/6) at the **physical** register of that member;
+- the **scalar** slot (``SCALAR``) → the ``.vx``/``.vf`` integer/FP scalar **value**, captured from
+  the INT/FP RF at issue and served from the side-table (no VRF read).
+
+The host applies **no** ``vta``/``vma`` masking on the operand read — the coprocessor pulls the
+``v0`` mask (``VM``) and the old-destination group (``VS3``) itself and applies tail/mask internally.
+
+What the coprocessor provides
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Source-Request channel** — the coprocessor decodes the issued ``instr`` and, for every operand
+member it needs, pulls ``{tag, op_id, op_offset}``:
+
+- ``op_id`` (``cii_caracal_srcid_e``) names the *abstract* source slot, not a register:
+  ``NONE=0`` (reserved), ``VS1=1``, ``VS2=2``, ``VS3=3`` (3rd source / old dest for read-modify-write),
+  ``VM=4`` (the ``v0`` mask), ``SCALAR=5`` (the ``.vx``/``.vf`` scalar);
+- ``op_offset`` is the **LMUL member index** (0..MAX_MEMBERS-1) within the register group. For a
+  register group of ``NM = EMUL`` members the coprocessor walks ``op_offset = 0..NM-1``; widening
+  doubles the destination/relevant-source member count.
+
+**Writeback channel** — the coprocessor returns one result beat per destination member:
+
+- ``wb_data`` — the fully-formed ``VLEN`` result (``vta``/``vma`` already applied by the
+  coprocessor; the host writes it **verbatim**). A scalar result (``vmv.x.s``/``vfmv.f.s``/…)
+  occupies the low ``XLEN`` bits.
+- ``wb_dst_offset`` — the destination **member index** (again a group offset, not a register).
+- ``wb_wr_en`` — per-beat write enable.
+- ``wb_status`` = ``{last, dst_kind, vxsat, fflags}``: ``last`` marks the final beat of the ``tag``
+  (→ completion); ``dst_kind`` routes the write to ``VEC`` (VRF), ``INT`` RF, or ``FP`` RF;
+  ``vxsat`` is the sticky fixed-point saturation bit; ``fflags`` are the ``{NV,DZ,OF,UF,NX}`` FP
+  exception flags. There is no expected-count — the host frees the ``tag`` and completes the ROB
+  entry on the beat with ``last`` set.
+
+.. _cii-prn-arn:
+
+Physical vs. architectural registers: the coprocessor sees neither
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Rename is fully resolved on the host before an op crosses the CII, and the coprocessor never
+addresses a register file by number — architectural (ARN) or physical (PRN).** The division is:
+
+- The **issue packet** carries the raw 32-bit RVV instruction word, whose ``vs1``/``vs2``/``vd``
+  fields are **architectural** specifiers. The coprocessor decodes these only to derive its operand
+  *set* (which ``op_id``\ s to pull) and the op semantics — **not** to address any register file.
+- Every **Source-Request** and **Writeback** beat identifies operands by the **abstract**
+  ``{op_id, op_offset}`` / ``{tag, wb_dst_offset}`` pair — a slot and a member index, with no
+  register number at all.
+- The **host** owns the entire ARN→PRN mapping. At issue it snapshots the renamed **physical**
+  groups (``pvs1/2/3_grp``, ``pvm``, ``pvdest_grp`` — vectors of PRNs, one per LMUL member) into the
+  side-table. On a pull it resolves ``op_id + op_offset → pvs*_grp(op_offset)`` (a **PRN**) and
+  reads the physical VRF; on a writeback it resolves ``tag + wb_dst_offset →
+  pvdest_grp(wb_dst_offset)`` (a **PRN**) and writes the physical VRF.
+- Scalar ``.vx``/``.vf`` sources are delivered **by value**, not by address: the host reads the INT/FP
+  RF at the renamed physical scalar reg (``prs1``) at grant and stores the *value* in the side-table.
+  Scalar destinations are completed to the renamed physical ``pdst`` recorded at issue.
+
+This keeps the coprocessor free of rename, wakeup, and replay logic (consistent with the past-PNR,
+non-speculative issue model): it manipulates opaque tags, slots, and member offsets, while the host
+alone translates them to physical registers of the machine.
+
+.. _cii-issue-packet:
+
+Instruction issue packet
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Because the interface has no separate CSR channel and a 32-bit RVV instruction does not encode
+``vtype``, the host folds the full dynamic vector context into the issue packet
+(``cii_caracal_instr_t``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 12 68
+
+   * - Field
+     - Width
+     - Meaning / source
+   * - ``insn``
+     - 32 b
+     - Raw RVV instruction word (architectural ``vs1``/``vs2``/``vd`` fields) — from ``uop.debug_inst``.
+   * - ``vtype``
+     - 8 b
+     - ``{vsew, vlmul, vta, vma}`` snapshot — from ``uop.vconfig``.
+   * - ``vl``
+     - 9 b
+     - Active vector length — from the VL-RF read of ``uop.pvl``.
+   * - ``vstart``
+     - 9 b
+     - Start element for precise resume. M2 forces ``0`` (past-PNR issue, no mid-op fault resume).
+   * - ``vxrm``
+     - 2 b
+     - Fixed-point rounding mode — from ``csr.io.vector``.
+   * - ``frm``
+     - 3 b
+     - FP rounding mode — from ``fcsr.frm``.
+
+The packet is prefixed with the 4-bit ``tag``. A per-source ``src_reuse`` hint field exists in the
+type but is **ignored in M2** (the host drives 0 and the coprocessor re-pulls every operand);
+honoring it to elide redundant pulls is a future optimization.
