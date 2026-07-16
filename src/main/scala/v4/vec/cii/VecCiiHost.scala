@@ -185,8 +185,12 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
     // trio (iregfile write port + int wakeup + rob.wb_resps clear), exactly like an
     // ALU/long-latency result. Always-accepting (dedicated port), so a plain Valid.
     // The carried uop has rob_idx / pdst / dst_rtype=RT_FIX set (all the ROB +
-    // wakeup + regfile need). FP scalar-dest (vfmv.f.s) is a later addition.
+    // wakeup + regfile need).
     val scalar_wb = Valid(new ExeUnitResp(xLen))
+    // FP scalar-dest results (B3b-FP: vfmv.f.s -> FP RF). Data is the raw IEEE
+    // element (low SEW bits); fp-pipeline recodes (IEEE->RecFN + NaN-box) using the
+    // carried uop.mem_size (2=e32/single, 3=e64/double), mirroring an FP load.
+    val scalar_wb_fp = Valid(new ExeUnitResp(fLen + 1))
 
     // Completion: one group-done per vector-dest OP.v + a single ROB busy-clear.
     val group_done = Valid(new VecGroupDone)
@@ -295,7 +299,8 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
     e.pvs3_grp        := g_uop.pvs3_grp
     e.pvm             := g_uop.pvm
     e.scalar          := io.irf_resp   // B2b: registered INT-RF read fired at grant
-    e.pdst            := g_uop.pdst    // B3b: INT phys dest for scalar-dest ops
+    e.pdst            := g_uop.pdst           // B3b: INT/FP phys dest for scalar-dest ops
+    e.vsew            := g_uop.vconfig.vsew   // B3b-FP: recode tag for vfmv.f.s
     e.dst_rtype       := g_uop.dst_rtype
     e.is_shared       := g_uop.is_shared
     sidetable(g_tag)  := e
@@ -423,20 +428,38 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
   io.vrf_write.bits.data := wb_datv
   io.vrf_write.bits.mask := Fill(vecVLen / 8, 1.U(1.W))   // full; VPU applied vta/vma
 
-  // Scalar-dest (B3b): INT RF write via the dedicated wb port in core.scala. Only
-  // DST_INT is handled here; DST_FP (vfmv.f.s) is deferred (see VDecode B3b TODO).
-  // Build a minimal ExeUnitResp: the ROB/wakeup/regfile need only rob_idx, pdst,
-  // dst_rtype=RT_FIX + data. Zero the rest so no stale flags (uses_stq/br/...) leak.
+  // Scalar-dest (B3b): route by dst_kind. DST_INT -> scalar_wb (INT RF via the
+  // dedicated wb port in core.scala); DST_FP -> scalar_wb_fp (FP RF via the
+  // dedicated ll_wport in fp-pipeline.scala). Build a minimal ExeUnitResp: the
+  // ROB/wakeup/regfile need only rob_idx, pdst, dst_rtype + data. Zero the rest so
+  // no stale flags (uses_stq/br/...) leak.
+  val is_fpd = wb_st.dst_kind === CiiConsts.DST_FP.U
+
   val scl_uop = WireInit(0.U.asTypeOf(new MicroOp))
   scl_uop.rob_idx   := went.rob_idx
   scl_uop.pdst      := went.pdst
   scl_uop.dst_rtype := RT_FIX
-  io.scalar_wb.valid          := wb_v && wb_wren && !is_vecd
+  io.scalar_wb.valid          := wb_v && wb_wren && !is_vecd && !is_fpd
   io.scalar_wb.bits           := 0.U.asTypeOf(new ExeUnitResp(xLen))
   io.scalar_wb.bits.uop       := scl_uop
   io.scalar_wb.bits.data      := wb_datv(xLen - 1, 0)
   io.scalar_wb.bits.predicated := false.B
   io.scalar_wb.bits.fflags.valid := false.B
+
+  // FP scalar-dest (vfmv.f.s). mem_size = 3 (e64/double) else 2 (e32/single), so
+  // fp-pipeline's `recode(data, mem_size =/= 2.U)` picks the right float type +
+  // NaN-boxes -- identical to an FP load's recode path.
+  val scl_uop_fp = WireInit(0.U.asTypeOf(new MicroOp))
+  scl_uop_fp.rob_idx   := went.rob_idx
+  scl_uop_fp.pdst      := went.pdst
+  scl_uop_fp.dst_rtype := RT_FLT
+  scl_uop_fp.mem_size  := Mux(went.vsew === 3.U, 3.U, 2.U)
+  io.scalar_wb_fp.valid            := wb_v && wb_wren && !is_vecd && is_fpd
+  io.scalar_wb_fp.bits             := 0.U.asTypeOf(new ExeUnitResp(fLen + 1))
+  io.scalar_wb_fp.bits.uop         := scl_uop_fp
+  io.scalar_wb_fp.bits.data        := wb_datv(63, 0)   // raw IEEE element; recoded in fp-pipeline
+  io.scalar_wb_fp.bits.predicated  := false.B
+  io.scalar_wb_fp.bits.fflags.valid := false.B
 
   // Completion. Vector-dest completes via group_done (VRF wakeup) + clr_rob
   // (rob.vec_clr_bsy). Scalar-dest completes via scalar_wb's dedicated wb port

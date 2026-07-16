@@ -321,22 +321,21 @@ object VDecode
           uop.lvs1       := rs1
           uop.lrs1_rtype := RT_X
         }
-        // B3b -- scalar-DESTINATION ops (VWXUNARY0, OPMVV funct6=0b010000):
-        //   vmv.x.s (vs1=00000) / vcpop.m (vs1=10000) / vfirst.m (vs1=10001) write
-        //   an INT GPR (rd). The vs1 field (inst[19:15]) is a funct5 selector here,
-        //   NOT a register -- lrs1_rtype stays RT_X from the .otherwise above, so no
-        //   scalar SOURCE is read. Overriding dst_rtype to RT_FIX routes the dest
-        //   through the INTEGER rename: the vec rename gates its vector-dest alloc
-        //   on dst_rtype===RT_VEC (skipped), while int rename allocates on RT_FIX
-        //   reading ldst (= rd, set in decode.scala). vs2 stays the vector source.
-        //   The CII scalar_wb then writes the INT RF + wakes the consumer + clears
-        //   the ROB (dedicated int wb port in core.scala).
-        //   TODO(B3b-FP): vfmv.f.s (OPFVV funct6=0b010000) writes an FP reg
-        //   (RT_FLT) -- needs an FP-RF ll_wport + FP wakeup; deferred (not in the LS
-        //   regression). Left as the vector-arith default for now.
-        when (inst(31, 26) === "b010000".U && f3 === OPMVV) {
+        // B3b -- scalar-DESTINATION ops (funct6=0b010000):
+        //   VWXUNARY0 (OPMVV): vmv.x.s (vs1=00000) / vcpop.m (vs1=10000) /
+        //     vfirst.m (vs1=10001) write an INT GPR (rd) -> dst_rtype=RT_FIX.
+        //   VWFUNARY0 (OPFVV): vfmv.f.s (vs1=00000) writes an FP reg -> RT_FLT.
+        //   The vs1 field (inst[19:15]) is a funct5 selector here, NOT a register --
+        //   lrs1_rtype stays RT_X from the .otherwise above, so no scalar SOURCE is
+        //   read. Overriding dst_rtype routes the dest through the scalar (int/fp)
+        //   rename: the vec rename gates its vector-dest alloc on dst_rtype===RT_VEC
+        //   (skipped), while int/fp rename allocates on RT_FIX/RT_FLT reading ldst
+        //   (= rd, set in decode.scala). vs2 stays the vector source. The CII
+        //   scalar_wb / scalar_wb_fp then writes the INT/FP RF + wakes the consumer
+        //   + clears the ROB (dedicated wb ports in core.scala / fp-pipeline.scala).
+        when (inst(31, 26) === "b010000".U && (f3 === OPMVV || f3 === OPFVV)) {
           uop.ldst      := rd
-          uop.dst_rtype := RT_FIX
+          uop.dst_rtype := Mux(f3 === OPFVV, RT_FLT, RT_FIX)
         }
         // M2 Track B: carry FC_ALU so the IQ_V_ALU issue unit can match this uop
         // against the fu_types the CII host advertises. Isolated to IQ_V_ALU (no

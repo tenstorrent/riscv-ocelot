@@ -1621,7 +1621,9 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     rob.io.vec_clr_bsy.get(1) := cii.io.clr_rob
     // scalar_wb (INT-RF write + int wakeup + rob clear for vmv.x.s/vcpop.m/
     // vfirst.m) is consumed by the dedicated INT writeback trio above (B3b, near
-    // the alu-loop wb_idx). FP scalar-dest (vfmv.f.s) is a later addition.
+    // the alu-loop wb_idx). scalar_wb_fp (vfmv.f.s) goes to the dedicated FP
+    // ll_wport (recode + FP wakeup + rob clear inside fp_pipeline).
+    fp_pipeline.io.cii_ll_wport.get := cii.io.scalar_wb_fp
   }
 
   //-------------------------------------------------------------

@@ -29,7 +29,11 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
   val fpIssueParams = issueParams.find(_.iqType == IQ_FP).get
   val dispatchWidth = fpIssueParams.dispatchWidth
   val numLlPorts = lsuWidth
-  val numWakeupPorts = fpIssueParams.issueWidth + numLlPorts
+  // +1 dedicated FP long-latency writeback port for the CII FP scalar-dest result
+  // (B3b-FP: vfmv.f.s -> FP RF) under usingVectorArith. Gated -> the FP pipeline is
+  // unchanged (bit-identical) with vector-arith off.
+  val numCiiFpPorts = if (usingVectorArith) 1 else 0
+  val numWakeupPorts = fpIssueParams.issueWidth + numLlPorts + numCiiFpPorts
   val fpPregSz = log2Ceil(numFpPhysRegs)
 
   val io = IO(new Bundle {
@@ -43,6 +47,9 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
     // +1 for recoding.
     val ll_wports        = Flipped(Vec(lsuWidth, Valid(new ExeUnitResp(fLen+1))))// from memory unit
     val from_int         = Flipped(Decoupled(new ExeUnitResp(fLen+1)))// from integer RF
+    // B3b-FP: CII FP scalar-dest writeback (vfmv.f.s). Raw IEEE element in .data;
+    // recoded here. Always-accepting (dedicated port), so a plain Valid.
+    val cii_ll_wport     = if (usingVectorArith) Some(Flipped(Valid(new ExeUnitResp(fLen+1)))) else None
     val dgen             = Valid(new MemGen)           // to Load/Store Unit
     val to_int           = Decoupled(new ExeUnitResp(xLen))           // to integer RF
 
@@ -63,7 +70,7 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
   }
   require (numFrfReadPorts >= 3)
   val numFrfLogicalReadPorts = fpWidth * 3
-  val numFrfWritePorts = fpWidth + lsuWidth
+  val numFrfWritePorts = fpWidth + lsuWidth + numCiiFpPorts
 
   val issue_unit     = IssueUnit(fpIssueParams, numWakeupPorts, false, false)
   issue_unit.suggestName("fp_issue_unit")
@@ -214,6 +221,15 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
     fp_bypasses(w).bits  := exe_units(w).io_fpu_resp.bits
   }
 
+  // B3b-FP: dedicated CII FP scalar-dest write port. Recode the raw IEEE element
+  // (uop.mem_size selects single/double) exactly like an FP load's writeback.
+  if (usingVectorArith) {
+    val cw = io.cii_ll_wport.get
+    fregfile.io.write_ports(w_cnt).valid     := cw.valid && cw.bits.uop.dst_rtype === RT_FLT
+    fregfile.io.write_ports(w_cnt).bits.addr := cw.bits.uop.pdst
+    fregfile.io.write_ports(w_cnt).bits.data := recode(cw.bits.data, cw.bits.uop.mem_size =/= 2.U)
+    w_cnt += 1
+  }
 
   require (w_cnt == fregfile.io.write_ports.length)
 
@@ -259,6 +275,20 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
       RegNext(io.ll_wports(i).bits.data),
       RegNext(io.ll_wports(i).bits.uop.mem_size =/= 2.U)
     )
+    idx += 1
+  }
+  // B3b-FP: CII FP scalar-dest wakeup + rob writeback. Combinational (scalar_wb_fp
+  // is already registered in VecCiiHost). io.wb carries the RECODED value so
+  // core.scala's ieee(wb.data) debug conversion round-trips.
+  if (usingVectorArith) {
+    val cw = io.cii_ll_wport.get
+    fp_wakeups(idx).valid := cw.valid && cw.bits.uop.dst_rtype === RT_FLT
+    fp_wakeups(idx).bits.uop := cw.bits.uop
+    fp_wakeups(idx).bits.speculative_mask := 0.U
+    fp_wakeups(idx).bits.bypassable := false.B
+    fp_wakeups(idx).bits.rebusy := false.B
+    io.wb(idx) := cw
+    io.wb(idx).bits.data := recode(cw.bits.data, cw.bits.uop.mem_size =/= 2.U)
     idx += 1
   }
   require (idx == numWakeupPorts)

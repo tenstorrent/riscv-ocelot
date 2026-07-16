@@ -339,8 +339,14 @@ module tt_vpu_cii_wrapper_top
             for (int m=0; m<8; m++)
               if (m < dst_nm) begin                        // dst_nm result beats
                 tag_by_lqid    [(id_vec_autogen.ldqid + m) % LQ_DEPTH] <= pend_tag;
+                // B3b: scalar-dest routes to INT RF, except vfmv.f.s (OPFVV,
+                // funct3=0b001) which routes to the FP RF. autogen_v_scalar_dest
+                // fires for both OPMVV and OPFVV funct6=0b010000, so distinguish
+                // on funct3 here.
                 dstkind_by_lqid[(id_vec_autogen.ldqid + m) % LQ_DEPTH] <=
-                                  id_vec_autogen.scalar_dest ? CII_DST_INT : CII_DST_VEC;
+                                  id_vec_autogen.scalar_dest ?
+                                    ((pend_insn[14:12] == 3'b001) ? CII_DST_FP : CII_DST_INT) :
+                                    CII_DST_VEC;
                 dstoff_by_lqid [(id_vec_autogen.ldqid + m) % LQ_DEPTH] <= m[CII_MEMBER_W-1:0];
                 last_by_lqid   [(id_vec_autogen.ldqid + m) % LQ_DEPTH] <= (m == (dst_nm-1));
               end
