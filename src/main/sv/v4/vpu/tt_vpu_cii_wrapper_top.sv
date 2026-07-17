@@ -59,8 +59,7 @@ module tt_vpu_cii_wrapper_top
   /////////////////////////////////////////////////////////////////////////////
 
   // ---- Issue path (driven by the CII issue channel in C1; tied off later) ----
-  logic [4:0]                       dispatch_sb_id;
-  logic                             dispatch_next_senior, dispatch_kill;
+
   logic [31:0]                      read_issue_inst;
   logic [63:0]                      read_issue_scalar_opnd;
   logic                             read_valid;
@@ -93,28 +92,18 @@ module tt_vpu_cii_wrapper_top
   logic [4:0]                       iterate_addrp0, iterate_addrp1, iterate_addrp2;
   logic                             ignore_lmul, ignore_dstincr, ignore_srcincr;
 
-  // ---- Legacy EX/MEM forwarding + LQ (tied off -- the CII owns mem/wb) ----
-  logic                             ex_dst_vld_1c, ex_dst_vld_2c;
-  logic [LQ_DEPTH_LOG2-1:0]         ex_dst_lqid_1c, ex_dst_lqid_2c;
-  logic [31:0]                      ex_fwd_data_1c, ex_fwd_data_2c;
-  logic                             id_rf_wr_flag, id_fp_rf_wr_flag;
-  logic [4:0]                       id_rf_wraddr, id_fp_rf_wraddr;
-  tt_briscv_pkg::arr_lq_info_s      lq_broadside_info;
-  logic [LQ_DEPTH-1:0][31:0]        lq_broadside_data;
-  logic [LQ_DEPTH-1:0]              lq_broadside_valid, lq_broadside_data_valid;
-  tt_briscv_pkg::lq_info_s          id_mem_lqinfo;
-  logic                             id_mem_lqalloc, id_mem_lq_done;
-  logic                             mem_fe_lqfull;
-  logic [LQ_DEPTH_LOG2-1:0]         mem_id_lqnxtid;
-  logic                             id_is_whole_memop, id_is_masked_memop, id_is_indexldst, id_is_maskldst;
-  logic [4:0]                       id_sb_id;
-  tt_briscv_pkg::inst_state_e       id_mem_state;
 
-  // ---- Staging VRF <-> tt_vec ----
+  // ---- Source pull response data ----
   logic [VLEN-1:0]                  vrf_p0_rddata, vrf_p1_rddata, vrf_p2_rddata, vrf_vm0_rddata;
-  logic                             mem_vrf_wr;
-  logic [4:0]                       mem_vrf_wraddr;
-  logic [VLEN-1:0]                  mem_vrf_wrdata;
+  // Per-instruction OPERAND REGISTERS (replace the staging regfile). Each source
+  // port holds up to MAX_MEMBERS member beats, pulled via CII src-data and held
+  // until the whole operand set is ready; tt_vec then reads them combinationally
+  // (matching tt_vec_regfile's combinational read) at its member addresses.
+  //   opnd_p0 = VS1, opnd_p1 = VS2, opnd_p2 = VS3/old-dest, opnd_vm = v0 mask.
+  logic [VLEN-1:0]                  opnd_p0 [0:7];
+  logic [VLEN-1:0]                  opnd_p1 [0:7];
+  logic [VLEN-1:0]                  opnd_p2 [0:7];
+  logic [VLEN-1:0]                  opnd_vm;
   logic                             ocelot_sat_csr;
 
   // ---- tt_vec result ports -> CII writeback (C4) ----
@@ -123,22 +112,6 @@ module tt_vpu_cii_wrapper_top
   tt_briscv_pkg::csr_fp_exc         vex_mem_lqexc_1c, vex_mem_lqexc_2c, vex_mem_lqexc_3c, vex_mem_lqexc_div;
   logic [LQ_DEPTH_LOG2-1:0]         vex_mem_lqid_1c, vex_mem_lqid_2c, vex_mem_lqid_3c, vex_mem_lqid_div;
 
-  // ---- Staging vector register file (per-instruction operand/result buffer) ----
-  // CII operand-pull fills it (C3); the datapath reads it via the decoded source
-  // addresses; results drain to CII writeback (C4). Read addresses come from the
-  // decoded vec_autogen source fields. The write port is tied off in this slice.
-  tt_vec_regfile #(.VLEN(VLEN)) vrf (
-    .i_clk       (clk),
-    .i_reset_n   (reset_n),
-    .i_rden_0a   ({id_vec_autogen.rf_rden2, id_vec_autogen.rf_rden1, id_vec_autogen.rf_rden0}),
-    .i_rdaddr_0a ({id_vec_autogen.rf_addrp2, id_vec_autogen.rf_addrp1, id_vec_autogen.rf_addrp0}),
-    .i_wren_0a   (mem_vrf_wr),
-    .i_wraddr_0a (mem_vrf_wraddr),
-    .i_wrdata_0a (mem_vrf_wrdata),
-    .o_rddata_0a ({vrf_p2_rddata, vrf_p1_rddata, vrf_p0_rddata}),
-    .o_dstmask_0a (),
-    .o_vm0_0a    (vrf_vm0_rddata)
-  );
 
   // =========================================================================
   // C1: CII Issue channel -> tt_id. The coprocessor is the issue RECEIVER
@@ -183,7 +156,10 @@ module tt_vpu_cii_wrapper_top
   logic [2:0]             pf_src;          // prefetch source (0=VS1,1=VS2,2=VS3,3=VM)
   logic [3:0]             pf_mem;          // prefetch member index (0..NM-1)
   logic [5:0]             rcv_cnt;         // dat beats received this op
-  logic [4:0]             dst_q [0:31];    // staging write addr per request (in order)
+  // Per-request (in pull order) target: which operand register the returned beat
+  // fills. port_q: 0=VS1,1=VS2,2=VS3/old-dest,3=VM. mem_q: member index.
+  logic [1:0]             port_q [0:31];
+  logic [2:0]             mem_q  [0:31];
   logic                   scl_q [0:31];    // 1 = this request's dat is the scalar operand
   logic [5:0]             dst_wr, dst_rd;  // request/receive pointers (<= 3*8+1 = 25)
   logic [63:0]            pend_scalar;     // captured .vx/.vf scalar (-> i_if_scalar_opnd)
@@ -198,6 +174,22 @@ module tt_vpu_cii_wrapper_top
 
   // Member count (EMUL) from LMUL: 1/2/4/8; fractional LMUL -> 1 register.
   wire [4:0] nmembers = pend_vtype.vlmul[2] ? 5'd1 : (5'd1 << pend_vtype.vlmul[1:0]);
+
+
+  type(cii_intf.iss_data) iss_fifo_data;
+  type(cii_intf.dat_data) dat_fifo_data;
+  wire  iss_fifo_empty, dat_fifo_empty;
+  logic iss_fifo_valid, dat_fifo_valid;   // RegNext(pop): pop_data valid this cycle
+
+
+  logic                     res_v;
+  logic [VLEN-1:0]          res_data;
+  logic [LQ_DEPTH_LOG2-1:0] res_lqid;
+  tt_briscv_pkg::csr_fp_exc res_exc;
+
+
+  logic [$clog2(CII_N_WB_CREDITS+1)-1:0] wb_credit_cnt;
+
 
   // Widening / narrowing (decode is combinational -> valid during prefetch).
   //   wdeop  : dest EEW = 2*SEW  -> dest EMUL = 2*NM (2*NM result beats).
@@ -249,19 +241,25 @@ module tt_vpu_cii_wrapper_top
       default: src_nmem = 5'd1;                            // VM single register
     endcase
   end
-  wire [4:0] stage_addr = (pf_src == 3'd3) ? 5'd0 : (src_base + {1'b0, pf_mem});
-  // this request routes to the scalar operand latch, not the staging regfile.
+  // this request routes to the scalar operand latch, not an operand register.
   wire       req_is_scalar = (pf_src == 3'd0) && scalar_src;
 
   // Per-op source-set pruning: fetch only the operands the op actually reads.
   // The decode read-enables are combinational (valid during prefetch): rf_rden0/1/2
   // gate VS1/VS2/VS3, and vm_needed gates v0. A disabled source is stepped over.
+  // Old-dest (VS3) is needed when the op is RMW/accumulate (rf_rden2) OR when it is
+  // tail-undisturbed (vta=0) / mask-undisturbed-and-masked (vma=0 && vm bit clear):
+  // the inactive (tail / masked-off) lanes must keep the OLD dest, so tt_vec reads
+  // it as the merge source. The host serves stale_pvdest_grp for SRC_VS3.
+  wire need_old_dest = id_vec_autogen.rf_rden2 ||
+                       (~pend_vtype.vta) ||
+                       (~pend_vtype.vma && ~pend_insn[25]);
   logic src_en;
   always_comb begin
     unique case (pf_src)
       3'd0:    src_en = id_vec_autogen.rf_rden0 || scalar_src; // VS1 or scalar rs1
       3'd1:    src_en = id_vec_autogen.rf_rden1;   // VS2
-      3'd2:    src_en = id_vec_autogen.rf_rden2;   // VS3 (3rd src / RMW old-dest)
+      3'd2:    src_en = need_old_dest;             // VS3 (3rd src / RMW / undisturbed old-dest)
       default: src_en = vm_needed;                 // VM (v0 mask)
     endcase
   end
@@ -276,54 +274,87 @@ module tt_vpu_cii_wrapper_top
   // *_fifo_valid reg regenerates the "credit -> registered valid/data" timing
   // the FSM below already expects.
   // -------------------------------------------------------------------------
-  type(cii_intf.iss_data) iss_fifo_data;
-  type(cii_intf.dat_data) dat_fifo_data;
-  wire  iss_fifo_empty, dat_fifo_empty;
+  // When can i pop data from the CII FIFOs?
   wire  iss_pop = (iss_state == S_IDLE) && !iss_fifo_empty;
   wire  dat_pop = ((iss_state == S_REQ) || (iss_state == S_DRAIN)) && !dat_fifo_empty;
-  logic iss_fifo_valid, dat_fifo_valid;   // RegNext(pop): pop_data valid this cycle
-  always_ff @(posedge clk or negedge reset_n)
-    if (!reset_n) begin iss_fifo_valid <= 1'b0; dat_fifo_valid <= 1'b0; end
-    else          begin iss_fifo_valid <= iss_pop; dat_fifo_valid <= dat_pop; end
+  
 
-  tt_cii_fifo #(.T(type(cii_intf.iss_data)), .DEPTH(CII_N_ISS_CREDITS)) u_iss_fifo (
-    .clk(clk), .rst_n(reset_n),
-    .push(cii_intf.iss_valid), .push_data(cii_intf.iss_data),
-    .pop(iss_pop), .pop_data(iss_fifo_data), .full(), .empty(iss_fifo_empty));
-  tt_cii_fifo #(.T(type(cii_intf.dat_data)), .DEPTH(CII_N_DAT_CREDITS)) u_dat_fifo (
-    .clk(clk), .rst_n(reset_n),
-    .push(cii_intf.dat_valid), .push_data(cii_intf.dat_data),
-    .pop(dat_pop), .pop_data(dat_fifo_data), .full(), .empty(dat_fifo_empty));
+  // TODO DELETE This does nothing
+  always_ff @(posedge clk or negedge reset_n) begin
+    if (!reset_n) begin 
+      iss_fifo_valid <= 1'b0;
+      dat_fifo_valid <= 1'b0; 
+    end else begin 
+      iss_fifo_valid <= iss_pop; 
+      dat_fifo_valid <= dat_pop; 
+    end
+  end
+
+
 
   always_ff @(posedge clk or negedge reset_n) begin
     if (!reset_n) begin
-      iss_state<=S_IDLE; pf_src<=3'd0; pf_mem<=4'd0; rcv_cnt<=6'd0; dst_wr<=6'd0; dst_rd<=6'd0;
-      req_credit_cnt <= CII_N_REQ_CREDITS;
+      iss_state       <=  S_IDLE; 
+      pf_src          <=  3'd0; 
+      pf_mem          <=  4'd0; 
+      rcv_cnt         <=  6'd0; 
+      dst_wr          <=  6'd0; 
+      dst_rd          <=  6'd0;
+      req_credit_cnt  <=  CII_N_REQ_CREDITS;
+    
     end else begin
       // Send-credit counter: -1 per request sent, +1 per returned credit, capped
       // at the FIFO depth. The channel returns a credit every cycle ds_credit is
       // high (us_credit = ds_credit, ungated by an actual pop), so WITHOUT the cap
       // the counter overflows its width and wraps to 0 -> false back-pressure.
-      if      ( cii_intf.req_credit && !req_send && req_credit_cnt != CII_N_REQ_CREDITS)
-                                                  req_credit_cnt <= req_credit_cnt + 1'b1;
-      else if (!cii_intf.req_credit &&  req_send) req_credit_cnt <= req_credit_cnt - 1'b1;
+      if (  cii_intf.req_credit && !req_send && req_credit_cnt != CII_N_REQ_CREDITS ) begin
+        req_credit_cnt <= req_credit_cnt + 1'b1;
+      
+      end else if (!cii_intf.req_credit && req_send) begin
+        req_credit_cnt <= req_credit_cnt - 1'b1;
+
+      end
+
       case (iss_state)
-        S_IDLE: if (!iss_fifo_empty) iss_state <= S_WAIT;   // pop this cycle (iss_pop)
-        S_WAIT: begin                                       // popped beat now valid
-            pend_insn<=iss_fifo_data[0].instr.insn; pend_tag<=iss_fifo_data[0].tag;
-            pend_vtype<=iss_fifo_data[0].instr.vtype;
-            pend_vl<=iss_fifo_data[0].instr.vl; pend_vstart<=iss_fifo_data[0].instr.vstart;
-            pend_vxrm<=iss_fifo_data[0].instr.vxrm; pend_frm<=iss_fifo_data[0].instr.frm;
-            pf_src<=3'd0; pf_mem<=4'd0; rcv_cnt<=6'd0; dst_wr<=6'd0; dst_rd<=6'd0;
-            iss_state<=S_REQ;
+        S_IDLE: begin
+          if (!iss_fifo_empty) begin
+            iss_state   <=  S_WAIT;   // pop this cycle (iss_pop)
           end
+        end
+
+        S_WAIT: begin   // popped beat now valid
+            pend_insn   <=  iss_fifo_data[0].instr.insn; 
+            pend_tag    <=  iss_fifo_data[0].tag;
+            pend_vtype  <=  iss_fifo_data[0].instr.vtype;
+            pend_vl     <=  iss_fifo_data[0].instr.vl; 
+            pend_vstart <=  iss_fifo_data[0].instr.vstart;
+            pend_vxrm   <=  iss_fifo_data[0].instr.vxrm; 
+            pend_frm    <=  iss_fifo_data[0].instr.frm;
+            pf_src      <=  3'd0; 
+            pf_mem      <=  4'd0; 
+            rcv_cnt     <=  6'd0; 
+            dst_wr      <=  6'd0; 
+            dst_rd      <=  6'd0;
+            iss_state   <=  S_REQ;
+          end
+
         S_REQ:
-          if (!src_en) begin                          // source unused -> skip, no request
-            pf_mem <= 4'd0;
-            if (pf_src==3'd3) iss_state<=S_DRAIN;
-            else             pf_src<=pf_src+1'b1;
+          if (!src_en) begin  // source unused -> skip, no request
+            pf_mem        <=  4'd0;
+            
+            // 
+            if (pf_src  == 3'd3) begin
+              iss_state   <=  S_DRAIN;
+            end else begin
+              pf_src      <=  pf_src + 1'b1;
+            end 
+            
           end else if (req_credit_cnt != 0) begin      // a request is sent this cycle
-            dst_q[dst_wr[4:0]]<=stage_addr; scl_q[dst_wr[4:0]]<=req_is_scalar; dst_wr<=dst_wr+1'b1;
+            // record the target operand register for the returned beat (pull order).
+            port_q[dst_wr[4:0]] <= pf_src[1:0];
+            mem_q [dst_wr[4:0]] <= pf_mem[2:0];
+            scl_q [dst_wr[4:0]] <= req_is_scalar;
+            dst_wr <= dst_wr+1'b1;
             if (pf_mem == src_nmem-1'b1) begin        // last member of this source
               pf_mem <= 4'd0;
               if (pf_src==3'd3) iss_state<=S_DRAIN;    // VM was the last source
@@ -356,53 +387,80 @@ module tt_vpu_cii_wrapper_top
       endcase
       if (dat_fifo_valid) begin
         rcv_cnt<=rcv_cnt+1'b1; dst_rd<=dst_rd+1'b1;
-        // a scalar beat (.vx/.vf rs1) is latched for i_if_scalar_opnd, not staged.
-        if (scl_q[dst_rd[4:0]]) pend_scalar <= dat_fifo_data[0].rsp_dat[63:0];
+        // Route the returned beat to its operand register (or the scalar latch).
+        if (scl_q[dst_rd[4:0]]) begin
+          pend_scalar <= dat_fifo_data[0].rsp_dat[63:0];   // .vx/.vf scalar rs1
+        end else begin
+          unique case (port_q[dst_rd[4:0]])
+            2'd0: opnd_p0[mem_q[dst_rd[4:0]]] <= dat_fifo_data[0].rsp_dat;  // VS1
+            2'd1: opnd_p1[mem_q[dst_rd[4:0]]] <= dat_fifo_data[0].rsp_dat;  // VS2
+            2'd2: opnd_p2[mem_q[dst_rd[4:0]]] <= dat_fifo_data[0].rsp_dat;  // VS3/old-dest
+            2'd3: opnd_vm                     <= dat_fifo_data[0].rsp_dat;  // v0 mask
+          endcase
+        end
       end
     end
   end
 
+
+
+
+
+
+  /////////////////////////////////////////////////////////////////////////////
+  // Drive the cii interface
+  /////////////////////////////////////////////////////////////////////////////
+
   // issue channel (RECEIVER): return 1 credit per FIFO pop.
-  assign cii_intf.iss_credit = iss_pop;
+  assign cii_intf.iss_credit      = iss_pop;
   // present the operand-staged instruction to tt_id.
-  assign read_issue_inst  = pend_insn;
-  assign read_valid       = (iss_state == S_HOLD);
-  assign read_issue_sb_id = {1'b0, pend_tag};
+  assign read_issue_inst          = pend_insn;
+  assign read_issue_scalar_opnd   = pend_scalar;   // .vx/.vf scalar (0 for .vv/.vi)
+  assign read_issue_state         = tt_briscv_pkg::inst_state_e'(0);
+  assign read_valid               = (iss_state == S_HOLD);
+  assign read_issue_sb_id         = {1'b0, pend_tag};
   // decoded CSR config from the issue packet.
-  assign csr_de0.v_vsew   = pend_vtype.vsew;
-  assign csr_de0.v_lmul   = pend_vtype.vlmul;
-  assign csr_de0.v_vxrm   = pend_vxrm;
-  assign csr_de0.v_vl     = pend_vl;
-  assign csr_de0.v_vstart = pend_vstart;
-  assign csr_de0.frm      = pend_frm;
+  assign csr_de0.v_vsew           = pend_vtype.vsew;
+  assign csr_de0.v_lmul           = pend_vtype.vlmul;
+  assign csr_de0.v_vxrm           = pend_vxrm;
+  assign csr_de0.v_vl             = pend_vl;
+  assign csr_de0.v_vstart         = pend_vstart;
+  assign csr_de0.frm              = pend_frm;
+
+
   // req channel (SENDER): lane 0 = current source+member request, lane 1 = NONE.
-  assign cii_intf.req_valid   = req_send;
-  assign cii_intf.req_data[0] = '{tag:pend_tag, rsp_src_id:src_id_sel,
-                                  rsp_src_offset:pf_mem[CII_MEMBER_W-1:0]};
-  assign cii_intf.req_data[1] = '{tag:pend_tag, rsp_src_id:CII_SRC_NONE, rsp_src_offset:'0};
+  assign cii_intf.req_valid       = req_send;
+  assign cii_intf.req_data[0]     = '{tag:pend_tag, rsp_src_id:src_id_sel, rsp_src_offset:pf_mem[CII_MEMBER_W-1:0]};
+  assign cii_intf.req_data[1]     = '{tag:pend_tag, rsp_src_id:CII_SRC_NONE, rsp_src_offset:'0};
+
+
+
   // dat channel (RECEIVER): pop throughout fetch (drain concurrently with the
   // request stream so the dat FIFO never backs up when NM*sources > credit depth);
-  // write each returned beat into staging at its recorded member address.
-  assign cii_intf.dat_credit  = dat_pop;   // return 1 credit per src-data pop
-  assign mem_vrf_wr           = dat_fifo_valid && !scl_q[dst_rd[4:0]]; // scalar beat is not staged
-  assign mem_vrf_wraddr       = dst_q[dst_rd[4:0]];
-  assign mem_vrf_wrdata       = dat_fifo_data[0].rsp_dat;
+  // the receive logic above routes each returned beat into its operand register.
+  assign cii_intf.dat_credit      = dat_pop;   // return 1 credit per src-data pop
 
-  // ---- remaining tie-offs: legacy inputs + null req/dat/wb (real glue C2-C4) ----
-  assign dispatch_sb_id       = '0;
-  assign dispatch_next_senior = 1'b0;
-  assign dispatch_kill        = 1'b0;
-  assign read_issue_scalar_opnd = pend_scalar;   // .vx/.vf scalar (0 for .vv/.vi)
-  assign read_issue_state       = tt_briscv_pkg::inst_state_e'(0);
-  assign ex_id_rtr              = 1'b1;
-  assign ex_dst_vld_1c = 1'b0; assign ex_dst_lqid_1c = '0; assign ex_fwd_data_1c = '0;
-  assign ex_dst_vld_2c = 1'b0; assign ex_dst_lqid_2c = '0; assign ex_fwd_data_2c = '0;
-  assign lq_broadside_info       = '0;
-  assign lq_broadside_data       = '0;
-  assign lq_broadside_valid      = '0;
-  assign lq_broadside_data_valid = '0;
-  assign mem_fe_lqfull           = 1'b0;
-  assign mem_id_lqnxtid          = '0;
+  // ---- operand feed to tt_vec (replaces the staging regfile combinational read).
+  // tt_vec presents member read addresses on id_vec_autogen.rf_addrp{0,1,2}
+  // (= source base + member, matching what the staging regfile was addressed by);
+  // convert to a member index by subtracting the source base and index the operand
+  // registers combinationally. VM (v0) is a single register.
+  wire [4:0] rd_mem_p0 = id_vec_autogen.rf_addrp0 - pend_insn[19:15]; // VS1 base
+  wire [4:0] rd_mem_p1 = id_vec_autogen.rf_addrp1 - pend_insn[24:20]; // VS2 base
+  wire [4:0] rd_mem_p2 = id_vec_autogen.rf_addrp2 - pend_insn[11:7];  // VS3/old-dest base (vd)
+  assign vrf_p0_rddata  = opnd_p0[rd_mem_p0[2:0]];
+  assign vrf_p1_rddata  = opnd_p1[rd_mem_p1[2:0]];
+  assign vrf_p2_rddata  = opnd_p2[rd_mem_p2[2:0]];
+  assign vrf_vm0_rddata = opnd_vm;
+
+
+
+
+
+
+
+
+
   // (C3 operand pull is merged into the C1+C3 prefetch FSM above -- operands are
   //  fetched into the staging regfile BEFORE the instruction is presented to
   //  tt_id, so no operands_ready gate on the tt_id<->tt_vec handshake.)
@@ -420,28 +478,50 @@ module tt_vpu_cii_wrapper_top
   // priority mux drops the loser; serializing concurrent results into the single
   // wb lane, and holding a result when wb_credit==0, need a small result buffer.
   // =========================================================================
-  logic                     res_v;
-  logic [VLEN-1:0]          res_data;
-  logic [LQ_DEPTH_LOG2-1:0] res_lqid;
-  tt_briscv_pkg::csr_fp_exc res_exc;
+
   always_comb begin
     res_v    = vex_mem_lqvld_1c | vex_mem_lqvld_2c | vex_mem_lqvld_3c | vex_mem_lqvld_div;
-    res_data = vex_mem_lqdata_div; res_lqid = vex_mem_lqid_div; res_exc = vex_mem_lqexc_div;
-    if (vex_mem_lqvld_3c) begin res_data=vex_mem_lqdata_3c; res_lqid=vex_mem_lqid_3c; res_exc=vex_mem_lqexc_3c; end
-    if (vex_mem_lqvld_2c) begin res_data=vex_mem_lqdata_2c; res_lqid=vex_mem_lqid_2c; res_exc=vex_mem_lqexc_2c; end
-    if (vex_mem_lqvld_1c) begin res_data=vex_mem_lqdata_1c; res_lqid=vex_mem_lqid_1c; res_exc=vex_mem_lqexc_1c; end
+    res_data = vex_mem_lqdata_div; 
+    res_lqid = vex_mem_lqid_div; 
+    res_exc  = vex_mem_lqexc_div;
+
+    if (vex_mem_lqvld_3c) begin 
+      res_data  = vex_mem_lqdata_3c; 
+      res_lqid  = vex_mem_lqid_3c; 
+      res_exc   = vex_mem_lqexc_3c; 
+    end
+
+    if (vex_mem_lqvld_2c) begin 
+      res_data  = vex_mem_lqdata_2c; 
+      res_lqid  = vex_mem_lqid_2c; 
+      res_exc   = vex_mem_lqexc_2c; 
+    end
+    
+    if (vex_mem_lqvld_1c) begin 
+      res_data  = vex_mem_lqdata_1c; 
+      res_lqid  = vex_mem_lqid_1c; 
+      res_exc   = vex_mem_lqexc_1c; 
+    end
   end
 
-  logic [$clog2(CII_N_WB_CREDITS+1)-1:0] wb_credit_cnt;
+  
+  
   wire wb_fire = res_v && (wb_credit_cnt != 0);
+
+
   always_ff @(posedge clk or negedge reset_n) begin
     // Cap at the FIFO depth -- see the req counter note: the channel returns a
     // credit every cycle wb_credit is high, so an uncapped +1 wraps the counter
     // to 0 and drops results (this dropped member 0 of a multi-beat writeback).
-    if (!reset_n)                                 wb_credit_cnt <= CII_N_WB_CREDITS;
-    else if ( cii_intf.wb_credit && !wb_fire && wb_credit_cnt != CII_N_WB_CREDITS)
-                                                  wb_credit_cnt <= wb_credit_cnt + 1'b1;
-    else if (!cii_intf.wb_credit &&  wb_fire)     wb_credit_cnt <= wb_credit_cnt - 1'b1;
+    if (!reset_n) begin
+      wb_credit_cnt <= CII_N_WB_CREDITS;
+    end                                 
+    else if ( cii_intf.wb_credit && !wb_fire && wb_credit_cnt != CII_N_WB_CREDITS) begin
+      wb_credit_cnt <= wb_credit_cnt + 1'b1;
+    end
+    else if (!cii_intf.wb_credit &&  wb_fire) begin
+      wb_credit_cnt <= wb_credit_cnt - 1'b1;
+    end
   end
 
   assign cii_intf.wb_valid   = wb_fire;
@@ -465,8 +545,53 @@ module tt_vpu_cii_wrapper_top
 
 
 
+  // ISSUE CHANNEL FIFO
+  tt_cii_fifo #(
+    .T            (type(cii_intf.iss_data)), 
+    .DEPTH        (CII_N_ISS_CREDITS      )
+  ) u_iss_fifo (
+    .clk          (clk                    ),
+    .rst_n        (reset_n                ),
+    .push         (cii_intf.iss_valid     ), 
+    .push_data    (cii_intf.iss_data      ),
+    .pop          (iss_pop                ), 
+    .pop_data     (iss_fifo_data          ), 
+    .full         (                       ), // we dont check for this because Host should track credits  
+    .empty        (iss_fifo_empty         )
+  );
+  
+  // SRC DATA RETURN CHANNEL FIFO
+  tt_cii_fifo #(
+    .T            (type(cii_intf.dat_data)), 
+    .DEPTH        (CII_N_DAT_CREDITS      )
+  ) u_dat_fifo (
+    .clk          (clk                    ), 
+    .rst_n        (reset_n                ),
+    .push         (cii_intf.dat_valid     ), 
+    .push_data    (cii_intf.dat_data      ),
+    .pop          (dat_pop                ), 
+    .pop_data     (dat_fifo_data          ), 
+    .full         (                       ), // we dont check for this because Host should track credits 
+    .empty        (dat_fifo_empty         )
+  );
 
 
+  // ---- Staging vector register file (per-instruction operand/result buffer) ----
+  // CII operand-pull fills it (C3); the datapath reads it via the decoded source
+  // addresses; results drain to CII writeback (C4). Read addresses come from the
+  // decoded vec_autogen source fields. The write port is tied off in this slice.
+  // tt_vec_regfile #(.VLEN(VLEN)) vrf (
+  //   .i_clk       (clk),
+  //   .i_reset_n   (reset_n),
+  //   .i_rden_0a   ({id_vec_autogen.rf_rden2, id_vec_autogen.rf_rden1, id_vec_autogen.rf_rden0}),
+  //   .i_rdaddr_0a ({id_vec_autogen.rf_addrp2, id_vec_autogen.rf_addrp1, id_vec_autogen.rf_addrp0}),
+  //   .i_wren_0a   (mem_vrf_wr),
+  //   .i_wraddr_0a (mem_vrf_wraddr),
+  //   .i_wrdata_0a (mem_vrf_wrdata),
+  //   .o_rddata_0a ({vrf_p2_rddata, vrf_p1_rddata, vrf_p0_rddata}),
+  //   .o_dstmask_0a (),
+  //   .o_vm0_0a    (vrf_vm0_rddata)
+  // );
 
 
 
@@ -483,6 +608,7 @@ module tt_vpu_cii_wrapper_top
   /////////////////////////////////////////////////////////////////////////////
   // Instatiate the VPU Top
   /////////////////////////////////////////////////////////////////////////////
+  // ---- remaining tie-offs: legacy inputs + null req/dat/wb (real glue C2-C4) ----
 
   tt_id #(
     .LQ_DEPTH(LQ_DEPTH),
@@ -499,14 +625,14 @@ module tt_vpu_cii_wrapper_top
     .i_reset_n                             (reset_n), 
 
     // Dispatch signals
-    .dispatch_sb_id                        (dispatch_sb_id),
-    .dispatch_next_senior                  (dispatch_next_senior),
-    .dispatch_kill                         (dispatch_kill),
+    .dispatch_sb_id                        ('0),
+    .dispatch_next_senior                  (1'b0),
+    .dispatch_kill                         (1'b0),
 
     .i_csr                                 (csr_de0),             
     .o_csr                                 (csr_ex0),  
     .o_id_rf_vex_p0                        (rf_vex_p0),
-    .o_id_rf_vex_p1                        (rf_vex_p1),
+    .o_id_rf_vex_p1                        ( ),
     .o_id_fprf_vex_p0                      (fprf_vex_p0),
 
     .i_if_instrn                           (read_issue_inst),       
@@ -516,7 +642,7 @@ module tt_vpu_cii_wrapper_top
     .o_id_instrn_rtr                       (ocelot_read_req),    
 
     .o_id_type                             (id_type),          
-    .o_id_immed_op                         (id_immed_op),     
+    .o_id_immed_op                         ( ),     
 
     // Vector Interface (ungated: operands are prefetched into staging before issue)
     .o_id_vex_rts                          (id_vex_rts),
@@ -528,46 +654,46 @@ module tt_vpu_cii_wrapper_top
 
     // EX Interface
     .i_div_resource_busy                   (vex_div_busy),
-    .o_id_ex_rts                           (id_ex_rts),             
-    .i_ex_rtr                              (ex_id_rtr         ),    
-    .o_id_ex_pc                            (id_ex_pc),        
+    .o_id_ex_rts                           ( ),             
+    .i_ex_rtr                              (1'b1 ),    
+    .o_id_ex_pc                            ( ),        
     .o_id_ex_instrn                        (id_ex_instrn),    
-    .o_id_ex_lqid                          (id_ex_lqid[LQ_DEPTH_LOG2-1:0]), 
+    .o_id_ex_lqid                          ( ), 
     .o_id_ex_vecldst                       (id_ex_vecldst),         
-    .o_id_ex_Zb_instr                      (id_ex_Zb_instr[4:0]),   
-    .o_id_ex_units_rts                     (id_ex_units_rts),       
-    .o_id_ex_instdisp                      (id_ex_instdisp),
-    .o_vecldst_autogen                     (id_ex_vecldst_autogen), 
-    .o_id_ex_last                          (id_ex_last),  
-    .i_ex_dst_vld_1c                       (ex_dst_vld_1c),         
-    .i_ex_dst_lqid_1c                      (ex_dst_lqid_1c), 
-    .i_ex_fwd_data_1c                      (ex_fwd_data_1c),  
-    .i_ex_dst_vld_2c                       (ex_dst_vld_2c),         
-    .i_ex_dst_lqid_2c                      (ex_dst_lqid_2c), 
-    .i_ex_fwd_data_2c                      (ex_fwd_data_2c),  
+    .o_id_ex_Zb_instr                      ( ),   
+    .o_id_ex_units_rts                     ( ),       
+    .o_id_ex_instdisp                      ( ),
+    .o_vecldst_autogen                     ( ), 
+    .o_id_ex_last                          ( ),  
+    .i_ex_dst_vld_1c                       (1'b0),         
+    .i_ex_dst_lqid_1c                      ('0), 
+    .i_ex_fwd_data_1c                      ('0),  
+    .i_ex_dst_vld_2c                       (1'b0),         
+    .i_ex_dst_lqid_2c                      ('0), 
+    .i_ex_fwd_data_2c                      ('0),  
 
     // Integer RegFile Interface  
-    .o_rf_wr_flag                          (id_rf_wr_flag     ),    
-    .o_rf_wraddr                           (id_rf_wraddr      ),    
+    .o_rf_wr_flag                          ( ),    
+    .o_rf_wraddr                           ( ),    
 
     // FP RegFile Interface    
-    .o_fp_rf_wr_flag                       (id_fp_rf_wr_flag  ),    
-    .o_fp_rf_wraddr                        (id_fp_rf_wraddr   ),    
+    .o_fp_rf_wr_flag                       ( ),    
+    .o_fp_rf_wraddr                        ( ),    
 
     // Mem Interface
-    .i_lq_broadside_info                   (lq_broadside_info),     
-    .o_id_mem_lqinfo                       (id_mem_lqinfo),         
+    .i_lq_broadside_info                   ('0),     
+    .o_id_mem_lqinfo                       ( ),         
     .o_id_replay                           (id_replay),             
-    .o_id_mem_lqalloc                      (id_mem_lqalloc),        
-    .o_id_mem_lq_done                      (id_mem_lq_done),        
-    .i_mem_dst_vld                         ('0          ), 
-    .i_mem_dst_lqid                        ('0         ), 
-    .i_mem_fwd_data                        ('0         ), 
+    .o_id_mem_lqalloc                      ( ),        
+    .o_id_mem_lq_done                      ( ),        
+    .i_mem_dst_vld                         ('0), 
+    .i_mem_dst_lqid                        ('0), 
+    .i_mem_fwd_data                        ('0), 
     .i_mem_lq_op                           ('0),        
     .i_mem_lq_commit                       ('0),         
-    .i_lq_broadside_data                   (lq_broadside_data),     
-    .i_lq_broadside_valid                  (lq_broadside_valid), 
-    .i_lq_broadside_data_valid             (lq_broadside_data_valid), 
+    .i_lq_broadside_data                   ('0),     
+    .i_lq_broadside_valid                  ('0), 
+    .i_lq_broadside_data_valid             ('0), 
 
     // Misc
     .i_iterate_addrp0                      (iterate_addrp0),   
@@ -576,20 +702,20 @@ module tt_vpu_cii_wrapper_top
     .i_ignore_lmul                         (ignore_lmul),           
     .i_ignore_dstincr                      (ignore_dstincr),        
     .i_ignore_srcincr                      (ignore_srcincr),        
-    .i_mem_fe_lqfull                       (mem_fe_lqfull),         
+    .i_mem_fe_lqfull                       (1'b0),         
     .i_mem_fe_lqempty                      ('0),
     .i_mem_fe_skidbuffull                  ('0),    
-    .i_mem_id_lqnxtid                      (mem_id_lqnxtid[LQ_DEPTH_LOG2-1:0]),
+    .i_mem_id_lqnxtid                      ('0),
 
-    .o_is_whole_memop                      (id_is_whole_memop),
-    .o_is_masked_memop                     (id_is_masked_memop),
-    .o_is_indexldst                        (id_is_indexldst),
-    .o_is_maskldst                         (id_is_maskldst),
+    .o_is_whole_memop                      ( ),
+    .o_is_masked_memop                     ( ),
+    .o_is_indexldst                        ( ),
+    .o_is_maskldst                         ( ),
     .i_if_sb_id                            (read_issue_sb_id),
-    .o_id_sb_id                            (id_sb_id),
+    .o_id_sb_id                            ( ),
 
     .i_if_state                            (read_issue_state),
-    .o_id_state                            (id_mem_state)
+    .o_id_state                            ( )
   );
 
 
@@ -626,7 +752,7 @@ module tt_vpu_cii_wrapper_top
     .i_vrf_p1_rddata       (vrf_p1_rddata),  
     .i_vrf_p2_rddata       (vrf_p2_rddata),  
     .i_vrf_vm0_rddata      (vrf_vm0_rddata),
-    // Mem Interface
+    // Mem Interface Write Back
     .o_vex_mem_lqvld_1c    (vex_mem_lqvld_1c),      
     .o_vex_mem_lqdata_1c   (vex_mem_lqdata_1c), 
     .o_vex_mem_lqexc_1c    (vex_mem_lqexc_1c),      
@@ -639,15 +765,11 @@ module tt_vpu_cii_wrapper_top
     .o_vex_mem_lqdata_3c   (vex_mem_lqdata_3c), 
     .o_vex_mem_lqexc_3c    (vex_mem_lqexc_3c),      
     .o_vex_mem_lqid_3c     (vex_mem_lqid_3c), 
-    // Division connections
-    .o_vex_mem_lqvld_div   (vex_mem_lqvld_div),      
+    .o_vex_mem_lqvld_div   (vex_mem_lqvld_div),  // Division connections 
     .o_vex_mem_lqdata_div  (vex_mem_lqdata_div), 
     .o_vex_mem_lqexc_div   (vex_mem_lqexc_div),      
     .o_vex_mem_lqid_div    (vex_mem_lqid_div), 
-    .i_mem_vrf_wr          (mem_vrf_wr),
-    .i_mem_vrf_wraddr      (mem_vrf_wraddr),
-    .i_mem_vrf_wrdata      (mem_vrf_wrdata),
-    .i_mem_ex_rtr          (1'b1),
+
     // C2: tail-/mask-agnostic policy from the CII issue vtype (the VPU applies it).
     .i_vta                 (pend_vtype.vta),
     .i_vma                 (pend_vtype.vma)

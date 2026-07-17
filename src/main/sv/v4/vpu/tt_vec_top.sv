@@ -42,12 +42,6 @@ module tt_vec_top #(
         
   input                                           tt_briscv_pkg::vec_autogen_s i_id_vec_autogen, //Decode signal bundle
 
-  //From Mem; used to both write in the RF and also to bypass the write.
-  input                                           i_mem_vrf_wr,
-  input [4:0]                                     i_mem_vrf_wraddr,
-  input [VLEN-1:0]                                i_mem_vrf_wrdata,
-  input                                           i_mem_ex_rtr ,
-
   // From VRF
   input [VLEN-1:0]                                i_vrf_p0_rddata,
   input [VLEN-1:0]                                i_vrf_p1_rddata,

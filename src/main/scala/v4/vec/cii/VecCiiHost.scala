@@ -297,6 +297,7 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
     e.pvs1_grp        := g_uop.pvs1_grp
     e.pvs2_grp        := g_uop.pvs2_grp
     e.pvs3_grp        := g_uop.pvs3_grp
+    e.stale_pvdest_grp := g_uop.stale_pvdest_grp   // old dest (undisturbed merge / RMW)
     e.pvm             := g_uop.pvm
     e.scalar          := io.irf_resp   // B2b: registered INT-RF read fired at grant
     e.pdst            := g_uop.pdst           // B3b: INT/FP phys dest for scalar-dest ops
@@ -365,7 +366,10 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
           io.vrf_read(i).req_addr := MuxLookup(opid, 0.U)(Seq(
             CiiConsts.SRC_VS1.U -> ent.pvs1_grp(off),
             CiiConsts.SRC_VS2.U -> ent.pvs2_grp(off),
-            CiiConsts.SRC_VS3.U -> ent.pvs3_grp(off),
+            // SRC_VS3 = the OLD dest group (= vs3 for accumulate ops; = the merge
+            // source for tail-/mask-undisturbed). stale_pvdest_grp is the old vd
+            // mapping in both cases, so serve it uniformly.
+            CiiConsts.SRC_VS3.U -> ent.stale_pvdest_grp(off),
             CiiConsts.SRC_VM.U  -> ent.pvm))
           l_isvec(i)  := (opid === CiiConsts.SRC_VS1.U) || (opid === CiiConsts.SRC_VS2.U) ||
                          (opid === CiiConsts.SRC_VS3.U) || (opid === CiiConsts.SRC_VM.U)

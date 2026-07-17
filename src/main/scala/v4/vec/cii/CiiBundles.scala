@@ -127,6 +127,12 @@ class CiiTagEntry(implicit p: Parameters) extends BoomBundle
   val pvs1_grp        = Vec(CiiConsts.MAX_MEMBERS, UInt(vecPregSz.W))
   val pvs2_grp        = Vec(CiiConsts.MAX_MEMBERS, UInt(vecPregSz.W))
   val pvs3_grp        = Vec(CiiConsts.MAX_MEMBERS, UInt(vecPregSz.W))
+  // OLD physical dest group (previous mapping of vd, freed at commit). Served for
+  // the SRC_VS3 / old-dest operand: the VPU pulls it for RMW/accumulate AND for
+  // tail-/mask-undisturbed (to merge the inactive lanes). For accumulate ops this
+  // equals pvs3_grp (both = the old vd mapping); for non-accumulate undisturbed
+  // ops pvs3_grp is not the old dest, so we serve stale_pvdest_grp instead.
+  val stale_pvdest_grp = Vec(CiiConsts.MAX_MEMBERS, UInt(vecPregSz.W))
   val pvm             = UInt(vecPregSz.W)
   val scalar          = UInt(xLen.W)  // captured .vx/.vf scalar operand (B2b: real value)
   val pdst            = UInt(maxPregSz.W)  // INT/FP phys dest for scalar-dest ops (B3b)

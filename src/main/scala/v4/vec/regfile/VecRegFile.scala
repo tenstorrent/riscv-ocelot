@@ -53,7 +53,13 @@ class VecRegFile(numReadPorts: Int = 8, numWritePorts: Int = 4, numDebugReadPort
 
   // [prn][lane]; lane 0 is bits[63:0], so .asUInt reconstructs the register with lane 0
   // as the least-significant bits (matches the per-lane write slicing below).
-  val vrf = Reg(Vec(numVecPhysRegs, Vec(nLanes, UInt(64.W))))
+  // Reset to 0 so uninitialized physical registers read as 0, matching the cosim
+  // ISS (Whisper) which initializes the architectural vector registers to 0. Arch
+  // regs v0..v31 are pre-mapped to PRNs 0..31, so a never-written vector register
+  // (e.g. the old dest merged into a tail-/mask-undisturbed result) reads 0 in both
+  // -- without this the DUT reads randomized state and mismatches on the tail. This
+  // mirrors the scalar GPR reset convention used for cosim.
+  val vrf = RegInit(0.U.asTypeOf(Vec(numVecPhysRegs, Vec(nLanes, UInt(64.W)))))
 
   // Registered read address, no same-cycle write-forward (mirror FullyPortedRF, regfile.scala:206).
   for (r <- 0 until numReadPorts) {
