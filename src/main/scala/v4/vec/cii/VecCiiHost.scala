@@ -173,6 +173,11 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
     // cycle (= the issue-emit cycle), so it feeds the side-table scalar directly.
     val irf_req  = DecoupledIO(UInt(log2Ceil(numIntPhysRegs).W))
     val irf_resp = Input(UInt(xLen.W))
+    // B2b-FP: dedicated FP-RF read of the .vf scalar fs1 at issue (mirror of the
+    // INT read). fp-pipeline un-recodes (ieee) the read so frf_resp is raw IEEE
+    // bits, which the VPU consumes directly as the FP scalar operand.
+    val frf_req  = DecoupledIO(UInt(log2Ceil(numFpPhysRegs).W))
+    val frf_resp = Input(UInt(xLen.W))
 
     // VRF write port (vector-dest results): CII write port 1. Per-byte mask.
     val vrf_write = Valid(new Bundle {
@@ -254,6 +259,10 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
   // for RT_FIX (.vx integer); .vf (RT_FLT, FP RF) is a later addition.
   io.irf_req.valid := grant && (io.iss_uop.bits.lrs1_rtype === RT_FIX)
   io.irf_req.bits  := io.iss_uop.bits.prs1
+  // B2b-FP: .vf reads an FP scalar (fs1 -> prs1 in the FP rename). Same timing as
+  // the INT read: fire at grant, registered resp lands at issue-emit.
+  io.frf_req.valid := grant && (io.iss_uop.bits.lrs1_rtype === RT_FLT)
+  io.frf_req.bits  := io.iss_uop.bits.prs1
 
   switch (istate) {
     is (IState.sIdle) {
@@ -299,7 +308,10 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
     e.pvs3_grp        := g_uop.pvs3_grp
     e.stale_pvdest_grp := g_uop.stale_pvdest_grp   // old dest (undisturbed merge / RMW)
     e.pvm             := g_uop.pvm
-    e.scalar          := io.irf_resp   // B2b: registered INT-RF read fired at grant
+    // B2b/B2b-FP: registered scalar read fired at grant. .vx (RT_FIX) reads the
+    // INT RF; .vf (RT_FLT) reads the FP RF (already un-recoded to IEEE). .vv/.vi
+    // (RT_X) have no scalar source (value unused).
+    e.scalar          := Mux(g_uop.lrs1_rtype === RT_FLT, io.frf_resp, io.irf_resp)
     e.pdst            := g_uop.pdst           // B3b: INT/FP phys dest for scalar-dest ops
     e.vsew            := g_uop.vconfig.vsew   // B3b-FP: recode tag for vfmv.f.s
     e.dst_rtype       := g_uop.dst_rtype

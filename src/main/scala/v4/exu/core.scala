@@ -1637,6 +1637,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     // the alu-loop wb_idx). scalar_wb_fp (vfmv.f.s) goes to the dedicated FP
     // ll_wport (recode + FP wakeup + rob clear inside fp_pipeline).
     fp_pipeline.io.cii_ll_wport.get := cii.io.scalar_wb_fp
+    // B2b-FP: .vf FP scalar-SOURCE read -- CII drives the FP-RF read port in
+    // fp_pipeline (registered, un-recoded to IEEE), mirroring the INT irf read.
+    fp_pipeline.io.cii_frf_req.get <> cii.io.frf_req
+    cii.io.frf_resp := fp_pipeline.io.cii_frf_resp.get
   }
 
   //-------------------------------------------------------------

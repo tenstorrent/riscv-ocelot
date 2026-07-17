@@ -50,6 +50,10 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
     // B3b-FP: CII FP scalar-dest writeback (vfmv.f.s). Raw IEEE element in .data;
     // recoded here. Always-accepting (dedicated port), so a plain Valid.
     val cii_ll_wport     = if (usingVectorArith) Some(Flipped(Valid(new ExeUnitResp(fLen+1)))) else None
+    // B2b-FP: CII .vf FP scalar-SOURCE read. req = fs1 phys reg (fpPregSz); resp is
+    // the registered read un-recoded to IEEE (raw bits for the VPU).
+    val cii_frf_req      = if (usingVectorArith) Some(Flipped(DecoupledIO(UInt(fpPregSz.W)))) else None
+    val cii_frf_resp     = if (usingVectorArith) Some(Output(UInt(xLen.W))) else None
     val dgen             = Valid(new MemGen)           // to Load/Store Unit
     val to_int           = Decoupled(new ExeUnitResp(xLen))           // to integer RF
 
@@ -69,7 +73,8 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
     )).suggestName(s"fp_exe_unit_${w}")
   }
   require (numFrfReadPorts >= 3)
-  val numFrfLogicalReadPorts = fpWidth * 3
+  // +numCiiFpPorts logical read port for the CII .vf FP scalar-source read (B2b-FP).
+  val numFrfLogicalReadPorts = fpWidth * 3 + numCiiFpPorts
   val numFrfWritePorts = fpWidth + lsuWidth + numCiiFpPorts
 
   val issue_unit     = IssueUnit(fpIssueParams, numWakeupPorts, false, false)
@@ -144,6 +149,10 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
       rd_idx += 1
     }
   }
+  if (usingVectorArith) {   // B2b-FP: CII .vf scalar-source read port
+    fregfile.io.arb_read_reqs(rd_idx) <> io.cii_frf_req.get
+    rd_idx += 1
+  }
   require(rd_idx == numFrfLogicalReadPorts)
 
   //-------------------------------------------------------------
@@ -157,6 +166,10 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
       unit.io_rrd_frf_resps(i) := fregfile.io.rrd_read_resps(rd_idx)
       rd_idx += 1
     }
+  }
+  if (usingVectorArith) {   // B2b-FP: un-recode the CII .vf scalar read to IEEE
+    io.cii_frf_resp.get := ieee(fregfile.io.rrd_read_resps(rd_idx))
+    rd_idx += 1
   }
   require(rd_idx == numFrfLogicalReadPorts)
 
