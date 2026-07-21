@@ -32,9 +32,9 @@ object CiiConsts
 {
   // Lane counts (what BOOM can source/sink per cycle).
   val NUM_INST_ISSUE  = 1   // single in-order IQ_V_ALU head
-  val NUM_SRC_REQ     = 2   // 2 CII VRF read ports (5,6)
-  val NUM_SRC_DAT_RSP = 2
-  val NUM_DST_WB      = 2   // MUST match tt_cii_caracal_pkg::CII_NUM_DST_WB (the SV
+  val NUM_SRC_REQ     = 4   // 2 CII VRF read ports (5,6)
+  val NUM_SRC_DAT_RSP = 4
+  val NUM_DST_WB      = 1   // MUST match tt_cii_caracal_pkg::CII_NUM_DST_WB (the SV
                             // interface default the relay's type(wb_data) resolves
                             // against). Host uses only wb lane 0; lane 1 is unused.
 

@@ -279,13 +279,15 @@ object VDecode
         // NOT silently treat mew=1 as a 64b op -- v_eew above uses only width[1:0],
         // and eew_unsup flags the unsupported case for the exception path / VCFG.
         // (No exception is raised from this object; see VLSDecode F3 note.)
-        // Memory ops: rs1 is the integer base address (scalar source).
+        // Memory ops: rs1 is the integer base address (scalar source). Reading x0
+        // is legal (base/stride 0); mirror decode.scala's x0->RT_ZERO conversion so
+        // rename never sees RT_FIX with lrs1==0 (rename-stage.scala:109 asserts).
         uop.lrs1       := rs1
-        uop.lrs1_rtype := RT_FIX
+        uop.lrs1_rtype := Mux(rs1 === 0.U, RT_ZERO, RT_FIX)
         // rs2 field: scalar stride (strided) or vector index (indexed) or unused.
         when (ls.is_strided) {
           uop.lrs2       := rs2
-          uop.lrs2_rtype := RT_FIX
+          uop.lrs2_rtype := Mux(rs2 === 0.U, RT_ZERO, RT_FIX)   // stride x0 (=0) is legal
         } .otherwise {
           uop.lrs2_rtype := RT_X
           uop.lvs2       := rs2     // vector index reg (indexed); don't-care otherwise
@@ -312,8 +314,12 @@ object VDecode
         // .vi's immediate is decoded inside the VPU from inst[19:15].
         val f3 = inst(14,12)
         when (f3 === OPIVX || f3 === OPMVX) {
+          // Integer scalar source (.vx / vmv.s.x). x0 is a legal source (value 0,
+          // e.g. `vmv.s.x vd, x0`); convert to RT_ZERO so rename never sees RT_FIX
+          // with lrs1==0 (rename-stage.scala:109 asserts). The scalar VALUE is then
+          // forced to 0 in VecCiiHost (irf_req does not fire for RT_ZERO).
           uop.lrs1       := rs1
-          uop.lrs1_rtype := RT_FIX
+          uop.lrs1_rtype := Mux(rs1 === 0.U, RT_ZERO, RT_FIX)
         } .elsewhen (f3 === OPFVX) {   // funct3=101 == OPFVF (FP scalar .vf)
           uop.lrs1       := rs1
           uop.lrs1_rtype := RT_FLT

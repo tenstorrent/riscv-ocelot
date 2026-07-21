@@ -310,8 +310,10 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
     e.pvm             := g_uop.pvm
     // B2b/B2b-FP: registered scalar read fired at grant. .vx (RT_FIX) reads the
     // INT RF; .vf (RT_FLT) reads the FP RF (already un-recoded to IEEE). .vv/.vi
-    // (RT_X) have no scalar source (value unused).
-    e.scalar          := Mux(g_uop.lrs1_rtype === RT_FLT, io.frf_resp, io.irf_resp)
+    // (RT_X) have no scalar source. A .vx reading x0 decodes to RT_ZERO (irf_req did
+    // NOT fire) -> force the scalar to 0 rather than latching a stale INT-RF read.
+    e.scalar          := Mux(g_uop.lrs1_rtype === RT_FLT, io.frf_resp,
+                         Mux(g_uop.lrs1_rtype === RT_FIX, io.irf_resp, 0.U))
     e.pdst            := g_uop.pdst           // B3b: INT/FP phys dest for scalar-dest ops
     e.vsew            := g_uop.vconfig.vsew   // B3b-FP: recode tag for vfmv.f.s
     e.dst_rtype       := g_uop.dst_rtype

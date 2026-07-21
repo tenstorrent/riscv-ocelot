@@ -156,7 +156,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   // below; read_ports.data outputs are left dangling (legal in Chisel).
   // numDebugReadPorts = coreWidth * MAX_MEMBERS: a combinational readback of each
   // committing vector op's full dest group, for the cosim commit trace (Step 11a.2).
-  val vec_regfile = if (usingRVV) Some(Module(new VecRegFile(8, 4, coreWidth * boom.v4.vec.rename.VecEmul.MAX_MEMBERS))) else None
+  // 10 read ports: 4 for the CII src-request lanes (NUM_SRC_REQ=4, ports 5,6,8,9)
+  // + dgen(1)/ls-mask(2)/vec-lsu(3)/idx-gen(4); port 0,7 spare. (Was 8; +2 for the
+  // widened CII src channel.)
+  val vec_regfile = if (usingRVV) Some(Module(new VecRegFile(10, 4, coreWidth * boom.v4.vec.rename.VecEmul.MAX_MEMBERS))) else None
   val vl_regfile  = if (usingRVV) Some(Module(new VlRegFile(6, 3)))  else None
 
   // Caracal vector LSU (Step 11a.2): unit-stride vle beat engine. Declared at
@@ -1608,10 +1611,14 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     cii.io.csr_frm    := csr.io.fcsr_rm
     // Operand pull (B2): dedicated CII VecRegFile read ports 5,6 (registered
     // 1-cycle read). Placed after the read-port tie-off so these win.
-    vec_regfile.get.io.read_ports(5).addr := cii.io.vrf_read(0).req_addr
-    cii.io.vrf_read(0).resp_data          := vec_regfile.get.io.read_ports(5).data
-    vec_regfile.get.io.read_ports(6).addr := cii.io.vrf_read(1).req_addr
-    cii.io.vrf_read(1).resp_data          := vec_regfile.get.io.read_ports(6).data
+    // One VRF read port per CII src-request lane (NUM_SRC_REQ). Lanes 0,1 keep
+    // ports 5,6; the widened channel's lanes 2,3 use the 2 new ports 8,9.
+    val ciiVrfPorts = Seq(5, 6, 8, 9)
+    require(ciiVrfPorts.length == cii.io.vrf_read.length, "CII VRF read-port map must match NUM_SRC_REQ")
+    for ((port, i) <- ciiVrfPorts.zipWithIndex) {
+      vec_regfile.get.io.read_ports(port).addr := cii.io.vrf_read(i).req_addr
+      cii.io.vrf_read(i).resp_data             := vec_regfile.get.io.read_ports(port).data
+    }
     // B2b: the CII .vx integer scalar (rs1 -> prs1) is read on the dedicated CII
     // int-RF logical read port wired below (arb/rrd loops); cii.io.irf_req/irf_resp.
     // (.vf FP scalar still pending an FP-RF read port.)
