@@ -96,11 +96,10 @@ module tt_vpu_cii_wrapper_top
   // The 4-lane src channel returns member `k` of {VS1,VS2,VS3,VM} in one dat beat,
   // so the member index equals the receive beat count (receive_data_cnt). tt_vec then reads
   // them combinationally at its iterate member address.
-  //   opnd_p0 = VS1, opnd_p1 = VS2, opnd_p2 = VS3/old-dest, opnd_vm = v0 mask.
-  logic [VLEN-1:0]                  opnd_p0 [0:7];
-  logic [VLEN-1:0]                  opnd_p1 [0:7];
-  logic [VLEN-1:0]                  opnd_p2 [0:7];
-  logic [VLEN-1:0]                  opnd_vm;
+  logic [VLEN-1:0]                  opnd_p0 [0:7]; // opnd_p0 = VS1
+  logic [VLEN-1:0]                  opnd_p1 [0:7]; // opnd_p1 = VS2
+  logic [VLEN-1:0]                  opnd_p2 [0:7]; // opnd_p2 = VS3/old-dest
+  logic [VLEN-1:0]                  opnd_vm;       // opnd_vm = v0 mask
 
   logic                             vpu_sat_csr;
 
@@ -122,6 +121,18 @@ module tt_vpu_cii_wrapper_top
   logic [LQ_DEPTH_LOG2-1:0]   wb_ldqid;
   tt_briscv_pkg::csr_fp_exc   wb_fp_flags;
   wire                        wb_fire;
+
+  // ----- Old-dest merge writeback (vec_single_reg upper members 1..NM-1) -----
+  // vec_single_reg ops emit one VPU result (member 0); the wrapper then writes the
+  // remaining group members 1..NM-1 verbatim from the pulled old dest (undisturbed).
+  logic [VLEN-1:0]          wb_olddest [0:7];  // old dest group, latched at S_HOLD
+  logic                     wbx_active;        // merging members 1..NM-1 this op
+  logic                     wbx_pending;       // op accepted; awaiting its member-0 WB
+  logic [4:0]               wbx_member;        // current merge member index
+  logic [4:0]               wbx_nm;            // latched dst group size (NM)
+  cii_caracal_tag_t         wbx_tag;           // latched op tag
+  logic [LQ_DEPTH_LOG2-1:0] wbx_base_ldqid;    // op's member-0 ldqid (merge trigger)
+  wire                      wb_send_merge = wbx_active;  // this cycle drives a merge beat
 
   // ----- Data Response Signals -----
   typedef enum logic [2:0] { S_IDLE, S_WAIT, S_REQ, S_DRAIN, S_HOLD } iss_state_e;
@@ -209,9 +220,28 @@ module tt_vpu_cii_wrapper_top
   // never completes -> pipeline hang. This keeps dst_nm in lockstep with the VPU's
   // actual result-beat count; the vs2 SOURCE count is unaffected (a reduction still
   // reads all NM members via src_vs2_num_beats).
-  wire       single_reg_dest = id_vpu_uop_packet.scalar_dest || ignore_lmul || ignore_dstincr;
+  // A VECTOR-dest op that writes only ONE register (member 0) but whose arch dest
+  // is an LMUL group in BOOM (vmv.s.x/vfmv.s.f, reductions, mask-producing). The
+  // VPU emits one result (member 0); the wrapper WRITES BACK the upper members
+  // 1..NM-1 with the UNDISTURBED old dest (they are not part of the destination and
+  // must keep their old values). scalar_dest ops (vmv.x.s/vfmv.f.s/vcpop/vfirst)
+  // write INT/FP -- genuinely one result, no vector group -- so they stay dst_nm=1.
+  //
+  // IMPORTANT: this is decoded from tt_id (reductop/mask_only) + the raw instruction
+  // (vmv.s.x/vfmv.s.f), NOT from tt_vec's ignore_lmul/ignore_dstincr. Those tt_vec
+  // signals only settle once the op is presented to tt_vec (S_HOLD); during the
+  // operand-pull phase (S_REQ) they still reflect the PREVIOUS op, which would give
+  // this op a stale need_old_dest / max_src_beats and deadlock the source pull.
+  //   vmv.s.x (OPMVX) / vfmv.s.f (OPFVF): funct6=010000, vs2 field == 0.
+  wire       vmv_s_vec = (next_iss_insn[31:26] == 6'b010000) &&
+                         ((next_iss_insn[14:12] == 3'b110) || (next_iss_insn[14:12] == 3'b101)) &&
+                         (next_iss_insn[24:20] == 5'd0);
+  wire       vec_single_reg = id_vpu_uop_packet.reductop || id_vpu_uop_packet.mask_only || vmv_s_vec;
 
-  wire [4:0] dst_nm   = single_reg_dest ? 5'd1 :
+  // dst_nm = number of writeback beats = BOOM's dest group size. scalar_dest -> 1;
+  // everything else (incl. vec_single_reg) writes the full NM (or 2*NM widening)
+  // group -- vec_single_reg fills members 1..NM-1 from the old dest (see WB merge).
+  wire [4:0] dst_nm   = id_vpu_uop_packet.scalar_dest ? 5'd1 :
                         (id_vpu_uop_packet.wdeop ? (lmul_beats << 1) : lmul_beats);
 
   wire vm_needed  = id_vpu_uop_packet.usemask || ~next_iss_insn[25];
@@ -222,9 +252,14 @@ module tt_vpu_cii_wrapper_top
   wire  req_is_scalar = scalar_src;
 
  
+  // Pull the old dest group (VS3) for RMW/accumulate, tail-undisturbed (vta=0), or
+  // mask-undisturbed masked ops -- AND for vec_single_reg ops, whose upper members
+  // 1..NM-1 are always undisturbed (independent of vta) and are written back from
+  // this old-dest pull (opnd_p2). src_vs3_num_beats = dst_nm covers all NM members.
   wire need_old_dest = id_vpu_uop_packet.rf_rden2 ||
                        (~next_iss_vtype.vta) ||
-                       (~next_iss_vtype.vma && ~next_iss_insn[25]);
+                       (~next_iss_vtype.vma && ~next_iss_insn[25]) ||
+                       vec_single_reg;
 
   
 
@@ -323,18 +358,26 @@ module tt_vpu_cii_wrapper_top
             iss_state     <=  S_DRAIN;
 
           end else if (req_credit_cnt != 0) begin  // send one 4-lane beat (member next_src_beat)
-            dst_wr <= dst_wr + 1'b1;                // count beats sent -> S_DRAIN target
             if (next_src_beat == max_src_beats - 1'b1) begin  // last member sent
               next_src_beat <= '0;
               iss_state     <= S_DRAIN;
             end else begin
+              // Count only the NON-final beats: dst_wr ends at (num_beats-1), i.e. the
+              // LAST member index. This keeps the S_DRAIN target inside receive_data_cnt's
+              // member-index range (CII_MEMBER_W bits) -- counting to num_beats (8) would
+              // wrap the 3-bit receive_data_cnt (0..7) and the drain would never match.
+              dst_wr <= dst_wr + 1'b1;
               next_src_beat <= next_src_beat + 1'b1;
             end
           end
         end
 
-        S_DRAIN: begin 
-          if (receive_data_cnt==dst_wr) begin
+        S_DRAIN: begin
+          // Done when the LAST member's dat beat actually arrives (receive_data_cnt is
+          // still the last member index that cycle, and its operand is written the same
+          // cycle). max_src_beats==0 means the op read no sources -> nothing to wait for.
+          if ((max_src_beats == 5'd0) ||
+              (dat_fifo_valid && (receive_data_cnt == dst_wr))) begin
             iss_state   <= S_HOLD; // all requested operands staged
           end
         end
@@ -385,7 +428,10 @@ module tt_vpu_cii_wrapper_top
         // lane 0: VS1 vector, OR the .vx/.vf scalar (a single beat -> member 0 only;
         //         later beats on lane 0 are NONE, so capture the scalar at receive_data_cnt==0).
         if (req_is_scalar) begin
-          if (receive_data_cnt == '0) next_iss_scalar <= dat_fifo_data[0].rsp_dat[63:0];
+          if (receive_data_cnt == '0) begin
+             next_iss_scalar <= dat_fifo_data[0].rsp_dat[63:0];
+          end
+
         end else begin
           opnd_p0[receive_data_cnt] <= dat_fifo_data[0].rsp_dat;
         end
@@ -475,7 +521,7 @@ module tt_vpu_cii_wrapper_top
                                       rsp_src_offset: next_src_beat};
 
   assign cii_intf.req_data[2]     = '{tag           : next_iss_tag, 
-                                      rsp_src_id    : (src_en_vs3 ? CII_SRC_VS3 : CII_SRC_NONE), 
+                                      rsp_src_id    : (src_en_vs3 ? CII_SRC_VS3_VD : CII_SRC_NONE), 
                                       rsp_src_offset: next_src_beat};
 
   assign cii_intf.req_data[3]     = '{tag           : next_iss_tag, 
@@ -561,27 +607,74 @@ module tt_vpu_cii_wrapper_top
 
 
 
-  assign wb_fire = wb_result_valid && (wb_credit_cnt != 0);
-
-
-
+  // A beat is sent this cycle when either the VPU produced a result OR we are
+  // merging old-dest members, and a WB credit is available. Merge takes priority
+  // on the single WB lane (the vec_single_reg op's own VPU result already fired
+  // member 0 before the merge starts, so there is no self-conflict).
+  assign wb_fire = (wbx_active || wb_result_valid) && (wb_credit_cnt != 0);
 
   assign cii_intf.wb_valid   = wb_fire;
-  assign cii_intf.wb_data[0] = '{
-                                  inst_tag      : tag_by_lqid[wb_ldqid],
-                                  wb_data       : wb_result_data,
-                                  wb_dst_offset : dstoff_by_lqid[wb_ldqid],                 // dest member index of this beat
-                                  wb_wr_en      : 1'b1,
-                                  wb_fp_flags   : '{  last     : last_by_lqid[wb_ldqid],    // final member of the group
-                                                      dst_kind : dstkind_by_lqid[wb_ldqid],
-                                                      vxsat    : 1'b0,
-                                                      fflags   : {wb_fp_flags.fpNV,
-                                                                  wb_fp_flags.fpDZ,
-                                                                  wb_fp_flags.fpOF,
-                                                                  wb_fp_flags.fpUF,
-                                                                  wb_fp_flags.fpNX} 
-                                                    }
-                                };
+  assign cii_intf.wb_data[0] = wb_send_merge ?
+    // Merge beat: write undisturbed old-dest member `wbx_member` (last on NM-1).
+    '{ inst_tag      : wbx_tag,
+       wb_data       : wb_olddest[wbx_member[CII_MEMBER_W-1:0]],
+       wb_dst_offset : wbx_member[CII_MEMBER_W-1:0],
+       wb_wr_en      : 1'b1,
+       wb_fp_flags   : '{ last     : (wbx_member == wbx_nm - 1'b1),
+                          dst_kind : CII_DST_VEC,
+                          vxsat    : 1'b0,
+                          fflags   : '0 } }
+    :
+    // VPU-result beat (member 0 for vec_single_reg; every member for normal ops).
+    '{ inst_tag      : tag_by_lqid[wb_ldqid],
+       wb_data       : wb_result_data,
+       wb_dst_offset : dstoff_by_lqid[wb_ldqid],
+       wb_wr_en      : 1'b1,
+       wb_fp_flags   : '{ last     : last_by_lqid[wb_ldqid],
+                          dst_kind : dstkind_by_lqid[wb_ldqid],
+                          vxsat    : 1'b0,
+                          fflags   : {wb_fp_flags.fpNV,
+                                      wb_fp_flags.fpDZ,
+                                      wb_fp_flags.fpOF,
+                                      wb_fp_flags.fpUF,
+                                      wb_fp_flags.fpNX} } };
+
+  /////////////////////////////////////////////////////////////////////////////
+  // Old-dest merge FSM: for a vec_single_reg op (VPU writes only member 0), write
+  // back the remaining group members 1..NM-1 from the undisturbed old dest.
+  //   S_HOLD accept  -> latch NM/tag/base-ldqid + snapshot old dest (opnd_p2).
+  //   member-0 WB    -> start merging (wbx_active), member = 1.
+  //   each merge beat (with credit) -> advance; last on member NM-1 completes the
+  //                     group (its `last` bit drives the host group-done).
+  // Emitting member 0 first then 1..NM-1 (last) guarantees all members are written
+  // before the group-done fires.
+  /////////////////////////////////////////////////////////////////////////////
+  always_ff @(posedge clk or negedge reset_n) begin
+    if (!reset_n) begin
+      wbx_pending <= 1'b0;
+      wbx_active  <= 1'b0;
+    end else begin
+      // Snapshot the op + old dest when tt_id accepts a multi-member vec_single_reg.
+      if ((iss_state == S_HOLD) && id_ready_to_receive && vec_single_reg && (dst_nm > 5'd1)) begin
+        wbx_pending    <= 1'b1;
+        wbx_nm         <= dst_nm;
+        wbx_tag        <= next_iss_tag;
+        wbx_base_ldqid <= id_vpu_uop_packet.ldqid;
+        for (int m = 0; m < 8; m++) wb_olddest[m] <= opnd_p2[m];
+      end
+      // Kick off merging once this op's member-0 (VPU) result is emitted.
+      if (wbx_pending && wb_fire && !wbx_active && (wb_ldqid == wbx_base_ldqid)) begin
+        wbx_pending <= 1'b0;
+        wbx_active  <= 1'b1;
+        wbx_member  <= 5'd1;
+      end
+      // Advance one merge member per emitted beat.
+      if (wbx_active && (wb_credit_cnt != 0)) begin
+        if (wbx_member == wbx_nm - 1'b1) wbx_active <= 1'b0;
+        wbx_member <= wbx_member + 1'b1;
+      end
+    end
+  end
 
   /////////////////////////////////////////////////////////////////////////////
   // END WriteBack Control Logic 

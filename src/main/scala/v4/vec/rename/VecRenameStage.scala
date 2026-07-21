@@ -133,9 +133,15 @@ class VecRenameStage(plWidth: Int, numVecPhysRegs: Int, commitWidth: Int, numWbP
     busytable.io.ren_srcs(w).pvs1       := maptable.io.map_resps(w).pvs1
     busytable.io.ren_srcs(w).pvs2       := maptable.io.map_resps(w).pvs2
     busytable.io.ren_srcs(w).pvs3       := maptable.io.map_resps(w).pvs3
+    busytable.io.ren_srcs(w).pvold      := maptable.io.map_resps(w).stale_pvdest
     busytable.io.ren_srcs(w).pvm        := maptable.io.map_resps(w).pvm
     busytable.io.ren_srcs(w).v_emul     := io.dec_uops(w).v_emul
     busytable.io.ren_srcs(w).reads_mask := io.dec_uops(w).is_vec && !io.dec_uops(w).v_unmasked
+    // The CII coprocessor reads the OLD dest group (stale_pvdest) as a source for any
+    // vector-dest arith op (accumulate, undisturbed tail/mask, reduction/vmv.s merge).
+    // Conservatively treat every vector-dest uop as reading it: the producer is always
+    // older in program order, so this adds a real (never-deadlocking) source dependency.
+    busytable.io.ren_srcs(w).reads_old  := io.dec_uops(w).is_vec && (io.dec_uops(w).dst_rtype === RT_VEC)
 
     // STATE WRITE (set busy on the freshly-allocated group): fire-gated.
     busytable.io.rebusy_reqs(w).valid     := alloc_fire(w)
@@ -182,6 +188,7 @@ class VecRenameStage(plWidth: Int, numVecPhysRegs: Int, commitWidth: Int, numWbP
     ren_uop.pvs1_busy       := busy.pvs1_busy
     ren_uop.pvs2_busy       := busy.pvs2_busy
     ren_uop.pvs3_busy       := busy.pvs3_busy
+    ren_uop.pvold_busy      := busy.pvold_busy
     ren_uop.pvm_busy        := busy.pvm_busy
     ren_uop.v_emul          := io.dec_uops(w).v_emul
 

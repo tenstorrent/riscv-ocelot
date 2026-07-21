@@ -1007,6 +1007,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
         dis_uops(w).pvs1_busy        := v_uop.pvs1_busy
         dis_uops(w).pvs2_busy        := v_uop.pvs2_busy
         dis_uops(w).pvs3_busy        := v_uop.pvs3_busy
+        dis_uops(w).pvold_busy       := v_uop.pvold_busy
         dis_uops(w).pvm_busy         := v_uop.pvm_busy
         dis_uops(w).pvl              := vl_uop.pvl
         dis_uops(w).pvl_busy         := vl_uop.pvl_busy

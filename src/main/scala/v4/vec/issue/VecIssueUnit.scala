@@ -146,6 +146,7 @@ class VecIssueUnitCollapsing(
     when (groupAllWoken(io.dis_uops(w).bits.pvs1_grp)) { dis_uops(w).pvs1_busy := false.B }
     when (groupAllWoken(io.dis_uops(w).bits.pvs2_grp)) { dis_uops(w).pvs2_busy := false.B }
     when (groupAllWoken(io.dis_uops(w).bits.pvs3_grp)) { dis_uops(w).pvs3_busy := false.B }
+    when (groupAllWoken(io.dis_uops(w).bits.stale_pvdest_grp)) { dis_uops(w).pvold_busy := false.B }
     when (memberWoken(io.dis_uops(w).bits.pvm)) { dis_uops(w).pvm_busy := false.B }
     when (io.vl_wakeup_ports.map { wk => wk.valid && (wk.bits.pvl === io.dis_uops(w).bits.pvl) }.reduce(_||_)) {
       dis_uops(w).pvl_busy := false.B
@@ -380,6 +381,7 @@ class VecAluIssueUnit(
     when (groupAllWoken(io.dis_uops(w).bits.pvs1_grp)) { dis_uops(w).pvs1_busy := false.B }
     when (groupAllWoken(io.dis_uops(w).bits.pvs2_grp)) { dis_uops(w).pvs2_busy := false.B }
     when (groupAllWoken(io.dis_uops(w).bits.pvs3_grp)) { dis_uops(w).pvs3_busy := false.B }
+    when (groupAllWoken(io.dis_uops(w).bits.stale_pvdest_grp)) { dis_uops(w).pvold_busy := false.B }
     when (memberWoken(io.dis_uops(w).bits.pvm)) { dis_uops(w).pvm_busy := false.B }
     when (io.vl_wakeup_ports.map { wk => wk.valid && (wk.bits.pvl === io.dis_uops(w).bits.pvl) }.reduce(_||_)) {
       dis_uops(w).pvl_busy := false.B

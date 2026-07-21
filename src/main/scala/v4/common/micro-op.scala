@@ -223,6 +223,13 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val pvs3_busy        = Bool()
   val pvm_busy         = Bool()
   val pvl_busy         = Bool()
+  // Old-dest (stale_pvdest_grp) readiness. The CII coprocessor reads the OLD dest
+  // group as a source (VS3: accumulate operand, and the undisturbed tail/mask +
+  // reduction/vmv.s merge source). It is a genuine source operand, so IQ_V_ALU must
+  // not issue until its producer's group-done has landed -- otherwise the op reads
+  // stale (unwritten) upper members. Tracked separately from pvs3_busy because the
+  // arith decode never sets lvs3 (pvs3_grp is bogus for arith uops).
+  val pvold_busy       = Bool()
 
   // Per-uop vcsr snapshot.
   val vconfig          = new VConfig

@@ -151,18 +151,21 @@ class VecBusySrc(implicit p: Parameters) extends BoomBundle
   val pvs1       = Vec(VecEmul.MAX_MEMBERS, UInt(vecPregSz.W))
   val pvs2       = Vec(VecEmul.MAX_MEMBERS, UInt(vecPregSz.W))
   val pvs3       = Vec(VecEmul.MAX_MEMBERS, UInt(vecPregSz.W))
+  val pvold      = Vec(VecEmul.MAX_MEMBERS, UInt(vecPregSz.W))  // stale_pvdest group (CII old-dest read)
   val pvm        = UInt(vecPregSz.W)
   val v_emul     = UInt(3.W)
   val reads_mask = Bool()   // pvm participates only when the op is masked
+  val reads_old  = Bool()   // pvold participates only when the CII reads the old dest
 }
 
 /** Per-uop group-ready (one collapsed bit per source). */
 class VecBusyResp(implicit p: Parameters) extends BoomBundle
 {
-  val pvs1_busy = Bool()
-  val pvs2_busy = Bool()
-  val pvs3_busy = Bool()
-  val pvm_busy  = Bool()
+  val pvs1_busy  = Bool()
+  val pvs2_busy  = Bool()
+  val pvs3_busy  = Bool()
+  val pvold_busy = Bool()
+  val pvm_busy   = Bool()
 }
 
 /** Per-uop set-busy request for the dest (and tmp) group. */

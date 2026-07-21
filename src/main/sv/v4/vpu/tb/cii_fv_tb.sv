@@ -204,7 +204,7 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
         case (ifh.req_data[0].rsp_src_id)
           CII_SRC_VS1:    ifh.dat_data[0].rsp_dat <= vs1_mem[ifh.req_data[0].rsp_src_offset];
           CII_SRC_VS2:    ifh.dat_data[0].rsp_dat <= vs2_mem[ifh.req_data[0].rsp_src_offset];
-          CII_SRC_VS3:    ifh.dat_data[0].rsp_dat <= vs3_mem[ifh.req_data[0].rsp_src_offset];
+          CII_SRC_VS3_VD:    ifh.dat_data[0].rsp_dat <= vs3_mem[ifh.req_data[0].rsp_src_offset];
           CII_SRC_VM:     ifh.dat_data[0].rsp_dat <= vm_mem [ifh.req_data[0].rsp_src_offset];
           CII_SRC_SCALAR: ifh.dat_data[0].rsp_dat <= {{(VLEN-64){1'b0}}, scalar_val};
           default:        ifh.dat_data[0].rsp_dat <= '0;

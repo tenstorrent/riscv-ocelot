@@ -180,15 +180,19 @@ class VecIssueSlot(
   val pvs1_all_woken = groupAllWoken(slot_uop.pvs1_grp)
   val pvs2_all_woken = groupAllWoken(slot_uop.pvs2_grp)
   val pvs3_all_woken = groupAllWoken(slot_uop.pvs3_grp)
+  // Old-dest (stale_pvdest) group: the CII reads it as a source; wait for its producer.
+  val pvold_all_woken = groupAllWoken(slot_uop.stale_pvdest_grp)
 
   when (pvs1_all_woken) { next_uop.pvs1_busy := false.B }
   when (pvs2_all_woken) { next_uop.pvs2_busy := false.B }
   when (pvs3_all_woken) { next_uop.pvs3_busy := false.B }
+  when (pvold_all_woken) { next_uop.pvold_busy := false.B }
 
   // Ready bits combine the latched busy bit with this-cycle wakeup forwarding.
   val pvs1_ready = !slot_uop.pvs1_busy || pvs1_all_woken
   val pvs2_ready = !slot_uop.pvs2_busy || pvs2_all_woken
   val pvs3_ready = !slot_uop.pvs3_busy || pvs3_all_woken
+  val pvold_ready = !slot_uop.pvold_busy || pvold_all_woken
 
   //--------------------------------------------------------------------------
   // Mask (pvm) readiness. Masked ops read v0 (single PRN, not a group); an
@@ -207,7 +211,7 @@ class VecIssueSlot(
   when (pvl_woken) { next_uop.pvl_busy := false.B }
   val pvl_ready = !slot_uop.pvl_busy || pvl_woken
 
-  val vector_operands_ready = pvs1_ready && pvs2_ready && pvs3_ready && pvm_ready && pvl_ready
+  val vector_operands_ready = pvs1_ready && pvs2_ready && pvs3_ready && pvold_ready && pvm_ready && pvl_ready
 
   //--------------------------------------------------------------------------
   // STORE AGEN/DGEN readiness (computed before io.request so request can fire on

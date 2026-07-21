@@ -158,7 +158,12 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
     lcb.io.beat.bits.data     := data
     lcb.io.beat.bits.pdst     := nop.pdst
     lcb.io.beat.bits.dst_byte := nop.el_id << ee                // byte offset within the 256b member
-    lcb.io.beat.bits.src_off  := nop.el_off                     // source byte offset within the 64b beat
+    // el_off is an ELEMENT offset within the 64b beat (VecLoadWalker computes it as
+    // (addr & (dmem_bytes-1)) >> eew_enc). The LCB consumes src_off as a BYTE offset
+    // (data >> (src_off << 3)), so convert element->byte the same way dst_byte/nbytes
+    // do. Missing this <<ee corrupted the first (misaligned) element of each register
+    // for a base not aligned to the 64b beat (e.g. vl2re32.v from a 4-mod-8 address).
+    lcb.io.beat.bits.src_off  := nop.el_off << ee               // source byte offset within the 64b beat
     lcb.io.beat.bits.nbytes   := nop.el_count << ee
     lcb.io.beat.bits.is_fake  := isFake
     lcb.io.beat.bits.last     := nop.last

@@ -115,6 +115,11 @@ class VecBusyTable(
     io.busy_resps(i).pvs1_busy := groupBusy(io.ren_srcs(i).pvs1, io.ren_srcs(i).v_emul, olderSet)
     io.busy_resps(i).pvs2_busy := groupBusy(io.ren_srcs(i).pvs2, io.ren_srcs(i).v_emul, olderSet)
     io.busy_resps(i).pvs3_busy := groupBusy(io.ren_srcs(i).pvs3, io.ren_srcs(i).v_emul, olderSet)
+    // Old-dest group (stale_pvdest): the CII reads it as a source (accumulate / tail-
+    // mask-undisturbed / reduction merge). Busy until its PRODUCER's group-done, so
+    // IQ_V_ALU stalls the consumer until the old dest is actually written.
+    io.busy_resps(i).pvold_busy := io.ren_srcs(i).reads_old &&
+                                   groupBusy(io.ren_srcs(i).pvold, io.ren_srcs(i).v_emul, olderSet)
     // pvm is a single PRN (always v0); it participates only when the op is masked.
     io.busy_resps(i).pvm_busy  := io.ren_srcs(i).reads_mask &&
                                   (((busy_table(io.ren_srcs(i).pvm) &&
