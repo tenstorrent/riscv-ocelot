@@ -325,6 +325,14 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
 
   val lsuWidth = boomParams.lsuWidth
 
+  // Caracal (LSU Phase 2 / dual-dynamic): how many vector-LOAD dcache beats the
+  // VecLSU may drive in one cycle. "single" (or a 1-pipe core) => 1 (the Phase-1
+  // serial-issue port). "dual-dynamic" on a multi-pipe core => 2: a second load
+  // beat opportunistically claims an idle scalar dcache pipe the same cycle (see
+  // VecLSU / VecLoadCoalescingBuffer / lsu.scala). Capped at 2 (one extra pipe).
+  val vecMemWidth = if (usingRVV && vectorParams.dcacheArbiterMode == "dual-dynamic")
+                      scala.math.min(lsuWidth, 2) else 1
+
   require(memWidth >= 2)
   require(memWidth >= lsuWidth)
 

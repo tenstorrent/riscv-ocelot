@@ -83,12 +83,19 @@ class VecLoadBeatDesc(implicit p: Parameters) extends BoomBundle with VecLsConst
   * ld_done in (VecLSU -> LSU: write the placeholder LDQ entry's exec/succ once). */
 class VecDmemIO(implicit p: Parameters) extends BoomBundle with VecLsConstants
 {
-  val req       = Flipped(DecoupledIO(new VecDmemReq))    // VecLSU -> LSU
+  val req       = Flipped(DecoupledIO(new VecDmemReq))    // VecLSU -> LSU (stores + primary load beat)
   val resp      = Valid(new VecDmemResp)                  // LSU -> VecLSU (load data)
   val nack      = Valid(new VecDmemResp)                  // LSU -> VecLSU
   val store_ack = Valid(new VecDmemResp)                  // LSU -> VecLSU (store committed to D$)
   val ld_done   = Flipped(Valid(UInt((1 + ldqAddrSz).W))) // VecLSU -> LSU (ldq idx, write exec/succ once)
   val st_done   = Flipped(Valid(UInt((1 + stqAddrSz).W))) // VecLSU -> LSU (stq idx, mark succeeded once)
+  // Phase 2 (dual-dynamic): a SECOND LOAD-beat lane. VecLSU issues a second beat/
+  // cycle on req2; the LSU fires it into an idle scalar dcache pipe opportunistically
+  // (lowest priority, never perturbs scalar). resp2/nack2 carry a second vector
+  // response/nack the same cycle. Present only when vecMemWidth>1.
+  val req2      = if (vecMemWidth > 1) Some(Flipped(DecoupledIO(new VecDmemReq))) else None
+  val resp2     = if (vecMemWidth > 1) Some(Valid(new VecDmemResp)) else None
+  val nack2     = if (vecMemWidth > 1) Some(Valid(new VecDmemResp)) else None
 }
 
 class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
@@ -97,6 +104,8 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
   val io = IO(new Bundle {
     // cracked unit-stride beats from VecAgenStage1(load) / VecAgenStage1(store)
     val load_nop  = Flipped(DecoupledIO(new VecLoadNop))
+    // Phase 2 (dual-dynamic): a second cracked load beat/cycle from the AGEN fast path.
+    val load_nop2 = if (vecMemWidth > 1) Some(Flipped(DecoupledIO(new VecLoadNop))) else None
     val store_nop = Flipped(DecoupledIO(new VecStoreNop))
     // dedicated vector dcache port (flipped LSU view)
     val dmem     = Flipped(new VecDmemIO)
@@ -106,6 +115,14 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
       val data = UInt(vecVLen.W)
       val mask = UInt((vecVLen / 8).W)             // per-BYTE write enable
     })
+    // Phase 2 (dual-dynamic): a second VRF write port for a distinct-member second
+    // load beat (the LCB merges same-member beats onto port 0). Present only when
+    // vecMemWidth>1; wired to VecRegFile write port 2 in core.scala.
+    val vrf_write2 = if (vecMemWidth > 1) Some(Valid(new Bundle {
+      val addr = UInt(vecPregSz.W)
+      val data = UInt(vecVLen.W)
+      val mask = UInt((vecVLen / 8).W)
+    })) else None
     // VecRegFile read port for the undisturbed copy: a masked load first copies
     // the OLD group (stale_pvdest_grp) into the new pdst group, so masked-off
     // lanes keep their architectural value (mask-undisturbed) -- with renaming
@@ -157,10 +174,20 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
   val slot_free   = VecInit(desc.map(!_.valid))
   val has_free    = slot_free.asUInt.orR
   val free_id     = PriorityEncoder(slot_free)
+  // Phase 2 (dual-dynamic): a SECOND free slot for accepting beat1 the same cycle.
+  val free2_mask  = VecInit(slot_free.zipWithIndex.map { case (f, i) => f && (i.U =/= free_id) })
+  val has_2free   = free2_mask.asUInt.orR
+  val free_id2    = PriorityEncoder(free2_mask)
   val all_done    = !desc.map(_.valid).reduce(_ || _)          // no outstanding load beats
   val need_issue  = VecInit(desc.map(d => d.valid && !d.inflight))
   val issue_valid = need_issue.asUInt.orR
   val issue_id    = PriorityEncoder(need_issue)
+  // Phase 2 (dual-dynamic): a SECOND distinct beat to issue the same cycle on req2.
+  // The next-lowest need_issue slot (excluding the primary issue_id) -> the two
+  // beats are always different descriptors, so their `inflight` sets never conflict.
+  val need_issue2  = VecInit(need_issue.zipWithIndex.map { case (n, i) => n && (i.U =/= issue_id) })
+  val issue_valid2 = need_issue2.asUInt.orR
+  val issue_id2    = PriorityEncoder(need_issue2)
 
   // Fill a descriptor from a cracked load beat: LCB placement + re-issue info.
   def fillDesc(nop: VecLoadNop): VecLoadBeatDesc = {
@@ -183,9 +210,14 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
 
   // ---- defaults ----
   io.load_nop.ready      := false.B
+  if (vecMemWidth > 1) { io.load_nop2.get.ready := false.B }
   io.store_nop.ready     := false.B
   io.dmem.req.valid      := false.B
   io.dmem.req.bits       := DontCare
+  if (vecMemWidth > 1) {
+    io.dmem.req2.get.valid := false.B
+    io.dmem.req2.get.bits  := DontCare
+  }
   io.clr_rob.valid       := false.B
   io.clr_rob.bits        := cur.uop.rob_idx
   io.dmem.ld_done.valid  := false.B
@@ -201,30 +233,45 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
   lcb.io.start.bits.mask := io.load_nop.bits.uop.pvdest_grp_mask
   lcb.io.kill            := io.kill
 
-  // ---- LCB beat: driven on a real response OR on a fake/bypass last beat ----
-  lcb.io.beat.valid          := false.B
-  lcb.io.beat.bits           := DontCare
-  lcb.io.beat.bits.is_fake   := true.B
+  // ---- LCB beat(s): driven on a real response OR on a fake/bypass last beat ----
+  for (i <- 0 until vecMemWidth) {
+    lcb.io.beat(i).valid        := false.B
+    lcb.io.beat(i).bits         := DontCare
+    lcb.io.beat(i).bits.is_fake := true.B
+  }
 
   // ---- Response / nack handling (LOAD beats). The LSU routes vector responses here
   // keyed by is_vec; beat_id selects the descriptor. A response PLACES the beat into
   // the LCB (by byte offset -> out-of-order safe) and frees the slot; a nack re-arms
-  // the slot for re-issue. One response/cycle (single vec_dmem port). Gated on
-  // sLoadIssue so a stale response can never touch the VRF outside a live group.
+  // the slot for re-issue. Up to vecMemWidth responses/cycle (one per vec dcache
+  // pipe). Gated on sLoadIssue so a stale response can never touch the VRF outside a
+  // live group. beat_id (not the lane) identifies the descriptor, so resp/resp2 are
+  // interchangeable -- either may carry any in-flight beat.
+  def placeResp(port: Int, resp: VecDmemResp): Unit = {
+    val id = resp.beat_id
+    lcb.io.beat(port).valid         := true.B
+    lcb.io.beat(port).bits.data     := resp.data
+    lcb.io.beat(port).bits.pdst     := desc(id).pdst
+    lcb.io.beat(port).bits.dst_byte := desc(id).dst_byte
+    lcb.io.beat(port).bits.src_off  := desc(id).src_off
+    lcb.io.beat(port).bits.nbytes   := desc(id).nbytes
+    lcb.io.beat(port).bits.is_fake  := desc(id).is_fake
+    lcb.io.beat(port).bits.last     := false.B           // LCB group_done unused (see below)
+    desc(id).valid                  := false.B
+  }
   when (io.dmem.resp.valid && state === State.sLoadIssue) {
-    val id = io.dmem.resp.bits.beat_id
-    lcb.io.beat.valid         := true.B
-    lcb.io.beat.bits.data     := io.dmem.resp.bits.data
-    lcb.io.beat.bits.pdst     := desc(id).pdst
-    lcb.io.beat.bits.dst_byte := desc(id).dst_byte
-    lcb.io.beat.bits.src_off  := desc(id).src_off
-    lcb.io.beat.bits.nbytes   := desc(id).nbytes
-    lcb.io.beat.bits.is_fake  := desc(id).is_fake
-    lcb.io.beat.bits.last     := false.B                 // LCB group_done unused (see below)
-    desc(id).valid            := false.B
+    placeResp(0, io.dmem.resp.bits)
   }
   when (io.dmem.nack.valid && state === State.sLoadIssue) {
     desc(io.dmem.nack.bits.beat_id).inflight := false.B  // re-arm for re-issue
+  }
+  if (vecMemWidth > 1) {
+    when (io.dmem.resp2.get.valid && state === State.sLoadIssue) {
+      placeResp(1, io.dmem.resp2.get.bits)
+    }
+    when (io.dmem.nack2.get.valid && state === State.sLoadIssue) {
+      desc(io.dmem.nack2.get.bits.beat_id).inflight := false.B
+    }
   }
 
   // ---- request payload: LOAD beat from desc(issue_id) in sLoadIssue, STORE in sSReq ----
@@ -251,6 +298,16 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
     io.dmem.req.bits.data    := 0.U
     io.dmem.req.bits.uop     := ld_uop
     io.dmem.req.bits.is_load := true.B
+  }
+
+  // ---- second LOAD beat payload (dual-dynamic): always load, from desc(issue_id2) ----
+  if (vecMemWidth > 1) {
+    val ld_uop2 = WireInit(desc(issue_id2).uop)
+    ld_uop2.vec_beat_id := issue_id2
+    io.dmem.req2.get.bits.addr    := desc(issue_id2).addr & ~(7.U(coreMaxAddrBits.W))
+    io.dmem.req2.get.bits.data    := 0.U
+    io.dmem.req2.get.bits.uop     := ld_uop2
+    io.dmem.req2.get.bits.is_load := true.B
   }
 
   // ---- FSM ----
@@ -335,12 +392,32 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
         saw_last := io.load_nop.bits.last
         when (!io.load_nop.bits.is_fake) { desc(free_id) := fillDesc(io.load_nop.bits) }
       }
+      // Phase 2: accept a SECOND beat/cycle into free_id2 -- only alongside a firing,
+      // non-last beat0 and only with a 2nd free slot. beat1 may itself be the last
+      // beat, so it takes over saw_last (last-connect; beat0 is non-last here).
+      if (vecMemWidth > 1) {
+        io.load_nop2.get.ready := has_2free && !saw_last && !io.kill &&
+                                  io.load_nop.fire && !io.load_nop.bits.last
+        when (io.load_nop2.get.fire) {
+          saw_last := io.load_nop2.get.bits.last
+          when (!io.load_nop2.get.bits.is_fake) { desc(free_id2) := fillDesc(io.load_nop2.get.bits) }
+        }
+      }
       // Issue one beat/cycle (fresh, or re-armed after a nack). Response/nack are
       // handled in the always-block above; a nacked beat drops back to !inflight and
       // is re-selected here.
       when (issue_valid && !io.kill) {
         io.dmem.req.valid := true.B
         when (io.dmem.req.fire) { desc(issue_id).inflight := true.B }
+      }
+      // Second beat/cycle on req2 (dual-dynamic): a distinct descriptor. The LSU
+      // fires it opportunistically into an idle scalar pipe -- if it isn't granted,
+      // the descriptor stays !inflight and is re-selected next cycle.
+      if (vecMemWidth > 1) {
+        when (issue_valid2 && !io.kill) {
+          io.dmem.req2.get.valid := true.B
+          when (io.dmem.req2.get.fire) { desc(issue_id2).inflight := true.B }
+        }
       }
       // Complete once the last beat has been consumed AND every slot has drained
       // (all responses placed -- out-of-order safe).
@@ -399,7 +476,12 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
     io.vrf_write.bits.data := io.vrf_read.resp_data
     io.vrf_write.bits.mask := ~0.U((vecVLen / 8).W)    // all bytes (full member copy)
   } .otherwise {
-    io.vrf_write := lcb.io.vrf_write
+    io.vrf_write := lcb.io.vrf_write(0)
+  }
+  // Second VRF write port (dual-dynamic): the LCB's distinct-member second beat.
+  // Never used by the copy phase (single-member/cycle), so no mux needed.
+  if (vecMemWidth > 1) {
+    io.vrf_write2.get := lcb.io.vrf_write(1)
   }
   // group_done is driven by the completion counter (responses can arrive out of
   // order), NOT by the LCB's last-beat pulse. The LCB's own group_done is unused.

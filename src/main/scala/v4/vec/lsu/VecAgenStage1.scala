@@ -49,6 +49,9 @@ extends BoomModule with VecLsConstants {
     val vdb_data   = if (isStore) Some(new VecDgenDataIF) else None
     // single muxed output nop
     val load_nop   = if (!isStore) Some(DecoupledIO(new VecLoadNop))  else None
+    // Phase 2 (dual-dynamic): a second load nop/cycle, from the Packer fast path only
+    // (Skipper/Walker leave it invalid). Present only when vecMemWidth>1 && !isStore.
+    val load_nop2  = if (!isStore && vecMemWidth > 1) Some(DecoupledIO(new VecLoadNop)) else None
     val store_nop  = if (isStore)  Some(DecoupledIO(new VecStoreNop)) else None
     val gen_active = Output(Bool())
   })
@@ -244,6 +247,10 @@ extends BoomModule with VecLsConstants {
     packer.io.mask.mask_data     := io.mask_idx.data(MASK_W - 1, 0)
     packer.io.kill               := io.kill
     packer.io.load_packet.ready  := io.load_nop.get.ready
+    if (vecMemWidth > 1) {
+      // beat1 is accepted only in PACKING (the fast path); other states force it off.
+      packer.io.load_packet2.get.ready := (state === State.PACKING) && io.load_nop2.get.ready
+    }
 
     // --- skipper ---
     val skipper = Module(new VecLoadSkipper)
@@ -355,6 +362,22 @@ extends BoomModule with VecLsConstants {
     val ld_bytes  = start_q.vl << start_q.eew_enc
     out.bits.tail_undist := ld_bytes < grp_bytes
 
+    // ---- Phase 2 (dual-dynamic): second output nop (Packer fast path only) ----
+    // Valid only in PACKING off the Packer's beat1; same PRN remap + tail_undist.
+    val out2_last = WireInit(false.B)
+    val out2_fire = WireInit(false.B)
+    if (vecMemWidth > 1) {
+      val out2 = io.load_nop2.get
+      out2.valid := (state === State.PACKING) && packer.io.load_packet2.get.valid
+      out2.bits  := packer.io.load_packet2.get.bits
+      val pdst_member2 = (out2.bits.v_reg - start_q.base_v_reg)(vecSplitSz - 1, 0)
+      out2.bits.pdst_member := pdst_member2
+      out2.bits.pdst        := start_q.uop.pvdest_grp(pdst_member2(2, 0))
+      out2.bits.tail_undist := ld_bytes < grp_bytes
+      out2_last := out2.bits.last
+      out2_fire := out2.fire
+    }
+
     // ---- gen_active ----
     io.gen_active := (state === State.BYPASS) ||
                      packer.io.gen_active || skipper.io.gen_active || walker.io.gen_active
@@ -375,7 +398,8 @@ extends BoomModule with VecLsConstants {
       when (io.kill) {
         state := State.IDLE
       } .elsewhen (out.fire) {
-        when (out.bits.last) {
+        // complete on beat0's last, or beat1's last if the fast-path second beat fired
+        when (out.bits.last || (out2_fire && out2_last)) {
           state := State.IDLE
         }
       }

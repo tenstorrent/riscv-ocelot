@@ -23,10 +23,12 @@ case class VectorParams(
   numVecTmpGroups: Int = 4,                  // pvtmp headroom: in-flight shared-inst temp vector groups
   ssiQueueEntries: Int = 512,                // worst-case single-store element count (VLEN/8 * LMUL=8)
   lcbEntries: Int = 8,                       // VLEN-wide load assembly (load-combine buffer) entries
-  vecLoadMaxInflight: Int = 4,               // Phase 1: # of vector LOAD beats outstanding on the
+  vecLoadMaxInflight: Int = 8,               // Phase 1: # of vector LOAD beats outstanding on the
                                              // vec_dmem port at once. 1 = the original serial model;
                                              // >1 pipelines beats (removes the per-beat round-trip).
-                                             // Bounded by lcbEntries and dcache MSHR headroom.
+                                             // Bounded by lcbEntries and dcache MSHR headroom. Phase 2
+                                             // (dual-dynamic) accepts+issues 2 beats/cycle, so it needs
+                                             // ~2x the in-flight headroom (8) to not slot-starve.
   vecLoadIssueEntries:  Int = 8,             // vector issue-queue slot counts; distinct from the
   vecStoreIssueEntries: Int = 8,             // LSU numVec{Load,Store}QueueEntries (those are the
   vecAluIssueEntries:   Int = 8,             // post-issue address/data queues, these are pre-issue slots)

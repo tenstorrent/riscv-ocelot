@@ -1755,6 +1755,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
       vec_agen_load.io.mask_idx.data  := vec_ls_rr.get.io.dec.mask
     }
     vec_lsu.get.io.load_nop <> vec_agen_load.io.load_nop.get
+    // Phase 2 (dual-dynamic): second cracked load beat/cycle (AGEN fast path -> VecLSU).
+    if (vecMemWidth > 1) {
+      vec_lsu.get.io.load_nop2.get <> vec_agen_load.io.load_nop2.get
+    }
 
     // Store AGEN: start from decode (!is_load). Step 11a.2: cracked store beats
     // (data filled by VecDgen) now feed VecLSU.
@@ -1813,6 +1817,15 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vec_regfile.get.io.write_ports(0).bits.addr := vec_lsu.get.io.vrf_write.bits.addr
     vec_regfile.get.io.write_ports(0).bits.data := vec_lsu.get.io.vrf_write.bits.data
     vec_regfile.get.io.write_ports(0).bits.mask := vec_lsu.get.io.vrf_write.bits.mask
+    // Phase 2 (dual-dynamic): a distinct-member second load beat lands on write
+    // port 2 (port 1 is the CII writeback). Same-member second beats are merged
+    // onto port 0 inside the LCB, so port 2 never collides with port 0's address.
+    if (vecMemWidth > 1) {
+      vec_regfile.get.io.write_ports(2).valid     := vec_lsu.get.io.vrf_write2.get.valid
+      vec_regfile.get.io.write_ports(2).bits.addr := vec_lsu.get.io.vrf_write2.get.bits.addr
+      vec_regfile.get.io.write_ports(2).bits.data := vec_lsu.get.io.vrf_write2.get.bits.data
+      vec_regfile.get.io.write_ports(2).bits.mask := vec_lsu.get.io.vrf_write2.get.bits.mask
+    }
   }
 
   //-------------------------------------------------------------

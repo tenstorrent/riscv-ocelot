@@ -48,8 +48,9 @@ class VecLoadCoalescingBuffer(implicit p: Parameters) extends BoomModule with Ve
       val prn  = Vec(VecEmul.MAX_MEMBERS, UInt(vecPregSz.W))
       val mask = UInt(VecEmul.MAX_MEMBERS.W)
     }))
-    // one placed beat (64b response + where it goes); driven by VecLSU
-    val beat = Flipped(Valid(new Bundle {
+    // placed beats (64b response + where it goes); driven by VecLSU. vecMemWidth
+    // beats/cycle (2 under dual-dynamic): one per vector dcache pipe that returned.
+    val beat = Vec(vecMemWidth, Flipped(Valid(new Bundle {
       val data     = UInt(coreDataBits.W)                       // 64b dcache response
       val pdst     = UInt(vecPregSz.W)                          // dest member PRN
       val dst_byte = UInt(log2Ceil(VLEN_BYTES + 1).W)           // byte offset within the 256b member
@@ -57,14 +58,17 @@ class VecLoadCoalescingBuffer(implicit p: Parameters) extends BoomModule with Ve
       val nbytes   = UInt(log2Ceil(VLEN_BYTES + 1).W)           // number of valid bytes
       val is_fake  = Bool()                                     // all-masked / el_count==0 / bypass: write nothing
       val last     = Bool()                                     // last beat of the group
-    }))
+    })))
     val kill = Input(Bool())
-    // VecRegFile write port (per-byte write enable)
-    val vrf_write = Valid(new Bundle {
+    // VecRegFile write ports (per-byte write enable). vecMemWidth ports: two beats
+    // to the SAME member PRN are merged onto port 0 (their valid bytes are disjoint,
+    // so OR is exact); two beats to DISTINCT members use both ports. This keeps the
+    // regfile's "no two writes to the same address" invariant.
+    val vrf_write = Vec(vecMemWidth, Valid(new Bundle {
       val addr = UInt(vecPregSz.W)
       val data = UInt(vecVLen.W)
       val mask = UInt((vecVLen / 8).W)
-    })
+    }))
     // group-done pulse on the last beat
     val group_done = Valid(new VecGroupDone)
   })
@@ -77,25 +81,41 @@ class VecLoadCoalescingBuffer(implicit p: Parameters) extends BoomModule with Ve
     grp_mask := io.start.bits.mask
   }
 
-  // ---- per-beat lane placement ----
-  val b      = io.beat.bits
-  val real   = io.beat.valid && !b.is_fake && (b.nbytes =/= 0.U)
+  // ---- per-beat lane placement (one entry per beat port) ----
+  // valid bytes shifted to the LSB, then up to their destination byte offset. The
+  // per-byte write mask (nbytes bytes starting at dst_byte) is passed straight to
+  // the VecRegFile so a sub-lane beat (mask load, partial tail) writes exactly its
+  // bytes and leaves the rest of the lane undisturbed.
+  val real   = VecInit(io.beat.map(bt => bt.valid && !bt.bits.is_fake && (bt.bits.nbytes =/= 0.U)))
+  val placed = VecInit(io.beat.map { bt =>
+    val sa = bt.bits.data >> (bt.bits.src_off << 3)
+    (sa << (bt.bits.dst_byte << 3))(vecVLen - 1, 0)
+  })
+  val bmask  = VecInit(io.beat.map(bt =>
+    (((1.U << bt.bits.nbytes) - 1.U) << bt.bits.dst_byte)(vecVLen / 8 - 1, 0)))
 
-  // valid bytes shifted to the LSB, then up to their destination byte offset.
-  val src_aligned = b.data >> (b.src_off << 3)
-  val placed      = (src_aligned << (b.dst_byte << 3))(vecVLen - 1, 0)
-  // per-byte write mask: nbytes valid bytes starting at dst_byte. Passed straight
-  // to the VecRegFile (per-byte write), so a sub-lane beat (mask load, partial
-  // tail) writes exactly its bytes and leaves the rest of the lane undisturbed.
-  val byte_mask   = (((1.U << b.nbytes) - 1.U) << b.dst_byte)(vecVLen / 8 - 1, 0)
+  if (vecMemWidth == 1) {
+    io.vrf_write(0).valid     := real(0) && !io.kill
+    io.vrf_write(0).bits.addr := io.beat(0).bits.pdst
+    io.vrf_write(0).bits.data := placed(0)
+    io.vrf_write(0).bits.mask := bmask(0)
+  } else {
+    // Two beats. Merge onto port 0 when they hit the same member (or when only one
+    // is real); use port 1 only for a distinct-member second beat.
+    val same = real(0) && real(1) && (io.beat(0).bits.pdst === io.beat(1).bits.pdst)
+    val one_fold = same || !real(0)   // port 0 also carries beat 1's bytes
+    io.vrf_write(0).valid     := (real(0) || real(1)) && !io.kill
+    io.vrf_write(0).bits.addr := Mux(real(0), io.beat(0).bits.pdst, io.beat(1).bits.pdst)
+    io.vrf_write(0).bits.data := (Mux(real(0), placed(0), 0.U) | Mux(one_fold, placed(1), 0.U))
+    io.vrf_write(0).bits.mask := (Mux(real(0), bmask(0),  0.U) | Mux(one_fold, bmask(1),  0.U))
+    io.vrf_write(1).valid     := real(0) && real(1) && !same && !io.kill
+    io.vrf_write(1).bits.addr := io.beat(1).bits.pdst
+    io.vrf_write(1).bits.data := placed(1)
+    io.vrf_write(1).bits.mask := bmask(1)
+  }
 
-  io.vrf_write.valid     := real && !io.kill
-  io.vrf_write.bits.addr := b.pdst
-  io.vrf_write.bits.data := placed
-  io.vrf_write.bits.mask := byte_mask
-
-  // ---- group-done on the last beat ----
-  io.group_done.valid     := io.beat.valid && b.last && !io.kill
+  // ---- group-done on the last beat (unused under the completion-counter model) ----
+  io.group_done.valid     := io.beat.map(bt => bt.valid && bt.bits.last).reduce(_ || _) && !io.kill
   io.group_done.bits.prn  := grp_prn
   io.group_done.bits.mask := grp_mask
 }

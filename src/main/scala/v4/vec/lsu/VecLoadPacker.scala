@@ -43,6 +43,11 @@ extends BoomModule with VecLsConstants {
     val kill = Input(Bool())
     // load process FSM outputs (packet info)
     val load_packet = DecoupledIO(new VecLoadNop)
+    // Phase 2 (dual-dynamic): a SECOND beat/cycle, emitted ONLY on the simple
+    // contiguous unit-stride fast path (non-masked, single-segment, unit-stride,
+    // positive dir). Off the fast path it stays invalid and the packer is 1-wide
+    // exactly as before, so masked/strided/segmented loads are unchanged.
+    val load_packet2 = if (vecMemWidth > 1) Some(DecoupledIO(new VecLoadNop)) else None
     // status signal
     val gen_active = Output(Bool())
   })
@@ -241,6 +246,58 @@ extends BoomModule with VecLsConstants {
   io.load_packet.bits.pdst_member := 0.U
   io.load_packet.bits.tail_undist := false.B   // group property set by the AGEN remap
 
+  // ======== Phase 2 (dual-dynamic): fast-path SECOND beat ========
+  // Emit a second beat/cycle ONLY on the contiguous unit-stride fast path. There:
+  // seg_enc==0 && stride_enc==0 => el_mask_off==0, so EEW_CTR is a flat element
+  // index, seg_id is always 0, el_off is always 0, and a beat covers
+  //   el_count = min(vl-ctr, dist-to-VLEN-group-boundary, dist-to-DMEM-chunk).
+  // beat1 is just beat0's successor: same math evaluated at the counter/dmem_off
+  // AFTER beat0's increment. Off the fast path, `fast2` is false and beat1 is never
+  // valid -- beat0 (the untouched general code above) is the only output.
+  val fast2 = (state === State.PACKING) && !is_mask && (seg_enc === 0.U) &&
+              (stride_enc === 0.U) && !stride_dir
+  // beat0's state after it fires (mirror the FSM advance below).
+  val eew_ctr_1  = EEW_CTR + ctr_inc_val
+  val dmem_off_1 = Mux(dmem_constraint_met, 0.U, dmem_off + ctr_inc_val)
+
+  // fast-path beat generator: returns (el_count, addr, v_reg, el_id, el_off,
+  // is_fake, last, inc, dmem_met) for a flat element counter `ec` + dmem offset `doff`.
+  val el_mask_width_f = log2Ceil(VLEN_BYTES).U - eew_enc      // elems per VLEN member
+  def genFast(ec: UInt, doff: UInt) = {
+    val dmem_c = dmem_max - doff
+    val vreg_c = ((ec & ~((1.U << el_mask_width_f) - 1.U)) + (1.U << el_mask_width_f)) - ec
+    val vl_c   = vl - ec
+    val dmem_m = (dmem_c <= vl_c) && (dmem_c <= vreg_c)
+    val vreg_m = (vreg_c <= vl_c) && (vreg_c <= dmem_c)
+    val vl_m   = (vl_c   <= vreg_c) && (vl_c <= dmem_c)
+    val inc    = Mux(vl_m, vl_c, Mux(vreg_m, vreg_c, dmem_c))
+    val vgrp   = ec >> el_mask_width_f
+    val elid   = ec & ((1.U << el_mask_width_f) - 1.U)
+    val pkt    = Wire(new VecLoadNop)
+    pkt              := io.load_packet.bits          // inherit uop/dir/is_fof/misaligned/pdst defaults
+    pkt.addr        := (base_addr.asSInt + ((ec << eew_enc).asSInt)).asUInt
+    pkt.v_reg       := base_v_reg + vgrp
+    pkt.el_id       := elid
+    pkt.el_off      := doff
+    pkt.el_count    := inc
+    pkt.mask_data   := 0.U
+    pkt.mask_valid  := false.B
+    pkt.is_fake     := (inc === 0.U)
+    pkt.last        := vl_m
+    pkt.dir         := false.B
+    (pkt, inc, vl_m, dmem_m)
+  }
+  val (beat1_pkt, beat1_inc, beat1_last, beat1_dmem_m) = genFast(eew_ctr_1, dmem_off_1)
+
+  if (vecMemWidth > 1) {
+    val p2 = io.load_packet2.get
+    // valid only on the fast path, only alongside a firing beat0 that is neither
+    // fake nor the last beat, and only if beat1 itself is a real (non-empty) beat.
+    p2.valid     := fast2 && io.load_packet.valid && !io.load_packet.bits.is_fake &&
+                    !io.load_packet.bits.last && (beat1_inc =/= 0.U)
+    p2.bits      := beat1_pkt
+  }
+
   // ======== Vstart Handling ========
   // need to re-align dmem offset to the new address after vstart
   val vstart_EEW_CTR = (vstart << el_mask_off)
@@ -279,17 +336,25 @@ extends BoomModule with VecLsConstants {
         state := State.IDLE
       }.elsewhen (io.load_packet.fire) {
 
-        // -- Increment counter --
-        EEW_CTR := EEW_CTR + ctr_inc_val
+        // Phase 2: did the fast-path second beat also fire this cycle? Then the
+        // counter/dmem advance covers BOTH beats and completion may land on beat1.
+        val b1_fire = (if (vecMemWidth > 1) io.load_packet2.get.fire else false.B)
+
+        // -- Increment counter (beat0 always; +beat1 when it fired) --
+        EEW_CTR := Mux(b1_fire, eew_ctr_1 + beat1_inc, eew_ctr_1)
 
         // -- Wrap increment dmem offset --
-        when (dmem_constraint_met) {
+        when (b1_fire) {
+          // fast path is unmasked/single-seg: wrap after beat1's advance.
+          dmem_off := Mux(beat1_dmem_m, 0.U, dmem_off_1 + beat1_inc)
+        }.elsewhen (dmem_constraint_met) {
           dmem_off := 0.U
         }.otherwise {
           dmem_off := dmem_off + ctr_inc_val
         }
 
-        // -- Wrap increment mask offset --
+        // -- Wrap increment mask offset (fast path is unmasked, so b1_fire never
+        //    coincides with a mask update; this stays beat0-only) --
         val next_mask_off = ((EEW_CTR + ctr_inc_val) >> el_mask_off) & (MASK_W-1).U
         when (mask_constraint_met) {
           current_mask_off := 0.U
@@ -299,8 +364,8 @@ extends BoomModule with VecLsConstants {
           current_mask_data := current_mask_data >> (next_mask_off - current_mask_off)
         }
 
-        // -- Reset when last packet is reached --
-        when (io.load_packet.bits.last) {
+        // -- Reset when the last packet is reached (on beat0, or beat1 if it fired) --
+        when (io.load_packet.bits.last || (b1_fire && beat1_last)) {
           state := State.IDLE
         }
 

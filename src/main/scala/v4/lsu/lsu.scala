@@ -491,6 +491,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // Caracal (Step 11a.2): appended-last vector load beat. Option => no extra
   // wires/dontTouch exist when !usingRVV, so the vector-OFF netlist is identical.
   val will_fire_vec_load = if (usingRVV) Some(Wire(Vec(lsuWidth, Bool()))) else None
+  // Phase 2 (dual-dynamic): a SECOND vector load beat fired opportunistically into
+  // pipe 0 (the lowest-priority claim, only when no scalar op took pipe 0's dcache
+  // slot this cycle). Present only when vecMemWidth>1.
+  val will_fire_vec_load2 = if (usingRVV && vecMemWidth > 1) Some(Wire(Vec(lsuWidth, Bool()))) else None
 
   val agen = io.core.agen
   // -------------------------------
@@ -670,6 +674,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                             io.core.vec_dmem.get.req.valid &&
                               Mux(vec_st, (w == 0).B, (w == lsuWidth-1).B)
                           })) else None
+  // Phase 2 (dual-dynamic): the second load beat only ever competes for pipe 0. It
+  // is scheduled at the lowest priority (below the primary vec beat), so it takes a
+  // pipe-0 dcache cycle only when no scalar op did -- the dynamic scalar/vector share.
+  val can_fire_vec_load2 = if (usingRVV && vecMemWidth > 1) Some(widthMap(w =>
+                             (w == 0).B && io.core.vec_dmem.get.req2.get.valid)) else None
 
   //---------------------------------------------------------
   // Controller logic. Arbitrate which request actually fires
@@ -714,6 +723,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     // beat only takes a dcache cycle no scalar op claimed (scalar floor).
     if (usingRVV) {
       will_fire_vec_load.get   (w) := lsu_sched(can_fire_vec_load.get     (w) , false, true , false) //     , DC
+    }
+    // Absolute-lowest priority: the dual-dynamic second load beat (pipe 0 only).
+    if (usingRVV && vecMemWidth > 1) {
+      will_fire_vec_load2.get  (w) := lsu_sched(can_fire_vec_load2.get    (w) , false, true , false) //     , DC
     }
 
 
@@ -1003,6 +1016,16 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         dmem_req(w).bits.addr := io.core.vec_dmem.get.req.bits.addr
         dmem_req(w).bits.data := io.core.vec_dmem.get.req.bits.data
         dmem_req(w).bits.uop  := io.core.vec_dmem.get.req.bits.uop
+      }
+    }
+    // dual-dynamic second load beat -> pipe 0. Fires only when will_fire_vec_load2
+    // won its lowest-priority pipe-0 slot (so no scalar op set dmem_req(0) here).
+    if (usingRVV && vecMemWidth > 1) {
+      when (will_fire_vec_load2.get(w)) {
+        dmem_req(w).valid     := true.B
+        dmem_req(w).bits.addr := io.core.vec_dmem.get.req2.get.bits.addr
+        dmem_req(w).bits.data := io.core.vec_dmem.get.req2.get.bits.data
+        dmem_req(w).bits.uop  := io.core.vec_dmem.get.req2.get.bits.uop
       }
     }
 
@@ -1614,6 +1637,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   }
   // Caracal (Step 11a.2): vector dcache port outputs default invalid; the
   // response loop below drives resp/nack on a vector beat (top lane).
+  // Phase 2 (dual-dynamic): per-pipe gather of vector responses/nacks. A vector beat
+  // may respond on ANY pipe (misses refill via ll_resp on the last pipe regardless of
+  // the pipe it was issued on), so we collect them across pipes and compact into
+  // resp/resp2 (nack/nack2) after the loop -- beat_id, not the lane, identifies the
+  // descriptor, so the ordering of the two lanes is irrelevant.
+  val vec_resp_slots = if (usingRVV) Some(Wire(Vec(lsuWidth, Valid(chiselTypeOf(io.core.vec_dmem.get.resp.bits))))) else None
+  val vec_nack_slots = if (usingRVV) Some(Wire(Vec(lsuWidth, Valid(chiselTypeOf(io.core.vec_dmem.get.nack.bits))))) else None
   if (usingRVV) {
     io.core.vec_dmem.get.resp.valid      := false.B
     io.core.vec_dmem.get.resp.bits       := DontCare
@@ -1621,6 +1651,18 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     io.core.vec_dmem.get.nack.bits       := DontCare
     io.core.vec_dmem.get.store_ack.valid := false.B
     io.core.vec_dmem.get.store_ack.bits  := DontCare
+    if (vecMemWidth > 1) {
+      io.core.vec_dmem.get.resp2.get.valid := false.B
+      io.core.vec_dmem.get.resp2.get.bits  := DontCare
+      io.core.vec_dmem.get.nack2.get.valid := false.B
+      io.core.vec_dmem.get.nack2.get.bits  := DontCare
+    }
+    for (w <- 0 until lsuWidth) {
+      vec_resp_slots.get(w).valid := false.B
+      vec_resp_slots.get(w).bits  := DontCare
+      vec_nack_slots.get(w).valid := false.B
+      vec_nack_slots.get(w).bits  := DontCare
+    }
 
     // store->load memory ordering query (Track A). The vector LDQ/STQ placeholder
     // entries never register an address (no LCAM disambiguation for vector ops),
@@ -1645,9 +1687,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     // path is guarded off (below) and must NOT touch it.
     if (usingRVV) {
       when (io.dmem.nack(w).valid && nack_is_vec) {
-        io.core.vec_dmem.get.nack.valid        := true.B
-        io.core.vec_dmem.get.nack.bits.data    := 0.U
-        io.core.vec_dmem.get.nack.bits.beat_id := io.dmem.nack(w).bits.uop.vec_beat_id
+        vec_nack_slots.get(w).valid        := true.B
+        vec_nack_slots.get(w).bits.data    := 0.U
+        vec_nack_slots.get(w).bits.beat_id := io.dmem.nack(w).bits.uop.vec_beat_id
       }
     }
     when (io.dmem.nack(w).valid) {
@@ -1679,9 +1721,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       if (usingRVV) {
         when (resp_is_vec) {
           dmem_resp_fired(w) := true.B
-          io.core.vec_dmem.get.resp.valid        := true.B
-          io.core.vec_dmem.get.resp.bits.data    := resp.data
-          io.core.vec_dmem.get.resp.bits.beat_id := resp.uop.vec_beat_id
+          vec_resp_slots.get(w).valid        := true.B
+          vec_resp_slots.get(w).bits.data    := resp.data
+          vec_resp_slots.get(w).bits.beat_id := resp.uop.vec_beat_id
         }
       }
       when (resp.uop.uses_ldq && !resp_is_vec) {
@@ -1820,6 +1862,33 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     }
   }
 
+  // Phase 2 (dual-dynamic): compact the per-pipe vector response/nack gather into
+  // resp/resp2 (nack/nack2). Pick the first valid pipe for lane 0 and, if a second
+  // is valid, the next for lane 1. For lsuWidth==1 this is just slot 0 -> resp, so
+  // the single-pipe (Medium) path is unchanged.
+  if (usingRVV) {
+    val rs     = vec_resp_slots.get
+    val rvalid = VecInit(rs.map(_.valid))
+    val r0     = PriorityEncoder(rvalid)
+    io.core.vec_dmem.get.resp.valid := rvalid.reduce(_ || _)
+    io.core.vec_dmem.get.resp.bits  := rs(r0).bits
+    val ns     = vec_nack_slots.get
+    val nvalid = VecInit(ns.map(_.valid))
+    val n0     = PriorityEncoder(nvalid)
+    io.core.vec_dmem.get.nack.valid := nvalid.reduce(_ || _)
+    io.core.vec_dmem.get.nack.bits  := ns(n0).bits
+    if (vecMemWidth > 1) {
+      val rrest = VecInit(rs.zipWithIndex.map { case (s, i) => s.valid && (i.U =/= r0) })
+      val r1    = PriorityEncoder(rrest)
+      io.core.vec_dmem.get.resp2.get.valid := rrest.reduce(_ || _)
+      io.core.vec_dmem.get.resp2.get.bits  := rs(r1).bits
+      val nrest = VecInit(ns.zipWithIndex.map { case (s, i) => s.valid && (i.U =/= n0) })
+      val n1    = PriorityEncoder(nrest)
+      io.core.vec_dmem.get.nack2.get.valid := nrest.reduce(_ || _)
+      io.core.vec_dmem.get.nack2.get.bits  := ns(n1).bits
+    }
+  }
+
   // Caracal (Step 11a.2): advertise vec_dmem.req.ready when the appended-last
   // beat actually won a dcache cycle. A vector load occupies one (real) scalar
   // LDQ entry as its ordering/commit placeholder; VecLSU pulses ld_done after the
@@ -1831,6 +1900,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     // over all pipes rather than assuming the last lane -- otherwise a memWidth>1
     // vector store (which routes to pipe 0) never sees req.ready and VecLSU hangs.
     io.core.vec_dmem.get.req.ready := will_fire_vec_load.get.reduce(_ || _) && io.dmem.req.fire
+    // dual-dynamic: the second beat rides the same single dcache handshake (all pipes
+    // are accepted together), so it is granted exactly when it won its pipe-0 slot.
+    if (vecMemWidth > 1) {
+      io.core.vec_dmem.get.req2.get.ready := will_fire_vec_load2.get.reduce(_ || _) && io.dmem.req.fire
+    }
     when (io.core.vec_dmem.get.ld_done.valid) {
       val v_ldq_idx = io.core.vec_dmem.get.ld_done.bits
       ldq_executed    (v_ldq_idx) := true.B
