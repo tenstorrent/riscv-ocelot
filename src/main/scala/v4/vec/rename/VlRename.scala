@@ -157,9 +157,12 @@ class VlRename(plWidth: Int, numVlPhysRegs: Int, numWbPorts: Int)(implicit p: Pa
     // -- the index into `sels` this lane should consume. PopCount over the static
     // slice keeps the count's width bounded (no scanLeft width growth).
     val sel_idx = if (w == 0) 0.U else PopCount((0 until w).map(is_vl_producer_req(_)))
-    // chosen select = sels(sel_idx). UIntToOH(sel_idx, plWidth) is all-zeros when
-    // sel_idx == plWidth (no select left), so chosen is 0 and the lane can't win.
-    val chosen = Mux1H(UIntToOH(sel_idx, plWidth), sels)
+    // chosen select = sels(sel_idx). sel_idx counts older requesting producers, so it
+    // is always in [0, plWidth-1] and indexes `sels` directly. (Avoids
+    // UIntToOH(sel_idx, plWidth): the explicit-width form hits a Chisel do_pad corner
+    // case for plWidth>2, e.g. the Mega tier's decodeWidth=4.) The Mux keeps the
+    // original "no select -> all-zeros, lane can't win" guard defensive.
+    val chosen = Mux(sel_idx < plWidth.U, sels(sel_idx), 0.U(n.W))
     alloc_pvl(w)   := OHToUInt(chosen)
     alloc_valid(w) := is_vl_producer_req(w) && chosen.orR
   }
@@ -364,6 +367,23 @@ class VlRename(plWidth: Int, numVlPhysRegs: Int, numWbPorts: Int)(implicit p: Pa
     out.pvl_src  := read_pvl
     out.pvl_busy := io.dec_uops(w).is_vec && (read_busy || older_inbundle_vl_prod)
     io.ren2_uops(w) := GetNewUopAndBrMask(out, io.brupdate)
+
+    // RAW guard for keep-vl (`vsetvli/vsetvl x0,x0`): the int-ALU recovers the
+    // unchanged VL by reading the VL-RF at this uop's source pvl (pvl_src = read_pvl)
+    // at its exe stage. Nothing else forces the PRODUCING (older) vset's VL-RF write
+    // to land first, so stall keep-vl at rename until read_pvl is no longer busy (its
+    // producer's writeback + VL wakeup has cleared it) -- or an older lane in this
+    // bundle is a VL producer. Wide-issue tiers (MegaBoom, decodeWidth=4) otherwise
+    // issue the two vsets close enough that the read samples stale -> VL>vlMax assert.
+    // Fire-INDEPENDENT (read_busy is register/wakeup-based; the in-bundle term uses
+    // is_vl_producer_REQ), so it does not create a ren_stalls->dec_fire loop.
+    val is_keepvl = (io.dec_uops(w).is_vsetvli || io.dec_uops(w).is_vsetvl) &&
+                    (io.dec_uops(w).ldst === 0.U) && (io.dec_uops(w).lrs1 === 0.U)
+    val older_vlprod_req =
+      if (w == 0) false.B else (0 until w).map(is_vl_producer_req(_)).reduce(_ || _)
+    when (is_keepvl && (read_busy || older_vlprod_req)) {
+      io.ren_stalls(w) := true.B
+    }
   }
 
   // ==========================================================================

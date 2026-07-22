@@ -658,11 +658,18 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // Can we fire a hellacache request that the dcache nack'd
   val can_fire_hella_wakeup    = WireInit(widthMap(w => false.B)) // This is assigned to in the hellashim controller
 
-  // Caracal (Step 11a.2): can we fire a vector load beat. Only on the highest
-  // lane, only when VecLSU presents a beat. M1 bare-mode: the EA is physical
-  // (riscv-tests are identity-mapped), so the beat uses DC only -- no TLB/LCAM.
-  val can_fire_vec_load = if (usingRVV) Some(widthMap(w =>
-                            (w == lsuWidth-1).B && io.core.vec_dmem.get.req.valid)) else None
+  // Caracal (Step 11a.2): can we fire a vector dcache beat (load or store). Only
+  // when VecLSU presents a beat. M1 bare-mode: the EA is physical (riscv-tests are
+  // identity-mapped), so the beat uses DC only -- no TLB/LCAM.
+  //   - LOADS use the highest lane (lowest priority, never perturbs scalar issue).
+  //   - STORES MUST use pipe 0: the L1D only takes store hits on the 0th pipe
+  //     (dcache.scala:903 asserts). On memWidth==1 (Medium) both collapse to pipe 0;
+  //     on memWidth>1 (Mega) a vector store on a non-0 pipe would trip that assert.
+  val can_fire_vec_load = if (usingRVV) Some(widthMap(w => {
+                            val vec_st = !io.core.vec_dmem.get.req.bits.is_load
+                            io.core.vec_dmem.get.req.valid &&
+                              Mux(vec_st, (w == 0).B, (w == lsuWidth-1).B)
+                          })) else None
 
   //---------------------------------------------------------
   // Controller logic. Arbitrate which request actually fires
@@ -1818,7 +1825,10 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // re-armed), so it retires cleanly at the ROB head. rob_bsy itself is cleared
   // separately by VecLSU.clr_rob -> rob.vec_clr_bsy (RT_VEC has no iresp wb).
   if (usingRVV) {
-    io.core.vec_dmem.get.req.ready := will_fire_vec_load.get(lsuWidth-1) && io.dmem.req.fire
+    // The vec beat fires on exactly one pipe (loads: lsuWidth-1; stores: 0), so OR
+    // over all pipes rather than assuming the last lane -- otherwise a memWidth>1
+    // vector store (which routes to pipe 0) never sees req.ready and VecLSU hangs.
+    io.core.vec_dmem.get.req.ready := will_fire_vec_load.get.reduce(_ || _) && io.dmem.req.fire
     when (io.core.vec_dmem.get.ld_done.valid) {
       val v_ldq_idx = io.core.vec_dmem.get.ld_done.bits
       ldq_executed    (v_ldq_idx) := true.B

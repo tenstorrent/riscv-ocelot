@@ -1606,15 +1606,11 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     // (iss -> arb(Reg) -> rrd(Reg) -> exe(Reg) = iss+3). Read ports 2..2+aluWidth-1
     // (0=LSU, 1=CII).
     //
-    // NOTE: pvl_src names the pvl the producing (older) vset wrote. There is NO
-    // dependency forcing that write to land before this read, so a keep-vl vset that
-    // ISSUES within ~2 cycles of the vset producing its pvl_src would read a stale
-    // VL-RF entry (the VL-RF has no write->read forwarding). Real code separates the
-    // two vsets by several instructions (e.g. a strip-mined loop's ta-vset then
-    // tu-vset), so this does not trigger in practice.
-    // TODO(raw-guard): gate the keep-vl vset's issue on its pvl_src producer (a VL
-    // source-readiness dependency, analogous to a vector consumer's pvl_busy) to make
-    // this robust for back-to-back vsets.
+    // NOTE: the read at pvl_src is safe against the producing (older) vset's VL-RF
+    // write because VlRename stalls a keep-vl vset at rename until read_pvl(=pvl_src)
+    // is no longer busy (its producer's writeback + VL wakeup landed). Without that
+    // guard a wide-issue tier (MegaBoom) issues the two vsets close enough to read
+    // stale. See VlRename's is_keepvl ren_stall.
     for (i <- 0 until aluWidth) {
       vl_regfile.get.io.read_ports(2 + i).addr := alu_iss_uops(i).bits.pvl_src
       // Align to the vset's exe stage. Read addr is driven at ISSUE (T); the ExeUnit
