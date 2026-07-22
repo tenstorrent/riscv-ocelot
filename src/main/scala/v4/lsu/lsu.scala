@@ -1645,8 +1645,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     // path is guarded off (below) and must NOT touch it.
     if (usingRVV) {
       when (io.dmem.nack(w).valid && nack_is_vec) {
-        io.core.vec_dmem.get.nack.valid     := true.B
-        io.core.vec_dmem.get.nack.bits.data := 0.U
+        io.core.vec_dmem.get.nack.valid        := true.B
+        io.core.vec_dmem.get.nack.bits.data    := 0.U
+        io.core.vec_dmem.get.nack.bits.beat_id := io.dmem.nack(w).bits.uop.vec_beat_id
       }
     }
     when (io.dmem.nack(w).valid) {
@@ -1678,8 +1679,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       if (usingRVV) {
         when (resp_is_vec) {
           dmem_resp_fired(w) := true.B
-          io.core.vec_dmem.get.resp.valid     := true.B
-          io.core.vec_dmem.get.resp.bits.data := resp.data
+          io.core.vec_dmem.get.resp.valid        := true.B
+          io.core.vec_dmem.get.resp.bits.data    := resp.data
+          io.core.vec_dmem.get.resp.bits.beat_id := resp.uop.vec_beat_id
         }
       }
       when (resp.uop.uses_ldq && !resp_is_vec) {

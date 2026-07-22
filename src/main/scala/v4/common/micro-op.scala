@@ -193,6 +193,11 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   // the outgoing committed pointer directly. Read by every vector EU on the VL read
   // port. VTYPE is not renamed -- it rides the VConfig snapshot (VCFG vtype mirror).
   val pvl              = UInt(vlPregSz.W)         // VL register-file index
+  // Phase 1 multi-outstanding vector loads: a cracked LOAD beat carries a small id
+  // so its (out-of-order) dcache response can be matched back to its descriptor in
+  // VecLSU. Rides the beat uop through the dcache (which echoes uop on resp/nack).
+  // Only meaningful on vector load nano-ops; 4 bits => up to 16 beats in flight.
+  val vec_beat_id      = UInt(4.W)
   // Source (old) VL preg = the VL mapping this uop displaces (= the pvl a consumer
   // at this program point reads). For a `vsetvli x0,x0` (keep-vl) producer the new
   // VL == the old VL, so the int-ALU reads the VL-RF at this pvl_src to recover it.
