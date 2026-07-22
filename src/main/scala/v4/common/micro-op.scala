@@ -65,6 +65,7 @@ class VsetWbResp(implicit p: Parameters) extends BoomBundle
   val vl_value = UInt(vecVLSz.W)
   val vtype    = new VConfig          // runtime-decoded vtype (vsetvl) or immediate (vsetvli)
   val pvl      = UInt(vlPregSz.W)
+  val keep_vl  = Bool()               // vsetvli x0,x0: VL unchanged -> core overrides vl_value with the old VL
 }
 
 class MicroOp(implicit p: Parameters) extends BoomBundle
@@ -192,6 +193,10 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   // the outgoing committed pointer directly. Read by every vector EU on the VL read
   // port. VTYPE is not renamed -- it rides the VConfig snapshot (VCFG vtype mirror).
   val pvl              = UInt(vlPregSz.W)         // VL register-file index
+  // Source (old) VL preg = the VL mapping this uop displaces (= the pvl a consumer
+  // at this program point reads). For a `vsetvli x0,x0` (keep-vl) producer the new
+  // VL == the old VL, so the int-ALU reads the VL-RF at this pvl_src to recover it.
+  val pvl_src          = UInt(vlPregSz.W)
 
   val vl_value         = UInt(vecVLSz.W)          // computed VL (rd value); architectural vl CSR at commit
 

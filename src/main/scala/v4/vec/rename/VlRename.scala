@@ -358,6 +358,10 @@ class VlRename(plWidth: Int, numVlPhysRegs: Int, numWbPorts: Int)(implicit p: Pa
     // Without this, the producer wrote VL-RF[prefix] while consumers read
     // VL-RF[alloc] -> consumers got a stale/garbage vl.
     out.pvl      := Mux(is_vl_producer_req(w), alloc_pvl(w), read_pvl)
+    // Source (old) VL preg = read_pvl (the pvl this uop displaces). A keep-vl vset
+    // producer allocates a fresh dest pvl (out.pvl) but the int-ALU needs the OLD VL,
+    // which lives at read_pvl -- carry it so core.scala can read the VL-RF for it.
+    out.pvl_src  := read_pvl
     out.pvl_busy := io.dec_uops(w).is_vec && (read_busy || older_inbundle_vl_prod)
     io.ren2_uops(w) := GetNewUopAndBrMask(out, io.brupdate)
   }

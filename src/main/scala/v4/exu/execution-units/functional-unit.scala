@@ -314,14 +314,16 @@ class ALUUnit(dataWidth: Int)(implicit p: Parameters)
     // vsetivli's VL was already computed at decode (uop.vl_value = min(uimm,vlmax)).
     val avl = io.req.bits.rs1_data
 
+    // rs1=x0 && rd=x0 (vsetvli/vsetvl): "keep current VL" -- vtype-only update, VL
+    // unchanged (RVV spec 6.1). The old architectural VL is not available in this
+    // stage, so we flag it (keep_vl) and let core.scala override vl_value with the
+    // VL-RF read at the uop's source pvl (pvl_src). The placeholder below is only a
+    // don't-care until that override lands.
+    val keep_vl = rs1_is_x0 && rd_is_x0
     // VL for vsetvli/vsetvl:
     val vl_vsetvl = Mux(rs1_is_x0 && !rd_is_x0, vlmax,                  // rs1=x0, rd!=x0 -> VLMAX
-                    Mux(rs1_is_x0 &&  rd_is_x0, vlmax,                  // rs1=x0, rd=x0 -> keep current VL
+                    Mux(keep_vl,                vlmax,                  // rs1=x0, rd=x0 -> keep VL (overridden in core)
                                                 Mux(avl < vlmax, avl(vecVLSz - 1, 0), vlmax)))  // min(AVL,VLMAX)
-    // TODO(rs1=x0 && rd=x0): spec says "keep current VL" (vtype only update). We do
-    // not yet read the old architectural VL here, so this falls back to VLMAX as a
-    // safe placeholder. Not exercised by the current smoke test. Wiring the old VL
-    // (e.g. from the VL-RF read via pvl) is needed for full correctness.
 
     vl_final := Mux(uop.is_vsetivli, uop.vl_value, vl_vsetvl)
 
@@ -330,6 +332,7 @@ class ALUUnit(dataWidth: Int)(implicit p: Parameters)
     vset_out.get.bits.vl_value := vl_final
     vset_out.get.bits.vtype   := eff_vtype
     vset_out.get.bits.pvl     := uop.pvl
+    vset_out.get.bits.keep_vl := keep_vl && !uop.is_vsetivli  // vsetivli always has an immediate AVL (never keep)
   }
 
 

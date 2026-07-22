@@ -160,7 +160,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   // + dgen(1)/ls-mask(2)/vec-lsu(3)/idx-gen(4); port 0,7 spare. (Was 8; +2 for the
   // widened CII src channel.)
   val vec_regfile = if (usingRVV) Some(Module(new VecRegFile(10, 4, coreWidth * boom.v4.vec.rename.VecEmul.MAX_MEMBERS))) else None
-  val vl_regfile  = if (usingRVV) Some(Module(new VlRegFile(6, 3)))  else None
+  // Read ports: 0 = LSU, 1 = CII, 2..2+aluWidth-1 = int-ALU vset keep-vl (old VL).
+  val vl_regfile  = if (usingRVV) Some(Module(new VlRegFile(2 + aluWidth, 3)))  else None
 
   // Caracal vector LSU (Step 11a.2): unit-stride vle beat engine. Declared at
   // top level so the completion datapath (group-done -> vec rename / issue
@@ -200,6 +201,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   // driven at the ALU-resp consumption site below and read in the regfile/rename/issue
   // tie-off blocks. Gated by usingRVV so the vector-OFF RTL is byte-identical (gate 9f).
   val vset_wb = if (usingRVV) Some(Wire(Valid(new boom.v4.common.VsetWbResp))) else None
+  // Per-ALU-lane OLD VL, read from the VL-RF at the vset's source pvl and pipelined to
+  // align with that lane's exe-stage vset writeback. Used to satisfy `vsetvli x0,x0`
+  // (keep-vl): the new VL == the old VL. Driven in the VL-RF read block below.
+  val vset_old_vl = if (usingRVV) Some(Wire(Vec(aluWidth, UInt(vecVLSz.W)))) else None
 
   val dispatcher       = Module(new BasicDispatcher)
   val iregfileBankedWriteArray = Seq.fill(lsuWidth + 1) { None } ++ ((0 until aluWidth).map { w => if (enableColumnALUWrites) Some(w) else None }) ++ (if (usingVectorArith) Seq(None) else Seq())
@@ -1023,6 +1028,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
       val is_vl_prod = dis_uops(w).is_vsetivli || dis_uops(w).is_vsetvli || dis_uops(w).is_vsetvl
       when (is_vl_prod) {
         dis_uops(w).pvl := vl_uop.pvl
+        // Source (old) VL preg for keep-vl (vsetvli x0,x0): the int-ALU reads the
+        // VL-RF here to recover the unchanged VL. Without this it stayed 0 -> read
+        // VL-RF[0] -> garbage VL > vlMax.
+        dis_uops(w).pvl_src := vl_uop.pvl_src
       }
 
       // D.6 -- fold the vector rename stalls into the per-lane ren_stalls. Re-list
@@ -1333,6 +1342,11 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vset_wb.get.valid := vset_valids.reduce(_ || _)
     vset_wb.get.bits  := Mux1H(vset_valids, alu_exe_units.map(_.io_vset_wb.get.bits))
     assert(PopCount(VecInit(vset_valids).asUInt) <= 1.U, "more than one ALU lane produced a vset writeback")
+    // keep-vl (vsetvli x0,x0): VL is unchanged -> override the placeholder vl_value
+    // with the OLD VL read from the VL-RF (vset_old_vl, aligned to this exe stage).
+    when (vset_wb.get.bits.keep_vl) {
+      vset_wb.get.bits.vl_value := Mux1H(vset_valids, vset_old_vl.get)
+    }
 
     // ROB vl/vtype stash port (Input Vec(coreWidth, Valid[VsetWbResp])). The int ALU maps to
     // lane 0; the rob_idx inside the response selects the ROB row, so the lane index is only a
@@ -1586,6 +1600,28 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     vl_regfile.get.io.write_ports(1).bits.addr := vset_wb.get.bits.pvl
     vl_regfile.get.io.write_ports(1).bits.data := vset_wb.get.bits.vl_value
     vl_regfile.get.io.read_ports.foreach { r => r.addr := 0.U }
+    // keep-vl support: read each int-ALU lane's vset SOURCE pvl (old VL). The read is
+    // driven from the ISSUE-stage uop; the VL-RF's 1-cycle registered read + two pipe
+    // registers below align the data with the lane's exe-stage vset writeback
+    // (iss -> arb(Reg) -> rrd(Reg) -> exe(Reg) = iss+3). Read ports 2..2+aluWidth-1
+    // (0=LSU, 1=CII).
+    //
+    // NOTE: pvl_src names the pvl the producing (older) vset wrote. There is NO
+    // dependency forcing that write to land before this read, so a keep-vl vset that
+    // ISSUES within ~2 cycles of the vset producing its pvl_src would read a stale
+    // VL-RF entry (the VL-RF has no write->read forwarding). Real code separates the
+    // two vsets by several instructions (e.g. a strip-mined loop's ta-vset then
+    // tu-vset), so this does not trigger in practice.
+    // TODO(raw-guard): gate the keep-vl vset's issue on its pvl_src producer (a VL
+    // source-readiness dependency, analogous to a vector consumer's pvl_busy) to make
+    // this robust for back-to-back vsets.
+    for (i <- 0 until aluWidth) {
+      vl_regfile.get.io.read_ports(2 + i).addr := alu_iss_uops(i).bits.pvl_src
+      // Align to the vset's exe stage. Read addr is driven at ISSUE (T); the ExeUnit
+      // is iss -> arb(Reg) -> rrd(Reg) -> exe(Reg) = T+3, and the VL-RF read is itself
+      // 1-cycle registered (data @ T+1). So pipe the data two more cycles: T+1 -> T+3.
+      vset_old_vl.get(i) := RegNext(RegNext(vl_regfile.get.io.read_ports(2 + i).data))
+    }
   }
 
   // ----------------------------------------------------------------
