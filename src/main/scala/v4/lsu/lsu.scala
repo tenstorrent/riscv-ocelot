@@ -303,6 +303,19 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val stq_commit_head  = Reg(UInt((stqAddrSz+1).W)) // point to next store to commit
   val stq_execute_head = Reg(UInt((stqAddrSz+1).W)) // point to next store to execute
 
+  // Caracal (LSU Phase 1b): vector store->load address disambiguation. Per-entry
+  // [lo,hi) BYTE range of a VECTOR memory op so a vector load can prove it does not
+  // alias an older vector store and skip the wait-for-store barrier. `rng_v` marks a
+  // recorded (unit-stride) range; when false the disambiguation scan falls back to
+  // the store-completion (succeeded) check, so behavior is conservative/correct until
+  // ranges are populated early (Stage 2). rng_v defaults false (reset + per-enq clear).
+  val stq_vec_lo    = Reg(Vec(numStqEntries, UInt(coreMaxAddrBits.W)))
+  val stq_vec_hi    = Reg(Vec(numStqEntries, UInt(coreMaxAddrBits.W)))
+  val stq_vec_rng_v = RegInit(VecInit(Seq.fill(numStqEntries)(false.B)))
+  val ldq_vec_lo    = Reg(Vec(numLdqEntries, UInt(coreMaxAddrBits.W)))
+  val ldq_vec_hi    = Reg(Vec(numLdqEntries, UInt(coreMaxAddrBits.W)))
+  val ldq_vec_rng_v = RegInit(VecInit(Seq.fill(numLdqEntries)(false.B)))
+
 
 
 
@@ -417,6 +430,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq_order_fail     (ldq_idx)       := false.B
       ldq_observed       (ldq_idx)       := false.B
       ldq_forward_std_val(ldq_idx)       := false.B
+      ldq_vec_rng_v      (ldq_idx)       := false.B   // Phase 1b: range recorded later
     }
     when (dis_uops(w).valid && dis_uops(w).bits.uses_stq) {
       val stq_idx = dis_uops(w).bits.stq_idx
@@ -428,6 +442,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       stq_can_execute    (stq_idx)        := false.B
       stq_succeeded      (stq_idx)        := false.B
       stq_cleared        (stq_idx)        := false.B
+      stq_vec_rng_v      (stq_idx)        := false.B   // Phase 1b: range recorded later
     }
 
     ld_enq_idx = Mux(dis_ld_val, WrapIncWCarry(ld_enq_idx, numLdqEntries),
@@ -925,6 +940,29 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.dmem.req.bits  := dmem_req
   val dmem_req_fire = widthMap(w => dmem_req(w).valid && io.dmem.req.fire)
 
+  // ---- Debug observability (dontTouch => survives to the waveform) ----
+  // How many D$ transactions the LSU drives each cycle. dmem_req(w).valid is the
+  // per-pipe request presented; io.dmem.req.fire says the whole bundle was accepted.
+  val dbg_dmem_req_valid_cnt = PopCount(dmem_req.map(_.valid))          // beats presented
+  val dbg_dmem_req_fire_cnt  = Mux(io.dmem.req.fire, dbg_dmem_req_valid_cnt, 0.U) // beats accepted
+  dontTouch(dmem_req)                    // per-pipe req valid/addr/uop each cycle
+  dontTouch(dbg_dmem_req_valid_cnt)
+  dontTouch(dbg_dmem_req_fire_cnt)
+  if (usingRVV) {
+    // Vector-beat breakdown: the primary beat (any pipe) and, under dual-dynamic,
+    // the opportunistic 2nd beat (pipe 0). Both ride the single io.dmem.req.fire.
+    val dbg_vec_beat_fire  = will_fire_vec_load.get.reduce(_ || _) && io.dmem.req.fire
+    dontTouch(dbg_vec_beat_fire)
+    // The 2nd beat only exists under dual-dynamic; on "single" (vecMemWidth==1) it
+    // would be the literal false.B, which dontTouch rejects -- so gate it.
+    if (vecMemWidth > 1) {
+      val dbg_vec_beat2_fire = will_fire_vec_load2.get.reduce(_ || _) && io.dmem.req.fire
+      val dbg_vec_beats_cnt  = dbg_vec_beat_fire.asUInt +& dbg_vec_beat2_fire.asUInt // 0/1/2 vec beats/cycle
+      dontTouch(dbg_vec_beat2_fire)
+      dontTouch(dbg_vec_beats_cnt)
+    }
+  }
+
   val s0_executing_loads = WireInit(VecInit((0 until numLdqEntries).map(x=>false.B)))
   val s0_kills = Wire(Vec(lsuWidth, Bool()))
 
@@ -1335,6 +1373,25 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           failed_load := true.B
         }
       }
+      // Track A (Phase 1b): a store beat landing inside a younger, already-executed
+      // speculative VECTOR load's [lo,hi) range -> order_fail replay. Vector loads
+      // register a range (not a per-dword LCAM addr) and never forward, so this is a
+      // separate, simpler branch: 8B store beat [lcam_addr, lcam_addr+8) overlaps the
+      // load range, and the store is program-order older (IdxAgeOt vs the load's
+      // older-store boundary). Covers vector-store->vector-load and scalar-store->
+      // vector-load ordering that the dword LCAM (l_addr.valid only) cannot see.
+      if (usingRVV) {
+        when (do_st_search(w)                                    &&
+              l_valid                                            &&
+              ldq_vec_rng_v(i)                                   &&
+              (l_executed || l_succeeded)                        &&
+              IdxAgeOt(lcam_stq_idx(w), l_next_stq_idx)          &&
+              (lcam_addr(w) < ldq_vec_hi(i))                     &&
+              ((lcam_addr(w) + 8.U) > ldq_vec_lo(i))) {
+          ldq_order_fail(i) := true.B
+          failed_load := true.B
+        }
+      }
       when (       do_ld_search(w)       &&
                    l_valid               &&
                    l_addr.valid          &&
@@ -1664,17 +1721,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       vec_nack_slots.get(w).bits  := DontCare
     }
 
-    // store->load memory ordering query (Track A). The vector LDQ/STQ placeholder
-    // entries never register an address (no LCAM disambiguation for vector ops),
-    // so a vector load must not read the dcache until all its program-order-older
-    // stores have committed and drained. core.scala presents the load it is about
-    // to ISSUE (by ldq_idx) and squashes that grant until this reports drained --
-    // keeping the load out of the shared vector-LS pipe so older stores can drain.
-    // The load's older-store boundary is ldq_next_stq_idx (the STQ tail at its
-    // dispatch); every older store has left the STQ once stq_head (which only
-    // advances on committed+succeeded stores) is younger-or-equal to the boundary.
-    io.core.vec_ld_order.get.drained :=
-      IdxAgeYe(stq_head, ldq_next_stq_idx(GetRealLSQIdx(io.core.vec_ld_order.get.idx)))
+    // Track A: vector loads no longer wait on this signal (core.scala hardwires
+    // squash_grant=false; loads execute speculatively and rely on the store-search +
+    // order_fail replay below). `drained` is retired -- tie true so the (now dead) port
+    // reads benignly.
+    io.core.vec_ld_order.get.drained := true.B
   }
   for (w <- 0 until lsuWidth) {
     wb_slow_wakeups(w).valid := false.B
@@ -1909,6 +1960,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       val v_ldq_idx = io.core.vec_dmem.get.ld_done.bits
       ldq_executed    (v_ldq_idx) := true.B
       ldq_will_succeed(v_ldq_idx) := true.B
+    }
+    // Track A: record the speculative vector load's [lo,hi) range in its LDQ entry so
+    // an older store's LCAM search can detect an overlap and set order_fail (replay).
+    when (io.core.vec_dmem.get.ld_range.valid) {
+      val r_idx = GetRealLSQIdx(io.core.vec_dmem.get.ld_range.bits.idx)
+      ldq_vec_lo   (r_idx) := io.core.vec_dmem.get.ld_range.bits.lo
+      ldq_vec_hi   (r_idx) := io.core.vec_dmem.get.ld_range.bits.hi
+      ldq_vec_rng_v(r_idx) := true.B
     }
     // Vector store completion: VecLSU pulses st_done on the last store beat; mark
     // the vse's STQ placeholder succeeded ONCE so it retires (committed+succeeded)

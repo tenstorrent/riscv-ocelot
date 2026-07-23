@@ -57,6 +57,14 @@ class VecLoadNop(implicit p: Parameters) extends BoomBundle with VecLsConstants
   // register group (vl<capacity, or vl==0), so the unwritten TAIL lanes must keep
   // their old value (undisturbed) -- VecLSU does the stale_pvdest group-copy.
   val tail_undist = Bool()
+  // Track A disambiguation: the load's [grp_lo, grp_hi) BYTE range, registered in the
+  // LDQ so an older store's LCAM search can catch a younger speculative vector load it
+  // overlaps (-> order_fail replay). PRECISE for unit-stride; a conservative full range
+  // [0, ~0) for strided/indexed (over-match: correct, just more replays). grp_rng_v
+  // marks it recorded (a real load).
+  val grp_lo      = UInt(coreMaxAddrBits.W)
+  val grp_hi      = UInt(coreMaxAddrBits.W)
+  val grp_rng_v   = Bool()
 }
 
 /** One cracked store micro-op (element or packed segment).

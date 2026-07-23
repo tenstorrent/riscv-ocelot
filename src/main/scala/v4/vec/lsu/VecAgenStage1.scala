@@ -315,6 +315,9 @@ extends BoomModule with VecLsConstants {
     bypass_packet.pdst        := 0.U
     bypass_packet.pdst_member := 0.U
     bypass_packet.tail_undist := false.B          // set by the remap below
+    bypass_packet.grp_lo      := 0.U              // set by the remap below
+    bypass_packet.grp_hi      := 0.U
+    bypass_packet.grp_rng_v   := false.B
 
     // ---- output mux (only one sub-gen is active per access) ----
     val out = io.load_nop.get
@@ -361,6 +364,18 @@ extends BoomModule with VecLsConstants {
     val grp_bytes = PopCount(start_q.uop.pvdest_grp_mask) << log2Ceil(VLEN_BYTES).U
     val ld_bytes  = start_q.vl << start_q.eew_enc
     out.bits.tail_undist := ld_bytes < grp_bytes
+
+    // Track A: the load's [grp_lo,grp_hi) byte range for the LDQ, so an older store's
+    // LCAM search can order_fail this speculative load if it overlaps. PRECISE for the
+    // contiguous unit-stride fast path (non-masked, single-segment, unit-stride,
+    // positive dir); a conservative FULL range for strided/indexed/masked (over-match
+    // -> correct, just extra replays). vl==0 has no footprint (rng_v=false).
+    val us_contig = !start_q.is_mask && (start_q.seg_enc === 0.U) &&
+                    (start_q.stride_enc === 0.U) && !start_q.stride_dir
+    out.bits.grp_rng_v := (start_q.vl =/= 0.U)
+    out.bits.grp_lo    := Mux(us_contig, start_q.base_addr, 0.U)
+    out.bits.grp_hi    := Mux(us_contig, start_q.base_addr + ld_bytes,
+                              ~(0.U(coreMaxAddrBits.W)))
 
     // ---- Phase 2 (dual-dynamic): second output nop (Packer fast path only) ----
     // Valid only in PACKING off the Packer's beat1; same PRN remap + tail_undist.

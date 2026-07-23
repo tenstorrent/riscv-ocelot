@@ -89,6 +89,13 @@ class VecDmemIO(implicit p: Parameters) extends BoomBundle with VecLsConstants
   val store_ack = Valid(new VecDmemResp)                  // LSU -> VecLSU (store committed to D$)
   val ld_done   = Flipped(Valid(UInt((1 + ldqAddrSz).W))) // VecLSU -> LSU (ldq idx, write exec/succ once)
   val st_done   = Flipped(Valid(UInt((1 + stqAddrSz).W))) // VecLSU -> LSU (stq idx, mark succeeded once)
+  // Track A: register the load's [lo,hi) byte range into its LDQ entry at group start,
+  // so an older store's LCAM search can order_fail this speculative vector load.
+  val ld_range  = Flipped(Valid(new Bundle {
+    val idx = UInt((1 + ldqAddrSz).W)
+    val lo  = UInt(coreMaxAddrBits.W)
+    val hi  = UInt(coreMaxAddrBits.W)
+  }))
   // Phase 2 (dual-dynamic): a SECOND LOAD-beat lane. VecLSU issues a second beat/
   // cycle on req2; the LSU fires it into an idle scalar dcache pipe opportunistically
   // (lowest priority, never perturbs scalar). resp2/nack2 carry a second vector
@@ -232,6 +239,13 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
   lcb.io.start.bits.prn  := io.load_nop.bits.uop.pvdest_grp
   lcb.io.start.bits.mask := io.load_nop.bits.uop.pvdest_grp_mask
   lcb.io.kill            := io.kill
+
+  // Track A: register the load group's [lo,hi) range into its LDQ entry at group start
+  // (rng_v gates it; a vl==0 load has no range/footprint).
+  io.dmem.ld_range.valid    := start_grp && io.load_nop.bits.grp_rng_v && !io.kill
+  io.dmem.ld_range.bits.idx := io.load_nop.bits.uop.ldq_idx
+  io.dmem.ld_range.bits.lo  := io.load_nop.bits.grp_lo
+  io.dmem.ld_range.bits.hi  := io.load_nop.bits.grp_hi
 
   // ---- LCB beat(s): driven on a real response OR on a fake/bypass last beat ----
   for (i <- 0 until vecMemWidth) {
@@ -490,4 +504,22 @@ class VecLSU(implicit p: Parameters) extends BoomModule with VecLsConstants
   io.group_done.bits.mask := cur.uop.pvdest_grp_mask
 
   io.busy := grp_active || (state =/= State.sIdle)
+
+  // ---- Debug observability (dontTouch => survives to the waveform) ----
+  // The vector LSU's view of D$ traffic: outstanding beats in the descriptor table,
+  // beats ISSUED to the scalar LSU this cycle (req + req2), beat RESPONSES placed
+  // this cycle (resp + resp2), and cracked beats ACCEPTED from the AGEN (nop + nop2).
+  val dbg_desc_valid_cnt    = PopCount(desc.map(_.valid))                       // beats occupying a slot
+  val dbg_desc_inflight_cnt = PopCount(desc.map(d => d.valid && d.inflight))    // beats out at the D$
+  val dbg_beats_issued_cnt  = io.dmem.req.fire.asUInt +&
+    (if (vecMemWidth > 1) io.dmem.req2.get.fire.asUInt else 0.U)                // beats issued this cycle
+  val dbg_beats_resp_cnt    = io.dmem.resp.valid.asUInt +&
+    (if (vecMemWidth > 1) io.dmem.resp2.get.valid.asUInt else 0.U)             // responses this cycle
+  val dbg_beats_accept_cnt  = io.load_nop.fire.asUInt +&
+    (if (vecMemWidth > 1) io.load_nop2.get.fire.asUInt else 0.U)              // cracked beats accepted
+  dontTouch(dbg_desc_valid_cnt)
+  dontTouch(dbg_desc_inflight_cnt)
+  dontTouch(dbg_beats_issued_cnt)
+  dontTouch(dbg_beats_resp_cnt)
+  dontTouch(dbg_beats_accept_cnt)
 }

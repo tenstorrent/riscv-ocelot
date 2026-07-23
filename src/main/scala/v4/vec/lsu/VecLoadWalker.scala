@@ -153,6 +153,9 @@ extends BoomModule with VecLsConstants {
   io.load_packet.bits.pdst        := 0.U
   io.load_packet.bits.pdst_member := 0.U
   io.load_packet.bits.tail_undist := false.B   // group property set by the AGEN remap
+  io.load_packet.bits.grp_lo      := 0.U       // Track A range: set by the AGEN remap
+  io.load_packet.bits.grp_hi      := 0.U
+  io.load_packet.bits.grp_rng_v   := false.B
 
   // ======== Vstart Handling Constraints ========
   // handling vstart for the walker has to be done across multiple cycles

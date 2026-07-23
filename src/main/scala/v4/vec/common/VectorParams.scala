@@ -29,9 +29,11 @@ case class VectorParams(
                                              // Bounded by lcbEntries and dcache MSHR headroom. Phase 2
                                              // (dual-dynamic) accepts+issues 2 beats/cycle, so it needs
                                              // ~2x the in-flight headroom (8) to not slot-starve.
-  vecLoadIssueEntries:  Int = 8,             // vector issue-queue slot counts; distinct from the
-  vecStoreIssueEntries: Int = 8,             // LSU numVec{Load,Store}QueueEntries (those are the
-  vecAluIssueEntries:   Int = 8,             // post-issue address/data queues, these are pre-issue slots)
+  vecLoadIssueEntries:  Int = 16,            // vector issue-queue slot counts (the AGEN/DGEN feed
+  vecStoreIssueEntries: Int = 16,            // queues): IQ_V_LOAD -> load AGEN, IQ_V_STORE -> store
+  vecAluIssueEntries:   Int = 16,            // AGEN+DGEN. Bumped 8->16 for a deeper in-flight LS window
+                                             // (the LDQ/STQ placeholders -- numLdqEntries/numStqEntries,
+                                             // 16 Medium / 32 Mega -- are the other in-flight ceiling).
   vecIssueGrantWidth: Int = 1,               // FU-pipeline-in-order: 1 on Medium, lift to 2 on Mega
   dcacheArbiterMode: String = "single",      // "single" (Goal 1 default) | "dual-dynamic" (Mega)
   vecScalarSnoopEnable: Boolean = false,     // turn on with dual-dynamic arbiter (issue 9)

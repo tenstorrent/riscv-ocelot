@@ -1551,8 +1551,16 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     // ldq_idx is always defined (issue unit zeroes iss_uops.bits when !valid), and
     // squashing a non-grant is a harmless no-op. Overrides the squash_grant tied
     // to false in the vec-issue loop above.
+    // Track A (loadstore.rst mem-order): vector loads execute SPECULATIVELY -- they no
+    // longer wait for older stores to drain. Correctness comes from the LCAM store-search
+    // + `order_fail` -> MINI_EXCEPTION_MEM_ORDERING refetch replay (lsu.scala): a vector
+    // store that finds a younger, already-executed overlapping load (scalar via the dword
+    // LCAM, or vector via the registered [lo,hi) range) sets that load's order_fail and it
+    // replays. Removing the squash is the Track-A win; the old conservative drained-wait is
+    // retired. (No deadlock: a speculative load executes and completes, never blocks the
+    // shared pipe waiting for a store.)
     io.lsu.vec_ld_order.get.idx        := vload_iss_unit.get.io.iss_uops(0).bits.ldq_idx
-    vload_iss_unit.get.io.squash_grant := !io.lsu.vec_ld_order.get.drained
+    vload_iss_unit.get.io.squash_grant := false.B
 
     // Step 12: IQ_V_ALU is DORMANT in Milestone 1. Vector arithmetic is decoded,
     // renamed, and queued, but there is NO vector-ALU / CII execution unit yet
