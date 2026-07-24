@@ -566,6 +566,15 @@ class ALUExeUnit(
   io_alu_resp.valid := alu.io.resp.valid
   io_alu_resp.bits  := alu.io.resp.bits
 
+  // Caracal: vset writeback (VL value + vtype + pvl + rob_idx) for the ROB / VL-RF /
+  // VL-wakeup. Only exists when usingRVV; the ALUUnit's vset_out is also gated, so
+  // when vector is off there is no port and the ALU is byte-identical to baseline.
+  // Combinational, aligned with io_alu_resp (the ALUUnit resp is combinational).
+  val io_vset_wb = if (usingRVV) Some(IO(Output(Valid(new VsetWbResp)))) else None
+  if (usingRVV) {
+    io_vset_wb.get := alu.vset_out.get
+  }
+
   val io_brinfo = IO(Output(Valid(new BrResolutionInfo)))
   io_brinfo := alu.io.brinfo
 

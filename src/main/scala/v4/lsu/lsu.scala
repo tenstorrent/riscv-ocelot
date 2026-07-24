@@ -160,6 +160,22 @@ class LSUCoreIO(implicit p: Parameters) extends BoomBundle()(p)
     val release = Bool()
     val tlbMiss = Bool()
   })
+
+  // Caracal (Step 11a.2): dedicated vector dcache beat port. Option => the LSU
+  // port list is BYTE-IDENTICAL when !usingRVV. Driven by VecLSU; forwarded into
+  // the scalar dcache request mux at LOWEST priority so the scalar will_fire
+  // schedule is unchanged by construction (compile-time scalar floor).
+  val vec_dmem = if (usingRVV) Some(new boom.v4.vec.lsu.VecDmemIO) else None
+
+  // Store->load ordering query (Track A). The core presents the ldq_idx of the
+  // vector load it is about to issue; the LSU reports whether all that load's
+  // program-order-older stores have committed and drained. The core squashes the
+  // load's grant until `drained`, so a vector load never enters the shared
+  // vector-LS pipe (and never reads the dcache) ahead of an older store.
+  val vec_ld_order = if (usingRVV) Some(new Bundle {
+    val idx     = Input(UInt((1 + ldqAddrSz).W))
+    val drained = Output(Bool())
+  }) else None
 }
 
 class LSUIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
@@ -287,6 +303,19 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val stq_commit_head  = Reg(UInt((stqAddrSz+1).W)) // point to next store to commit
   val stq_execute_head = Reg(UInt((stqAddrSz+1).W)) // point to next store to execute
 
+  // Caracal (LSU Phase 1b): vector store->load address disambiguation. Per-entry
+  // [lo,hi) BYTE range of a VECTOR memory op so a vector load can prove it does not
+  // alias an older vector store and skip the wait-for-store barrier. `rng_v` marks a
+  // recorded (unit-stride) range; when false the disambiguation scan falls back to
+  // the store-completion (succeeded) check, so behavior is conservative/correct until
+  // ranges are populated early (Stage 2). rng_v defaults false (reset + per-enq clear).
+  val stq_vec_lo    = Reg(Vec(numStqEntries, UInt(coreMaxAddrBits.W)))
+  val stq_vec_hi    = Reg(Vec(numStqEntries, UInt(coreMaxAddrBits.W)))
+  val stq_vec_rng_v = RegInit(VecInit(Seq.fill(numStqEntries)(false.B)))
+  val ldq_vec_lo    = Reg(Vec(numLdqEntries, UInt(coreMaxAddrBits.W)))
+  val ldq_vec_hi    = Reg(Vec(numLdqEntries, UInt(coreMaxAddrBits.W)))
+  val ldq_vec_rng_v = RegInit(VecInit(Seq.fill(numLdqEntries)(false.B)))
+
 
 
 
@@ -401,6 +430,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq_order_fail     (ldq_idx)       := false.B
       ldq_observed       (ldq_idx)       := false.B
       ldq_forward_std_val(ldq_idx)       := false.B
+      ldq_vec_rng_v      (ldq_idx)       := false.B   // Phase 1b: range recorded later
     }
     when (dis_uops(w).valid && dis_uops(w).bits.uses_stq) {
       val stq_idx = dis_uops(w).bits.stq_idx
@@ -412,6 +442,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       stq_can_execute    (stq_idx)        := false.B
       stq_succeeded      (stq_idx)        := false.B
       stq_cleared        (stq_idx)        := false.B
+      stq_vec_rng_v      (stq_idx)        := false.B   // Phase 1b: range recorded later
     }
 
     ld_enq_idx = Mux(dis_ld_val, WrapIncWCarry(ld_enq_idx, numLdqEntries),
@@ -471,6 +502,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val will_fire_store_commit_fast = Wire(Vec(lsuWidth, Bool()))
   val will_fire_store_commit_slow = Wire(Vec(lsuWidth, Bool()))
   val will_fire_load_wakeup       = Wire(Vec(lsuWidth, Bool()))
+
+  // Caracal (Step 11a.2): appended-last vector load beat. Option => no extra
+  // wires/dontTouch exist when !usingRVV, so the vector-OFF netlist is identical.
+  val will_fire_vec_load = if (usingRVV) Some(Wire(Vec(lsuWidth, Bool()))) else None
+  // Phase 2 (dual-dynamic): a SECOND vector load beat fired opportunistically into
+  // pipe 0 (the lowest-priority claim, only when no scalar op took pipe 0's dcache
+  // slot this cycle). Present only when vecMemWidth>1.
+  val will_fire_vec_load2 = if (usingRVV && vecMemWidth > 1) Some(Wire(Vec(lsuWidth, Bool()))) else None
 
   val agen = io.core.agen
   // -------------------------------
@@ -638,6 +677,24 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // Can we fire a hellacache request that the dcache nack'd
   val can_fire_hella_wakeup    = WireInit(widthMap(w => false.B)) // This is assigned to in the hellashim controller
 
+  // Caracal (Step 11a.2): can we fire a vector dcache beat (load or store). Only
+  // when VecLSU presents a beat. M1 bare-mode: the EA is physical (riscv-tests are
+  // identity-mapped), so the beat uses DC only -- no TLB/LCAM.
+  //   - LOADS use the highest lane (lowest priority, never perturbs scalar issue).
+  //   - STORES MUST use pipe 0: the L1D only takes store hits on the 0th pipe
+  //     (dcache.scala:903 asserts). On memWidth==1 (Medium) both collapse to pipe 0;
+  //     on memWidth>1 (Mega) a vector store on a non-0 pipe would trip that assert.
+  val can_fire_vec_load = if (usingRVV) Some(widthMap(w => {
+                            val vec_st = !io.core.vec_dmem.get.req.bits.is_load
+                            io.core.vec_dmem.get.req.valid &&
+                              Mux(vec_st, (w == 0).B, (w == lsuWidth-1).B)
+                          })) else None
+  // Phase 2 (dual-dynamic): the second load beat only ever competes for pipe 0. It
+  // is scheduled at the lowest priority (below the primary vec beat), so it takes a
+  // pipe-0 dcache cycle only when no scalar op did -- the dynamic scalar/vector share.
+  val can_fire_vec_load2 = if (usingRVV && vecMemWidth > 1) Some(widthMap(w =>
+                             (w == 0).B && io.core.vec_dmem.get.req2.get.valid)) else None
+
   //---------------------------------------------------------
   // Controller logic. Arbitrate which request actually fires
 
@@ -677,6 +734,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     will_fire_load_retry       (w) := lsu_sched(can_fire_load_retry       (w) , true , true , true ) // TLB , DC , LCAM
     will_fire_load_wakeup      (w) := lsu_sched(can_fire_load_wakeup      (w) , false, true , true ) //     , DC , LCAM
     will_fire_store_commit_slow(w) := lsu_sched(can_fire_store_commit_slow(w) , false, true , false) //     , DC
+    // Caracal: APPENDED LAST -> strict top-down priority guarantees the vector
+    // beat only takes a dcache cycle no scalar op claimed (scalar floor).
+    if (usingRVV) {
+      will_fire_vec_load.get   (w) := lsu_sched(can_fire_vec_load.get     (w) , false, true , false) //     , DC
+    }
+    // Absolute-lowest priority: the dual-dynamic second load beat (pipe 0 only).
+    if (usingRVV && vecMemWidth > 1) {
+      will_fire_vec_load2.get  (w) := lsu_sched(can_fire_vec_load2.get    (w) , false, true , false) //     , DC
+    }
 
 
     assert(!(agen(w).valid && !(will_fire_load_agen_exec(w) || will_fire_load_agen(w) || will_fire_store_agen(w))))
@@ -874,6 +940,29 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   io.dmem.req.bits  := dmem_req
   val dmem_req_fire = widthMap(w => dmem_req(w).valid && io.dmem.req.fire)
 
+  // ---- Debug observability (dontTouch => survives to the waveform) ----
+  // How many D$ transactions the LSU drives each cycle. dmem_req(w).valid is the
+  // per-pipe request presented; io.dmem.req.fire says the whole bundle was accepted.
+  val dbg_dmem_req_valid_cnt = PopCount(dmem_req.map(_.valid))          // beats presented
+  val dbg_dmem_req_fire_cnt  = Mux(io.dmem.req.fire, dbg_dmem_req_valid_cnt, 0.U) // beats accepted
+  dontTouch(dmem_req)                    // per-pipe req valid/addr/uop each cycle
+  dontTouch(dbg_dmem_req_valid_cnt)
+  dontTouch(dbg_dmem_req_fire_cnt)
+  if (usingRVV) {
+    // Vector-beat breakdown: the primary beat (any pipe) and, under dual-dynamic,
+    // the opportunistic 2nd beat (pipe 0). Both ride the single io.dmem.req.fire.
+    val dbg_vec_beat_fire  = will_fire_vec_load.get.reduce(_ || _) && io.dmem.req.fire
+    dontTouch(dbg_vec_beat_fire)
+    // The 2nd beat only exists under dual-dynamic; on "single" (vecMemWidth==1) it
+    // would be the literal false.B, which dontTouch rejects -- so gate it.
+    if (vecMemWidth > 1) {
+      val dbg_vec_beat2_fire = will_fire_vec_load2.get.reduce(_ || _) && io.dmem.req.fire
+      val dbg_vec_beats_cnt  = dbg_vec_beat_fire.asUInt +& dbg_vec_beat2_fire.asUInt // 0/1/2 vec beats/cycle
+      dontTouch(dbg_vec_beat2_fire)
+      dontTouch(dbg_vec_beats_cnt)
+    }
+  }
+
   val s0_executing_loads = WireInit(VecInit((0 until numLdqEntries).map(x=>false.B)))
   val s0_kills = Wire(Vec(lsuWidth, Bool()))
 
@@ -955,6 +1044,27 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       dmem_req(w).bits.uop.mem_size   := hella_req.size
       dmem_req(w).bits.uop.mem_signed := hella_req.signed
       dmem_req(w).bits.is_hella       := true.B
+    }
+
+    // Caracal (Step 11a.2): vector load beat -- physical addr + beat uop straight
+    // from VecLSU (is_vec already set). Lowest priority; never perturbs scalar.
+    if (usingRVV) {
+      when (will_fire_vec_load.get(w)) {
+        dmem_req(w).valid     := true.B
+        dmem_req(w).bits.addr := io.core.vec_dmem.get.req.bits.addr
+        dmem_req(w).bits.data := io.core.vec_dmem.get.req.bits.data
+        dmem_req(w).bits.uop  := io.core.vec_dmem.get.req.bits.uop
+      }
+    }
+    // dual-dynamic second load beat -> pipe 0. Fires only when will_fire_vec_load2
+    // won its lowest-priority pipe-0 slot (so no scalar op set dmem_req(0) here).
+    if (usingRVV && vecMemWidth > 1) {
+      when (will_fire_vec_load2.get(w)) {
+        dmem_req(w).valid     := true.B
+        dmem_req(w).bits.addr := io.core.vec_dmem.get.req2.get.bits.addr
+        dmem_req(w).bits.data := io.core.vec_dmem.get.req2.get.bits.data
+        dmem_req(w).bits.uop  := io.core.vec_dmem.get.req2.get.bits.uop
+      }
     }
 
     //-------------------------------------------------------------
@@ -1045,6 +1155,29 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val fired_hella_incoming = RegNext(will_fire_hella_incoming)
   val fired_hella_wakeup   = RegNext(will_fire_hella_wakeup)
 
+  // Caracal Track A: a vector STORE beat drives an LCAM store-search against the
+  // LDQ (loadstore.rst "ST->LD ordering (vector store vs. any load)": each vector
+  // store address is searched against the LDQ -- scalar AND vector loads -- like a
+  // scalar store addr-gen; a match on a younger, already-executed load sets its
+  // order_fail and replays it via the existing ordering-violation path). The beat
+  // fires appended-last (so the scalar LCAM floor is preserved and the LCAM port on
+  // this lane is free), is physical + dword-aligned, and one beat covers one dword
+  // of the US range [base, base+VL*EEW) -- the per-beat searches together cover the
+  // whole range. RegNext aligns it with the fired_store_agen search timing (the
+  // LCAM uses the prior-cycle address). Only the appended-last lane can carry it.
+  val fired_vec_store = widthMap(w => if (usingRVV && w == lsuWidth-1)
+      RegNext(will_fire_vec_load.get(w) && !io.core.vec_dmem.get.req.bits.is_load)
+    else false.B)
+  // SafeRegNext (Reg(chiselTypeOf)) so the registered widths are structurally
+  // known -- IdxAgeYoungerThan asserts widthKnown on lcam_stq_idx.
+  val vec_st_paddr   = if (usingRVV) SafeRegNext(io.core.vec_dmem.get.req.bits.addr)        else 0.U
+  val vec_st_stq_idx = if (usingRVV) SafeRegNext(io.core.vec_dmem.get.req.bits.uop.stq_idx) else 0.U((1+stqAddrSz).W)
+  // beat uop for the search, forced to a full-dword (8B) mask -- conservative: any
+  // load touching this dword conflicts (over-detect -> replay, always correct).
+  val vec_st_uop     = if (usingRVV) {
+    val u = WireInit(SafeRegNext(io.core.vec_dmem.get.req.bits.uop)); u.mem_size := 3.U; u
+  } else NullMicroOp
+
   val mem_incoming_uop     = SafeRegNext(widthMap(w => UpdateBrMask(io.core.brupdate, agen(w).bits.uop)))
   val mem_ldq_incoming_e   = RegNext(widthMap(w => UpdateBrMask(io.core.brupdate, io.core.exception, ldq_incoming_e(w))))
   val mem_stq_incoming_e   = RegNext(widthMap(w => UpdateBrMask(io.core.brupdate, io.core.exception, stq_incoming_e(w))))
@@ -1114,7 +1247,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // We have the opportunity to kill a request we sent last cycle. Use it wisely!
 
   // We translated a store last cycle
-  val do_st_search = widthMap(w => (fired_store_agen(w) || fired_store_retry(w)) && !mem_tlb_miss(w))
+  // fired_vec_store is a store-search too (Track A ST->LD). It has no TLB stage
+  // (physical, bare-mode) so it is not gated by mem_tlb_miss.
+  val do_st_search = widthMap(w => ((fired_store_agen(w) || fired_store_retry(w)) && !mem_tlb_miss(w)) || fired_vec_store(w))
   // We translated a load last cycle
   val do_ld_search = widthMap(w => ((fired_load_agen(w) || fired_load_agen_exec(w) || fired_load_retry(w)) && !mem_tlb_miss(w)) ||
                      fired_load_wakeup(w))
@@ -1125,12 +1260,14 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // Load wakeups don't go through TLB, get it through memory
   // Load incoming and load retries go through both
 
-  val lcam_addr  = widthMap(w => Mux(fired_store_agen(w) || fired_store_retry(w) || fired_load_agen(w) || fired_load_agen_exec(w),
+  val lcam_addr  = widthMap(w => Mux(fired_vec_store(w), vec_st_paddr.asUInt.pad(paddrBits)(paddrBits-1, 0),
+                                 Mux(fired_store_agen(w) || fired_store_retry(w) || fired_load_agen(w) || fired_load_agen_exec(w),
                                      RegNext(exe_tlb_paddr(w)),
                                      Mux(fired_release(w), RegNext(io.dmem.release.bits.address),
-                                         mem_paddr(w))))
-  val lcam_uop   = widthMap(w => Mux(do_st_search(w), mem_stq_e(w).bits.uop,
-                                 Mux(do_ld_search(w), mem_ldq_e(w).bits.uop, NullMicroOp)))
+                                         mem_paddr(w)))))
+  val lcam_uop   = widthMap(w => Mux(fired_vec_store(w), vec_st_uop,
+                                 Mux(do_st_search(w), mem_stq_e(w).bits.uop,
+                                 Mux(do_ld_search(w), mem_ldq_e(w).bits.uop, NullMicroOp))))
 
   val lcam_mask  = widthMap(w => GenByteMask(lcam_addr(w), lcam_uop(w).mem_size))
   val lcam_next_stq_idx = widthMap(w => mem_ldq_e(w).bits.next_stq_idx)
@@ -1141,8 +1278,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
                       Mux(fired_load_wakeup  (w), SafeRegNext(ldq_wakeup_idx),
                       Mux(fired_load_retry   (w), SafeRegNext(ldq_retry_idx), 0.U((1+ldqAddrSz).W)))))
   val lcam_stq_idx  = widthMap(w =>
+                      Mux(fired_vec_store  (w), vec_st_stq_idx.asUInt,
                       Mux(fired_store_agen (w), mem_incoming_uop(w).stq_idx,
-                      Mux(fired_store_retry(w), SafeRegNext(stq_retry_idx), 0.U((1+stqAddrSz).W))))
+                      Mux(fired_store_retry(w), SafeRegNext(stq_retry_idx), 0.U((1+stqAddrSz).W)))))
 
   // is_younger_mask(i) == 1 means i is younger than ldq_idx (ldq_idx is older than i)
   val lcam_younger_load_mask = Wire(Vec(lsuWidth, Vec(numLdqEntries, Bool())))
@@ -1231,6 +1369,27 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         // We are older than this load, which overlapped us.
         when (!l_forward_std_val || // If the load wasn't forwarded, it definitely failed
           ((l_forward_stq_idx =/= lcam_stq_idx(w)) && forwarded_is_older)) { // If the load forwarded from us, we might be ok
+          ldq_order_fail(i) := true.B
+          failed_load := true.B
+        }
+      }
+      // Track A (Phase 1b): a store beat landing inside a younger, already-executed
+      // speculative VECTOR load's [lo,hi) range -> order_fail replay. Vector loads
+      // register a range (not a per-dword LCAM addr) and never forward, so this is a
+      // separate, simpler branch: 8B store beat [lcam_addr, lcam_addr+8) overlaps the
+      // load range, and the store is program-order older (IdxAgeOt vs the load's
+      // older-store boundary). Covers vector-store->vector-load and scalar-store->
+      // vector-load ordering that the dword LCAM (l_addr.valid only) cannot see.
+      // When usingVecSnoop, this exact check moves into the CrossLsuSnoop module (A1);
+      // gate the in-line copy off so only one path drives ldq_order_fail.
+      if (usingRVV && !usingVecSnoop) {
+        when (do_st_search(w)                                    &&
+              l_valid                                            &&
+              ldq_vec_rng_v(i)                                   &&
+              (l_executed || l_succeeded)                        &&
+              IdxAgeOt(lcam_stq_idx(w), l_next_stq_idx)          &&
+              (lcam_addr(w) < ldq_vec_hi(i))                     &&
+              ((lcam_addr(w) + 8.U) > ldq_vec_lo(i))) {
           ldq_order_fail(i) := true.B
           failed_load := true.B
         }
@@ -1359,6 +1518,33 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     }
   }
 
+
+  // Track A / A1: CrossLsuSnoop does the vector store->LDQ range disambiguation (the
+  // in-line branch above is gated off when usingVecSnoop). Feed it the per-pipe store
+  // searcher (any store beat: scalar or vector, via do_st_search/lcam_*) + an LDQ range
+  // snapshot; OR its order_fail back into ldq_order_fail. kill=false to match the in-line
+  // branch exactly (bit-identical behavior), so this is a pure refactor of the A2 check.
+  if (usingVecSnoop) {
+    val snoop = Module(new boom.v4.vec.lsu.CrossLsuSnoop)
+    snoop.io.kill := false.B
+    for (w <- 0 until lsuWidth) {
+      snoop.io.st_search(w).valid   := do_st_search(w)
+      snoop.io.st_search(w).addr    := lcam_addr(w)
+      snoop.io.st_search(w).stq_idx := lcam_stq_idx(w)
+    }
+    for (i <- 0 until numLdqEntries) {
+      snoop.io.ldq(i).valid        := ldq_valid(i)
+      snoop.io.ldq(i).eos          := ldq_executed(i) || ldq_succeeded(i)
+      snoop.io.ldq(i).next_stq_idx := ldq_next_stq_idx(i)
+      snoop.io.ldq(i).rng_v        := ldq_vec_rng_v(i)
+      snoop.io.ldq(i).lo           := ldq_vec_lo(i)
+      snoop.io.ldq(i).hi           := ldq_vec_hi(i)
+      when (snoop.io.order_fail(i)) {
+        ldq_order_fail(i) := true.B
+        failed_load       := true.B
+      }
+    }
+  }
 
   val fast_stq_valids = stq_valid.asUInt
   for (w <- 0 until lsuWidth) {
@@ -1535,14 +1721,62 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     wb_spec_wakeups(w) := (if (enableFastLoadUse) w2 else w1)
 
   }
+  // Caracal (Step 11a.2): vector dcache port outputs default invalid; the
+  // response loop below drives resp/nack on a vector beat (top lane).
+  // Phase 2 (dual-dynamic): per-pipe gather of vector responses/nacks. A vector beat
+  // may respond on ANY pipe (misses refill via ll_resp on the last pipe regardless of
+  // the pipe it was issued on), so we collect them across pipes and compact into
+  // resp/resp2 (nack/nack2) after the loop -- beat_id, not the lane, identifies the
+  // descriptor, so the ordering of the two lanes is irrelevant.
+  val vec_resp_slots = if (usingRVV) Some(Wire(Vec(lsuWidth, Valid(chiselTypeOf(io.core.vec_dmem.get.resp.bits))))) else None
+  val vec_nack_slots = if (usingRVV) Some(Wire(Vec(lsuWidth, Valid(chiselTypeOf(io.core.vec_dmem.get.nack.bits))))) else None
+  if (usingRVV) {
+    io.core.vec_dmem.get.resp.valid      := false.B
+    io.core.vec_dmem.get.resp.bits       := DontCare
+    io.core.vec_dmem.get.nack.valid      := false.B
+    io.core.vec_dmem.get.nack.bits       := DontCare
+    io.core.vec_dmem.get.store_ack.valid := false.B
+    io.core.vec_dmem.get.store_ack.bits  := DontCare
+    if (vecMemWidth > 1) {
+      io.core.vec_dmem.get.resp2.get.valid := false.B
+      io.core.vec_dmem.get.resp2.get.bits  := DontCare
+      io.core.vec_dmem.get.nack2.get.valid := false.B
+      io.core.vec_dmem.get.nack2.get.bits  := DontCare
+    }
+    for (w <- 0 until lsuWidth) {
+      vec_resp_slots.get(w).valid := false.B
+      vec_resp_slots.get(w).bits  := DontCare
+      vec_nack_slots.get(w).valid := false.B
+      vec_nack_slots.get(w).bits  := DontCare
+    }
+
+    // Track A: vector loads no longer wait on this signal (core.scala hardwires
+    // squash_grant=false; loads execute speculatively and rely on the store-search +
+    // order_fail replay below). `drained` is retired -- tie true so the (now dead) port
+    // reads benignly.
+    io.core.vec_ld_order.get.drained := true.B
+  }
   for (w <- 0 until lsuWidth) {
     wb_slow_wakeups(w).valid := false.B
     wb_slow_wakeups(w).bits  := DontCare
 
     // Handle nacks
+    val nack_is_vec = if (usingRVV) (io.dmem.nack(w).bits.uop.is_vec) else false.B
+    // Caracal: a vector beat nack -> VecLSU retries the (single-outstanding) beat.
+    // The placeholder LDQ entry's executed bit was never set, so the scalar re-arm
+    // path is guarded off (below) and must NOT touch it.
+    if (usingRVV) {
+      when (io.dmem.nack(w).valid && nack_is_vec) {
+        vec_nack_slots.get(w).valid        := true.B
+        vec_nack_slots.get(w).bits.data    := 0.U
+        vec_nack_slots.get(w).bits.beat_id := io.dmem.nack(w).bits.uop.vec_beat_id
+      }
+    }
     when (io.dmem.nack(w).valid) {
       when (io.dmem.nack(w).bits.is_hella) {
         assert(hella_state === h_wait || hella_state === h_dead)
+      } .elsewhen (nack_is_vec) {
+        // vector beat nack: handled above; nothing for the scalar LDQ to do.
       } .elsewhen (io.dmem.nack(w).bits.uop.uses_ldq) {
         assert(ldq_executed(io.dmem.nack(w).bits.uop.ldq_idx))
         ldq_executed(io.dmem.nack(w).bits.uop.ldq_idx) := false.B
@@ -1560,8 +1794,19 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     if (w == lsuWidth-1) {
       io.dmem.ll_resp.ready := !io.dmem.resp(w).valid && !wb_spec_wakeups(w).valid
     }
+    val resp_is_vec = if (usingRVV) (resp.uop.is_vec) else false.B
     when (io.dmem.resp(w).valid || ((w == lsuWidth-1).B && io.dmem.ll_resp.fire)) {
-      when (resp.uop.uses_ldq) {
+      // Caracal: a vector beat response is consumed by VecLSU (routed below) and
+      // kept out of iresp/fresp and the scalar ldq_succeeded path.
+      if (usingRVV) {
+        when (resp_is_vec) {
+          dmem_resp_fired(w) := true.B
+          vec_resp_slots.get(w).valid        := true.B
+          vec_resp_slots.get(w).bits.data    := resp.data
+          vec_resp_slots.get(w).bits.beat_id := resp.uop.vec_beat_id
+        }
+      }
+      when (resp.uop.uses_ldq && !resp_is_vec) {
         assert(!resp.is_hella)
         val ldq_idx = resp.uop.ldq_idx
         val uop = WireInit(ldq_uop(ldq_idx))
@@ -1610,7 +1855,17 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       }
     }
     // Handle store acks
-    when (io.dmem.store_ack(w).valid) {
+    val sack_is_vec = if (usingRVV) (io.dmem.store_ack(w).bits.uop.is_vec) else false.B
+    // Caracal: a vector store beat's ack goes to VecLSU (routed below); the vse's
+    // STQ placeholder is marked succeeded ONCE on the last beat via st_done, not
+    // here, so the scalar handler must skip per-beat acks.
+    if (usingRVV) {
+      when (io.dmem.store_ack(w).valid && sack_is_vec) {
+        io.core.vec_dmem.get.store_ack.valid     := true.B
+        io.core.vec_dmem.get.store_ack.bits.data := 0.U
+      }
+    }
+    when (io.dmem.store_ack(w).valid && !sack_is_vec) {
       stq_succeeded(io.dmem.store_ack(w).bits.uop.stq_idx) := true.B
     }
 
@@ -1684,6 +1939,71 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         wakeupArbs(w).io.in(0).bits  := spec_wakeups(w).bits
         wakeupArbs(w).io.in(0).bits.rebusy := true.B
       }
+    }
+  }
+
+  // Phase 2 (dual-dynamic): compact the per-pipe vector response/nack gather into
+  // resp/resp2 (nack/nack2). Pick the first valid pipe for lane 0 and, if a second
+  // is valid, the next for lane 1. For lsuWidth==1 this is just slot 0 -> resp, so
+  // the single-pipe (Medium) path is unchanged.
+  if (usingRVV) {
+    val rs     = vec_resp_slots.get
+    val rvalid = VecInit(rs.map(_.valid))
+    val r0     = PriorityEncoder(rvalid)
+    io.core.vec_dmem.get.resp.valid := rvalid.reduce(_ || _)
+    io.core.vec_dmem.get.resp.bits  := rs(r0).bits
+    val ns     = vec_nack_slots.get
+    val nvalid = VecInit(ns.map(_.valid))
+    val n0     = PriorityEncoder(nvalid)
+    io.core.vec_dmem.get.nack.valid := nvalid.reduce(_ || _)
+    io.core.vec_dmem.get.nack.bits  := ns(n0).bits
+    if (vecMemWidth > 1) {
+      val rrest = VecInit(rs.zipWithIndex.map { case (s, i) => s.valid && (i.U =/= r0) })
+      val r1    = PriorityEncoder(rrest)
+      io.core.vec_dmem.get.resp2.get.valid := rrest.reduce(_ || _)
+      io.core.vec_dmem.get.resp2.get.bits  := rs(r1).bits
+      val nrest = VecInit(ns.zipWithIndex.map { case (s, i) => s.valid && (i.U =/= n0) })
+      val n1    = PriorityEncoder(nrest)
+      io.core.vec_dmem.get.nack2.get.valid := nrest.reduce(_ || _)
+      io.core.vec_dmem.get.nack2.get.bits  := ns(n1).bits
+    }
+  }
+
+  // Caracal (Step 11a.2): advertise vec_dmem.req.ready when the appended-last
+  // beat actually won a dcache cycle. A vector load occupies one (real) scalar
+  // LDQ entry as its ordering/commit placeholder; VecLSU pulses ld_done after the
+  // last beat and the LSU writes that entry's executed/succeeded ONCE (never
+  // re-armed), so it retires cleanly at the ROB head. rob_bsy itself is cleared
+  // separately by VecLSU.clr_rob -> rob.vec_clr_bsy (RT_VEC has no iresp wb).
+  if (usingRVV) {
+    // The vec beat fires on exactly one pipe (loads: lsuWidth-1; stores: 0), so OR
+    // over all pipes rather than assuming the last lane -- otherwise a memWidth>1
+    // vector store (which routes to pipe 0) never sees req.ready and VecLSU hangs.
+    io.core.vec_dmem.get.req.ready := will_fire_vec_load.get.reduce(_ || _) && io.dmem.req.fire
+    // dual-dynamic: the second beat rides the same single dcache handshake (all pipes
+    // are accepted together), so it is granted exactly when it won its pipe-0 slot.
+    if (vecMemWidth > 1) {
+      io.core.vec_dmem.get.req2.get.ready := will_fire_vec_load2.get.reduce(_ || _) && io.dmem.req.fire
+    }
+    when (io.core.vec_dmem.get.ld_done.valid) {
+      val v_ldq_idx = io.core.vec_dmem.get.ld_done.bits
+      ldq_executed    (v_ldq_idx) := true.B
+      ldq_will_succeed(v_ldq_idx) := true.B
+    }
+    // Track A: record the speculative vector load's [lo,hi) range in its LDQ entry so
+    // an older store's LCAM search can detect an overlap and set order_fail (replay).
+    when (io.core.vec_dmem.get.ld_range.valid) {
+      val r_idx = GetRealLSQIdx(io.core.vec_dmem.get.ld_range.bits.idx)
+      ldq_vec_lo   (r_idx) := io.core.vec_dmem.get.ld_range.bits.lo
+      ldq_vec_hi   (r_idx) := io.core.vec_dmem.get.ld_range.bits.hi
+      ldq_vec_rng_v(r_idx) := true.B
+    }
+    // Vector store completion: VecLSU pulses st_done on the last store beat; mark
+    // the vse's STQ placeholder succeeded ONCE so it retires (committed+succeeded)
+    // at the STQ head. The scalar store-commit drain self-skips it (its addr/data
+    // are never set, so can_enq_store_execute is false).
+    when (io.core.vec_dmem.get.st_done.valid) {
+      stq_succeeded(io.core.vec_dmem.get.st_done.bits) := true.B
     }
   }
 
@@ -1789,6 +2109,15 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
   // store has been committed AND successfully sent data to memory
   val stq_head_is_fence = stq_uop(stq_head).is_fence
+  // Caracal: a vector-store STQ placeholder never goes through the normal
+  // execute path (its addr/data are never set; the 64b beats drain via VecLSU's
+  // vec_dmem port). So can_enq_store_execute is false for it and stq_execute_head
+  // would NEVER advance past it -- stranding every younger scalar store (e.g. the
+  // tohost write) behind a now-freed slot. Like a fence, advance stq_execute_head
+  // when the placeholder is cleared (execute_head === stq_head here, since it
+  // could not have moved past the placeholder).
+  val stq_head_is_vec = if (usingRVV) (stq_uop(stq_head).is_vec && stq_uop(stq_head).uses_stq)
+                        else false.B
   when (stq_valid(stq_head) && stq_committed(stq_head))
   {
 
@@ -1804,7 +2133,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     stq_valid(stq_head)           := false.B
 
     stq_head := WrapIncWCarry(stq_head, numStqEntries)
-    when (stq_head_is_fence)
+    when (stq_head_is_fence || stq_head_is_vec)
     {
       stq_execute_head := WrapIncWCarry(stq_execute_head, numStqEntries)
     }

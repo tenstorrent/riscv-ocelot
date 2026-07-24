@@ -18,6 +18,7 @@ import freechips.rocketchip.devices.tilelink.{BootROMParams, CLINTParams, PLICPa
 import boom.v4.ifu._
 import boom.v4.exu._
 import boom.v4.lsu._
+import boom.v4.vec.common.{VectorParams}
 
 /**
  * Default BOOM core parameters
@@ -120,11 +121,16 @@ case class BoomCoreParams(
   enableCommitLogPrintf: Boolean = false,
   enableBranchPrintf: Boolean = false,
   enableMemtracePrintf: Boolean = false,
+  enableDebugHarness: Boolean = false,
 
   /* enableConservativeSNI: speculative non-interference */
   enableConservativeSNI: Boolean = false,
 
   enableTraceCoreIngress: Boolean = false,
+
+  /* Caracal RVV 1.0 vector extension (Goal 1) */
+  enableVector: Boolean = false,
+  vector: Option[VectorParams] = None,
 
 // DOC include end: BOOM Parameters
 ) extends freechips.rocketchip.tile.CoreParams
@@ -144,6 +150,30 @@ case class BoomCoreParams(
   val useZba = true
   val useZbb = true
   val useZbs = true
+
+  // Vector (Caracal Goal 1) — Option A: tie rocketchip's useVector to enableVector
+  // for the vector configs. This reverses the earlier "keep useVector=false" stance
+  // (see usingRVV comment in HasBoomCoreParameters) for vector builds only: with
+  // useVector=true, rocketchip's CSRFile provides the vl/vtype/vlenb CSRs and a
+  // writable mstatus.VS, which Caracal relies on. When enableVector=false everything
+  // below resolves to 0/false, so rocketchip's usingVector-gated require()s are
+  // skipped and the RTL is byte-identical to the baseline (gate 9f).
+  // Member kinds match CoreParams exactly: useVector is a `val`; vLen/eLen/vfLen/
+  // vMemDataBits are `def`s.
+  override val useVector = enableVector
+  override def vLen = vector.map(_.vLen).getOrElse(0)
+  override def eLen = if (enableVector) 64 else 0
+  override def vfLen = 0
+  // Keep vMemDataBits = 0: it must NOT inflate coreDataBits (= xLen max fLen max
+  // vMemDataBits) above the D$ rowBits(64) (rocket require(rowBits >= coreDataBits)).
+  // Caracal M1 reuses the scalar 64-bit D$ port (DMEM_WIDTH = coreDataBits = 64).
+  override def vMemDataBits = 0
+  // Advertise misa.V for vector configs. rocket's default hasV = vLen>=128 &&
+  // eLen>=64 && vfLen>=64 is false here because vfLen=0 (above), which would leave
+  // the vector-capable core NOT advertising misa.V. hasV feeds ONLY the misa 'V'
+  // bit (CSR.scala isaMaskString) -- no hardware is gated on it -- so overriding
+  // it is a pure architectural-advertisement fix (matches the cosim reference).
+  override def hasV = enableVector
 
   override def customCSRs(implicit p: Parameters) = new BoomCustomCSRs
 }
@@ -227,6 +257,24 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val numFrfBanks = boomParams.numFrfBanks
 
   //************************************
+  // Vector (Caracal Goal 1)
+  // usingRVV gates every downstream Caracal vector pipeline stage. Deliberately
+  // NOT named `usingVector`: rocketchip's HasCoreParameters already owns that
+  // name (tied to coreParams.useVector) and uses it to gate its own RVV CSR /
+  // decode plumbing plus hard require()s on vLen/eLen. Caracal supplies its own
+  // vector pipeline and CSRs, so we keep rocketchip's useVector=false and gate
+  // on this independent flag instead. Default off => baseline bit-identical.
+  val usingRVV = boomParams.enableVector
+  val vectorParams = boomParams.vector.getOrElse(VectorParams())
+  // M2 Track B/C: gates the CII coprocessor attach + IQ_V_ALU un-tie. Implies usingRVV.
+  // Default off => M1 vector-arith tie-off preserved, bit-identical.
+  val usingVectorArith = usingRVV && vectorParams.enableVectorArith
+  // M2 Track A / A1: gates the modular disambiguation substrate (vector address/data
+  // queues + CrossLsuSnoop + DcacheArbiter, loadstore.rst mem-order). Off => the
+  // Track-A A2 in-line path (LDQ range + store-search) stays active, bit-identical.
+  val usingVecSnoop = usingRVV && vectorParams.vecScalarSnoopEnable
+
+  //************************************
   // Functional Units
   val usingFDivSqrt = boomParams.fpu.isDefined && boomParams.fpu.get.divSqrt
 
@@ -257,10 +305,22 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   require (issueParams.count(_.iqType == IQ_ALU) == 1)
   require (issueParams.count(_.iqType == IQ_UNQ) == 1)
 
+  // Caracal vector issue queues: exactly one of each iff usingRVV, zero otherwise
+  // (gate 9f: scalar builds must keep the four-entry issueParams untouched).
+  require (issueParams.count(_.iqType == IQ_V_LOAD)  == (if (usingRVV) 1 else 0))
+  require (issueParams.count(_.iqType == IQ_V_STORE) == (if (usingRVV) 1 else 0))
+  require (issueParams.count(_.iqType == IQ_V_ALU)   == (if (usingRVV) 1 else 0))
+
   val unqIssueParam = issueParams.find(_.iqType == IQ_UNQ).get
   val aluIssueParam = issueParams.find(_.iqType == IQ_ALU).get
   val memIssueParam = issueParams.find(_.iqType == IQ_MEM).get
   val fpIssueParam  = issueParams.find(_.iqType == IQ_FP ).get
+
+  // Option-typed: None on scalar builds, so we never .get on a missing queue.
+  // core.scala consumes these inside if(usingRVV) with .get.
+  val vLoadIssueParam  = issueParams.find(_.iqType == IQ_V_LOAD)
+  val vStoreIssueParam = issueParams.find(_.iqType == IQ_V_STORE)
+  val vAluIssueParam   = issueParams.find(_.iqType == IQ_V_ALU)
 
   require(unqIssueParam.issueWidth == 1)
   val aluWidth = aluIssueParam.issueWidth
@@ -268,6 +328,14 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val fpWidth  = fpIssueParam.issueWidth
 
   val lsuWidth = boomParams.lsuWidth
+
+  // Caracal (LSU Phase 2 / dual-dynamic): how many vector-LOAD dcache beats the
+  // VecLSU may drive in one cycle. "single" (or a 1-pipe core) => 1 (the Phase-1
+  // serial-issue port). "dual-dynamic" on a multi-pipe core => 2: a second load
+  // beat opportunistically claims an idle scalar dcache pipe the same cycle (see
+  // VecLSU / VecLoadCoalescingBuffer / lsu.scala). Capped at 2 (one extra pipe).
+  val vecMemWidth = if (usingRVV && vectorParams.dcacheArbiterMode == "dual-dynamic")
+                      scala.math.min(lsuWidth, 2) else 1
 
   require(memWidth >= 2)
   require(memWidth >= lsuWidth)
@@ -345,6 +413,28 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val lsuAddrSz       = ldqAddrSz max stqAddrSz
   val brTagSz         = log2Ceil(maxBrCount)
 
+  // Caracal vector sizes (Goal 1). Named with a `vec` prefix to avoid colliding
+  // with rocketchip HasCoreParameters' own vLen/maxVLMax (which are 0 for BOOM
+  // since useVector stays false -- see usingRVV). All derived from vectorParams.
+  val vecVLen         = vectorParams.vLen                          // VLEN in bits (default 256)
+  val numVecPhysRegs  = vectorParams.numVecPhysRegisters           // physical vector pregs (default 128)
+  val vecPregSz       = log2Ceil(numVecPhysRegs)                   // bits to index a vector preg
+  val numVlPhysRegs   = vectorParams.numVlPhysRegisters            // VL register file depth (default 64)
+  val vlPregSz        = log2Ceil(numVlPhysRegs)                    // bits to index a VL preg
+  // Vector group-done completion ports into the ROB (one group-done per OP.v clears
+  // rob_bsy single-shot). Tied off in core for Step 5, so the value is non-critical.
+  // Port 0 = VecLSU (loads). Port 1 = CII (vector arith), only under usingVectorArith
+  // so vector-arith-OFF configs keep exactly one port (M1 bit-identical).
+  val numVecWbPorts   = if (usingVectorArith) 2 else if (usingRVV) 1 else 0
+  val numVecWakeupPorts = if (usingRVV) numVecWbPorts else 0   // VECTOR network (group-done; LCB/CII)
+  val numVlWakeupPorts  = if (usingRVV) 1 else 0               // VL network (vset/vleff writeback)
+  val vecLregSz       = 5                                          // 32 architectural vector regs v0..v31
+  val maxVecVL        = vecVLen                                    // max VL in elements (SEW=8, LMUL=8 => vLen)
+  val vecVLSz         = log2Ceil(maxVecVL + 1)                     // bits to hold a VL value (0..maxVecVL)
+  // RVV 1.0 constrains EMUL*NF <= 8, so the nOP.v split cursor counts up to 8
+  // elements/segments. Index/total range 0..8 inclusive => log2Ceil(9) = 4 bits.
+  val vecSplitSz      = log2Ceil(8 + 1)
+
   require (numIntPhysRegs >= (32 + coreWidth))
   require (numFpPhysRegs >= (32 + coreWidth))
   require (maxBrCount >=2)
@@ -357,6 +447,7 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val COMMIT_LOG_PRINTF   = boomParams.enableCommitLogPrintf // dump commit state, for comparision against ISA sim
   val BRANCH_PRINTF       = boomParams.enableBranchPrintf // dump branch predictor results
   val MEMTRACE_PRINTF     = boomParams.enableMemtracePrintf // dump trace of memory accesses to L1D for debugging
+  val DEBUG_HARNESS       = boomParams.enableDebugHarness // attach BoomCoreHarnessWrapper BlackBox for whisper-cosim DPI bridge
 
   //************************************
   // Other Non/Should-not-be sythesizable modules

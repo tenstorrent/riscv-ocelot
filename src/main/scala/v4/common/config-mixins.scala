@@ -18,10 +18,44 @@ import freechips.rocketchip.tile._
 import boom.v4.ifu._
 import boom.v4.exu._
 import boom.v4.lsu._
+import boom.v4.vec.common.{VectorParams}
 
 // ---------------------
 // BOOM Config Fragments
 // ---------------------
+
+/**
+ * Caracal RVV 1.0 vector extension (Goal 1). Enables the vector pipeline on
+ * every BOOM tile. Pass a custom VectorParams for tier-specific overrides
+ * (e.g. Mega lifts vecIssueGrantWidth to 2 and uses the dual-dynamic arbiter).
+ * Default off everywhere else keeps existing configs bit-identical to baseline.
+ */
+class WithVector(vector: VectorParams = VectorParams()) extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+      enableVector = true,
+      vector = Some(vector),
+      // Append the three vector issue queues ONLY here (vector mixin), so scalar
+      // configs keep their exactly-four issueParams untouched (gate 9f). One IQ
+      // each for vector load / store / ALU; dispatchWidth = decodeWidth satisfies
+      // BasicDispatcher's require and HasBoomCoreParameters' dispatchWidth<=coreWidth.
+      issueParams = tp.tileParams.core.issueParams ++ Seq(
+        IssueParams(issueWidth = vector.vecIssueGrantWidth, numEntries = vector.vecLoadIssueEntries,  iqType = IQ_V_LOAD,  dispatchWidth = tp.tileParams.core.decodeWidth),
+        IssueParams(issueWidth = vector.vecIssueGrantWidth, numEntries = vector.vecStoreIssueEntries, iqType = IQ_V_STORE, dispatchWidth = tp.tileParams.core.decodeWidth),
+        IssueParams(issueWidth = vector.vecIssueGrantWidth, numEntries = vector.vecAluIssueEntries,   iqType = IQ_V_ALU,   dispatchWidth = tp.tileParams.core.decodeWidth))
+    )))
+    case other => other
+  }
+})
+
+/**
+ * Convenience: small BOOM with the vector extension enabled. Mixin order is
+ * right-to-left; WithNSmallBooms doesn't touch any vector field so order is
+ * functionally irrelevant -- stated for clarity.
+ */
+class WithNSmallBoomsVector(n: Int = 1) extends Config(
+  new WithVector ++
+  new WithNSmallBooms(n))
 
 class WithBoomCommitLogPrintf extends Config((site, here, up) => {
   case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
@@ -48,6 +82,33 @@ class WithBoomMemtracePrintf extends Config((site, here, up) => {
       enableMemtracePrintf = true
     )))
     case other => other
+  }
+})
+
+// Attach the whisper-cosim debug harness (BoomCoreHarnessWrapper_N BlackBox + monitor_* DPI imports).
+// The BlackBox SV uses `import "DPI-C"` constructs that VCS handles natively but Verilator does not,
+// so we auto-disable on Verilator builds by sniffing the cwd / SIMULATOR env var. Set SIMULATOR=vcs
+// (or SIM_NAME=vcs) to force-enable from a non-vcs path.
+class WithBoomDebugHarness extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => {
+    val cwd = System.getProperty("user.dir", "")
+    val cwdAbs = try {
+      new java.io.File(cwd).getAbsolutePath
+    } catch {
+      // Fully-qualified: `Exception` unqualified here resolves to boom.v4.exu.Exception (the ROB bundle).
+      case _: java.lang.Exception => cwd
+    }
+    val simEnv = sys.env.get("SIMULATOR").orElse(sys.env.get("SIM_NAME"))
+    val isVcs = simEnv.map(_.toLowerCase == "vcs").getOrElse {
+      val pathLower = (cwd + " " + cwdAbs).toLowerCase
+      pathLower.contains("vcs") && !pathLower.contains("verilator")
+    }
+    up(TilesLocated(InSubsystem), site) map {
+      case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+        enableDebugHarness = isVcs
+      )))
+      case other => other
+    }
   }
 })
 

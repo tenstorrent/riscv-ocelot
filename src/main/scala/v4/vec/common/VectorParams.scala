@@ -1,0 +1,43 @@
+//******************************************************************************
+// Copyright (c) 2024 - 2024, The Regents of the University of California (Regents).
+// All Rights Reserved. See LICENSE and LICENSE.SiFive for license details.
+//------------------------------------------------------------------------------
+
+//------------------------------------------------------------------------------
+// Caracal Vector Parameters
+//------------------------------------------------------------------------------
+//
+// Configuration for the Caracal RVV 1.0 vector extension to BOOM v4. Every
+// field is parametrizable; the defaults below are the Medium-tier Goal 1
+// settings. The Mega tier overrides vecIssueGrantWidth, dcacheArbiterMode and
+// vecScalarSnoopEnable (see WithVector usage in config-mixins.scala).
+
+package boom.v4.vec.common
+
+case class VectorParams(
+  vLen: Int = 256,
+  numVecPhysRegisters: Int = 128,            // bump after perf tuning (issue 7)
+  numVlPhysRegisters: Int = 64,              // VL register file depth (own rename space)
+  numVecLoadQueueEntries: Int = 64,          // single LMUL=8 NF=8 inst should fit (issue 8)
+  numVecStoreQueueEntries: Int = 64,
+  numVecTmpGroups: Int = 4,                  // pvtmp headroom: in-flight shared-inst temp vector groups
+  ssiQueueEntries: Int = 512,                // worst-case single-store element count (VLEN/8 * LMUL=8)
+  lcbEntries: Int = 8,                       // VLEN-wide load assembly (load-combine buffer) entries
+  vecLoadMaxInflight: Int = 8,               // Phase 1: # of vector LOAD beats outstanding on the
+                                             // vec_dmem port at once. 1 = the original serial model;
+                                             // >1 pipelines beats (removes the per-beat round-trip).
+                                             // Bounded by lcbEntries and dcache MSHR headroom. Phase 2
+                                             // (dual-dynamic) accepts+issues 2 beats/cycle, so it needs
+                                             // ~2x the in-flight headroom (8) to not slot-starve.
+  vecLoadIssueEntries:  Int = 16,            // vector issue-queue slot counts (the AGEN/DGEN feed
+  vecStoreIssueEntries: Int = 16,            // queues): IQ_V_LOAD -> load AGEN, IQ_V_STORE -> store
+  vecAluIssueEntries:   Int = 16,            // AGEN+DGEN. Bumped 8->16 for a deeper in-flight LS window
+                                             // (the LDQ/STQ placeholders -- numLdqEntries/numStqEntries,
+                                             // 16 Medium / 32 Mega -- are the other in-flight ceiling).
+  vecIssueGrantWidth: Int = 1,               // FU-pipeline-in-order: 1 on Medium, lift to 2 on Mega
+  dcacheArbiterMode: String = "single",      // "single" (Goal 1 default) | "dual-dynamic" (Mega)
+  vecScalarSnoopEnable: Boolean = false,     // turn on with dual-dynamic arbiter (issue 9)
+  mshrAllocPolicy: String = "fair-floor",    // "fair-floor" (default) | "hard-partition" | "fcfs" (issue 10)
+  enableVectorArith: Boolean = false         // M2 Track B/C: attach the CII coprocessor and un-tie
+                                             // IQ_V_ALU. Default OFF -> M1 tie-off, bit-identical.
+)
