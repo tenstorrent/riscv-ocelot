@@ -1380,7 +1380,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       // load range, and the store is program-order older (IdxAgeOt vs the load's
       // older-store boundary). Covers vector-store->vector-load and scalar-store->
       // vector-load ordering that the dword LCAM (l_addr.valid only) cannot see.
-      if (usingRVV) {
+      // When usingVecSnoop, this exact check moves into the CrossLsuSnoop module (A1);
+      // gate the in-line copy off so only one path drives ldq_order_fail.
+      if (usingRVV && !usingVecSnoop) {
         when (do_st_search(w)                                    &&
               l_valid                                            &&
               ldq_vec_rng_v(i)                                   &&
@@ -1516,6 +1518,33 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     }
   }
 
+
+  // Track A / A1: CrossLsuSnoop does the vector store->LDQ range disambiguation (the
+  // in-line branch above is gated off when usingVecSnoop). Feed it the per-pipe store
+  // searcher (any store beat: scalar or vector, via do_st_search/lcam_*) + an LDQ range
+  // snapshot; OR its order_fail back into ldq_order_fail. kill=false to match the in-line
+  // branch exactly (bit-identical behavior), so this is a pure refactor of the A2 check.
+  if (usingVecSnoop) {
+    val snoop = Module(new boom.v4.vec.lsu.CrossLsuSnoop)
+    snoop.io.kill := false.B
+    for (w <- 0 until lsuWidth) {
+      snoop.io.st_search(w).valid   := do_st_search(w)
+      snoop.io.st_search(w).addr    := lcam_addr(w)
+      snoop.io.st_search(w).stq_idx := lcam_stq_idx(w)
+    }
+    for (i <- 0 until numLdqEntries) {
+      snoop.io.ldq(i).valid        := ldq_valid(i)
+      snoop.io.ldq(i).eos          := ldq_executed(i) || ldq_succeeded(i)
+      snoop.io.ldq(i).next_stq_idx := ldq_next_stq_idx(i)
+      snoop.io.ldq(i).rng_v        := ldq_vec_rng_v(i)
+      snoop.io.ldq(i).lo           := ldq_vec_lo(i)
+      snoop.io.ldq(i).hi           := ldq_vec_hi(i)
+      when (snoop.io.order_fail(i)) {
+        ldq_order_fail(i) := true.B
+        failed_load       := true.B
+      }
+    }
+  }
 
   val fast_stq_valids = stq_valid.asUInt
   for (w <- 0 until lsuWidth) {

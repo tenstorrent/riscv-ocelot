@@ -269,6 +269,10 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   // M2 Track B/C: gates the CII coprocessor attach + IQ_V_ALU un-tie. Implies usingRVV.
   // Default off => M1 vector-arith tie-off preserved, bit-identical.
   val usingVectorArith = usingRVV && vectorParams.enableVectorArith
+  // M2 Track A / A1: gates the modular disambiguation substrate (vector address/data
+  // queues + CrossLsuSnoop + DcacheArbiter, loadstore.rst mem-order). Off => the
+  // Track-A A2 in-line path (LDQ range + store-search) stays active, bit-identical.
+  val usingVecSnoop = usingRVV && vectorParams.vecScalarSnoopEnable
 
   //************************************
   // Functional Units
