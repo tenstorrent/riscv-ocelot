@@ -1,0 +1,401 @@
+Loadstore
+=========
+
+.. Custom attributes — set once, reuse via |name|
+.. |caracal| replace:: Caracal
+.. |boom| replace:: BOOM
+.. |isa| replace:: RV64GC
+
+The Unified Load/Store Unit (LSU)
+---------------------------------
+
+A major feature of |caracal| is that it extends the |boom| Load Store Unit to support
+scalar and vector load stores. We call this the Unified Load Store Unit.
+
+If the ``usingRVV`` parameter is disabled the underlying |boom| LSU is essentially untouched.
+When enabled, several vector address and data queues are initialized. Vector load/store
+``OP.v``'s are still allocated to the existing STQ and LDQ as a **single entry**, using largely
+the same dispatch-stage logic.
+
+As vector memory accesses often produce many D$ accesses to read or write a whole vector,
+we allocate separate vector address and data queues to buffer those effective ``nOP.v`` memory
+operations. This prevents the primary STQ and LDQ from being polluted by many vector memory
+operations and impacting scalar load/store performance. When a vector LDQ or STQ entry becomes
+ready for execution, it reads the effective address or store data from the separate address and
+data queues, rather than from a uOP as is the case with scalar load stores.
+
+The conditions that allow a vector LDQ or STQ entry to become eligible to drain are the same as
+scalar. Here **atomic** means an entry drains *all* of the element accesses it owns in program /
+element order without another op interleaving at that entry — it does **not** mean all-or-nothing:
+a faulting load/store still commits the elements before the fault and records ``vstart`` (see
+:ref:`elem-progress`). The element accesses themselves contend for the shared D$ port through the
+arbiter in :ref:`dcache-arbiter`, so a vector drain does **not** monopolize the cache.
+
+For ``LargeBoomV4Config`` or ``MegaBoomV4Config`` we take advantage of the dual-port L1 D$
+interface and allow 2 memory operations to be issued per cycle; the vector address and data queues
+are ``2 x nOP.v`` wide to allow 2 concurrent element accesses.
+
+Queue-naming convention. Vector queues are named ``{ld,st}_{SSI,US}_{ADDR,DATA}_Q`` —
+``ld_SSI_ADDR_Q``, ``st_SSI_ADDR_Q``, ``st_SSI_DATA_Q``, ``ld_US_ADDR_Q``, ``st_US_ADDR_Q``,
+``st_US_DATA_Q``.
+
+
+Strided, Segmented, Indexed Queue
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This class of vector (SSI) queues holds effective addresses calculated for strided, indexed, and
+segmented load stores. There exists a ``ld_SSI_ADDR_Q`` and a ``st_SSI_ADDR_Q``.
+
+Because the SSI queues hold essentially element-wise memory addresses, their default parameterized
+size is quite big at 512 entries. The ``ld_SSI_ADDR_Q`` and ``st_SSI_ADDR_Q`` receive calculated
+effective addresses from the stage 1 vAGENs.
+
+Sizing is set by the **store** requirement, which is stricter than the load one:
+
+- **Stores must hold their full active address set pre-commit.** A store cannot write memory until
+  it commits, and every element's fault must be detected *before* commit (precise exceptions). So a
+  store's translated addresses are **retained in ``st_SSI_ADDR_Q`` from execute until commit-drain**
+  — they cannot be streamed/freed mid-instruction. The queue is therefore sized to hold the
+  **worst-case single-instruction element count**: with ``VLEN=256`` the maximum is ~256
+  element-accesses (``SEW=8`` × ``LMUL=8`` = 256; segmented ``NF*EMUL ≤ 8`` also caps at 256), so the
+  512-entry default fits one max store with headroom. Additional in-flight stores **back-pressure
+  the store vAGEN** when the queue is full rather than overflowing it.
+- **Loads may stream.** A load completes out of the Load Coalescing Buffer (:ref:`load-coalesce`)
+  and does not gate on commit, so the ``ld_SSI_ADDR_Q`` may be drained in waves and a load whose
+  active element count exceeds the queue depth is streamed through it.
+
+
+Unit-Strided Queue
+~~~~~~~~~~~~~~~~~~
+
+We specially optimize unit-strided load/store performance. Unit-strided load/stores have very
+simple address generation and only require a base address, VL, and EEW to generate all addresses.
+Thus we have a separate ``ld_US_ADDR_Q`` and ``st_US_ADDR_Q`` to hold these transactions. Unlike
+the SSI queues, a unit-stride load/store need only generate a **single** ``nOP.v`` from the stage 1
+vAGENs that describes the whole contiguous range ``[base, base + VL*EEW)``.
+
+A second Packer-based AGEN unit fires when a unit-strided STQ/LDQ entry is activated and expands
+that single ``nOP.v`` into per-element D$ accesses *just-in-time*.
+
+Because a unit-stride access is a single contiguous byte range, its disambiguation and forwarding
+are done as **one range-overlap check** rather than per element — see :ref:`mem-order`.
+
+
+Store Data Queue
+~~~~~~~~~~~~~~~~
+
+Instead of holding the store data in the STQ entry, which would not be feasible for vector data, a
+separate ``st_SSI_DATA_Q`` and ``st_US_DATA_Q`` buffer the store data. The ``st_SSI_DATA_Q`` entry
+width is one element (``ELEN``, 64 bits); the ``st_US_DATA_Q`` entry width is a full ``VLEN`` (256
+bits), so a unit-stride store reads its entire source ``vPRN`` in one access and the Packer slices
+out per-element data at drain.
+
+The store data is **read from the source ``vPRN`` at DGEN (execute time)** and held in the data queue
+until the post-commit drain. Because the data is captured this early, the source ``vPRN`` needs **no
+pin** — it frees with the rest of the stale group at commit (a later writer to the same architectural
+vreg cannot clobber an in-flight store's data, since that data already lives in the queue). The cost
+is that, like the SSI address queue, the ``st_SSI_DATA_Q`` must hold a full store's active element
+data pre-commit, so it is sized to the worst-case single-store element count (matching the address
+queue); additional in-flight stores back-pressure the store vDGEN when it is full.
+
+
+.. _load-coalesce:
+
+Load Coalescing Buffer
+~~~~~~~~~~~~~~~~~~~~~~
+
+A vector load returns at most one element (``≤ ELEN``) per D$ response, and those responses may
+arrive **out of order** across MSHRs, while a destination physical register is a full ``VLEN``.
+Writing the VRF once per element would need an impractically wide, byte-masked write port and would
+break the one-write-per-PRN (and one-**group-done**-per-instruction) assumption that the ROB
+single-shot busy-clear and the vector Busy Table rely on (see :ref:`group-done-wb`).
+
+To bridge this, |caracal| adds a **Load Coalescing Buffer (LCB)** in front of the VRF write port:
+
+1. The LCB holds a small number of in-flight ``VLEN``-wide assembly entries, one per destination
+   PRN currently being filled (parameterizable; default a few entries per in-flight vector load).
+2. Each returning element is written into its byte offset within the assembly entry for its
+   destination PRN, using the element index carried on the ``nOP.v``.
+3. When **all active bytes** of a destination PRN are present (tracked by a per-entry byte-valid
+   bitmap, bounded by the active-element mask), the LCB issues a **single** VRF write on ``W0`` for
+   that PRN.
+4. Inactive (masked-off or tail) byte lanes are filled per ``vta``/``vma`` policy before the write,
+   so the single VRF write leaves no stale bytes.
+5. The LCB also owns the **per-group PRN-done count** (target = the destination-group size from
+   ``v_emul``/``v_seg_nf``). When the **last** destination PRN of the group is written, it emits
+   **one group-done** carrying the group's member-PRN vector. That single event is what the ROB, the vector
+   Busy Table, and the vector wakeup network all consume (see :ref:`group-done-wb` and
+   :ref:`group-done wakeup <group-done>`) — there is no per-PRN ROB writeback or per-PRN vector wakeup. The
+   intermediate per-PRN VRF writes are visible only to the regfile.
+
+The LCB is what makes "one writeback per destination PRN" true for the regfile — and **one
+group-done per instruction** true for the ROB / Busy Table / wakeup network — even though the cache
+returns data element-by-element and out of order.
+
+
+.. _elem-progress:
+
+Per-Element Progress Tracking and Precise Exceptions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A vector LDQ/STQ entry owns up to ``VLMAX`` element accesses but is a single entry, so it carries an
+**element cursor** in addition to the scalar fields:
+
+- ``elem_next`` — the index of the next element to drain.
+- ``elem_done`` — count (or bitmap) of elements that have completed.
+- ``fault_elem`` — the index of the **oldest** faulting element, latched on the first fault.
+
+Because the issue stage grants in age order and the V-LSU pipeline consumes element accesses **in
+program/element order**, no element ``> k`` has been written to the cache (stores) or committed to
+the LCB→VRF (loads) when element ``k`` faults. On a fault the entry stops advancing, the oldest
+``fault_elem`` is written to architectural ``vstart`` on trap, and the instruction resumes
+mid-stream per RVV 1.0. This gives precise element-level exceptions without any partial-write
+roll-back.
+
+Fault-only-first (``vleff.v``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The fault-only-first unit-stride load has special semantics: a fault on **element 0** is reported
+as a normal precise trap (``vstart = 0``), but a fault on **element ``i > 0``** must **not** trap —
+instead VL is trimmed to ``i`` and the instruction completes with the elements it did load.
+
+``vleff`` is decoded as a **unique instruction** (``is_unique``, like ``vsetvl``) so it is the only
+in-flight op when it resolves and it can update VL without racing younger uOPs. It is also a
+**VL producer**: on completion it writes the final element count to its VL register-file destination
+— the full VL if no fault occurred, or ``i`` if element ``i > 0`` faulted — exactly as a vset writes
+VL. That write wakes ``pvl`` in dependent vector slots on the VL wakeup network like any vset, so they
+pick up the (possibly trimmed) VL through the normal ``pvl`` path, and the architectural ``vl`` CSR is
+updated at commit. Only the element-0 fault raises ``rob_exception``; the ``i > 0`` case clears no
+architectural state beyond trimming VL.
+
+
+.. _mem-order:
+
+Memory Ordering and Disambiguation
+----------------------------------
+
+Vector load/store element addresses live in the SSI/US address queues, **not** in the scalar STQ.
+The scalar LCAM (which searches the LDQ/STQ entries) therefore does not see them by default, so
+|caracal| explicitly routes vector addresses through the disambiguation machinery so RVWMO ordering
+between scalar and vector memory ops is maintained in **both** directions:
+
+- **ST→LD ordering (vector store vs. any load).** Each vector store address presented for execute
+  is searched against the LDQ — both scalar LDQ entries and in-flight vector loads — exactly as a
+  scalar store addr-gen drives the LCAM. A match on a younger, already-executed load sets that
+  load's ``order_fail`` and replays it.
+- **LD→ST forwarding (any load vs. vector store).** A load address is searched against both the
+  scalar STQ and the vector store address queues. The vector store's data, when forwarded, is read
+  from the ``st_*_DATA_Q`` (which already holds the store data, captured at DGEN), not from a scalar
+  STQ data field.
+- **Scalar LD/ST vs. scalar ST/LD.** Unchanged from |boom|.
+
+Granularity of the search differs by access class:
+
+- **Unit-stride (US): one range check, not per element.** A US access is the contiguous byte range
+  ``[base, base + VL*EEW)``. The LCAM comparison for US loads/stores is a **range-overlap** test of
+  that whole range against each queue entry's address, performed once when the US entry executes —
+  rather than expanding to per-element searches. This is both cheaper and sufficient: any overlap
+  anywhere in the range triggers the ordering/forwarding action. For forwarding, an overlap that
+  only partially covers the load is handled like any partial-forward case in |boom| — replay if the
+  covering store data cannot fully satisfy the load.
+- **Strided / Indexed / Segmented (SSI): per element.** Scattered addresses cannot be range-folded,
+  so SSI accesses search the LCAM per element ``nOP.v`` as they drain. These per-element searches
+  contend for the shared LCAM through the same arbiter that gates the D$ port
+  (:ref:`dcache-arbiter`), so they cannot starve scalar disambiguation.
+
+**Edge case — SSI store → younger overlapping SSI load serializes.** Store-to-load forwarding is
+**not** attempted between two SSI accesses. An SSI store generates its element addresses
+incrementally (one ``nOP.v`` at a time through the arbiter), so until the store has resolved *all*
+its active elements a younger load cannot know whether a not-yet-generated store element aliases it —
+nor which store element holds the youngest byte for an aliased address, since a later element of the
+same store may overwrite it (ordered-indexed or duplicate indices). Forwarding from a
+partially-resolved scatter is therefore unsafe. |caracal| instead **holds** a younger SSI load that
+overlaps an older in-flight SSI store until that store completes (all its elements drain), then lets
+the load read the updated cache line. Because the two element streams also share the LCAM / D$ port
+through the arbiter, the pair executes **effectively serially**. The ordering-violation replay path
+(:ref:`order-fail-replay`) remains the correctness floor if a load slips through before the
+dependence is detected; the hold simply converts a multi-element replay storm into one clean
+serialization when the overlap is known or predicted.
+
+Memory-dependency speculation (a load issuing past a store whose address is not yet known) reuses
+|boom|'s existing predictor and ordering-violation replay path, now extended to fire on the
+cross-queue matches above.
+
+.. _order-fail-replay:
+
+Ordering-Violation Replay
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When a store's address search (scalar addr-gen, or a vector store's US range / SSI per-element
+search) matches a **younger, already-executed** load, that load has speculated past the store and
+may have read stale data. |caracal| recovers with |boom|'s existing ordering-violation path — the
+same squash-and-refetch machinery a branch mispredict uses — **not** a selective replay of just the
+load and its dependents. The mechanism, and why it is correct even though the load has already
+written a physical register and possibly woken dependents:
+
+1. **Mark, don't act.** The matching search sets the load's LDQ ``order_fail`` bit. The LSU
+   broadcasts the *oldest* failing load to the ROB as a ``lxcpt`` with cause
+   ``MINI_EXCEPTION_MEM_ORDERING``; the ROB records it as an exception on that load's row but takes
+   no action yet.
+
+2. **Deferred to the ROB head.** The flush fires only when the failing load reaches the **head** of
+   the ROB. This is the load-bearing invariant: because commit is in-order and the load is then the
+   oldest instruction in the machine, **every remaining in-flight instruction is younger than the
+   load** — so all of its dependents are still un-committed and squashable. No consumer of the bad
+   value can have escaped to architectural state.
+
+3. **Mini-exception ⇒ refetch, not trap.** ``MINI_EXCEPTION_MEM_ORDERING`` is not an architectural
+   exception: it does not go to the CSR/trap vector. It produces a pipeline flush with
+   ``flush_typ = refetch`` — the frontend redirects to the failing load's **own PC** (from its
+   ``ftq_idx``/``pc_lob``), so the load re-fetches and re-executes.
+
+4. **The RF is not rolled back — renaming makes that unnecessary.** The load already wrote its result
+   into a *physical* register ``Pd``, and dependents may have consumed it. On the flush, the physical
+   RF is left untouched; instead the ROB rollback **restores the rename map to the committed
+   architectural state and returns every speculatively-allocated physical register — including
+   ``Pd`` — to the free list.** The stale value is simply orphaned: after rollback nothing maps the
+   load's logical destination to ``Pd``. On refetch the load renames to a *fresh* physical
+   destination, executes correctly (forwarding the store data from ``st_*_DATA_Q`` or reading the
+   drained cache line), and writes that register.
+
+5. **Dependents are handled by the coarse squash.** Because dependents are by definition younger than
+   the load, the flush discards the load and everything younger — ROB rows, issue queues, and the
+   pipeline — and frees their speculative physical registers in the same rollback. |caracal| does not
+   track which specific instructions consumed the poisoned result; like branch recovery, it
+   conservatively squashes all younger work, differing only in that the redirect PC is the load
+   itself (``refetch``) rather than a branch target.
+
+The window where the load writes back early and wakes dependents on bad data is therefore harmless:
+all of that work is younger than the load and still un-committed when the flush fires at the ROB
+head, so in-order commit guarantees it never reaches architectural state. The cost is purely
+performance (a full refill from the load), which is what the memory-dependency predictor exists to
+avoid by holding back loads likely to alias.
+
+For a **vector** load that order-fails, the same refetch/re-rename path applies at the granularity of
+the whole vector instruction: the single LDQ placeholder entry drives one ``lxcpt``, and on replay
+the vector op re-renames its whole destination group and re-drains its element accesses through the
+LCB (:ref:`load-coalesce`) — there is no partial-group rewind, consistent with the one-group-done
+completion model.
+
+
+.. _dcache-arbiter:
+
+D$ Interface Arbiter
+--------------------
+
+The unified LSU shares the D$ request lane(s) (``dmem.req``, ``lsuWidth`` wide — 1 on Medium, 2 on
+Large/Mega) among several requestors:
+
+- scalar LSU fire (load/store),
+- vector **load** drain (US Packer or SSI per-element),
+- vector **store** drain (post-commit, from ``stq_execute_queue``).
+
+A **priority round-robin arbiter** grants the lane(s) each cycle:
+
+- **Priority floor.** Scalar memory ops carry a higher base priority than vector drains, so a burst
+  of vector element accesses never indefinitely blocks a scalar load/store. This keeps scalar memory
+  latency close to baseline.
+- **Round-robin anti-starvation.** Among requestors of equal priority, and to bound how long a
+  lower-priority requestor can wait, a round-robin pointer guarantees each contending requestor at
+  least one grant every *N* cycles. A long vector drain therefore yields the lane periodically so
+  scalar traffic makes progress, and a steady scalar stream still lets the vector drain advance.
+- **Dual lane (Large/Mega, ``lsuWidth=2``).** The arbiter grants up to 2 of the pending requests per
+  cycle and is work-conserving: an all-scalar workload uses both lanes for scalar, an all-vector
+  workload uses both for vector, and a mix splits them under the priority-floor + round-robin policy.
+
+The same policy gates the **shared LCAM** and **TLB** ports, since a vector element stream consumes
+those resources at the same rate it consumes D$ bandwidth. All three (D$ lane, LCAM port, TLB port)
+are released back to scalar on the round-robin boundary so no single vector ``OP.v`` can monopolize
+disambiguation or translation.
+
+
+Fences
+------
+
+``fence`` (RVWMO ``fence rw,rw`` and friends) and ``fence.i`` must order vector memory ops alongside
+scalar ones. |caracal| takes the simplest correct approach: a fence at the head of the ROB **does not
+retire until both LSUs are fully drained** — the scalar LDQ/STQ are empty *and* the vector load/store
+path is empty (every vector store drained to the cache and every vector load completed), not merely
+committed. A store is only globally visible once drained, so "committed" is not sufficient; the fence
+waits for the actual cache writes.
+
+Implementation: the ROB raises a ``fence_pending`` signal when a fence reaches the head; the scalar
+LSU and the vector LSU each drive a ``drain_done`` back when their queues are empty, and the ROB
+retires the fence only when both are asserted. This is coarser than a per-address or acquire/release
+scheme (it drains *all* in-flight memory work, not just pre-fence work), but it is unconditionally
+correct.
+
+
+Vector Loads Algorithm
+-----------------------
+1. **Dispatch** — LDQ slot reserved in-order by the dispatch stage.
+2. **Issue / AGen** — when the load issues out of the issue queue it drains addresses from the
+   ``ld_SSI_ADDR_Q`` (per element, precomputed by stage 1 vAGEN) or, for unit-stride, runs the
+   stage 2 Packer over the single ``ld_US_ADDR_Q`` ``nOP.v`` to generate element addresses
+   just-in-time.
+3. **Fire** — for each element access the arbiter (:ref:`dcache-arbiter`) grants a D$ lane; the fire
+   does TLB + D$ + LCAM together (``will_fire_load_agen_exec``). US loads do a single range-overlap
+   LCAM check; SSI loads search per element.
+4. **Coalesce / Writeback** — element responses land in the Load Coalescing Buffer
+   (:ref:`load-coalesce`); when a destination PRN is fully assembled the LCB issues one VRF write and
+   one completion. ``elem_done`` advances; a fault latches ``fault_elem`` (:ref:`elem-progress`).
+
+Identical to scalar **loads** other than draining addresses from the dedicated vector queues,
+coalescing in the LCB, and per-element progress tracking.
+
+Vector Stores Algorithm
+-----------------------
+1. **Dispatch** — STQ slot reserved in-order by the dispatch stage.
+2. **Execute (translate + order-check)** — drains addresses from ``st_SSI_ADDR_Q`` /
+   ``st_US_ADDR_Q`` and does **TLB + LCAM** only. **All active element addresses are translated
+   pre-commit** so that any page/access fault is detected and reported precisely (with
+   ``fault_elem``) **before** the store commits; the translated addresses are **retained** in the
+   address queue until commit-drain (a store cannot free them mid-instruction), so the queue is sized
+   to the worst-case single-store element count and additional in-flight stores back-pressure the
+   store vAGEN. LCAM searches the LDQ for ordering violations (US: one range check; SSI: per element).
+3. **Commit** — when the ROB retires the store its committed flag is set; only then is it eligible to
+   drain to the ``stq_execute_queue``.
+4. **Fire** — the ``stq_execute_queue`` drains and the actual D$ writes occur, one element per
+   granted lane via the arbiter. Store data is taken from ``st_US_DATA_Q`` (whole-``vPRN``, sliced by
+   the Packer) or ``st_SSI_DATA_Q`` (per element). The store data was **read from the source ``vPRN``
+   at DGEN (execute time)** and has lived in the data queue ever since, so the source ``vPRN`` is
+   **not pinned** — it frees normally with the rest of the stale group at commit, since its value is
+   already captured in the data queue.
+
+Identical to scalar stores other than draining address and data from the dedicated vector queues and
+the pre-commit translation of the whole active element range.
+
+
+Memory SubSystem
+----------------
+
+The memory subsystem remains unchanged from BOOMv4 — the D$ Interface Arbiter (:ref:`dcache-arbiter`)
+sits *outside* the cache and presents the same ``dmem.req`` interface.
+
+.. _vector-bw-ceiling:
+
+Vector memory bandwidth ceiling
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Because the cache and its request interface are unchanged, **vector memory bandwidth is bounded by
+the scalar D$ port width, not by ``VLEN``.** Each ``dmem.req`` lane carries at most one element
+(``≤ ELEN`` = 64 bits) per cycle, and there are ``lsuWidth`` lanes — **1 on Medium, 2 on
+Large/Mega**. The consequences are first-order for vector performance and must be understood:
+
+- A single ``VLEN = 256`` destination register is **≥ 4 D$ beats** (``VLEN/ELEN``), even for the
+  densest unit-stride load — so peak vector load/store throughput is **64 bits/cycle on Medium,
+  128 bits/cycle on Mega**, regardless of ``LMUL``.
+- **SSI** (strided / indexed / segmented) accesses drain **one element per granted lane**, and that
+  lane is shared with scalar memory ops through the priority round-robin arbiter
+  (:ref:`dcache-arbiter`). A pathological scatter/gather is therefore element-serial.
+- **Unit-stride** is the optimized case (the Packer coalesces contiguous bytes up to the lane width
+  and the LCAM does one range check), but it is still capped at the same ``lsuWidth × ELEN``
+  bandwidth — the Packer reduces *address-generation* and *disambiguation* cost, not cache-port
+  width.
+
+This is a deliberate area/complexity trade-off: |caracal| reuses the scalar cache port rather than
+building a ``VLEN``-wide vector cache interface. For memory-bound vector kernels it is the dominant
+performance limiter, so ``LargeBoomV4Config`` / ``MegaBoomV4Config`` (dual-port L1 D$, two grants
+per cycle) is **required, not merely recommended,** for acceptable vector throughput. A wider /
+line-granular vector cache port is explicitly out of scope here and would be the highest-leverage
+follow-on if vector memory bandwidth proves limiting.
