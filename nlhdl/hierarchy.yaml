@@ -1,0 +1,163 @@
+# =============================================================================
+# hierarchy.yaml — NL_HDL project module map
+# =============================================================================
+# This file is the authoritative map of the design. The generation agent reads
+# it to:
+#   1. Locate each module's nlhdl source and generated output.
+#   2. Resolve <|begin_dependencies|> entries to concrete module interfaces.
+#   3. Derive build order (topological sort of the instantiation DAG) so that
+#      leaf modules are generated before the modules that instantiate them.
+#   4. Elaborate the instance tree (arrays, parameter overrides, connections).
+#
+# Design principle — DEFINE ONCE, INSTANTIATE MANY:
+#   A module is DEFINED once under `modules:` (its source, params, interface).
+#   It is INSTANTIATED any number of times via another module's `instantiates:`
+#   list, each with its own instance name, replication count, and parameter
+#   overrides. This is what lets one definition (e.g. sync_fifo) serve dozens of
+#   uses across a complex design without duplication.
+#
+# Source of truth for interfaces:
+#   For nlhdl-backed modules, the module's <|begin_ports|> / <|begin_parameters|>
+#   sections are authoritative — do NOT duplicate them here. Declare `ports:` /
+#   `parameters:` inline ONLY for `blackbox:` modules that have no nlhdl source.
+# =============================================================================
+
+version: 1
+
+# -----------------------------------------------------------------------------
+# Project-wide defaults. Any module may override these.
+# -----------------------------------------------------------------------------
+defaults:
+  target: sv                 # default HDL when a module doesn't pin one
+  clock: core_clk            # default clock domain name
+  reset: core_rst_n          # default reset net
+  reset_polarity: active_low # active_low | active_high
+  reset_sync: sync           # sync | async
+
+# -----------------------------------------------------------------------------
+# Clock domains. Name them here and reference by name from modules/instances.
+# Enables multi-clock designs and makes CDC crossings explicit.
+# -----------------------------------------------------------------------------
+clocks:
+  core_clk: { freq_mhz: 1000 }
+  io_clk:   { freq_mhz: 200 }
+
+resets:
+  core_rst_n: { clock: core_clk, polarity: active_low, sync: async }
+  io_rst_n:   { clock: io_clk,   polarity: active_low, sync: async }
+
+# -----------------------------------------------------------------------------
+# Reusable interface / bundle definitions (SV `interface`, Chisel `Bundle`).
+# Bind them at instantiation with `connect:` instead of listing every signal.
+# Widths may reference parameters, resolved in the binding module's scope.
+# -----------------------------------------------------------------------------
+interfaces:
+  axi4_lite:
+    description: "AXI4-Lite manager/subordinate channel bundle"
+    params:
+      - { name: ADDR_W, default: 32 }
+      - { name: DATA_W, default: 64 }
+    signals:
+      - { name: awaddr,  dir: fwd, width: ADDR_W }
+      - { name: awvalid, dir: fwd, width: 1 }
+      - { name: awready, dir: bwd, width: 1 }
+      - { name: wdata,   dir: fwd, width: DATA_W }
+      - { name: wvalid,  dir: fwd, width: 1 }
+      - { name: wready,  dir: bwd, width: 1 }
+      - { name: rdata,   dir: bwd, width: DATA_W }
+      - { name: rvalid,  dir: bwd, width: 1 }
+      - { name: rready,  dir: fwd, width: 1 }
+      # dir is from the manager's viewpoint: fwd = manager->subordinate.
+
+# -----------------------------------------------------------------------------
+# Top-level module(s) of the design. May be a single name or a list.
+# Build/elaboration starts here and walks the instantiates DAG downward.
+# -----------------------------------------------------------------------------
+top: soc_top
+
+# -----------------------------------------------------------------------------
+# Module registry. Key = module name; MUST match the generated RTL module name
+# and the <module_name> in the nlhdl filename.
+# -----------------------------------------------------------------------------
+modules:
+
+  # ---- Top-level subsystem: shows arrays, param propagation, interfaces ------
+  soc_top:
+    source: soc/soc_top.nlhdl.sv
+    output: soc/generated/soc_top.sv
+    group: soc                     # optional tag for organization/reporting
+    clock: core_clk
+    reset: core_rst_n
+    # parameters/ports come from the nlhdl file — not repeated here.
+    instantiates:
+      - module: cpu_core
+        instance: core             # elaborates to core[0..NUM_CORES-1]
+        count: NUM_CORES           # array -> generate/genvar in RTL
+        params: { XLEN: 64 }       # override applied to every element
+      - module: axi_xbar
+        instance: xbar
+        params: { NUM_M: NUM_CORES, NUM_S: 3 }   # expr refs parent param
+      - module: sram_ctrl
+        instance: mem
+        connect:
+          bus: { interface: axi4_lite, params: { ADDR_W: 32, DATA_W: 64 } }
+      - module: uart
+        instance: uart0
+        clock: io_clk              # different clock domain (CDC boundary)
+        reset: io_rst_n
+
+  # ---- A core: shows reuse of one definition across two instances -----------
+  cpu_core:
+    source: cores/cpu_core.nlhdl.sv
+    output: cores/generated/cpu_core.sv
+    group: core
+    instantiates:
+      - { module: alu,       instance: alu }
+      - { module: regfile,   instance: rf }       # blackbox, see below
+      - { module: sync_fifo, instance: ld_q, params: { WIDTH: XLEN, DEPTH: 8 } }
+      - { module: sync_fifo, instance: st_q, params: { WIDTH: XLEN, DEPTH: 8 } }
+
+  # ---- Leaf modules backed by nlhdl sources ---------------------------------
+  alu:
+    source: examples/alu/alu.nlhdl.sv
+    output: examples/alu/generated/alu.sv
+    group: core
+    # no instantiates -> leaf; generated first in topo order.
+
+  sync_fifo:
+    source: examples/fifo/fifo.nlhdl.sv
+    output: examples/fifo/generated/sync_fifo.sv
+    group: common
+
+  axi_xbar:
+    source: soc/axi_xbar.nlhdl.sv
+    output: soc/generated/axi_xbar.sv
+    group: soc
+
+  sram_ctrl:
+    source: soc/sram_ctrl.nlhdl.sv
+    output: soc/generated/sram_ctrl.sv
+    group: soc
+
+  uart:
+    source: soc/uart.nlhdl.sv
+    output: soc/generated/uart.sv
+    group: soc
+
+  # ---- Blackbox / external IP: interface-only, NEVER generated --------------
+  # Has no nlhdl source, so its interface MUST be declared inline here. The
+  # agent instantiates against this interface but does not emit RTL for it.
+  regfile:
+    blackbox: true
+    output: vendor/regfile.sv      # pre-existing RTL, referenced not written
+    parameters:
+      - { name: XLEN,    default: 64 }
+      - { name: N_READ,  default: 2 }
+      - { name: N_WRITE, default: 1 }
+    ports:
+      - { name: clk,   dir: input,  width: 1 }
+      - { name: raddr, dir: input,  width: "5 * N_READ" }
+      - { name: rdata, dir: output, width: "XLEN * N_READ" }
+      - { name: waddr, dir: input,  width: "5 * N_WRITE" }
+      - { name: wdata, dir: input,  width: "XLEN * N_WRITE" }
+      - { name: wen,   dir: input,  width: N_WRITE }
