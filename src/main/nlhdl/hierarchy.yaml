@@ -1,0 +1,1301 @@
+# =============================================================================
+# hierarchy.yaml — Caracal Milestone Plan v2 module map
+# =============================================================================
+# The authoritative map for the v2 (combined M1+M2) host-side implementation.
+# The SV coprocessor (VPU + TT-CII) is REFACTORED AND VERIFIED: it appears here
+# as blackboxes so the map can show where a waveform signal comes from, but this
+# flow does not rewrite it. v2 changes the BOOM host (Chisel) plus exactly two SV
+# nodes:
+#   - `tt_cii_host_wrap`     (mode: new)           the flattening shim
+#   - `tt_cii_caracal_pkg`   (mode: edit_existing)  ONE added enum value,
+#                                                   CII_SRC_STALE_VD = 3'd6
+# Everything else SV is blackbox. Note the second one means v2 is NOT strictly
+# host-only; it also needs the VPU decoder to emit the new slot, which is outside
+# this map and must be coordinated with the VPU owner.
+#
+# PATH CONVENTION: every `source:`, `output:`, and `target:` path in this file is
+# REPO-RELATIVE (from /proj_risc/user_dev/ading/riscv-ocelot), not relative to
+# this file. Unambiguous, because targets point outside the nlhdl tree.
+#
+# GENERATED CHISEL LOCATION: sbt only compiles under `src/main/scala/`, so
+# `mode: new` Chisel lands at `src/main/scala/v4/vec/generated/<Module>.scala`
+# (package `boom.v4.vec.generated`). This satisfies both sbt and the
+# validator's "`output:` under a `generated/` directory" rule.
+#
+# -----------------------------------------------------------------------------
+# WHY v2 EXISTS — the performance failure this map is shaped to prevent
+# -----------------------------------------------------------------------------
+# The M1+M2 attempt (`origin/Caracal/addvector`, 41 files / ~10.4k lines) was
+# functional but serialized. Root cause was STRUCTURAL, not tuning:
+# `VecLSU.scala:159` declared module-level `state` + `grp_active` registers and
+# line 506 exported `io.busy := grp_active || (state =/= sIdle)`, which gated
+# `fu_ready`. ONE FSM, shared by both directions, spanning operand-read → AGEN →
+# D$ → completion. Concurrency ceiling of 1 vector memory op machine-wide, by
+# construction. Everything else followed from it: the load-priority mux, the
+# dropped store grant, the serial sCopyRd/sCopyWr undisturbed-copy prologue, and
+# `agen_active` having to OR in `vec_dgen.active`.
+#
+# ===> INVARIANT (vec_lsu group). No module in the vector LSU may hold state
+#      scoped to "the current instruction", and no module may export a `busy`
+#      that gates issue. In-flight state lives ONLY in (a) the six element
+#      queues, whose capacity was reserved at dispatch in program order, and
+#      (b) the LCB's per-PRN assembly entries. `VecElemAgen` keeps an element
+#      cursor but retires it the moment the last element is pushed into the
+#      queue — it never waits on a D$ response or on completion, so it cannot
+#      gate the next instruction. Issue eligibility is purely "is there a
+#      reservation", decided at dispatch.
+#      This invariant is also a v2 plan ground rule. A violation is reviewable.
+#
+# -----------------------------------------------------------------------------
+# SPEC OF RECORD
+# -----------------------------------------------------------------------------
+# docs_caracal/src/*.rst. Load-bearing anchors:
+#   loadstore.rst  :ref:`ssi-queues` `load-coalesce` `mem-order` `vec-squash`
+#                  `elem-progress` `vec-queue-reservation`
+#   midcore.rst    :ref:`vrf-ports` `old-vd`
+#   cii.rst        :ref:`cii-flush` `cii-operands`
+#   frontend.rst   :ref:`vector-csr-ownership` `vset-dual-dest`
+# =============================================================================
+
+version: 1
+
+# -----------------------------------------------------------------------------
+# Defaults: the design is predominantly Chisel, so `scala` is the default target
+# and Chisel's implicit reset convention (posedge clk, ACTIVE-HIGH sync reset)
+# is the default. SV nodes override both.
+# -----------------------------------------------------------------------------
+defaults:
+  target: scala
+  clock: core_clk
+  reset: core_reset
+  reset_polarity: active_high
+  reset_sync: sync
+
+clocks:
+  core_clk: { freq_mhz: 1000 }      # single domain; the coprocessor is synchronous
+
+# NOTE: two resets, one domain. Chisel's implicit reset is ACTIVE-HIGH; the SV
+# coprocessor stack takes ACTIVE-LOW `reset_n`. The inversion happens exactly
+# once, in `tt_cii_host_wrap`. Declared as two named resets so that crossing is
+# visible in the map instead of being an undocumented `~reset` in the shim.
+resets:
+  core_reset: { clock: core_clk, polarity: active_high, sync: sync }  # Chisel
+  core_rst_n: { clock: core_clk, polarity: active_low,  sync: sync }  # SV coproc
+
+# -----------------------------------------------------------------------------
+# Interfaces
+# -----------------------------------------------------------------------------
+interfaces:
+
+  # === THE seam of the v2 design ============================================
+  # `addvector` added 1101 lines to core.scala, braiding vector wiring line-by-
+  # line through scalar wiring. v2 replaces that with ONE explicit bundle. It is
+  # deliberately WIDE — a wide named interface is safer than 1101 implicit
+  # connections, and enumerating it here is the point, not an accident.
+  #
+  # Load-bearing detail: the rename inputs are named `ren2_uops`/`dis_fire`, NOT
+  # `dec_uops`. The M1 free-list double-free was vector rename running
+  # combinationally off `dec_uops`, one cycle AHEAD of the scalar RenameStage's
+  # registered ren1→ren2 pipeline, so at dispatch the vec fields reflected the
+  # NEXT cycle's (bubble) uop and two ops freed PRN 0. With these port names,
+  # wiring `dec_uops` here is visibly wrong at the connection site.
+  vec_pipeline_io:
+    description: "BoomCore <-> VecPipeline. The complete vector-subsystem seam."
+    params:
+      - { name: coreWidth,  default: 3 }
+      - { name: vLen,       default: 256 }
+      - { name: xLen,       default: 64 }
+    signals:
+      # ---- decode feed (vector decode lives inside VecPipeline) ------------
+      - { name: dec_insns,          dir: fwd, width: "32 * coreWidth" }
+      - { name: dec_valids,         dir: fwd, width: coreWidth }
+      - { name: dec_uops_in,        dir: fwd, width: "MicroOp * coreWidth" }
+      - { name: dec_uops_out,       dir: bwd, width: "MicroOp * coreWidth" }
+      - { name: dec_vec_illegal,    dir: bwd, width: coreWidth }
+      # ---- rename / dispatch lockstep (see note above) ---------------------
+      - { name: ren2_uops,          dir: fwd, width: "MicroOp * coreWidth" }
+      - { name: ren2_mask,          dir: fwd, width: coreWidth }
+      - { name: dis_fire,           dir: fwd, width: coreWidth }
+      - { name: dis_ready,          dir: bwd, width: 1 }
+      # ---- speculation / recovery -----------------------------------------
+      - { name: brupdate,           dir: fwd, width: BrUpdateInfo }
+      - { name: rob_pnr_idx,        dir: fwd, width: robAddrSz }
+      - { name: rob_flush,          dir: fwd, width: 1 }
+      - { name: rob_flush_kill,     dir: fwd, width: 1 }
+      # ---- commit ---------------------------------------------------------
+      - { name: commit_valids,      dir: fwd, width: coreWidth }
+      - { name: commit_uops,        dir: fwd, width: "MicroOp * coreWidth" }
+      - { name: commit_rollback,    dir: fwd, width: 1 }
+      # ---- completion back into the ROB (group-done) -----------------------
+      - { name: vec_clr_bsy,        dir: bwd, width: "robAddrSz + 1" }
+      - { name: vec_clr_unsafe,     dir: bwd, width: "robAddrSz + 1" }
+      - { name: vec_xcpt,           dir: bwd, width: VecException }
+      # ---- scalar feeders: vector ops read INT/FP for base/stride/.vx/.vf ---
+      - { name: int_rf_read_req,    dir: bwd, width: "pregSz * 3" }
+      - { name: int_rf_read_rsp,    dir: fwd, width: "xLen * 3" }
+      - { name: int_wakeups,        dir: fwd, width: IntWakeupBus }
+      - { name: fp_rf_read_req,     dir: bwd, width: pregSz }
+      - { name: fp_rf_read_rsp,     dir: fwd, width: xLen }
+      # ---- scalar-dest writeback (vmv.x.s, vcpop.m, vfirst.m, vfmv.f.s) ----
+      - { name: int_wb,             dir: bwd, width: ExeUnitResp }
+      - { name: fp_wb,              dir: bwd, width: ExeUnitResp }
+      # ---- vector CSR state (OWNED by rocket CSRFile, see frontend.rst) -----
+      - { name: csr_vector,         dir: fwd, width: CSRVectorIO }
+      - { name: csr_frm,            dir: fwd, width: 3 }
+      - { name: csr_vs_dirty,       dir: bwd, width: 1 }
+      # ---- vset: the dual-destination rule (is_vl_producer) ----------------
+      - { name: vset_resp,          dir: fwd, width: ExeUnitResp }
+      - { name: vl_wakeup,          dir: bwd, width: "vlPregSz + 1" }
+      # ---- memory: the vector LSU's own D$ port + ordering hooks -----------
+      - { name: lsu_vec,            dir: bwd, width: VecLsuCoreIO }
+      - { name: lsu_fencei_rdy_vec, dir: bwd, width: 1 }
+      # ---- debug / trace (ground rule: guarded printf, off by default) -----
+      - { name: vec_trace_en,       dir: fwd, width: 1 }
+      - { name: debug_vrf_read,     dir: bwd, width: "vLen * coreWidth" }
+
+  # === Frozen SV interface ==================================================
+  # `tt_cii_interface.sv` is AUTHORITATIVE for these signals; this entry exists
+  # only so `connect:` resolves and so the four channels are named in the map.
+  # Do not treat the widths here as a specification — the SV `parameter type`
+  # payloads come from tt_cii_caracal_pkg.
+  tt_cii_interface:
+    description: >
+      Frozen 4-channel credit-metered CII interface (vendored SV, modport
+      host/coprocessor). Authoritative source: src/main/sv/v4/tt-cii/src/
+      tt_cii_interface.sv. Payload types from tt_cii_caracal_pkg.
+    signals:
+      - { name: issue,    dir: fwd, width: cii_caracal_issue_req_t }  # host->cop
+      - { name: src_req,  dir: bwd, width: cii_caracal_src_req_t }    # cop->host
+      - { name: src_dat,  dir: fwd, width: cii_caracal_dat_rsp_t }    # host->cop
+      - { name: wb,       dir: bwd, width: cii_caracal_result_t }     # cop->host
+
+top: BoomCore
+
+# =============================================================================
+# MODULE REGISTRY
+# =============================================================================
+modules:
+
+  # ===========================================================================
+  # PACKAGES — shared declarations. Never instantiated; sorted before dependents.
+  # ===========================================================================
+
+  # --- Baseline BOOM declarations, extended in place -------------------------
+  # The single most depended-upon declaration in the design. `addvector` added
+  # 162 lines here; the `pvl` busy-bit bugs traced back to it. Fan-in over
+  # `depends_on:` is the blast radius of any field added below.
+  MicroOp:
+    kind: package
+    source: src/main/nlhdl/pkg/MicroOp.nlhdl.scala
+    mode: edit_existing
+    target: src/main/scala/v4/common/micro-op.scala
+    group: pkg_boom
+    # DELTA: is_vec; lvs1/lvs2/lvs3/lvd/lvm; pvs1/pvs2/pvs3/pvdest/stale_pvdest/
+    # pvm/pvtmp/pvl + busy bits; v_eew/v_emul/v_seg_nf; vconfig snapshot;
+    # is_shared; is_vl_producer (ORTHOGONAL to dst_rtype — see vset-dual-dest);
+    # nOP.v-scoped element cursor fields (inert on the OP.v itself).
+    #
+    # `pvs3` and `stale_pvdest` are TWO SEPARATE FIELDS naming two separate
+    # physical groups, and must stay separate: `pvs3` is an explicitly encoded
+    # third source operand (e.g. vse.v store data), `stale_pvdest` is the group
+    # that held the destination arch vreg before this OP.v renamed it. They
+    # coincide for RMW arithmetic (vfmacc) and diverge for masked non-RMW ops,
+    # vslideup, and vcompress. Both are exposed to the coprocessor as distinct
+    # CII source slots (VS3 / STALE_VD) and the VPU chooses which to pull.
+
+  ScalarOpConstants:
+    kind: package
+    source: src/main/nlhdl/pkg/ScalarOpConstants.nlhdl.scala
+    mode: edit_existing
+    target: src/main/scala/v4/common/consts.scala
+    group: pkg_boom
+    # DELTA: RT_VEC (dst_rtype/lrs*_rtype widened 2b -> 3b); IQ_V_LOAD /
+    # IQ_V_STORE / IQ_V_ALU appended to the IQ_* space (IQ_SZ 4 -> 7).
+
+  BoomCoreParams:
+    kind: package
+    source: src/main/nlhdl/pkg/BoomCoreParams.nlhdl.scala
+    mode: edit_existing
+    target: src/main/scala/v4/common/parameters.scala
+    group: pkg_boom
+    depends_on: [VectorParams]
+    # DELTA: enableVector + vector: Option[VectorParams]; derived usingRVV,
+    # numVecPhysRegs/vecPregSz, numVlPhysRegs/vlPregSz, vecVLen, maxVecVL;
+    # override hasV = enableVector (feeds the misa string only).
+
+  BoomConfigMixins:
+    kind: package
+    source: src/main/nlhdl/pkg/BoomConfigMixins.nlhdl.scala
+    mode: edit_existing
+    target: src/main/scala/v4/common/config-mixins.scala
+    group: pkg_boom
+    depends_on: [VectorParams, BoomCoreParams]
+    # DELTA: WithVector; WithNSmallBoomsVector; Mega overrides
+    # (vecIssueGrantWidth=2, dcacheArbiterMode="dual-dynamic").
+
+  # --- New Caracal declarations ---------------------------------------------
+  VectorParams:
+    kind: package
+    source: src/main/nlhdl/pkg/VectorParams.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/VectorParams.scala
+    group: pkg_vec
+    # numVecPhysRegisters = 96 (was 128). The RMT maps all 32 architectural vregs
+    # at all times regardless of current LMUL, so 32 PRNs are permanently
+    # committed-state: (96 - 32) / 8 = 8 LMUL=8 groups in flight, and a segmented
+    # op takes pvdest + pvtmp (16 PRNs) so at most 4 of those. Tighter than 128's
+    # 12 groups — watch the free-list stall rate in the LS regression.
+    # vecPregSz = 7 bits.
+    #
+    # Queue depths are ARCHITECTURAL LIMITS, not tuning knobs: reservation
+    # happens at dispatch against the worst-case element count, so depth
+    # directly bounds in-flight vector memory ops. 512 / 256 = 2 worst-case
+    # stores (loadstore.rst:95-99). Document the derived MLP wherever the
+    # parameter is documented.
+    # NOTE: no `numVecTmpGroups`. No free-list headroom is needed for forward
+    # progress — rename is in program order, so an op that cannot allocate
+    # simply stalls. The requirement is that pvdest+pvtmp allocation is
+    # ALL-OR-NOTHING (see VecFreeList).
+
+  VecBundles:
+    kind: package
+    source: src/main/nlhdl/pkg/VecBundles.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/VecBundles.scala
+    group: pkg_vec
+    depends_on: [MicroOp, VectorParams]
+    # VecPipelineIO (realizes the vec_pipeline_io interface above); VecGroupDone
+    # (member-PRN vector — ONE event drives ROB busy-clear + Busy-Table clear +
+    # vector wakeup); VecElemAccess (the nOP.v: addr/member/byte-enable/elem-idx);
+    # VecReservation; VecCiiTagEntry; VecException.
+
+  VecTrace:
+    kind: package
+    source: src/main/nlhdl/pkg/VecTrace.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/VecTrace.scala
+    group: pkg_vec
+    depends_on: [MicroOp]
+    # There are NO unit tests in this project (ground rule 10) — every module is
+    # validated only through end-to-end VCS+Whisper regressions. Guarded printf
+    # tracing is therefore the primary debug surface, and it is a PACKAGE so the
+    # convention is shared rather than reinvented per module: gated on a
+    # `vecTrace` plusarg (off by default, so the usingRVV=false bit-identical
+    # baseline is unaffected), one line per key event, every line tagged with
+    # module name + rob_idx so stages correlate with each other and with the
+    # Whisper cosim trace, and greppable.
+
+  # --- Frozen SV contracts (blackbox packages, never written) ---------------
+  tt_cii_caracal_pkg:
+    kind: package
+    source: src/main/nlhdl/sv/tt_cii_caracal_pkg.nlhdl.sv
+    mode: edit_existing
+    target_hdl: sv
+    target: src/main/sv/v4/tt-cii/src/tt_cii_caracal_pkg.svh
+    group: coproc
+    # THE contract both sides bind to. Facts the Chisel host must match exactly
+    # (host-side constants are DERIVED from these, never redeclared):
+    # CII_TAG_W=4 (16 tags); CII_NUM_INST_ISSUE=1;
+    # CII_NUM_SRC_REQ=CII_NUM_SRC_DAT_RSP=4; CII_NUM_DST_WB=1 (MUST match the
+    # tt_cii_interface default — the relay's type(wb_data) resolves against it);
+    # issue payload carries vtype/vl/vstart/vxrm/frm; wb_status carries
+    # {last, dst_kind, vxsat, fflags}.
+    #
+    # ===> NOT `blackbox` — this is the ONE SV file v2 must edit, so it is
+    #      `edit_existing` with a tightly bounded `<|begin_edit_scope|>`.
+    # DELTA, and nothing more: add `CII_SRC_STALE_VD = 3'd6` to
+    # cii_caracal_srcid_e, so the coprocessor can request the old-vd group
+    # (stale_pvdest) INDEPENDENTLY of the explicitly encoded third source
+    # (pvs3) — see VecCiiOperandServer for why one slot cannot serve both.
+    #
+    # This is deliberately the smallest possible SV change:
+    #   - The wire type is ALREADY `logic [2:0]` (cii_caracal_srcid_t), so values
+    #     6 and 7 were free. NO payload width changes, NO struct changes, NO
+    #     change to tt_cii_interface or the relay, and the verified tb stays
+    #     valid.
+    #   - Slot 3 should also be renamed CII_SRC_VS3_VD -> CII_SRC_VS3 now that it
+    #     means only "the encoded third source". A rename is normally a
+    #     forbidden drive-by under edit_existing; call it out explicitly in the
+    #     edit_scope's interface delta, or leave the old name and note the
+    #     narrowed meaning in a comment.
+    #   - The VPU DECODER must be able to emit slot 6. That work is outside this
+    #     map (tt_vpu_cii_wrapper_top stays a blackbox) and must be coordinated
+    #     with the VPU owner. Until it lands, the host serves slot 6 correctly
+    #     and simply never sees a request for it.
+
+  tt_briscv_pkg:
+    kind: package
+    blackbox: true
+    target_hdl: sv
+    output: src/main/sv/v4/vpu/packages/tt_briscv_pkg.svh
+    group: coproc
+    # VPU-internal declarations. Listed so the coprocessor subtree's build order
+    # is complete; the host never binds to it.
+
+  # ===========================================================================
+  # BASELINE BOOM MODULES — targeted edits (mode: edit_existing)
+  # Every one of these must be bit-identical when usingRVV=false.
+  # ===========================================================================
+
+  BoomCore:
+    kind: module
+    source: src/main/nlhdl/host/BoomCore.nlhdl.scala
+    mode: edit_existing
+    target: src/main/scala/v4/exu/core.scala
+    group: host
+    depends_on: [MicroOp, ScalarOpConstants, BoomCoreParams, VecBundles]
+    instantiates:
+      - module: VecPipeline
+        instance: vec
+        connect:
+          io: { interface: vec_pipeline_io }
+    # SCOPE DISCIPLINE: `addvector` added 1101 lines here. v2 targets ~150: one
+    # gated instantiation, one bundle connect, and the taps the bundle names.
+    # If this edit exceeds ~200 lines, the container boundary is leaking and the
+    # excess belongs inside VecPipeline. That is a reviewable budget.
+
+  Rob:
+    kind: module
+    source: src/main/nlhdl/host/Rob.nlhdl.scala
+    mode: edit_existing
+    target: src/main/scala/v4/exu/rob.scala
+    group: host
+    depends_on: [MicroOp, ScalarOpConstants]
+    # DELTA: dst_rtype widened to 3b for RT_VEC; `vec_clr_bsy` single-shot
+    # group-done busy-clear (an RT_VEC load has no iresp writeback to clear
+    # rob_bsy); vec ops must also clear `rob_unsafe` or the PNR assert at
+    # rob.scala:438-441 trips.
+    # DO NOT add a per-entry group completion counter — completion is ONE
+    # group-done event carrying the member-PRN vector.
+
+  LSU:
+    kind: module
+    source: src/main/nlhdl/host/LSU.nlhdl.scala
+    mode: edit_existing
+    target: src/main/scala/v4/lsu/lsu.scala
+    group: host
+    depends_on: [MicroOp, VecBundles, VectorParams]
+    # DELTA: expose the VecLsuCoreIO tap (LDQ/STQ placeholder alloc, LCAM port,
+    # DTLB port, D$ port); route vector element addresses through the LCAM in
+    # BOTH directions (mem-order); fold vec_lsu_empty into fencei_rdy ->
+    # `io.core.fencei_rdy := !stq_nonempty && io.dmem.ordered && vec_lsu_empty`
+    # (the old head-side handshake deadlocks on younger vector stores);
+    # advance stq_execute_head past a committed vector-store placeholder (a
+    # vector store never executes via the normal path, so without this it
+    # strands every younger scalar store incl. the HTIF tohost write).
+    # A vector load holds ONE LDQ entry, a store ONE STQ entry — the ordering +
+    # commit placeholder. Cracked element accesses are VecLsu's own queues,
+    # NEVER LDQ/STQ slots.
+
+  DecodeUnit:
+    kind: module
+    source: src/main/nlhdl/host/DecodeUnit.nlhdl.scala
+    mode: edit_existing
+    target: src/main/scala/v4/exu/decode.scala
+    group: host
+    depends_on: [MicroOp, ScalarOpConstants]
+    # DELTA: `v_legal` gate routing RVV opcodes to VecDecode; merge the vector
+    # MicroOp fields back in; mark `vsetvl` BOTH is_unique AND flush_on_commit
+    # (is_unique alone does NOT order the vtype mirror against younger decode —
+    # core.scala:739-740 proves the mirror is not ordered by is_unique); mark
+    # explicit vector-CSR writes flush_on_commit.
+
+  ALUUnit:
+    kind: module
+    source: src/main/nlhdl/host/ALUUnit.nlhdl.scala
+    mode: edit_existing
+    target: src/main/scala/v4/exu/execution-units/functional-unit.scala
+    group: host
+    depends_on: [MicroOp, ScalarOpConstants]
+    # DELTA (usingRVV-gated): execute vsetvli/vsetvl — compute VL (and VTYPE for
+    # vsetvl) and, for these uops, target the VL RF + drive the VL wakeup net.
+    # TWO destinations in TWO rename spaces (pdst in INT RF, pvl in VL RF), so
+    # `is_vl_producer` is required: dst_rtype is single-valued and reads RT_ZERO
+    # when rd == x0 while the VL RF is still written.
+    # Compare the FULL-WIDTH AVL against VLMAX. Truncating to vecVLSz+1 bits
+    # wraps instead of saturating (AVL=2048 -> vl=0), which breaks the canonical
+    # strip-mining idiom where AVL is the remaining count.
+
+  ALUExeUnit:
+    kind: module
+    source: src/main/nlhdl/host/ALUExeUnit.nlhdl.scala
+    mode: edit_existing
+    target: src/main/scala/v4/exu/execution-units/execution-unit.scala
+    group: host
+    depends_on: [ScalarOpConstants]
+    # DELTA: advertise the widened iq_type/fu_types so vset routes to the ALU EU.
+
+  FpPipeline:
+    kind: module
+    source: src/main/nlhdl/host/FpPipeline.nlhdl.scala
+    mode: edit_existing
+    target: src/main/scala/v4/exu/fp-pipeline.scala
+    group: host
+    depends_on: [MicroOp]
+    # DELTA: an FP RF read port + wakeup tap so `.vf` scalar feeders reach the
+    # vector pipeline. Vector ops ride the EXISTING FP wakeup network; no new
+    # network is added for `.vf`.
+
+  # ===========================================================================
+  # VecPipeline — the container. One instantiation in core.scala; everything
+  # vector lives below here.
+  # ===========================================================================
+  VecPipeline:
+    kind: module
+    source: src/main/nlhdl/vec/VecPipeline.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/VecPipeline.scala
+    group: vec
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
+    instantiates:
+      - { module: VecDecode,     instance: vdec }
+      # --- ONE parameterized rename space, TWO instances -------------------
+      # BOOM already does this for INT and FP (AbstractRenameStage +
+      # parameterized RenameFreeList/RenameBusyTable/MapTable). `addvector`
+      # instead hand-wrote two spaces, and VlRename came to 405 lines
+      # reimplementing map+free+busy+wakeup+commit for a space with ONE
+      # architectural register. Define once, instantiate many.
+      - module: VecRenameSpace
+        instance: vec_rename
+        params:
+          numArchRegs:   32
+          maxGroupSize:  8            # LMUL/EMUL <= 8
+          numPhysRegs:   numVecPhysRegs
+          freeDiscipline: stale_group # frees the whole stale_pvdest group at commit
+          wakeupKind:    group_done   # member-PRN vector
+      - module: VecRenameSpace
+        instance: vl_rename
+        params:
+          numArchRegs:   1            # there is exactly one `vl`
+          maxGroupSize:  1
+          numPhysRegs:   numVlPhysRegs
+          freeDiscipline: committed_ptr  # frees the OUTGOING committed pointer;
+                                         # there is deliberately no stale_pvl
+          wakeupKind:    ready_bit       # plain readiness; value read at execute
+      # --- ONE parameterized issue unit, THREE instances -------------------
+      # All three are age-ordered collapsing. IQ_V_ALU differs ONLY by adding a
+      # per-entry past-PNR eligibility gate (RoCC-style). It is deliberately NOT
+      # a head-only FIFO: the VPU being in-order requires one-at-a-time
+      # EXECUTION, not program-order ISSUE, and a head-only queue would let a
+      # segmented store's coprocessor half block all younger vector arithmetic.
+      - module: VecIssueUnit
+        instance: iq_v_load
+        params: { iqType: IQ_V_LOAD,  pnrGate: false, numEntries: 16 }
+      - module: VecIssueUnit
+        instance: iq_v_store
+        params: { iqType: IQ_V_STORE, pnrGate: false, numEntries: 16 }
+      - module: VecIssueUnit
+        instance: iq_v_alu
+        params: { iqType: IQ_V_ALU,   pnrGate: true,  numEntries: 16 }
+      # --- register files --------------------------------------------------
+      - { module: VecRegFile, instance: vrf }
+      - { module: VlRegFile,  instance: vlrf }
+      # --- datapaths -------------------------------------------------------
+      - { module: VecLsu,     instance: vlsu }
+      - { module: VecCiiHost, instance: cii }
+
+  # ===========================================================================
+  # DECODE
+  # ===========================================================================
+  VecDecode:
+    kind: module
+    source: src/main/nlhdl/vec/decode/VecDecode.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/decode/VecDecode.scala
+    group: vec_decode
+    depends_on: [MicroOp, VecBundles, VecTrace]
+    instantiates:
+      - { module: VDecode,     instance: arith }
+      - { module: VLSDecode,   instance: ls }
+      - { module: VsetDecode,  instance: vset }
+      - { module: VConfigUnit, instance: vcfg }
+
+  VDecode:
+    kind: module
+    source: src/main/nlhdl/vec/decode/VDecode.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/decode/VDecode.scala
+    group: vec_decode
+    depends_on: [MicroOp, VecTrace]
+    # Single-cycle combinational, ONE uOP per instruction. NO cracking and no
+    # micro-op expansion: an OP.v stays one uOP through decode/rename/ROB/issue
+    # and is expanded into nOP.v only inside the vector LS AGEN.
+
+  VLSDecode:
+    kind: module
+    source: src/main/nlhdl/vec/decode/VLSDecode.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/decode/VLSDecode.scala
+    group: vec_decode
+    depends_on: [MicroOp, VecTrace]
+    # Statically-decoded access descriptor: v_eew, mop, nf, and the
+    # unit-stride/strided/indexed/segment/whole-register/mask flags. This
+    # descriptor is what selects VecRangeAgen vs VecElemAgen downstream.
+    # `vleff` is NOT is_unique (see elem-progress) and is NOT a VL producer
+    # until the real fault-trim path exists.
+
+  VsetDecode:
+    kind: module
+    source: src/main/nlhdl/vec/decode/VsetDecode.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/decode/VsetDecode.scala
+    group: vec_decode
+    depends_on: [MicroOp, VecTrace]
+    # Three shapes, three paths:
+    #   vsetivli — FRONT-END ONLY (both vtype and AVL are immediate). VCFG
+    #              computes VL at decode; the VL-RF write happens in the RENAME
+    #              cycle where pvl is allocated. No busy bit, pvl born ready,
+    #              ROB entry dispatched non-busy. No back-end EU.
+    #   vsetvli  — VL from a GPR -> executes on the integer ALU EU.
+    #   vsetvl   — vtype AND VL from GPRs -> ALU EU, is_unique + flush_on_commit.
+    # `vsetvli rd=x0, rs1=x0` is the reserved keep-VL case, not AVL=0.
+
+  VConfigUnit:
+    kind: module
+    source: src/main/nlhdl/vec/decode/VConfigUnit.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/decode/VConfigUnit.scala
+    group: vec_decode
+    depends_on: [MicroOp, VecTrace]
+    # The speculative decode-stage `vtype` MIRROR (the VCFG mirror). NOT
+    # architectural state — rocket's CSRFile owns vtype/vl/vstart/vxrm/vxsat/
+    # vcsr/vlenb/mstatus.VS under usingVector. This unit owns exactly two
+    # things: the speculative mirror and the COMMITTED SHADOW it is recovered
+    # from on any flush.
+    #   - Mirrors vtype ONLY. Never vl — VL is renamed into the VL RF.
+    #   - Branch-snapshotted per br_tag.
+    #   - There is NO execute-time mirror write. Recovery is committed-shadow +
+    #     flush_on_commit refetch.
+    #   - A vill-setting vset must POISON the mirror, so younger vtype-dependent
+    #     uOPs trap at decode instead of allocating a mis-sized PRN group.
+    #   - The LMUL table is constrained by VLMAX >= 1; configurations that would
+    #     give VLMAX < 1 set vill.
+
+  # ===========================================================================
+  # RENAME — one parameterized space, two instances (see VecPipeline)
+  # ===========================================================================
+  VecRenameSpace:
+    kind: module
+    source: src/main/nlhdl/vec/rename/VecRenameSpace.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/rename/VecRenameSpace.scala
+    group: vec_rename
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
+    instantiates:
+      - { module: VecMapTable,  instance: maptable }
+      - { module: VecFreeList,  instance: freelist }
+      - { module: VecBusyTable, instance: busytable }
+    # LOCKSTEP CONTRACT (the M1 free-list double-free). This module allocates on
+    # `dis_fire` off `ren2_uops`, in lockstep with the scalar RenameStage's
+    # registered ren1->ren2 pipeline. It must NOT be driven combinationally from
+    # `dec_uops` — doing so runs it one cycle ahead, and at dispatch the vec
+    # fields reflect the NEXT cycle's (bubble) uop.
+    #
+    # `freeDiscipline` and `wakeupKind` are kept as EXPLICIT parameters rather
+    # than derived from maxGroupSize, because the two instances genuinely differ:
+    #   stale_group   + group_done : vector space. Frees the whole stale_pvdest
+    #                                group at commit; wakes on one group-done
+    #                                event carrying the member-PRN vector.
+    #   committed_ptr + ready_bit  : VL space. Frees the outgoing committed
+    #                                pointer (no stale_pvl exists); wakes as a
+    #                                plain readiness bit, value read at execute.
+    # Deriving these from group size would silently couple two unrelated design
+    # decisions. Keep them named.
+    #
+    # TIMING RISK — the top timing risk in this design. Atomic group rename does
+    # up to `coreWidth * 8` PRN allocations per cycle. Run a timing spike on
+    # this module BEFORE the rename integration step lands; if the vector side
+    # loses, the whole core's rename stage pays.
+
+  VecMapTable:
+    kind: module
+    source: src/main/nlhdl/vec/rename/VecMapTable.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/rename/VecMapTable.scala
+    group: vec_rename
+    depends_on: [VecBundles, VectorParams, VecTrace]
+    # Maps architectural vreg -> physical GROUP (base PRN + size). NO per-PRN
+    # LMUL tag table and NO whole-group checker: an earlier draft carried a
+    # 32x2b tag table plus comparators to detect non-whole-group reads. Deleted
+    # deliberately — atomic group rename makes every read whole-group by
+    # construction, so the checker can only ever confirm what the mapper already
+    # guarantees, at the cost of 32x2b of state and a comparator tree in the
+    # rename critical path.
+
+  VecFreeList:
+    kind: module
+    source: src/main/nlhdl/vec/rename/VecFreeList.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/rename/VecFreeList.scala
+    group: vec_rename
+    depends_on: [VecBundles, VectorParams, VecTrace]
+    # ALL-OR-NOTHING group allocation. A shared instruction needs pvdest AND
+    # pvtmp; it allocates both or neither, then stalls. That is the entire
+    # forward-progress requirement — no headroom reservation is needed, because
+    # rename is in program order, so stalling is safe (hence no
+    # `numVecTmpGroups`).
+    # Capacity note: (128 - 32) / 8 = 12 concurrently-renamable LMUL=8 groups.
+
+  VecBusyTable:
+    kind: module
+    source: src/main/nlhdl/vec/rename/VecBusyTable.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/rename/VecBusyTable.scala
+    group: vec_rename
+    depends_on: [VecBundles, VectorParams, VecTrace]
+    # Cleared by the SAME group-done event that clears rob_bsy and drives the
+    # vector wakeup network — one event, three consumers, no per-PRN path.
+
+  # ===========================================================================
+  # ISSUE — one parameterized unit, three instances (see VecPipeline)
+  # ===========================================================================
+  VecIssueUnit:
+    kind: module
+    source: src/main/nlhdl/vec/issue/VecIssueUnit.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/issue/VecIssueUnit.scala
+    group: vec_issue
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
+    instantiates:
+      - { module: VecIssueSlot, instance: slots, count: numEntries }
+    # Age-ordered collapsing, grant oldest-ready. An OP.v occupies ONE slot and
+    # is granted ONCE, when ALL operands are ready: scalar feeders
+    # (base/stride/.vx) on the INT network, `.vf` on FP, `pvl` on the VL
+    # network, and vector regs (pvs*, mask pvm) on the vector network.
+    #
+    # `pnrGate` (IQ_V_ALU only): grant only entries older than rob_pnr_idx.
+    # This removes BRANCH-kill from the CII, because is_br/is_jalr set
+    # starts_unsafe so the PNR never sweeps past an unresolved branch. It does
+    # NOT remove flush recovery — past-PNR is NOT a commit guarantee
+    # (rob.scala:436-442: a load's rob_unsafe clears on first address
+    # translation while order_fail is discovered later). Hence VecCiiFlush.
+    #
+    # For IQ_V_LOAD/IQ_V_STORE, grant additionally requires the dispatch-time
+    # queue RESERVATION to exist. It always does — it was taken at dispatch —
+    # so this is an assertion, not a stall condition. Nothing here may consult a
+    # `busy` from VecLsu (see the vec_lsu invariant).
+
+  VecIssueSlot:
+    kind: module
+    source: src/main/nlhdl/vec/issue/VecIssueSlot.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/issue/VecIssueSlot.scala
+    group: vec_issue
+    depends_on: [MicroOp, VecBundles, VecTrace]
+
+  # ===========================================================================
+  # REGISTER FILES
+  # ===========================================================================
+  VecRegFile:
+    kind: module
+    source: src/main/nlhdl/vec/regfile/VecRegFile.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/regfile/VecRegFile.scala
+    group: vec_regfile
+    depends_on: [VectorParams, VecTrace]
+    # ===> 96 PRNs, 9R / 3W. RESOLVED; spec updated to match (midcore.rst
+    #      `vrf-ports`). 96 x VLEN=256b = 24 kbit of flops, 12 ports.
+    #
+    # Port count is the dominant area term, so the partition is CANONICAL and
+    # 0-based — every reader/writer below cites its port by number, and nothing
+    # may add a port without amending this table.
+    #
+    #   R0  Load/LCB   index vector (indexed loads)
+    #   R1  Load/LCB   mask v0
+    #   R2  Load/LCB   stale_pvdest  <- undisturbed lanes; see `old-vd`
+    #   R3  Store      pvs3 store data (DGEN)
+    #   R4  Store      mask v0
+    #   R5  CoProc     CII src lane 0
+    #   R6  CoProc     CII src lane 1
+    #   R7  CoProc     CII src lane 2
+    #   R8  CoProc     CII src lane 3
+    #   W0  Load/LCB   one write per destination PRN
+    #   W1  Load/LCB   second LCB write (Mega dual-port; single-port ties off)
+    #   W2  CoProc     CII writeback
+    #
+    # Both coproc figures are DERIVED from the frozen SV contract, not chosen:
+    #   CII_NUM_SRC_REQ = 4 -> R5-R8. The VPU wrapper returns "member k of
+    #     {VS1,VS2,VS3,VM} in one dat beat", so all four lanes can be live in the
+    #     same cycle. (The pkg's own inline comment still reads "2 VRF read ports
+    #     for CII (5,6)" — the VALUE is authoritative, not the comment.)
+    #   CII_NUM_DST_WB = 1  -> W2 only. Flagged must-match-the-interface-default:
+    #     the relay's type(wb_data) resolves against it. One port suffices because
+    #     the coprocessor cannot present two result beats in a cycle.
+    #
+    # Earlier drafts said 7R/4W, arguing a pull interface "needs 2 reads, not 4".
+    # Wrong in both directions: 4 reads, 1 write.
+    #
+    # Capacity: the RMT maps all 32 architectural vregs at all times regardless
+    # of current LMUL, so 32 PRNs are always committed-state. (96 - 32) / 8 = 8
+    # LMUL=8 groups in flight; a segmented op takes pvdest + pvtmp (16 PRNs), so
+    # at most 4 of those. Tighter than the old 128 — 12 groups -> 8 — so the
+    # free-list stall rate is worth watching in the (9e2) LS regression.
+
+  VlRegFile:
+    kind: module
+    source: src/main/nlhdl/vec/regfile/VlRegFile.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/regfile/VlRegFile.scala
+    group: vec_regfile
+    depends_on: [VectorParams, VecTrace]
+    # 64 x ~9b. Kept separate from VecRegFile despite sharing the rename space
+    # definition: 64x9b of flops with a handful of ports has nothing structurally
+    # in common with 128x256b. Rename logic is shared (VecRenameSpace); storage
+    # is not.
+    # Written from TWO places: the rename cycle (vsetivli, front-end only) and
+    # the ALU EU writeback (vsetvli/vsetvl).
+
+  # ===========================================================================
+  # VECTOR LSU
+  # ---------------------------------------------------------------------------
+  # ===> THE INVARIANT (restated where it is enforced). No module in this group
+  #      may hold state scoped to "the current instruction", and no module may
+  #      export a `busy` that gates issue. In-flight state lives ONLY in the six
+  #      VecElemQueue instances and the LCB's assembly entries.
+  #
+  # The fill/drain seam is what makes that true, and it is the one boundary a
+  # reviewer should check. Address generation is cut BY PIPELINE POSITION, not
+  # by the inherited OVI Packer/Skipper/Walker x Load/Store cross-product (six
+  # modules, 2110 lines, whose duplication had already caused divergent mask
+  # support between the load and store Packers — forcing masked stores onto the
+  # slower Skipper as a workaround):
+  #
+  #   FILL side (before the queue)
+  #     VecElemAgen   SSI: one element address per active element  -> *_SSI_ADDR_Q
+  #     VecRangeAgen  US:  ONE range entry [base, base+VL*EEW)     -> *_US_ADDR_Q
+  #   DRAIN side (after the queue)
+  #     VecBeatExpander  US: coalesce elements into D$-width accesses
+  #                          JUST-IN-TIME. `addvector` put the Packer on the
+  #                          fill side, so nothing coalesced late and every
+  #                          access was one 64b beat per element.
+  #
+  # Direction (load/store) is a PARAMETER, never a separate module. Each agen is
+  # instantiated twice so the two directions never arbitrate — the load-priority
+  # mux is what silently dropped store grants last time.
+  # ===========================================================================
+  VecLsu:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecLsu.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecLsu.scala
+    group: vec_lsu
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
+    instantiates:
+      - { module: VecQueueReservation, instance: resv }
+      # --- operand read: per-direction, never shared -----------------------
+      - { module: VecScalarOperandRead, instance: ld_opnd, params: { isStore: false } }
+      - { module: VecScalarOperandRead, instance: st_opnd, params: { isStore: true } }
+      # --- fill side -------------------------------------------------------
+      - { module: VecElemAgen,  instance: ld_elem_agen,  params: { isStore: false } }
+      - { module: VecElemAgen,  instance: st_elem_agen,  params: { isStore: true } }
+      - { module: VecRangeAgen, instance: ld_range_agen, params: { isStore: false } }
+      - { module: VecRangeAgen, instance: st_range_agen, params: { isStore: true } }
+      # --- the six element queues: ONE definition, SIX instances -----------
+      # Naming follows the spec: {ld,st}_{SSI,US}_{ADDR,DATA}_Q.
+      - { module: VecElemQueue, instance: ld_SSI_ADDR_Q, params: { entries: ssiQueueEntries, width: addrWidth,  reserved: true } }
+      - { module: VecElemQueue, instance: st_SSI_ADDR_Q, params: { entries: ssiQueueEntries, width: addrWidth,  reserved: true } }
+      - { module: VecElemQueue, instance: st_SSI_DATA_Q, params: { entries: ssiQueueEntries, width: eLen,       reserved: true } }
+      - { module: VecElemQueue, instance: ld_US_ADDR_Q,  params: { entries: usQueueEntries,  width: rangeWidth, reserved: true } }
+      - { module: VecElemQueue, instance: st_US_ADDR_Q,  params: { entries: usQueueEntries,  width: rangeWidth, reserved: true } }
+      - { module: VecElemQueue, instance: st_US_DATA_Q,  params: { entries: usQueueEntries,  width: vLen,       reserved: true } }
+      # --- drain side ------------------------------------------------------
+      - { module: VecBeatExpander, instance: ld_beat, params: { isStore: false } }
+      - { module: VecBeatExpander, instance: st_beat, params: { isStore: true } }
+      - { module: VecDgen,         instance: dgen }
+      - { module: VecLoadCoalescingBuffer, instance: lcb }
+      # --- shared memory-system plumbing -----------------------------------
+      - { module: VecDcacheArbiter, instance: arb }
+      - { module: VecCrossLsuSnoop, instance: snoop }
+      - { module: VecSquashUnit,    instance: squash }
+
+  VecQueueReservation:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecQueueReservation.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecQueueReservation.scala
+    group: vec_lsu
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
+    # Claims element-queue capacity IN PROGRAM ORDER AT DISPATCH, sized to the
+    # worst-case active element count from EMUL/EEW, releasing the surplus at
+    # execute once VL is known. A vector store reserves in BOTH its address and
+    # data queue or does not dispatch.
+    #
+    # This is a CORRECTNESS requirement, not tuning. Opportunistic allocation
+    # deadlocks the machine:
+    #   1. Older store A's operands aren't ready, so younger B and C are granted
+    #      first (age-ordered-READY issue may skip a not-ready older entry) and
+    #      fill the queue.
+    #   2. A becomes ready, issues, back-pressures at the vAGEN — no room.
+    #   3. A cannot finish translating its element set, so A cannot commit.
+    #   4. Commit is in-order, so B and C never reach commit-drain and never
+    #      free their entries. Nothing moves.
+    # Liveness under opportunistic allocation would need
+    # depth >= max_elements_per_store * max_in_flight_stores = 64*256 = 16384
+    # entries. Sizing cannot fix it; the reservation is what fixes it, because
+    # the oldest store always already holds its capacity.
+    #
+    # Loads do NOT have this failure mode (a load completes out of the LCB
+    # without waiting for commit). Loads are reserved in program order for the
+    # OTHER reason: it is what makes the queues squashable by pointer rollback.
+
+  VecScalarOperandRead:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecScalarOperandRead.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecScalarOperandRead.scala
+    group: vec_lsu
+    depends_on: [MicroOp, VecBundles, VecTrace]
+    # Reads the scalar feeders (base, stride, .vx/.vf) plus the mask and index
+    # vectors for this direction. Instantiated PER DIRECTION — `addvector` had a
+    # single shared, fire-and-forget VecLSRegRead with a load-priority mux, and
+    # when both queues granted in the same cycle the store's grant was silently
+    # lost (worked around by making the store not advertise FC_AGEN whenever the
+    # load was granting). Two instances remove the arbitration entirely.
+    #
+    # MUST snoop the INT writeback bus and forward on a same-cycle match. The
+    # vector LS is woken speculatively, so this read can fire the same cycle the
+    # base GPR's writeback commits; the INT RF is a registered Mem read with no
+    # read-during-write bypass, giving a stale base. Masked in most tests by
+    # la->use slack, so it will not show up in casual testing.
+
+  VecElemAgen:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecElemAgen.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecElemAgen.scala
+    group: vec_lsu
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
+    instantiates:
+      - { module: VecIdxGen,     instance: idx }
+      - { module: VecMaskStream, instance: msk }
+    # FILL side, SSI patterns (strided / indexed / segmented). Emits one element
+    # address per ACTIVE element into *_SSI_ADDR_Q. Absorbs the inherited
+    # Skipper and Walker: masked-skip and indexed differ only in where the
+    # address comes from, not in what they emit.
+    #
+    # CARRY-OVER — LOOKAHEAD HAZARDS (found by bring-up, not by design; they are
+    # not optional and must be described explicitly in the nlhdl):
+    #   - Do not start, and do not emit, an element access whose mask bit is not
+    #     yet staged. The inherited Skipper's rule was "will not send a packet
+    #     (or even start) if the next requires a new mask entry", specifically to
+    #     avoid wait states mid-stream.
+    #   - Same rule for the index vector: do not start an element access whose
+    #     index entry is not yet staged.
+    #   - VecIdxGen serializes the index vector into per-element SIGNED offsets.
+    #   - Element counting must complete by TOTAL BYTES (vl << eew), handling a
+    #     partial final member. A hardcoded 8-member walk streams phantom
+    #     members after a 1-member op and stalls (this was the back-to-back
+    #     vector-store data-corruption bug).
+    #
+    # Retires its element cursor when the last element is pushed. It does NOT
+    # wait for D$ responses or completion (see the group invariant).
+
+  VecRangeAgen:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecRangeAgen.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecRangeAgen.scala
+    group: vec_lsu
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
+    # FILL side, unit-stride. Emits exactly ONE range entry describing
+    # [base, base + VL*EEW) into *_US_ADDR_Q. Also covers whole-register
+    # (vl1re*/vs1r) and mask (vlm/vsm) accesses, which are contiguous ranges
+    # with a fixed length.
+    # Because a unit-stride access is a single contiguous byte range, its
+    # disambiguation and forwarding are ONE range-overlap check, not per element.
+
+  VecIdxGen:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecIdxGen.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecIdxGen.scala
+    group: vec_lsu
+    depends_on: [VecBundles, VectorParams, VecTrace]
+    # Serializes an index vector register group into per-element signed offsets.
+
+  VecMaskStream:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecMaskStream.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecMaskStream.scala
+    group: vec_lsu
+    depends_on: [VecBundles, VectorParams, VecTrace]
+    # Streams v0 mask bits at element granularity, with the one-entry lookahead
+    # the agen's hazard rule depends on.
+
+  VecElemQueue:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecElemQueue.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecElemQueue.scala
+    group: vec_lsu
+    depends_on: [VecBundles, VectorParams, VecTrace]
+    # ONE definition, SIX instances. The decoupling structure that makes the
+    # group invariant possible: the fill side pushes and retires; the drain side
+    # pops independently. Neither knows the other's progress.
+    #
+    # Requirements:
+    #   - RESERVED capacity, claimed at dispatch in program order (`reserved`).
+    #   - SQUASHABLE BY POINTER ROLLBACK. On a squash, roll the tail pointer back
+    #     to the youngest surviving reservation. This is why loads reserve in
+    #     program order even though they have no deadlock exposure.
+    #   - Stores RETAIN their translated addresses and data from execute until
+    #     commit-drain — they cannot be streamed or freed mid-instruction,
+    #     because a store cannot write memory before it commits and every
+    #     element's fault must be detected before commit.
+    #   - Loads MAY stream: a load whose active element count exceeds its
+    #     reservation is drained in waves.
+
+  VecBeatExpander:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecBeatExpander.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecBeatExpander.scala
+    group: vec_lsu
+    depends_on: [VecBundles, VectorParams, VecTrace]
+    # DRAIN side. Pops a queue entry and issues D$ accesses.
+    #   - US range entry  -> coalesce contiguous elements into D$-port-width
+    #                        accesses just-in-time. This is where unit-stride
+    #                        throughput comes from: 8 x SEW=8 elements in one
+    #                        64b access instead of 8 accesses.
+    #   - SSI element     -> one access per entry (already element-wise).
+    # Beat width is bounded by the D$ port, so a wide vector cache port raises
+    # this ceiling; the module must not assume 64b.
+    # Runs from queue state only. Holds NO per-instruction state.
+
+  VecDgen:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecDgen.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecDgen.scala
+    group: vec_lsu
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
+    # Reads store data from the source vPRN at EXECUTE time (VRF port R3) into
+    # st_*_DATA_Q. Captured this early, the source vPRN needs NO PIN — it frees
+    # with the rest of the stale group at commit, because a later writer to the
+    # same architectural vreg cannot clobber data that already lives in the queue.
+    #
+    # For a SHARED instruction the data operand is the pvtmp rendezvous group,
+    # not pvs3: `dgen_operand := Mux(uop.is_shared, uop.pvtmp, uop.pvs3)`.
+    # Gating DGEN on pvs3 for a shared op reads the wrong group.
+    #
+    # Completes by TOTAL BYTES (vl << eew), handling a partial final member.
+
+  VecLoadCoalescingBuffer:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecLoadCoalescingBuffer.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecLoadCoalescingBuffer.scala
+    group: vec_lsu
+    depends_on: [VecBundles, VectorParams, VecTrace]
+    # Turns out-of-order, <=ELEN per-element D$ responses into ONE VRF write per
+    # destination PRN (W0) and ONE group-done per instruction. Owns the per-group
+    # PRN-done count; target is the destination-group size from v_emul/v_seg_nf.
+    #
+    # UNDISTURBED LANES: for vta=0 / vma=0, inactive-lane data is PRE-LOADED from
+    # stale_pvdest on VRF read port R2 before arriving elements are overlaid.
+    # Only members that actually contain inactive lanes are pre-loaded, and the
+    # pre-load OVERLAPS the load's memory latency.
+    # ===> This replaces `addvector`'s serial sCopyRd/sCopyWr prologue, which
+    #      copied the whole stale group before placing any beat — two extra
+    #      cycles per member, x8 members, in front of every masked or
+    #      tail-undisturbed load, on the critical path of the load itself.
+    #
+    # Per-BYTE write mask (vLen/8 bits), not per 64b lane: a sub-lane write
+    # (vlm's ceil(vl/8) bytes, a partial tail) must leave the rest undisturbed.
+    #
+    # group_done must be driven from the REGISTERED beat, never combinationally
+    # from the incoming nop — issue.vec_wakeup -> iss_uops -> decode -> AGEN ->
+    # nop -> group_done closes a combinational loop.
+
+  VecDcacheArbiter:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecDcacheArbiter.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecDcacheArbiter.scala
+    group: vec_lsu
+    depends_on: [VecBundles, VectorParams, VecTrace]
+    # PRIORITY ROUND-ROBIN with a scalar-priority floor plus anti-starvation,
+    # gating the D$ port, the LCAM port, and the TLB port together.
+    # ===> NOT `addvector`'s scheme, which appended vector requests LAST in
+    #      lsu_sched at LOWEST priority with uses_tlb=false and uses_lcam=false.
+    #      That is why vector accesses were both slow and invisible to
+    #      disambiguation.
+    # Vector element addresses go through the DTLB like any other access —
+    # bare-physical addressing is not an option here, because it makes
+    # cross-queue disambiguation impossible.
+    # `dcacheArbiterMode`: "single" | "dual-dynamic" (Mega, 2 accesses/cycle).
+
+  VecCrossLsuSnoop:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecCrossLsuSnoop.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecCrossLsuSnoop.scala
+    group: vec_lsu
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
+    # BIDIRECTIONAL cross-queue disambiguation: vector element addresses are
+    # routed through the LCAM in both directions, so scalar ops see vector
+    # addresses and vector ops see scalar addresses.
+    #   - US accesses: ONE range-overlap check per instruction.
+    #   - SSI accesses: per-element search.
+    #   - ST->LD ordering reuses the existing order_fail replay path.
+    #   - LD->ST forwarding reads out of the vector store DATA queues.
+    # An order-fail replay raises MINI_EXCEPTION_MEM_ORDERING at the ROB head,
+    # which can squash past-PNR coprocessor work — see VecCiiFlush.
+
+  VecSquashUnit:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecSquashUnit.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecSquashUnit.scala
+    group: vec_lsu
+    depends_on: [MicroOp, VecBundles, VecTrace]
+    # Squashes the vector LSU on mispredict and flush: POINTER ROLLBACK on all
+    # six element queues plus LCB entry invalidation by ldq_idx.
+    # ===> DRAIN-AND-DISCARD IS UNSAFE HERE, and this is the one place the CII's
+    #      contract must NOT be copied. The CII can drain killed work harmlessly
+    #      because a CII tag is opaque and is not reused until reclaimed. A
+    #      squashed vector load's destination PRNs are RECYCLED by the free list
+    #      immediately, so a late response draining into a stale pvdest corrupts
+    #      whatever now owns that PRN. Squashed element accesses must be dropped
+    #      by pointer rollback, not drained.
+
+  # ===========================================================================
+  # CII HOST — the BOOM side of the coprocessor interface
+  # ===========================================================================
+  VecCiiHost:
+    kind: module
+    source: src/main/nlhdl/vec/cii/VecCiiHost.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/cii/VecCiiHost.scala
+    group: vec_cii
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
+    instantiates:
+      - { module: VecCiiTagTable,      instance: tags }
+      - { module: VecCiiOperandServer, instance: opnd }
+      - { module: VecCiiWriteback,     instance: wb }
+      - { module: VecCiiFlush,         instance: flush }
+      - { module: tt_cii_host_wrap,    instance: coproc, reset: core_rst_n }
+    # Binds the SV stack via HasBlackBoxPath pointing at src/main/sv/v4/**
+    # DIRECTLY — nothing is copied into src/main/resources/vsrc/.
+    # ===> `addvector` copied 7 SV files into resources/vsrc/, ONE OF THEM
+    #      SUBMODULE CONTENT (src/main/sv/v4/tt-cii). The premise of v2 is that
+    #      the SV is refactored and verified; a stale copy silently falsifies
+    #      exactly that premise — you would verify one file and simulate another
+    #      with nothing to tell you. Single source of truth, no copies.
+    #      A build check must confirm the tt-cii submodule is checked out; if
+    #      addPath fights the Chipyard flow, the fallback is a sync step with a
+    #      checksum guard that FAILS the build on drift, never a silent copy.
+    # Host-side constants are DERIVED from tt_cii_caracal_pkg, never redeclared.
+
+  VecCiiTagTable:
+    kind: module
+    source: src/main/nlhdl/vec/cii/VecCiiTagTable.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/cii/VecCiiTagTable.scala
+    group: vec_cii
+    depends_on: [MicroOp, VecBundles, VecTrace]
+    # 16 entries (CII_N_TAGS), 4-bit tag (CII_TAG_W). The CII NEVER carries
+    # physical register numbers: sources are named by an abstract op_id (source
+    # slot) + member offset, and this table maps slot+offset -> PRN.
+    # Per tag: rob_idx, pvdest_grp, pvs1/pvs2/pvs3_grp, stale_pvdest_grp, pvm,
+    # captured scalar operand, dest-group size, and `killed`.
+    # `pvs3_grp` and `stale_pvdest_grp` are stored SEPARATELY and served on
+    # separate op_ids — they coincide for RMW arithmetic but must not be merged
+    # into one field, or the diverging case becomes unrepresentable
+    # (see VecCiiOperandServer).
+    # The tag is NOT the rob_idx and NOT an architectural register.
+
+  VecCiiOperandServer:
+    kind: module
+    source: src/main/nlhdl/vec/cii/VecCiiOperandServer.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/cii/VecCiiOperandServer.scala
+    group: vec_cii
+    depends_on: [VecBundles, VecTrace]
+    # Services Src-Request -> VRF/scalar read -> Src-Data, in order, on VRF read
+    # ports R5-R8 (four lanes, CII_NUM_SRC_REQ = 4).
+    # op_id mapping:
+    #   CII_SRC_NONE     -> reserved, "no source needed"
+    #   CII_SRC_VS1      -> pvs1_grp(offset)
+    #   CII_SRC_VS2      -> pvs2_grp(offset)
+    #   CII_SRC_VS3      -> pvs3_grp(offset)          explicitly encoded 3rd src
+    #   CII_SRC_VM       -> pvm (v0)
+    #   CII_SRC_SCALAR   -> the .vx/.vf value captured at issue (no VRF read)
+    #   CII_SRC_STALE_VD -> stale_pvdest_grp(offset)  old-vd, for merging
+    #
+    # ===> RESOLVED. VS3 and STALE_VD are TWO DISTINCT SLOTS naming TWO DISTINCT
+    #      GROUPS. MicroOp carries both `pvs3` and `stale_pvdest` as separate
+    #      fields, and this module performs NO instruction-dependent
+    #      reinterpretation — it serves whichever slot is requested straight from
+    #      the side-table. THE COPROCESSOR DECIDES WHAT TO PULL:
+    #        - RMW arithmetic (vfmacc.vv vd,vs1,vs2 -> vd += vs1*vs2): the third
+    #          source IS old-vd, both name the SAME group, VPU pulls ONE.
+    #        - When they differ (masked vadd.vv under vma=0; vslideup untouched
+    #          prefix; vcompress tail): VPU pulls BOTH, spending another lane.
+    #      An earlier draft had ONE VS3 slot that the HOST resolved to
+    #      stale_pvdest "when the instruction encodes no third source". That put
+    #      instruction decoding in the host adapter and made the
+    #      two-different-groups case UNREPRESENTABLE — no way to obtain pvs3 AND
+    #      old-vd for the same instruction.
+    #
+    # ===> SV DELTA REQUIRED (the one place v2 is not host-only). Slot 6 is a
+    #      one-VALUE addition to cii_caracal_srcid_e: the wire type is already
+    #      `logic [2:0]`, so 6 and 7 were free and NO payload width changes. But
+    #      the VPU decoder must be able to emit it, and the SV currently names
+    #      slot 3 `CII_SRC_VS3_VD` ("3rd src / old dest for RMW") with opnd_p2
+    #      serving both roles. Coordinate this with the VPU owner.
+    #
+    # Also see VecCiiFlush: a request for a KILLED tag must still be answered.
+
+  VecCiiWriteback:
+    kind: module
+    source: src/main/nlhdl/vec/cii/VecCiiWriteback.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/cii/VecCiiWriteback.scala
+    group: vec_cii
+    depends_on: [VecBundles, VecTrace]
+    # Places writeback beats by wb_status.dst_kind: CII_DST_VEC -> VRF W2 at
+    # pvdest_grp(wb_dst_offset); CII_DST_INT -> INT RF (vmv.x.s, vcpop.m,
+    # vfirst.m); CII_DST_FP -> FP RF (vfmv.f.s). Accumulates vxsat and fflags.
+    # On the beat marked `last`, emits ONE group-done (+ rob clr_bsy).
+    # A `last` beat for a killed tag is consumed and its four effects suppressed
+    # (no VRF write, no group-done, no rob clear, no CSR side effect).
+
+  VecCiiFlush:
+    kind: module
+    source: src/main/nlhdl/vec/cii/VecCiiFlush.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/cii/VecCiiFlush.scala
+    group: vec_cii
+    depends_on: [VecBundles, VecTrace]
+    # THE DRAIN-ON-FLUSH CONTRACT. Past-PNR issue removes BRANCH-kill but NOT
+    # flush recovery: past-PNR is not a commit guarantee. rob.scala:436-442
+    # documents the exact hole — on MINI_EXCEPTION_MEM_ORDERING the failing load
+    # "will have been marked safe already", because rob_unsafe clears on the
+    # load's first address translation while order_fail is discovered later. So a
+    # ROB-head flush (exception, mem-ordering, CSR replay, ERET) CAN squash work
+    # the CII has already accepted. Branch mispredicts cannot.
+    #
+    # Kill scope is ALL in-flight tags, with no age comparator. Flushes always
+    # fire at the ROB head, and rob.io.flush.bits carries no rob_idx to compare
+    # against (only badvaddr/cause/ftq_idx/pc_lob/edge_inst/is_rvc/flush_typ).
+    # Kill-all is therefore both correct and cheaper.
+    #
+    # ===> THE SRC-DATA BEAT IS MANDATORY. A killed tag's Src-Request MUST still
+    #      be answered, with don't-care data. It is NOT valid to ignore the
+    #      request and return credit: on the Src-Data channel the HOST IS THE
+    #      SENDER and holds no credit to return, and the VPU has no kill line —
+    #      so a swallowed request stalls the channel for every SURVIVING
+    #      instruction, not just the killed one. Drain with don't-care beats,
+    #      then suppress the four effects at writeback.
+    #      Do NOT reuse this drain-and-discard pattern in the LSU
+    #      (see VecSquashUnit).
+
+  # ===========================================================================
+  # SV COPROCESSOR
+  # The ONE new SV module (the shim), then the frozen verified stack. Internals
+  # are shown so a waveform signal can be located, not because this flow writes
+  # them.
+  # ===========================================================================
+  tt_cii_host_wrap:
+    kind: module
+    source: src/main/nlhdl/sv/tt_cii_host_wrap.nlhdl.sv
+    mode: new
+    target_hdl: sv
+    output: src/main/sv/v4/generated/tt_cii_host_wrap.sv
+    group: coproc
+    reset: core_rst_n
+    depends_on: [tt_cii_caracal_pkg]
+    instantiates:
+      - { module: tt_cii,                  instance: relay }
+      - { module: tt_vpu_cii_wrapper_top,  instance: vpu }
+    connect:
+      ifh: { interface: tt_cii_interface }   # host  <-> relay
+      ifc: { interface: tt_cii_interface }   # relay <-> coproc
+    # THE ONLY new SV in v2, and it exists for a hard reason: a Chisel BlackBox
+    # can bind flat `logic` ports only — not an SV `interface`/`modport`, and not
+    # `parameter type` packed-struct ports. tt_vpu_cii_wrapper_top's CII port is
+    # `tt_cii_interface.coprocessor cii_intf`, so it cannot be a BlackBox target
+    # directly. This module flattens the four channels to lane-packed ports and
+    # repacks them into tt_cii_interface structs:
+    #
+    #   flat host ports <-> ifh(host) --tt_cii relay-- ifc <-> vpu
+    #
+    # Also the single reset-polarity crossing: Chisel active-HIGH `core_reset` in,
+    # active-LOW `core_rst_n` to the SV stack.
+    # Port names and directions MUST match the Chisel BlackBox io exactly.
+    # `addvector`'s version (203 lines) is a working reference.
+
+  tt_cii:
+    kind: module
+    blackbox: true
+    target_hdl: sv
+    output: src/main/sv/v4/tt-cii/src/tt_cii.sv
+    group: coproc
+    # The credit relay joining the two interface instances. Verified; frozen.
+    instantiates:
+      - { module: tt_cii_channel, instance: ch_issue }
+      - { module: tt_cii_channel, instance: ch_src_req }
+      - { module: tt_cii_channel, instance: ch_src_dat }
+      - { module: tt_cii_channel, instance: ch_wb }
+    ports:
+      - { name: clk,         dir: input,  width: 1 }
+      - { name: rst_n,       dir: input,  width: 1 }
+      - { name: cii_host,    dir: inout,  width: tt_cii_interface }
+      - { name: cii_coproc,  dir: inout,  width: tt_cii_interface }
+
+  tt_cii_channel:
+    kind: module
+    blackbox: true
+    target_hdl: sv
+    output: src/main/sv/v4/tt-cii/src/tt_cii_channel.sv
+    group: coproc
+    instantiates:
+      - { module: tt_cii_fifo, instance: fifo }
+    ports:
+      - { name: clk,   dir: input, width: 1 }
+      - { name: rst_n, dir: input, width: 1 }
+    # Credit-metered channel. One definition, four instances (see tt_cii).
+
+  tt_cii_fifo:
+    kind: module
+    blackbox: true
+    target_hdl: sv
+    output: src/main/sv/v4/tt-cii/src/tt_cii_fifo.sv
+    group: coproc
+    ports:
+      - { name: clk,   dir: input, width: 1 }
+      - { name: rst_n, dir: input, width: 1 }
+
+  tt_vpu_cii_wrapper_top:
+    kind: module
+    blackbox: true
+    target_hdl: sv
+    output: src/main/sv/v4/vpu/tt_vpu_cii_wrapper_top.sv
+    group: coproc
+    depends_on: [tt_cii_caracal_pkg, tt_briscv_pkg]
+    ports:
+      - { name: clk,                dir: input,  width: 1 }
+      - { name: reset_n,            dir: input,  width: 1 }
+      - { name: cii_intf,           dir: inout,  width: tt_cii_interface }
+      - { name: debug_wb_vec_valid, dir: output, width: 1 }
+      - { name: debug_wb_vec_wdata, dir: output, width: "VLEN * 8" }
+      - { name: debug_wb_vec_wmask, dir: output, width: 8 }
+    # REFACTORED AND VERIFIED (src/main/sv/v4/vpu/tb/cii_fv_tb.sv plays the host
+    # through the real relay and checks per-member writeback, including
+    # widening/narrowing where dst EMUL != src EMUL). v2 does not touch it.
+    #
+    # Facts the host must respect:
+    #   - Keeps its vector regfile as a PER-INSTRUCTION CII STAGING BUFFER. The
+    #     ARCHITECTURAL vector RF lives in BOOM; the coprocessor is a client of
+    #     it through the CII, not its owner.
+    #   - Holds per-instruction operand registers opnd_p0/p1/p2 (VS1/VS2/VS3) up
+    #     to 8 member beats each, plus opnd_vm. Member index == receive beat
+    #     count, so SRC-DATA BEATS MUST ARRIVE IN MEMBER ORDER per source.
+    #   - The debug_wb_vec_* ports feed the cosim checker. The Whisper cosim does
+    #     NOT deeply compare vector-STORE memory data — a garbage vector store
+    #     passes the per-instruction check and is caught only by a later scalar
+    #     load-back. A memory-compare hook is a recommended follow-on.
+    # Internals (tt_id, tt_vec_top, the int/fp datapath units, tt_vec_regfile)
+    # are deliberately NOT transcribed: verified SV, outside this flow's scope.

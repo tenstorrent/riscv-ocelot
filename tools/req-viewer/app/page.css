@@ -1,0 +1,57 @@
+/* page.css — injected into the spec iframe, on top of the Sphinx RTD theme.
+   Styles the hover / pin / quote states that the app drives through data attributes. */
+
+html, body { background: #fff; }
+body { padding: 0 !important; }
+
+.rv-wrap { max-width: none !important; padding: 12px 20px 60px !important; }
+.rv-wrap .rst-content { max-width: 62rem; }
+
+/* Sphinx's own permalink anchors add noise in a narrow pane. */
+.headerlink { opacity: 0; transition: opacity .12s; }
+:hover > .headerlink { opacity: .5; }
+
+/* Every hoverable block. */
+[data-block] {
+  border-left: 3px solid transparent;
+  margin-left: -9px; padding-left: 6px;
+  border-radius: 0 3px 3px 0;
+  transition: background-color .08s ease, border-color .08s ease;
+}
+td[data-block], th[data-block] { margin-left: 0; padding-left: 6px; }
+
+/* Prose some requirement cites. */
+[data-block].rv-cited { border-left-color: #7c9cf5; cursor: pointer; }
+[data-block].rv-cited:hover { background: #eef4ff; border-left-color: #1f6feb; }
+
+/* Prose nothing cites — still hoverable, but visibly inert. */
+[data-block]:not(.rv-cited):hover { background: #f5f6f8; border-left-color: #d8dce3; }
+
+/* The block whose requirements the top pane is showing. */
+[data-block].rv-hover { background: #eef4ff; border-left-color: #1f6feb; }
+
+/* Pinned: the list stays put until cleared. */
+[data-block].rv-pinned {
+  background: #fff4e0; border-left-color: #b45309;
+  box-shadow: 0 0 0 1px rgba(180, 83, 9, .18);
+}
+
+/* Blocks belonging to the requirement selected in the top pane. */
+[data-block].rv-selected { background: #fffbeb; border-left-color: #d97706; }
+
+/* The exact span of the selected requirement's quote. */
+mark.rv-quote {
+  background: #fde68a; color: inherit; padding: 0 1px; border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(217, 119, 6, .25);
+}
+
+/* "only cited prose" mode. */
+body.rv-dim [data-block]:not(.rv-cited) { opacity: .32; }
+body.rv-dim [data-block]:not(.rv-cited):hover { opacity: .7; }
+
+/* Landing target when jumping to a section or a requirement. */
+@keyframes rv-flash {
+  from { background: #fde68a; }
+  to { background: transparent; }
+}
+[data-block].rv-flash { animation: rv-flash 1.1s ease-out; }

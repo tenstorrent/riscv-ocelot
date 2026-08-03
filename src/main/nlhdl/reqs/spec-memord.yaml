@@ -1,0 +1,1473 @@
+family: memord
+description: >
+  Memory ordering between the vector and scalar paths: bidirectional cross-queue
+  disambiguation, ordering-violation replay, and fences.
+spec_sources:
+  - docs_caracal/src/loadstore.rst
+
+groups:
+  a: cross-queue disambiguation — routing vector addresses into the LCAM in both directions
+  b: search granularity — US range-overlap vs SSI per-element, and the SSI/SSI hold
+  c: the ordering-violation replay mechanism
+  d: the past-PNR consequence for the CII
+  e: order-fail of a vector load
+  f: fences and the fencei_rdy extension
+
+reqs:
+
+  # --- a: cross-queue disambiguation, both directions --------------------------
+
+  - id: spec-memord.a1
+    kind: interface
+    statement: >
+      The design must explicitly route vector addresses through the disambiguation
+      machinery.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        The scalar LCAM (which searches the LDQ/STQ entries) therefore does not see them by
+        default, so |caracal| explicitly routes vector addresses through the disambiguation
+        machinery so RVWMO ordering between scalar and vector memory ops is maintained in
+        **both** directions:
+    notes: >
+      The premise is that vector load/store element addresses live in the SSI/US address
+      queues, **not** in the scalar STQ, so the scalar LCAM does not see them by default. The
+      queues themselves are obligations of spec-lsu groups b–d, not restated here.
+
+  - id: spec-memord.a2
+    kind: function
+    statement: >
+      RVWMO ordering between scalar and vector memory ops must be maintained in both
+      directions.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        The scalar LCAM (which searches the LDQ/STQ entries) therefore does not see them by
+        default, so |caracal| explicitly routes vector addresses through the disambiguation
+        machinery so RVWMO ordering between scalar and vector memory ops is maintained in
+        **both** directions:
+
+  - id: spec-memord.a3
+    kind: function
+    statement: >
+      Each vector store address presented for execute must be searched against the LDQ.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **ST→LD ordering.** Each vector store address presented
+        for execute is searched against the LDQ — both scalar LDQ entries and in-flight vector
+        loads — exactly as a scalar store addr-gen drives the LCAM.
+
+  - id: spec-memord.a4
+    kind: function
+    statement: >
+      The LDQ search for a vector store address must cover both scalar LDQ entries and
+      in-flight vector loads.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **ST→LD ordering.** Each vector store address presented
+        for execute is searched against the LDQ — both scalar LDQ entries and in-flight vector
+        loads — exactly as a scalar store addr-gen drives the LCAM.
+
+  - id: spec-memord.a5
+    kind: interface
+    statement: >
+      A vector store address must drive the LCAM exactly as a scalar store addr-gen does.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **ST→LD ordering.** Each vector store address presented
+        for execute is searched against the LDQ — both scalar LDQ entries and in-flight vector
+        loads — exactly as a scalar store addr-gen drives the LCAM.
+
+  - id: spec-memord.a6
+    kind: function
+    statement: >
+      A vector store address match on a younger, already-executed load must set that load's
+      ``order_fail``.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        A match on a younger, already-executed load sets that load's ``order_fail`` and
+        replays it.
+
+  - id: spec-memord.a7
+    kind: function
+    statement: >
+      A vector store address match on a younger, already-executed load must replay that load.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        A match on a younger, already-executed load sets that load's ``order_fail`` and
+        replays it.
+    notes: >
+      The replay mechanism itself is group c; this requirement is only that the cross-queue
+      match triggers it.
+
+  - id: spec-memord.a12
+    kind: structure
+    statement: >
+      Memory-dependency speculation must reuse |boom|'s existing predictor.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        Memory-dependency speculation (a load issuing past a store whose address is not yet
+        known) reuses |boom|'s existing predictor and ordering-violation replay path, now
+        extended to fire on the cross-queue matches above.
+    notes: >
+      Memory-dependency speculation is defined here as a load issuing past a store whose
+      address is not yet known.
+
+  - id: spec-memord.a13
+    kind: structure
+    statement: >
+      Memory-dependency speculation must reuse |boom|'s existing ordering-violation replay
+      path.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        Memory-dependency speculation (a load issuing past a store whose address is not yet
+        known) reuses |boom|'s existing predictor and ordering-violation replay path, now
+        extended to fire on the cross-queue matches above.
+
+  - id: spec-memord.a14
+    kind: function
+    statement: >
+      The ordering-violation replay path must be extended to fire on the cross-queue
+      scalar/vector matches.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        Memory-dependency speculation (a load issuing past a store whose address is not yet
+        known) reuses |boom|'s existing predictor and ordering-violation replay path, now
+        extended to fire on the cross-queue matches above.
+
+  - id: spec-memord.a15
+    kind: interface
+    statement: >
+      Forwarded vector store data must be read from the st_*_DATA_Q.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        A match on an older vector store forwards that store's data, read from the
+        ``st_*_DATA_Q`` (which already holds the store data, captured at DGEN).
+    notes: >
+      Supersedes the retired spec-memord.a10. The store data queues themselves are spec-lsu
+      group d; the data is captured at DGEN per spec-lsu.d7. Re-quoted on 2026-07-31 when the
+      forwarding bullet became load-initiated; the obligation is unchanged.
+
+  # The direction of the forwarding search, resolved 2026-07-31.
+
+  - id: spec-memord.a18
+    kind: function
+    statement: >
+      Each load address presented for execute must be searched against the scalar STQ.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **ST→LD forwarding.** Forwarding is **load-initiated**: each load address presented
+        for execute is searched against both the scalar STQ and the vector store address
+        queues, exactly as a scalar load drives the LCAM today.
+    notes: >
+      Supersedes the retired spec-memord.a16/a17. The spec's stated reason for making
+      forwarding load-initiated is that a store's own search cannot forward, because a load
+      that has not yet executed has no address to match against.
+
+  - id: spec-memord.a19
+    kind: function
+    statement: >
+      Each load address presented for execute must be searched against the vector store
+      address queues.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **ST→LD forwarding.** Forwarding is **load-initiated**: each load address presented
+        for execute is searched against both the scalar STQ and the vector store address
+        queues, exactly as a scalar load drives the LCAM today.
+
+  - id: spec-memord.a20
+    kind: interface
+    statement: >
+      A load address must drive the LCAM exactly as a scalar load does today.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        each load address presented for execute is searched against both the scalar STQ and
+        the vector store address queues, exactly as a scalar load drives the LCAM today.
+    notes: >
+      The store-side counterpart is spec-memord.a5.
+
+  - id: spec-memord.a21
+    kind: function
+    statement: >
+      A load-address match on an older vector store must forward that store's data to the
+      load.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        A match on an older vector store forwards that store's data, read from the
+        ``st_*_DATA_Q`` (which already holds the store data, captured at DGEN).
+    notes: >
+      Which store/load class pairs are eligible is spec-memord.a23 (scalar loads) and
+      spec-memord.b14 (vector loads).
+
+  - id: spec-memord.a22
+    kind: structure
+    statement: >
+      A vector store address queue entry must not be presented to the LCAM until its
+      corresponding ``st_*_DATA_Q`` entry is valid.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **A vector store address is withheld from disambiguation until its data is captured.**
+        An address queue entry is not presented to the LCAM until its corresponding
+        ``st_*_DATA_Q`` entry is valid, so a forwarding match can never hit a store whose data
+        has not yet been captured.
+    notes: >
+      Resolved 2026-07-31. This is what makes the data-pending case unreachable: rather than
+      blocking or replaying a load whose matched store has no captured data, the design keeps
+      the address out of the LCAM until DGEN has run.
+
+  # Which store/load class pairs forward — scalar consumer side, resolved 2026-07-31.
+
+  - id: spec-memord.a23
+    kind: function
+    statement: >
+      The design must forward to a scalar load from an older vector store of either the US or
+      the SSI class.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **Scalar load from a vector store.** Permitted for both US and SSI stores.
+    notes: >
+      This is deliberately wider than the vector-consumer rule (spec-memord.b14), which
+      forwards only US to US. The spec's stated reason is that a scalar load costs at most one
+      replay, so it forwards, whereas a multi-element vector load is held instead.
+
+  - id: spec-memord.a24
+    kind: function
+    statement: >
+      Where several already-generated elements of the same SSI store alias a scalar load, the
+      youngest matching element must supply the forwarded data.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        Where several already-generated elements of the same SSI store alias the load, the
+        **youngest matching element** supplies the data.
+
+  - id: spec-memord.a25
+    kind: function
+    statement: >
+      A store element generated after a scalar load has forwarded, and aliasing that load,
+      must set the load's ``order_fail`` through that element's own ST→LD ordering search.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        A store element generated *later* that aliases the load is caught by that element's
+        own ST→LD ordering search, which sets the load's ``order_fail``
+    notes: >
+      Forwarding to a scalar load from a partially-resolved SSI store is speculative; the spec
+      names the replay path (:ref:`order-fail-replay`) as the correctness floor for that
+      speculation. The floor itself is spec-memord.b13.
+
+  # --- b: search granularity, and the store/load hold --------------------------
+
+  - id: spec-memord.b1
+    kind: structure
+    statement: >
+      A US access must be treated as the contiguous byte range ``[base, base + VL*EEW)``.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **Unit-stride (US): one range check, not per element.** A US access is the contiguous
+        byte range ``[base, base + VL*EEW)``.
+
+  - id: spec-memord.b2
+    kind: function
+    statement: >
+      The LCAM comparison for US loads/stores must be a range-overlap test of the whole US
+      range against each queue entry's address.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        The LCAM comparison for US loads/stores is a **range-overlap** test of that whole
+        range against each queue entry's address, performed once when the US entry executes —
+        rather than expanding to per-element searches.
+
+  - id: spec-memord.b3
+    kind: timing
+    statement: >
+      The US range-overlap test must be performed once when the US entry executes.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        The LCAM comparison for US loads/stores is a **range-overlap** test of that whole
+        range against each queue entry's address, performed once when the US entry executes —
+        rather than expanding to per-element searches.
+
+  - id: spec-memord.b4
+    kind: function
+    statement: >
+      The US LCAM comparison must not expand to per-element searches.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        The LCAM comparison for US loads/stores is a **range-overlap** test of that whole
+        range against each queue entry's address, performed once when the US entry executes —
+        rather than expanding to per-element searches.
+    notes: >
+      The spec's stated reason is that the range check is both cheaper than per-element
+      expansion and sufficient.
+
+  - id: spec-memord.b5
+    kind: function
+    statement: >
+      Any overlap anywhere in the US range must trigger the ordering/forwarding action.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        any overlap anywhere in the range triggers the ordering/forwarding action.
+    notes: >
+      The US range check is masking-agnostic: it is a folded test of [base, base + VL*EEW)
+      computed once at execute from base/VL/EEW arithmetic, so it is not narrowed by AGEN
+      suppressing masked-off accesses. The masked-store forwarding hazard this raised was
+      resolved on 2026-07-31 by splitting the two paths: the range test stays mask-oblivious
+      for ordering (spec-memord.b20), where over-approximation costs only a replay, while
+      forwarding is qualified by the store's active byte mask (spec-memord.b21). The SSI path
+      never had the hazard, because a masked-off element generates no nOP.v and so no
+      per-element search.
+
+  - id: spec-memord.b6
+    kind: function
+    statement: >
+      A forwarding overlap that only partially covers the load must be handled like any
+      partial-forward case in |boom|.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        For forwarding, an overlap that only partially covers the load is handled like any
+        partial-forward case in |boom| — replay if the covering store data cannot fully
+        satisfy the load.
+
+  - id: spec-memord.b7
+    kind: function
+    statement: >
+      A partially covering forward must replay the load when the covering store data cannot
+      fully satisfy it.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        For forwarding, an overlap that only partially covers the load is handled like any
+        partial-forward case in |boom| — replay if the covering store data cannot fully
+        satisfy the load.
+
+  - id: spec-memord.b8
+    kind: function
+    statement: >
+      SSI accesses must search the LCAM per element ``nOP.v`` as they drain.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **Strided / Indexed / Segmented (SSI): per element.** Scattered addresses cannot be
+        range-folded, so SSI accesses search the LCAM per element ``nOP.v`` as they drain.
+    notes: >
+      The spec's stated reason is that scattered addresses cannot be range-folded. The
+      obligation that element accesses fire in element order is spec-lsu group f.
+
+  - id: spec-memord.b9
+    kind: interface
+    statement: >
+      The per-element SSI LCAM searches must contend for the shared LCAM through the same
+      arbiter that gates the D$ port.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        These per-element searches contend for the shared LCAM through the same arbiter that
+        gates the D$ port (:ref:`dcache-arbiter`), so they cannot starve scalar
+        disambiguation.
+    notes: >
+      The arbiter itself and its anti-starvation guarantee — that these searches cannot starve
+      scalar disambiguation — are obligations of spec-lsu group h and are not restated here.
+
+  - id: spec-memord.b10
+    kind: function
+    statement: >
+      Store-to-load forwarding must not be attempted between two SSI accesses.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        In the three other combinations — US store → SSI load, SSI store → US load, SSI store
+        → SSI load — forwarding is not attempted
+    notes: >
+      The spec's stated reason is that an SSI store generates its element addresses
+      incrementally, one ``nOP.v`` at a time through the arbiter, so until the store has
+      resolved all its active elements a younger load cannot know whether a not-yet-generated
+      store element aliases it, nor which store element holds the youngest byte for an aliased
+      address; forwarding a whole vector load from a partially-resolved scatter is therefore
+      unsafe. Re-quoted on 2026-07-31 when the rule was generalized from SSI/SSI to the three
+      non-forwarding combinations; the SSI/SSI obligation this requirement states is unchanged
+      and the general rule is spec-memord.b14.
+
+  - id: spec-memord.b11
+    kind: function
+    statement: >
+      The design must hold a younger vector load that overlaps an older in-flight vector store
+      until that store completes, in every combination that does not forward.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        In all three, |caracal| instead **holds** the younger vector load that overlaps the
+        older in-flight vector store until that store completes (all its elements drain), then
+        lets the load read the updated cache line.
+    notes: >
+      Widened on 2026-07-31 from SSI store / SSI load to all three non-forwarding
+      combinations, resolving the mixed US/SSI gap. The widening is what closes the replay
+      livelock: a non-forwarding overlap that only order-failed would re-fail on every replay
+      until the older store committed and drained. Where both are SSI the two element streams
+      also share the LCAM / D$ port through the arbiter, so the spec observes that the pair
+      then executes effectively serially.
+
+  - id: spec-memord.b12
+    kind: function
+    statement: >
+      The held vector load must read the updated cache line once all of the older store's
+      elements have drained.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        In all three, |caracal| instead **holds** the younger vector load that overlaps the
+        older in-flight vector store until that store completes (all its elements drain), then
+        lets the load read the updated cache line.
+    notes: >
+      Widened on 2026-07-31 alongside spec-memord.b11.
+
+  - id: spec-memord.b13
+    kind: function
+    statement: >
+      The ordering-violation replay path must remain the correctness floor when a load slips
+      through before the dependence is detected.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        The ordering-violation replay path (:ref:`order-fail-replay`) remains the correctness
+        floor if a load slips through before the dependence is detected
+    notes: >
+      The hold of spec-memord.b11 is an optimization on top of this floor: the spec describes
+      it as converting a multi-element replay storm into one clean serialization when the
+      overlap is known or predicted.
+
+  # Which store/load class pairs forward — vector consumer side, resolved 2026-07-31.
+
+  - id: spec-memord.b14
+    kind: function
+    statement: >
+      Vector-to-vector store-to-load forwarding must be attempted only when both the store and
+      the load are unit-stride.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        Vector-to-vector store-to-load forwarding is attempted **only** for a US store to a US
+        load.
+    notes: >
+      Supersedes the retired spec-memord.a17 and resolves the mixed US/SSI gap. The three
+      non-forwarding combinations take the hold of spec-memord.b11 instead. The spec gives two
+      distinct reasons: for an SSI store the partially-resolved scatter makes forwarding
+      unsafe, while for a US store to an SSI load the forward is safe in principle and is
+      declined only because a per-element load would have to range-check and slice every
+      element against the store's US range.
+
+  # The hold mechanism, resolved 2026-07-31.
+
+  - id: spec-memord.b15
+    kind: function
+    statement: >
+      An overlap must be treated as known when the LCAM matches an already-generated store
+      element address, or the store's US range, against the load's address.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **Known** — an LCAM match between an already-generated store element address (or the
+        store's US range) and the load's address.
+
+  - id: spec-memord.b16
+    kind: structure
+    statement: >
+      Overlap prediction for the hold must use |boom|'s existing memory-dependence predictor.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **Predicted** — |boom|'s existing memory-dependence predictor, the same one reused for
+        memory-dependency speculation below.
+    notes: >
+      The same predictor is reused for memory-dependency speculation generally
+      (spec-memord.a12); this requirement is its use as the predicted trigger for the hold.
+
+  - id: spec-memord.b17
+    kind: structure
+    statement: >
+      The hold must use the younger load's existing per-load store-dependency block on the
+      older vector store entry.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **Held by** — the younger load's existing per-load store-dependency block on the older
+        vector store entry
+    notes: >
+      The spec states that no new queue or state is added. That absence is not stated as a
+      separate requirement, for the same reason the retired spec-memord.f4 was: no line of RTL
+      implements the absence of a mechanism.
+
+  - id: spec-memord.b18
+    kind: function
+    statement: >
+      A held load must not be granted the LCAM or D$ port by the arbiter.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        the held load is simply not granted the LCAM / D$ port by the arbiter
+        (:ref:`dcache-arbiter`).
+    notes: >
+      The arbiter itself is spec-lsu group h.
+
+  - id: spec-memord.b19
+    kind: function
+    statement: >
+      The hold must be released when the older store entry's element cursor completes its
+      active element set.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **Released by** — that store entry's element cursor completing its active element set,
+        i.e. the store's drain, after which the load reads the updated cache line.
+    notes: >
+      The element cursor itself is spec-lsu group f.
+
+  # Masked elements versus the US range test, resolved 2026-07-31.
+
+  - id: spec-memord.b20
+    kind: function
+    statement: >
+      The US range-overlap test must remain mask-oblivious for ordering.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        The range test is deliberately **mask-oblivious for ordering**: it over-approximates,
+        and a false positive costs only a replay.
+    notes: >
+      Over-approximation is safe on the ordering path because a false positive costs only a
+      replay. It is not safe on the forwarding path, which is why spec-memord.b21 qualifies it
+      there.
+
+  - id: spec-memord.b21
+    kind: function
+    statement: >
+      Forwarding from a US store must be qualified by the store's active byte mask.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **Forwarding is mask-qualified** — bytes belonging to inactive (masked-off or tail)
+        elements of the store are never forwarded, and if the store's active bytes cannot
+        fully cover the load the partial-forward rule above applies.
+    notes: >
+      Resolves the masked-store forwarding hazard recorded against spec-memord.b5. When the
+      active bytes cannot fully cover the load the existing partial-forward rule applies —
+      spec-memord.b6 and spec-memord.b7 — so no separate obligation is written for that case.
+
+  # --- c: the ordering-violation replay mechanism ------------------------------
+
+  - id: spec-memord.c1
+    kind: function
+    statement: >
+      The design must recover from an ordering violation using |boom|'s existing
+      ordering-violation path.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        |caracal| recovers with |boom|'s existing ordering-violation path — the same
+        squash-and-refetch machinery a branch mispredict uses — **not** a selective replay of
+        just the load and its dependents.
+    notes: >
+      The trigger is a store's address search — scalar addr-gen, or a vector store's US range
+      or SSI per-element search — matching a younger, already-executed load that has
+      speculated past the store and may have read stale data.
+
+  - id: spec-memord.c2
+    kind: structure
+    statement: >
+      Ordering-violation recovery must use the same squash-and-refetch machinery a branch
+      mispredict uses.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        |caracal| recovers with |boom|'s existing ordering-violation path — the same
+        squash-and-refetch machinery a branch mispredict uses — **not** a selective replay of
+        just the load and its dependents.
+
+  - id: spec-memord.c3
+    kind: function
+    statement: >
+      Ordering-violation recovery must not be a selective replay of just the load and its
+      dependents.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        |caracal| recovers with |boom|'s existing ordering-violation path — the same
+        squash-and-refetch machinery a branch mispredict uses — **not** a selective replay of
+        just the load and its dependents.
+
+  - id: spec-memord.c4
+    kind: function
+    statement: >
+      The matching store address search must set the matched load's LDQ ``order_fail`` bit.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        **Mark, don't act.** The matching search sets the load's LDQ ``order_fail`` bit.
+    notes: >
+      This is the general form, covering a scalar addr-gen search as well as a vector store's
+      US range or SSI per-element search; spec-memord.a6 is the cross-queue vector-store case
+      stated in the disambiguation section.
+
+  - id: spec-memord.c5
+    kind: interface
+    statement: >
+      The LSU must broadcast the oldest failing load to the ROB as an ``lxcpt``.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        The LSU broadcasts the *oldest* failing load to the ROB as a ``lxcpt`` with cause
+        ``MINI_EXCEPTION_MEM_ORDERING``; the ROB records it as an exception on that load's row
+        but takes no action yet.
+
+  - id: spec-memord.c6
+    kind: interface
+    statement: >
+      The ``lxcpt`` broadcast for a failing load must carry cause
+      ``MINI_EXCEPTION_MEM_ORDERING``.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        The LSU broadcasts the *oldest* failing load to the ROB as a ``lxcpt`` with cause
+        ``MINI_EXCEPTION_MEM_ORDERING``; the ROB records it as an exception on that load's row
+        but takes no action yet.
+
+  - id: spec-memord.c7
+    kind: function
+    statement: >
+      The ROB must record the ``lxcpt`` as an exception on the failing load's row.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        The LSU broadcasts the *oldest* failing load to the ROB as a ``lxcpt`` with cause
+        ``MINI_EXCEPTION_MEM_ORDERING``; the ROB records it as an exception on that load's row
+        but takes no action yet.
+
+  - id: spec-memord.c8
+    kind: function
+    statement: >
+      The ROB must take no action on the recorded ordering-violation exception when it is
+      reported.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        the ROB records it as an exception on that load's row but takes no action yet.
+
+  - id: spec-memord.c9
+    kind: timing
+    statement: >
+      The ordering-violation flush must fire only when the failing load reaches the head of the
+      ROB.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        **Deferred to the ROB head.** The flush fires only when the failing load reaches the
+        **head** of the ROB.
+    notes: >
+      The spec calls this the load-bearing invariant: because commit is in-order and the load
+      is then the oldest instruction in the machine, every remaining in-flight instruction is
+      younger than the load, so all of its dependents are still un-committed and squashable.
+
+  - id: spec-memord.c10
+    kind: function
+    statement: >
+      No consumer of the failing load's bad value must escape to architectural state.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        No consumer of the bad value can have escaped to architectural state.
+
+  - id: spec-memord.c11
+    kind: function
+    statement: >
+      ``MINI_EXCEPTION_MEM_ORDERING`` must not be routed to the CSR/trap vector.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        **Mini-exception ⇒ refetch, not trap.** ``MINI_EXCEPTION_MEM_ORDERING`` is not an
+        architectural exception: it does not go to the CSR/trap vector.
+
+  - id: spec-memord.c12
+    kind: interface
+    statement: >
+      An ordering-violation must produce a pipeline flush with ``flush_typ = refetch``.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        It produces a pipeline flush with ``flush_typ = refetch``
+
+  - id: spec-memord.c13
+    kind: function
+    statement: >
+      The frontend must redirect to the failing load's own PC.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        the frontend redirects to the failing load's **own PC** (from its
+        ``ftq_idx``/``pc_lob``), so the load re-fetches and re-executes.
+
+  - id: spec-memord.c14
+    kind: interface
+    statement: >
+      The redirect PC for a failing load must be taken from its ``ftq_idx``/``pc_lob``.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        the frontend redirects to the failing load's **own PC** (from its
+        ``ftq_idx``/``pc_lob``), so the load re-fetches and re-executes.
+
+  - id: spec-memord.c15
+    kind: function
+    statement: >
+      The failing load must re-execute after the refetch redirect.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        the frontend redirects to the failing load's **own PC** (from its
+        ``ftq_idx``/``pc_lob``), so the load re-fetches and re-executes.
+
+  - id: spec-memord.c16
+    kind: function
+    statement: >
+      The physical register file must be left untouched on an ordering-violation flush.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        On the flush, the physical RF is left untouched
+    notes: >
+      The spec's stated reason is that renaming makes a rollback of the RF unnecessary: the
+      load already wrote its result into a physical register ``Pd`` and dependents may have
+      consumed it, but ``Pd`` is orphaned by the rename-map rollback instead.
+
+  - id: spec-memord.c17
+    kind: function
+    statement: >
+      The ROB rollback must restore the rename map to the committed architectural state.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        instead the ROB rollback **restores the rename map to the committed architectural
+        state and returns every speculatively-allocated physical register — including ``Pd``
+        — to the free list.**
+
+  - id: spec-memord.c18
+    kind: function
+    statement: >
+      The ROB rollback must return every speculatively-allocated physical register, including
+      the failing load's ``Pd``, to the free list.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        instead the ROB rollback **restores the rename map to the committed architectural
+        state and returns every speculatively-allocated physical register — including ``Pd``
+        — to the free list.**
+
+  - id: spec-memord.c19
+    kind: function
+    statement: >
+      After the rollback nothing must map the failing load's logical destination to ``Pd``.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        The stale value is simply orphaned: after rollback nothing maps the load's logical
+        destination to ``Pd``.
+
+  - id: spec-memord.c20
+    kind: function
+    statement: >
+      On refetch the load must rename to a fresh physical destination.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        On refetch the load renames to a *fresh* physical destination, executes correctly
+        (forwarding the store data from ``st_*_DATA_Q`` or reading the drained cache line),
+        and writes that register.
+
+  - id: spec-memord.c21
+    kind: function
+    statement: >
+      The re-executed load must obtain its data either by forwarding the store data from
+      ``st_*_DATA_Q`` or by reading the drained cache line.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        On refetch the load renames to a *fresh* physical destination, executes correctly
+        (forwarding the store data from ``st_*_DATA_Q`` or reading the drained cache line),
+        and writes that register.
+
+  - id: spec-memord.c22
+    kind: function
+    statement: >
+      The re-executed load must write its result into the fresh physical destination.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        On refetch the load renames to a *fresh* physical destination, executes correctly
+        (forwarding the store data from ``st_*_DATA_Q`` or reading the drained cache line),
+        and writes that register.
+
+  - id: spec-memord.c23
+    kind: function
+    statement: >
+      The ordering-violation flush must discard the failing load and everything younger,
+      covering ROB rows, issue queues and the pipeline.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        the flush discards the load and everything younger — ROB rows, issue queues, and the
+        pipeline — and frees their speculative physical registers in the same rollback.
+
+  - id: spec-memord.c24
+    kind: function
+    statement: >
+      The ordering-violation flush must free the discarded instructions' speculative physical
+      registers in the same rollback.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        the flush discards the load and everything younger — ROB rows, issue queues, and the
+        pipeline — and frees their speculative physical registers in the same rollback.
+
+  - id: spec-memord.c25
+    kind: function
+    statement: >
+      The design must not track which specific instructions consumed the poisoned load result.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        |caracal| does not track which specific instructions consumed the poisoned result
+
+  - id: spec-memord.c26
+    kind: function
+    statement: >
+      The design must conservatively squash all work younger than the failing load.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        like branch recovery, it conservatively squashes all younger work, differing only in
+        that the redirect PC is the load itself (``refetch``) rather than a branch target.
+    notes: >
+      The window in which the load writes back early and wakes dependents on bad data is
+      therefore harmless — all of that work is younger and still un-committed when the flush
+      fires at the ROB head. The cost is purely performance, which is what the
+      memory-dependency predictor exists to avoid.
+
+  # --- d: the past-PNR consequence for the CII ---------------------------------
+
+  - id: spec-memord.d1
+    kind: function
+    statement: >
+      The design must not rely on the assumption that an instruction past the PNR will commit.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        **This path is what breaks the "past-PNR ⇒ will commit" assumption for the CII.** A
+        load's ``rob_unsafe`` bit is cleared on its **first address translation**
+        (``lsu.scala:1443``), but ``order_fail`` is only discovered later — so the PNR sweeps
+        past the load, vector arithmetic ops issue to the coprocessor, and the flush above
+        then squashes them.
+    notes: >
+      Evidence, not separate obligations: a load's ``rob_unsafe`` bit is cleared on its first
+      address translation (``lsu.scala:1443``) while ``order_fail`` is discovered later, and
+      |boom| documents the same at ``rob.scala:438-441``. Extending ``order_fail`` to
+      cross-queue vector/scalar matches makes this more frequent than in baseline |boom|, not
+      less. The coprocessor-side contract that handles the resulting squash is
+      :ref:`cii-flush` — spec-cii group e, especially spec-cii.e1 and spec-cii.e2 — and is not
+      restated here.
+
+  # --- e: order-fail of a vector load ------------------------------------------
+
+  - id: spec-memord.e1
+    kind: function
+    statement: >
+      For a vector load that order-fails, the refetch/re-rename path must apply at the
+      granularity of the whole vector instruction.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        For a **vector** load that order-fails, the same refetch/re-rename path applies at the
+        granularity of the whole vector instruction
+
+  - id: spec-memord.e2
+    kind: interface
+    statement: >
+      The single LDQ placeholder entry of a vector load must drive one ``lxcpt``.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        the single LDQ placeholder entry drives one ``lxcpt``
+
+  - id: spec-memord.e3
+    kind: function
+    statement: >
+      On replay a vector op must re-rename its whole destination group.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        on replay the vector op re-renames its whole destination group and re-drains its
+        element accesses through the LCB (:ref:`load-coalesce`)
+
+  - id: spec-memord.e4
+    kind: function
+    statement: >
+      On replay a vector op must re-drain its element accesses through the LCB.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        on replay the vector op re-renames its whole destination group and re-drains its
+        element accesses through the LCB (:ref:`load-coalesce`)
+
+  - id: spec-memord.e5
+    kind: function
+    statement: >
+      A vector load replay must perform no partial-group rewind.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: order-fail-replay
+      heading: "Ordering-Violation Replay"
+      quote: >
+        there is no partial-group rewind, consistent with the one-group-done completion model.
+
+  # --- f: fences and the fencei_rdy extension ----------------------------------
+
+  - id: spec-memord.f1
+    kind: function
+    statement: >
+      A ``fence`` must order vector memory ops alongside scalar ones.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        ``fence`` (RVWMO ``fence rw,rw`` and friends), ``fence.i`` and ``sfence.vma`` must
+        order vector memory ops alongside scalar ones.
+    notes: >
+      The spec scopes ``fence`` here as RVWMO ``fence rw,rw`` and friends.
+
+  - id: spec-memord.f2
+    kind: function
+    statement: >
+      A ``fence.i`` must order vector memory ops alongside scalar ones.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        ``fence`` (RVWMO ``fence rw,rw`` and friends), ``fence.i`` and ``sfence.vma`` must
+        order vector memory ops alongside scalar ones.
+
+  - id: spec-memord.f3
+    kind: function
+    statement: >
+      An ``sfence.vma`` must order vector memory ops alongside scalar ones.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        ``fence`` (RVWMO ``fence rw,rw`` and friends), ``fence.i`` and ``sfence.vma`` must
+        order vector memory ops alongside scalar ones.
+
+  - id: spec-memord.f5
+    kind: structure
+    statement: >
+      The design must obtain fence ordering by extending the signal |boom| already gates
+      fences on.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        |caracal| gets this **without adding any mechanism**, by extending the signal |boom|
+        already gates fences on.
+
+  - id: spec-memord.f6
+    kind: function
+    statement: >
+      ``fence``, ``fence.i`` and ``sfence.vma`` must all be decoded ``is_unique``.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        All three are decoded ``is_unique`` (``decode.scala:157,166-167``; ``FENCE`` and
+        ``SFENCE_VMA`` are also ``flush_on_commit``)
+
+  - id: spec-memord.f7
+    kind: function
+    statement: >
+      ``FENCE`` and ``SFENCE_VMA`` must also be decoded ``flush_on_commit``.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        All three are decoded ``is_unique`` (``decode.scala:157,166-167``; ``FENCE`` and
+        ``SFENCE_VMA`` are also ``flush_on_commit``)
+
+  - id: spec-memord.f8
+    kind: function
+    statement: >
+      An ``is_unique`` uop must not dispatch until the ROB is empty.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        an ``is_unique`` uop cannot **dispatch** until the ROB is empty *and* ``fencei_rdy``
+        (``core.scala:739-740``).
+
+  - id: spec-memord.f9
+    kind: function
+    statement: >
+      An ``is_unique`` uop must not dispatch until ``fencei_rdy`` is asserted.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        an ``is_unique`` uop cannot **dispatch** until the ROB is empty *and* ``fencei_rdy``
+        (``core.scala:739-740``).
+
+  - id: spec-memord.f10
+    kind: interface
+    statement: >
+      The LSU must fold the vector path into the ``fencei_rdy`` signal.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        So |caracal| simply folds the vector path into that signal:
+
+  - id: spec-memord.f11
+    kind: interface
+    statement: >
+      The LSU must drive ``io.core.fencei_rdy`` as ``!stq_nonempty && io.dmem.ordered &&
+      vec_lsu_empty``.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        io.core.fencei_rdy := !stq_nonempty && io.dmem.ordered && vec_lsu_empty
+
+  - id: spec-memord.f14
+    kind: function
+    statement: >
+      A committed vector store must drain unconditionally.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        at dispatch the ROB is empty, so every older vector store has already **committed**
+        and will drain unconditionally
+
+  - id: spec-memord.f15
+    kind: structure
+    statement: >
+      The design must not order fences with a ROB-head ``fence_pending``/``drain_done``
+      handshake between the ROB and the scalar and vector LSUs.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        **The previous head-side handshake deadlocks.** Earlier drafts had the ROB raise
+        ``fence_pending`` when a fence reaches the head, with the scalar and vector LSUs
+        driving ``drain_done`` when their queues are empty
+    notes: >
+      This is the hard negative obligation of the section's ``.. danger::`` block: the earlier
+      head-side handshake is rejected, not merely deprecated.
+
+  - id: spec-memord.f16
+    kind: function
+    statement: >
+      Fence retirement must not be made conditional on the vector store queues being empty.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        That coarseness *is* the deadlock: a **younger** vector store (dispatched after the
+        fence) fills ``st_SSI_*_Q``, and those entries can only be freed at commit-drain —
+        which cannot happen, because the fence is at the ROB head. The fence cannot retire
+        because the queues aren't empty. Neither side moves.
+    notes: >
+      The deadlock is closed by a younger vector store, dispatched after the fence, filling
+      ``st_SSI_*_Q`` whose entries can only be freed at commit-drain — which cannot happen
+      while the fence sits at the ROB head. The commit-drain rule for store queue entries is
+      spec-lsu group d.
+
+  - id: spec-memord.f17
+    kind: function
+    statement: >
+      A ``vsetvl`` must wait for in-flight vector memory to settle before dispatching.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        ``vsetvl`` and the explicit vector-CSR accesses (``csrw vstart``, ``csrr vl``) now also
+        wait for in-flight vector memory to settle before dispatching.
+
+  - id: spec-memord.f18
+    kind: function
+    statement: >
+      The explicit vector-CSR accesses must wait for in-flight vector memory to settle before
+      dispatching.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        ``vsetvl`` and the explicit vector-CSR accesses (``csrw vstart``, ``csrr vl``) now also
+        wait for in-flight vector memory to settle before dispatching.
+    notes: >
+      The spec names ``csrw vstart`` and ``csrr vl`` as the examples, and states this is
+      required anyway for the vector-CSR serialization in :ref:`vector-csr-ownership`. That
+      those accesses are decoded ``is_unique``/``flush_on_commit`` is spec-decode group f and
+      is not restated here. The wait cannot deadlock because it happens at dispatch, with the
+      ROB empty.
+
+  # What vec_lsu_empty means, resolved 2026-07-31.
+
+  - id: spec-memord.f19
+    kind: function
+    statement: >
+      ``vec_lsu_empty`` must assert only when the four vector address queues are empty.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        ``vec_lsu_empty`` asserts when **all** vector LSU state is empty: the four address
+        queues (``ld_SSI_ADDR_Q``, ``st_SSI_ADDR_Q``, ``ld_US_ADDR_Q``, ``st_US_ADDR_Q``), both
+        store data queues (``st_SSI_DATA_Q``, ``st_US_DATA_Q``), and the Load Coalescing Buffer
+        (:ref:`load-coalesce`).
+    notes: >
+      The queues named are ld_SSI_ADDR_Q, st_SSI_ADDR_Q, ld_US_ADDR_Q and st_US_ADDR_Q; the
+      queues themselves are spec-lsu groups b and c. In-flight D$ responses are not part of
+      this term — the spec leaves them to the existing io.dmem.ordered conjunct in the same
+      expression.
+
+  - id: spec-memord.f20
+    kind: function
+    statement: >
+      ``vec_lsu_empty`` must assert only when both vector store data queues are empty.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        ``vec_lsu_empty`` asserts when **all** vector LSU state is empty: the four address
+        queues (``ld_SSI_ADDR_Q``, ``st_SSI_ADDR_Q``, ``ld_US_ADDR_Q``, ``st_US_ADDR_Q``), both
+        store data queues (``st_SSI_DATA_Q``, ``st_US_DATA_Q``), and the Load Coalescing Buffer
+        (:ref:`load-coalesce`).
+    notes: >
+      The store data queues are spec-lsu group d.
+
+  - id: spec-memord.f21
+    kind: function
+    statement: >
+      ``vec_lsu_empty`` must assert only when the Load Coalescing Buffer is empty.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: fences
+      heading: "Fences"
+      quote: >
+        ``vec_lsu_empty`` asserts when **all** vector LSU state is empty: the four address
+        queues (``ld_SSI_ADDR_Q``, ``st_SSI_ADDR_Q``, ``ld_US_ADDR_Q``, ``st_US_ADDR_Q``), both
+        store data queues (``st_SSI_DATA_Q``, ``st_US_DATA_Q``), and the Load Coalescing Buffer
+        (:ref:`load-coalesce`).
+    notes: >
+      The LCB is spec-lsu group e. The spec's stated reason for the conservative definition is
+      that the wait happens at dispatch with the ROB already empty, so the drain is bounded;
+      the deadlock in the section's danger block came from waiting at the ROB head, not from
+      the breadth of the condition.
+
+coverage:
+
+  # loadstore.rst: memord owns exactly the three sections below; the other fourteen
+  # sections belong to sibling family lsu or are unowned — see the assignments block in
+  # families.yaml.
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Memory Ordering and Disambiguation"
+    anchor: mem-order
+    reqs: [spec-memord.a1, spec-memord.a2, spec-memord.a3, spec-memord.a4, spec-memord.a5,
+           spec-memord.a6, spec-memord.a7, spec-memord.a15,
+           spec-memord.a12, spec-memord.a13, spec-memord.a14,
+           spec-memord.a18, spec-memord.a19, spec-memord.a20, spec-memord.a21,
+           spec-memord.a22, spec-memord.a23, spec-memord.a24, spec-memord.a25,
+           spec-memord.b1, spec-memord.b2, spec-memord.b3, spec-memord.b4, spec-memord.b5,
+           spec-memord.b6, spec-memord.b7, spec-memord.b8, spec-memord.b9, spec-memord.b10,
+           spec-memord.b11, spec-memord.b12, spec-memord.b13, spec-memord.b14,
+           spec-memord.b15, spec-memord.b16, spec-memord.b17, spec-memord.b18,
+           spec-memord.b19, spec-memord.b20, spec-memord.b21]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Ordering-Violation Replay"
+    anchor: order-fail-replay
+    reqs: [spec-memord.c1, spec-memord.c2, spec-memord.c3, spec-memord.c4, spec-memord.c5,
+           spec-memord.c6, spec-memord.c7, spec-memord.c8, spec-memord.c9, spec-memord.c10,
+           spec-memord.c11, spec-memord.c12, spec-memord.c13, spec-memord.c14,
+           spec-memord.c15, spec-memord.c16, spec-memord.c17, spec-memord.c18,
+           spec-memord.c19, spec-memord.c20, spec-memord.c21, spec-memord.c22,
+           spec-memord.c23, spec-memord.c24, spec-memord.c25, spec-memord.c26,
+           spec-memord.d1,
+           spec-memord.e1, spec-memord.e2, spec-memord.e3, spec-memord.e4, spec-memord.e5]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Fences"
+    anchor: fences
+    reqs: [spec-memord.f1, spec-memord.f2, spec-memord.f3, spec-memord.f5,
+           spec-memord.f6, spec-memord.f7, spec-memord.f8, spec-memord.f9, spec-memord.f10,
+           spec-memord.f11, spec-memord.f14,
+           spec-memord.f15, spec-memord.f16, spec-memord.f17, spec-memord.f18,
+           spec-memord.f19, spec-memord.f20, spec-memord.f21]
+
+retired:
+
+  - id: spec-memord.a16
+    statement: >
+      A store-address match on a younger not-yet-executed scalar load must forward the vector
+      store's data to that load.
+    retired_because: >
+      loadstore.rst "Memory Ordering and Disambiguation" was corrected on 2026-07-31: the
+      2026-07-31 rewrite had made the store the searcher while keeping the load-initiated
+      search targets, so it named the scalar STQ as a target and required a match against a
+      load that has no address yet. Forwarding is now load-initiated. Superseded by
+      spec-memord.a18, a19 and a21.
+
+  - id: spec-memord.a17
+    statement: >
+      A store-address match on a younger not-yet-executed vector load must forward the data
+      when both the store and the load are unit-stride.
+    retired_because: >
+      Same 2026-07-31 correction as spec-memord.a16 — the search direction was wrong. The
+      surviving obligation, that vector-to-vector forwarding is US-to-US only, is reissued as
+      spec-memord.b14.
+
+  - id: spec-memord.a11
+    statement: >
+      Scalar load/store versus scalar store/load disambiguation must be unchanged from |boom|.
+    retired_because: >
+      A scope statement ("Scalar LD/ST vs. scalar ST/LD. Unchanged from BOOM."). Nothing is added, so nothing can be tagged; better recorded as a note on spec-memord.a3.
+
+  - id: spec-memord.f12
+    statement: >
+      Fence ordering must be established before the fence enters the machine.
+    retired_because: >
+      Marked by the spec's own connective as a derived consequence ("Ordering is therefore established before the fence ever enters the machine"). A theorem about the design, not an obligation on it.
+
+  - id: spec-memord.f13
+    statement: >
+      Every vector store older than a dispatching fence must already have committed.
+    retired_because: >
+      Marked by the spec's own connective as a derived consequence ("at dispatch the ROB is empty, so every older vector store has already committed").
+
+  - id: spec-memord.f4
+    statement: >
+      The design must order vector memory ops at fences without adding any mechanism.
+    retired_because: >
+      The rationale half of its sentence ("without adding any mechanism"). No line of RTL implements the absence of a mechanism; the obligation is spec-memord.f5.
+
+  - id: spec-memord.a8
+    statement: >
+      A load address must be searched against the scalar STQ.
+    retired_because: >
+      loadstore.rst "Memory Ordering and Disambiguation" was rewritten on 2026-07-31. LD-to-ST
+      forwarding does not exist in Caracal, and the bullet that specified it was replaced by a
+      second ST-to-LD bullet, so no load-initiated search of store queues remains in the spec.
+
+  - id: spec-memord.a9
+    statement: >
+      A load address must be searched against the vector store address queues.
+    retired_because: >
+      loadstore.rst "Memory Ordering and Disambiguation" was rewritten on 2026-07-31. LD-to-ST
+      forwarding does not exist in Caracal, and the bullet that specified it was replaced by a
+      second ST-to-LD bullet, so no load-initiated search of store queues remains in the spec.
+
+  - id: spec-memord.a10
+    statement: >
+      Forwarded vector store data must be read from the ``st_*_DATA_Q`` rather than from a
+      scalar STQ data field.
+    retired_because: >
+      The "not from a scalar STQ data field" clause was dropped in the 2026-07-31 rewrite of
+      loadstore.rst "Memory Ordering and Disambiguation". The surviving obligation, that
+      forwarded data comes from st_*_DATA_Q, is reissued as spec-memord.a15.
+
+# All seven open questions recorded against this family were resolved on 2026-07-31 and
+# loadstore.rst was amended accordingly:
+#
+#   forwarding search direction   -> load-initiated; spec-memord.a18-a21, a16/a17 retired
+#   "not yet executed" load       -> dissolved by the same correction
+#   mixed US/SSI pairs            -> US-to-US only; spec-memord.b14, hold widened at b11/b12
+#   how the hold works            -> spec-memord.b15-b19
+#   store data not yet captured   -> made unreachable; spec-memord.a22
+#   masked-off elements           -> ordering vs forwarding split; spec-memord.b20, b21
+#   what vec_lsu_empty covers     -> spec-memord.f19-f21
+

@@ -7,6 +7,8 @@ Execution
 .. |isa| replace:: RV64GC
 
 
+.. _execution-pipelines:
+
 The Execution Pipelines
 -----------------------
 
@@ -21,6 +23,13 @@ Vector instruction OP.v's may execute out-of-order relative to program order, bu
 and in element order. Shared instructions require more than 1 EU to activate and hand off intermediate results
 through a temp vector group (``pvtmp``) in the VRF — one half writes it, the other reads it.
 
+**Atomically means architecturally atomic**, not that an ``OP.v``'s element accesses are
+indivisible. No partial result of an ``OP.v`` is ever architecturally visible. An ``OP.v`` whose
+element stream faults mid-group satisfies this even though accesses below the fault point have
+already fired and their responses land in the LCB: ``pvdest`` is a *fresh* physical group that a
+non-committing instruction never installs in ``com_map_table``, so the trap discards those responses
+and restarts the whole instruction with ``vstart = 0`` (see :ref:`elem-progress`).
+
 
 .. figure:: ../figures/execution_stage.png
    :align: center
@@ -28,6 +37,8 @@ through a temp vector group (``pvtmp``) in the VRF — one half writes it, the o
    Overview of Vector Mapper Stage.
 
 
+
+.. _vector-ls-agen:
 
 Vector LS AGEN stage
 --------------------
@@ -50,30 +61,84 @@ the CII IQ are directly forwarded to the co-processor via the CII interface.
 
 We reuse the Load/StorePacker, Load/StoreSkipper, Load/StoreWalker AGEN units from bobtail.
 
+**The generator is selected by access class, not by direction.** The three rules below hold
+identically on the load and store paths — the subsections say "accesses" for that reason. The only
+asymmetries between the two paths are that they read the mask and index through different VRF ports
+(``R0`` index / ``R1`` mask on the load path, ``R4`` on the store path — see :ref:`vrf-ports`), and
+that the store path additionally runs ``st_vdgen`` alongside ``st_vagen_1`` (:ref:`vector-dgen`).
+Selection itself is:
+
+- **indexed**, masked or not → **Walker**;
+- **non-indexed and not unit-stride** (strided, segmented), masked or not → **Skipper**;
+- **unit-stride** → **Packer**, in stage 2.
+
+**Both AGEN stages must read the vector mask and apply it during address generation.** The mask is
+read through the unit's VRF mask read port — ``R1`` on the load path, ``R4`` on the store path (see
+:ref:`vrf-ports`) — and both stages **suppress address generation for masked-off elements**: a
+masked-off
+element produces no ``nOP.v``, and therefore no D$ access, no TLB translation and no LCAM
+search. The resulting cursor is the **single owner** of which elements survive: both the
+``st_vdgen`` on the store path (see :ref:`vector-dgen`) and the Load Coalescing Buffer on the load
+path (see :ref:`load-coalesce`) consume that cursor rather than evaluating the mask again.
+
+**Stage 1 performs the mask read for every access class, including unit-stride.** The stage 2 Packer
+does **not** read the VRF: a US ``OP.v`` already passes through stage 1, where it is encoded into a
+single ``nOP.v``, so ``ld_vAGEN_1`` reads ``v0`` there and the mask travels with that ``nOP.v`` to
+the Packer. This is what keeps the mask port to **one reader** — were stage 2 to read it directly, a
+US ``OP.v`` in stage 2 and an SSI ``OP.v`` in stage 1 would be two concurrent readers of ``R1``,
+which :ref:`vrf-ports` cannot serve because ports are statically partitioned and never arbitrated.
+The cost is carrying up to ``VLMAX`` mask bits on the US ``nOP.v`` — wide, but one bundle per
+``OP.v``.
+
+The mask read happens **once per ``OP.v``** and is latched: a single ``VLEN``-wide read of ``v0``
+yields the mask bits for every element of the access. Index members, by contrast, are read as the
+walk advances. That cadence is why the store path's single ``R4`` suffices for both jobs.
+
+.. important::
+
+   Applying the mask in AGEN rather than downstream is what makes masked vector memory
+   operations architecturally correct in both directions. A masked-off **store** element must
+   leave memory unmodified, and the source ``vPRN``'s inactive lanes hold coprocessor data
+   rather than the memory's prior contents, so an access that reached the D$ would clobber
+   bytes the instruction never wrote. A masked-off **load** element must not raise a memory
+   exception, so an access that reached the TLB could fault on an address the instruction never
+   architecturally touches. Suppressing the access itself satisfies both.
+
 Packer
 ^^^^^^
 Handles the fastest, densest case: contiguous/unit-stride loads with no 
 indexing. It packs multiple segments and multiple elements into each DMEM-width packet, 
 advancing a single EEW_CTR by whichever constraint (VL, vreg boundary, DMEM boundary, 
-segment, or mask) is hit first. Supports masked loads (masked-off lanes are still fetched 
-but flagged), but not indexed loads.
+segment, or mask) is hit first. Supports masked loads: the bobtail unit fetches masked-off
+lanes and merely flags them, so the reused Packer is extended to **suppress** those accesses
+instead, per the mask rule above. Does not support indexed loads.
 
 Skipper
 ^^^^^^^
-Handles masked, non-indexed loads where masked-off elements should 
-be skipped rather than fetched. It packs whole segments per element but uses the mask bits 
-(via a priority encoder) to jump past runs of disabled elements in power-of-2 strides, 
-emitting "fake" packets for skipped regions. Use this instead of the packer when a mask 
-is present, and instead of the walker when there is no index.
+Handles **non-indexed, non-unit-stride accesses** — strided and segmented — whether or not a mask
+is present, and where masked-off elements should be skipped rather than fetched.
+It packs whole segments per element but uses the mask bits
+(via a priority encoder) to jump past runs of disabled elements in power-of-2 strides,
+emitting "fake" packets for skipped regions. **Masking is an optimization here, not a selection
+criterion**: with no mask active the Skipper skips nothing and simply walks the elements at
+``base + i*stride``. Use this instead of the packer whenever the access is not unit-stride, and
+instead of the walker whenever there is no index.
 
 Walker
 ^^^^^^
-Handles indexed loads (and the general element-by-element fallback) 
-by walking through elements one at a time, taking a per-element byte offset and mask bit 
-from the index interface. Segments are still packed per element, but each element gets 
-its own computed address and direction; to avoid stall/wait states it won't release the 
-final segment or start until the next index arrives. Use this for any indexed load or 
-indexed-masked load — it does not support non-indexed masked loads which the skipper will handle.
+Handles **indexed accesses**
+by walking through elements one at a time, taking a per-element byte offset and mask bit
+from the index interface. Segments are still packed per element, but each element gets
+its own computed address and direction; to avoid stall/wait states it won't release the
+final segment or start until the next index arrives. Use this for any indexed or
+indexed-masked access — it does not support non-indexed accesses, which the skipper handles.
+The Walker is **not** the fallback for a non-indexed access: its per-element offset comes from the
+index interface, and a strided access has no index vector to drive it.
+
+``ld_vAGEN_1`` performs both vector reads that feed these generators: the **index vector** on ``R0``
+and the **mask** on ``R1`` (:ref:`vrf-ports` is the authority for the port numbers). The index read
+drives the Walker's index interface; the mask read drives the Skipper's priority encoder and the
+mask rule above. On the store path ``st_vagen_1`` reads both through ``R4``.
 
 |caracal| splits the vAGEN into two stages. The first stage is after the issue stage (the
 ``IQ_V_LOAD``/``IQ_V_STORE`` queues) where load and store OP.v's are issued to ld_vAGEN_1 and
@@ -104,8 +169,12 @@ wide so the st_vdgen reads and buffers the entire vPRN read value, and generates
 
 These nOP.v bundles must be dispatched to the LSU store queues in-order and atomically. Each nOP.v
 must be processed in program and memory order, to maintain precise exception tracking via 
-VSTART. As data within vPRN's is already packed each effective address corresponds to one 
-consecutive element of the vPRN.
+VSTART. As data within vPRN's is already packed each effective address is paired with the data of
+the element that ``st_vagen_1`` selected. The ``st_vdgen`` **must not re-derive which elements
+survive masking**: it consumes the **same mask-derived element cursor** as ``st_vagen_1``, so the
+address and data bundles stay paired element-for-element and a masked-off element is skipped in
+both streams. With no mask active the cursor advances consecutively, one bundle per consecutive
+element of the vPRN.
 
 For unit-stride load/stores, the st_vdgen may read an entire vPRN and pass the entire VLEN
 read data alongside the effective base address from st_vagen_1 to be dispatched to LSU.
@@ -126,11 +195,16 @@ implement the CII interface. Improvements from the previous generation include a
 to support segmented LS.
 
 Like |boom|'s **RoCC** interface, the CII IQ issues to the VPU **only instructions that are
-non-speculative** — its in-order-FIFO head is granted only once it is **past the PNR** (older than
-``rob_pnr_idx``, guaranteed to commit) **and** its operands are ready, **in program order** (see the
-Issue/Scheduling Stage). Consequently the in-order VPU never has to undo speculative work: it needs
-**no branch-kill or replay** path, because anything dispatched over the CII will commit. Squashed
-``IQ_V_ALU`` entries are dropped from the FIFO before they ever issue.
+non-speculative** — an entry is granted only once it is **past the PNR** (older than
+``rob_pnr_idx``) **and** its operands are ready. The gate is **per entry**, and ``IQ_V_ALU`` is
+age-ordered rather than head-only (see the Issue/Scheduling Stage). Squashed
+``IQ_V_ALU`` entries are dropped from the queue before they ever issue.
+
+The VPU therefore needs no **branch**-kill path: the PNR cannot sweep past an unresolved branch, so
+nothing it accepts is ever younger than one. It *does* need a **drain-on-flush** path, because
+past-PNR is not a commit guarantee — a ROB-head flush (exception,
+``MINI_EXCEPTION_MEM_ORDERING``, CSR replay, ERET) can squash work the CII has already accepted. See
+:ref:`cii-flush` for the contract.
 
 Performance: in-order vector arithmetic is a deliberate trade-off
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -138,7 +212,7 @@ Performance: in-order vector arithmetic is a deliberate trade-off
 |caracal| is **out-of-order for vector memory and in-order for vector arithmetic.** Vector
 load/store ``OP.v``'s issue out-of-order from ``IQ_V_LOAD``/``IQ_V_STORE`` and disambiguate against
 scalar memory in both directions; vector **arithmetic / reduction / permutation** ``OP.v``'s are
-issued from ``IQ_V_ALU`` **in program order** over the CII to the in-order VPU. 
+issued from ``IQ_V_ALU`` **in age order** over the CII to the in-order VPU.
 
 - **What it costs.** A long-latency vector arithmetic ``OP.v`` (e.g. a vector multiply or a
   reduction) blocks *younger* vector arithmetic behind it, even when the younger op is independent —
@@ -179,7 +253,7 @@ The interface is four independent, **credit-metered, unidirectional** channels (
 16 credits each). The relay between host and coprocessor is pure latency pipes with no buffering;
 each channel's **receiver** owns the FIFO and returns one credit per pop. Parameters (Caracal
 sizing): ``VLEN = 256``, ``XLEN = ELEN = 64``, ``MAX_MEMBERS = 8`` (EMUL ≤ m8), 1 issue lane,
-2 source-request / source-data lanes, 2 writeback lanes, 16 in-flight ``tag``\ s.
+4 source-request / source-data lanes, 1 writeback lane, 16 in-flight ``tag``\ s.
 
 .. list-table::
    :header-rows: 1
@@ -201,10 +275,13 @@ sizing): ``VLEN = 256``, ``XLEN = ELEN = 64``, ``MAX_MEMBERS = 8`` (EMUL ≤ m8)
      - cop → host
      - ``{tag, wb_data[VLEN], wb_dst_offset, wb_wr_en, wb_status}`` — one result beat.
 
-The ``tag`` is an **opaque 4-bit handle** allocated by the host at issue and echoed by the
-coprocessor on every request/writeback beat. It indexes the host's per-tag **side-table**
-(``tag → {rob_idx, pvdest_grp, pvdest_grp_mask, pvs1/2/3_grp, pvm, scalar, pdst, vsew,
-dst_rtype, …}``). The coprocessor treats it as an identifier only; it never inspects its contents.
+The ``tag`` is an **opaque 4-bit handle** (parameter ``ciiTagBits``, 16 in flight) allocated by the
+host at issue and echoed by the
+coprocessor on every request/writeback beat. It indexes the host's per-tag **side-table**, whose
+membership is defined once in :ref:`cii-issue` and not restated here. The coprocessor treats the
+tag as an identifier only; it never inspects its contents. The ``killed`` bit carries the
+drain-on-flush state of :ref:`cii-flush`, and ``stale_pvdest_grp`` is what the ``STALE_VD`` slot
+resolves to (:ref:`old-vd`).
 
 What the host provides
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -213,16 +290,19 @@ What the host provides
 records a side-table entry keyed by the freshly-allocated ``tag``.
 
 **Source-Data channel** — the host answers each Source-Request beat with a ``VLEN`` data beat, **in
-the same order the requests arrived** (a small in-flight ordering FIFO preserves order across the
-two lanes). It resolves the request's ``op_id`` + ``op_offset`` to a source and reads it:
+the same order the requests arrived** — a single global order across all four lanes, defined in
+:ref:`cii-operands`. It resolves the request's ``op_id`` + ``op_offset`` to a source and reads it:
 
-- a **vector** slot (``VS1``/``VS2``/``VS3``/``VM``) → a registered read of the host VRF (CII read
-  ports 5/6) at the **physical** register of that member;
+- a **vector** slot (``VS1``/``VS2``/``VS3``/``VM``/``STALE_VD``) → a registered read of the host VRF
+  (CII read ports ``R5``-``R8``, see :ref:`vrf-ports`) at the **physical** register of that member.
+  The host serves whichever slot is requested and applies no instruction-dependent reinterpretation
+  (:ref:`cii-operands`);
 - the **scalar** slot (``SCALAR``) → the ``.vx``/``.vf`` integer/FP scalar **value**, captured from
   the INT/FP RF at issue and served from the side-table (no VRF read).
 
 The host applies **no** ``vta``/``vma`` masking on the operand read — the coprocessor pulls the
-``v0`` mask (``VM``) and the old-destination group (``VS3``) itself and applies tail/mask internally.
+``v0`` mask (``VM``) and the old-destination group (``STALE_VD``) itself and applies tail/mask
+internally.
 
 What the coprocessor provides
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -231,8 +311,9 @@ What the coprocessor provides
 member it needs, pulls ``{tag, op_id, op_offset}``:
 
 - ``op_id`` (``cii_caracal_srcid_e``) names the *abstract* source slot, not a register:
-  ``NONE=0`` (reserved), ``VS1=1``, ``VS2=2``, ``VS3=3`` (3rd source / old dest for read-modify-write),
-  ``VM=4`` (the ``v0`` mask), ``SCALAR=5`` (the ``.vx``/``.vf`` scalar);
+  ``NONE=0`` (reserved), ``VS1=1``, ``VS2=2``, ``VS3=3`` (the **explicitly encoded** third source,
+  nothing else), ``VM=4`` (the ``v0`` mask), ``SCALAR=5`` (the ``.vx``/``.vf`` scalar),
+  ``STALE_VD=6`` (the old-``vd`` group, for merging — see :ref:`cii-operands`);
 - ``op_offset`` is the **LMUL member index** (0..MAX_MEMBERS-1) within the register group. For a
   register group of ``NM = EMUL`` members the coprocessor walks ``op_offset = 0..NM-1``; widening
   doubles the destination/relevant-source member count.
@@ -304,7 +385,11 @@ Because the interface has no separate CSR channel and a 32-bit RVV instruction d
      - Active vector length — from the VL-RF read of ``uop.pvl``.
    * - ``vstart``
      - 9 b
-     - Start element for precise resume. M2 forces ``0`` (past-PNR issue, no mid-op fault resume).
+     - Start element — read from the ``vstart`` CSR at issue and **honoured by the VPU** (elements
+       below it are left untouched). It is **not** forced to ``0``: software may set ``vstart``
+       directly with ``csrw vstart``, and RVV requires elements below it to be unmodified — visible
+       whenever ``vd`` overlaps a source. Hardware never *produces* a non-zero ``vstart``, because
+       vector LS faults trap with ``vstart = 0`` and restart (see :ref:`elem-progress`).
    * - ``vxrm``
      - 2 b
      - Fixed-point rounding mode — from ``csr.io.vector``.
@@ -315,3 +400,7 @@ Because the interface has no separate CSR channel and a 32-bit RVV instruction d
 The packet is prefixed with the 4-bit ``tag``. A per-source ``src_reuse`` hint field exists in the
 type but is **ignored in M2** (the host drives 0 and the coprocessor re-pulls every operand);
 honoring it to elide redundant pulls is a future optimization.
+
+Because this packet carries the full dynamic context per instruction, the CII needs **no
+cross-instruction configuration state and no serializing configuration write** — which is what
+permits ``IQ_V_ALU`` to issue age-ordered rather than in program order (see :doc:`issue`).

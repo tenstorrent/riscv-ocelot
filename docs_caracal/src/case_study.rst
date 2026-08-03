@@ -11,6 +11,8 @@ This document will review how edge-cases and complex instructions are handled by
 
 
 
+.. _case-segmented-ls:
+
 Segmented Load Stores (Shared Instruction)
 -------------------------------------------
 
@@ -20,6 +22,8 @@ is executed by the load store unit to move data to/from memory, and the other ha
 to transpose the data; they hand off through ``pvtmp``.
 
 
+
+.. _case-vl-zero:
 
 VL == 0
 -------
@@ -43,6 +47,15 @@ physical group was renamed for it. Two cases, gated on ``vta``:
   like a real load, so the ROB/Busy-Table/wakeup path is unchanged.
 - **Tail-agnostic (``vta = 1``).** The tail may hold any value, so no copy is required; the entry
   takes the squash / complete-without-execute path and emits its group-done immediately.
+
+The Load Unit's VRF ports are arbitrated by a **strict-priority mux**: an active load drain always
+wins, and the group copy takes the ports only in a cycle when no drain is using them. There is no
+anti-starvation counter, because liveness here is **structural**. The ``VL = 0`` op holds a ROB entry
+and commit is in program order, so a steady stream of younger loads fills the ROB, dispatch stalls,
+the in-flight drains finish, and the ports fall idle. The copy is rare and not latency-critical, so
+eventual progress without a cycle bound is sufficient — unlike the D$ lane
+(:ref:`dcache-arbiter`), which carries scalar traffic and therefore does need a bounded
+round-robin guarantee.
 
 This is the degenerate (``elem_start ≥ vl``) corner of the **general** tail/mask-undisturbed
 handling, which is *not* special to ``VL = 0``: on every masked or partial-tail vector op the

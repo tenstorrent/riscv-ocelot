@@ -13,5 +13,6 @@ top: sync_fifo
 modules:
   sync_fifo:
     source: fifo.nlhdl.sv
+    mode: new              # nlhdl owns the whole module; write `output:` fresh
     output: generated/sync_fifo.sv
     # No `instantiates:` -> leaf module, nothing else to build.

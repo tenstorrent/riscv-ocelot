@@ -1,3 +1,5 @@
+.. _issue-chapter:
+
 Issue
 =====
 
@@ -11,6 +13,8 @@ Issue
 
    Overview of Dispatch and Issue Stages.
 
+.. _dispatch-stage:
+
 Dispatch Stage
 --------------
 
@@ -20,7 +24,39 @@ instruction into the appropriate IQ and reserves the LDQ/STQ slot in program ord
 only the in-order dispatch stage can do. The dispatch stage is essentially unchanged from
 |boom| except modified to support vector op-codes and routing into the new ``IQ_V_*`` queues.
 
+.. _vec-queue-reservation:
+
+Vector element-queue reservation (in program order)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Dispatch acquires one more thing for a vector memory ``OP.v``: **capacity in the vector element
+queues**, reserved in program order alongside the LDQ/STQ slot. A vector load/store may not dispatch
+unless its target address queue (and, for stores, data queue) has room for its **worst-case active
+element count**, computed from ``EMUL`` and ``EEW`` — both known at decode (e.g. ``SEW=8, LMUL=8`` at
+``VLEN=256`` → ``8 × 256/8 = 256`` elements). At execute, once ``VL`` is read from the VL RF, the
+**unused portion of the reservation is released**.
+
+**The release is tail-only.** The Vector AGEN — the stage that reads ``VL`` — may return the unused
+portion **only while the reserving ``OP.v``'s region is still the youngest in that queue**, in which
+case the release simply moves the tail pointer back. If any younger ``OP.v`` has already reserved
+past it, the unused entries stay held and are freed in order with the rest of the region. A
+mid-queue release is **not** permitted: it would punch a hole in the occupied region and break the
+program-ordered-tail invariant that property 2 below depends on. The honest cost of the restriction
+is that under a stream of vector memory ops the release usually cannot fire, so the worst-case
+reservation, not ``VL``, is what bounds in-flight vector memory (:ref:`ssi-queues`).
+
+This is the same discipline :ref:`rename-stage` already applies to the LDQ/STQ slot, extended to the
+element queues, and it buys two unrelated properties that both turn out to be structural:
+
+1. **Deadlock freedom** for stores — see :ref:`ssi-queues`.
+2. **Squashability by pointer rollback** — because reservations are handed out in program order, each
+   queue's occupied region is program-ordered, so a mispredict rolls the tail back to the branch's
+   reservation index exactly as |boom| rolls ``stq_tail``. No per-entry ``br_mask`` is needed on
+   queues that hold hundreds of entries. See :ref:`vec-squash`.
+
 A special case exists for shared vector instructions.
+
+.. _cii-shared-sched:
 
 CII Shared Instruction Scheduling
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -28,7 +64,9 @@ CII Shared Instruction Scheduling
 Shared instructions (currently only segmented load/store, marked ``is_shared`` by the
 Decoder) require more than one execution resource. In the single-stage scheme this is
 handled at **dispatch time**: when a segmented load or store is renamed by the vector mapper,
-it is dispatched to BOTH the CII IQ/coprocessor and its own Load/Store path. A shared vector
+it is dispatched to BOTH the CII IQ/coprocessor and its own Load/Store path. Its ``pvdest`` and
+``pvtmp`` groups are allocated **all-or-nothing** (see the note under CII Shared Instruction Mapping
+in :doc:`midcore`) — a partially allocated shared op would hold PRNs it cannot free until commit. A shared vector
 *arithmetic* instruction does not apply — the coprocessor fully manages its own
 resources — so shared handling applies only to vector load/store.
 
@@ -45,7 +83,11 @@ Segmented Load
 ^^^^^^^^^^^^^^
 
 1. The LSU treats ``pvtmp`` as its **destination** group and writes the loaded data into it.
-2. The LSU is selected for issue when all of its vector source operands are available.
+2. The LSU is selected for issue when its **address operands** are ready — the scalar base and
+   stride, the index vector for indexed forms, ``pvm`` when the op is masked, and ``pvl``. This is
+   the same condition midcore.rst §"Segmented Load" states, named explicitly here. It is
+   deliberately narrower than "all vector source operands": the LSU half of a segmented load never
+   reads ``pvs3``, so gating on it would couple the half to an operand it does not use.
 3. ``pvtmp``'s group-done wakes the coprocessor, which reads ``pvtmp``, transposes, and writes
    ``pvdest``.
 
@@ -55,9 +97,50 @@ Segmented Store
 
 1. The coprocessor treats ``pvtmp`` as its **destination** group and writes the transposed data
    into it.
-2. ``pvtmp``'s group-done wakes the store IQ slot.
+2. ``pvtmp``'s group-done wakes the store IQ slot's **DGEN** path (not AGEN — see below).
 3. The LSU treats ``pvtmp`` as its **source** group, reads it from the VRF, and writes memory once
    committed.
+
+.. _shared-store-chain:
+
+The segmented-store dependency chain
+""""""""""""""""""""""""""""""""""""""
+
+The two halves of a segmented store are not independent: the coprocessor half cannot start until the
+LSU half has *already* run its address path. The full chain is six steps, and it must be respected by
+the implementation:
+
+.. code-block:: text
+
+   1. LSU half AGEN                (needs base GPR, + index vector, + mask — all from older producers)
+   2. → group-safe / clr_unsafe    (lsu.scala:1443, on do_st_search)
+   3. → PNR advances past this ROB entry
+   4. → coprocessor half becomes PNR-eligible in IQ_V_ALU and is granted
+   5. → coprocessor transposes, writes pvtmp, emits group-done
+   6. → LSU half DGEN reads pvtmp as store data
+
+Two requirements follow:
+
+- **AGEN and DGEN of the same issue slot must be independently grantable, in that order, separated by
+  a long and variable delay** (steps 1 and 6 can be hundreds of cycles apart). The slot cannot treat
+  AGEN+DGEN as a single grant.
+- **There is no circular wait**, so the chain cannot deadlock: every operand step 1 depends on comes
+  from an instruction *older* than the segmented store, and the coprocessor half's PNR eligibility
+  depends only on its own store's address translation. It is a long serial chain, not a cycle.
+
+**What makes the shared ROB entry pass the PNR.** The entry carries **one** ``rob_unsafe`` bit, and
+the LSU half's first address translation clearing it is **sufficient** — nothing waits on the
+coprocessor half. The PNR tracks the resolution of *speculation*, not completion, so a ROB entry with
+a half still un-issued is treated no differently from any other safe entry; completion is what the
+ROB's "other half pending" flag tracks, separately. Requiring *both* halves safe is what would close
+the cycle above: the coprocessor half cannot issue until the PNR passes the entry, so gating the PNR
+on that half issuing would deadlock.
+
+This chain is also why ``IQ_V_ALU`` must not be a head-only FIFO: step 4 can stall for the duration of
+a 256-element translation pass, and in a head-only queue that stall would block every younger vector
+arithmetic op (see the Issue/Scheduling Stage).
+
+.. _issue-sched-stage:
 
 The Issue/Scheduling Stage
 --------------------------
@@ -68,7 +151,7 @@ vector queues: ``IQ_V_LOAD``, ``IQ_V_STORE``, and ``IQ_V_ALU``. Each vector IQ m
 any datatype.
 
 All queues issue in a **single** scheduling stage; |caracal| does **not** add a second issue
-stage, and a vector ``OP.v`` occupies exactly one issue slot in one queue and is granted **once**,
+stage, and a non-shared vector ``OP.v`` occupies exactly one issue slot in one queue and is granted **once**,
 when all of its operands (scalar feeders and vector registers) are ready. The *selection policy*,
 however, differs by queue:
 
@@ -76,22 +159,37 @@ however, differs by queue:
   **age-ordered collapsing** Issue Queue and its priority-encoder select unchanged — they grant the
   **oldest *ready*** entry and may skip a not-ready older entry (out-of-order issue among ready ops).
   This is correct for vector loads/stores because the V-LSU is out-of-order.
-- **``IQ_V_ALU`` is an in-order, non-speculative FIFO**, **not** age-ordered. It feeds the
-  **in-order CII coprocessor**, and — like |boom|'s **RoCC** interface — only issues instructions
-  that are **known-safe and non-speculative**, in program order. It presents only its **oldest
-  (head)** entry to the CII and grants it only when **all** of:
+- **``IQ_V_ALU`` is age-ordered collapsing with a *per-entry* past-PNR gate.** Like the other queues
+  it grants the **oldest *ready*** entry, but an entry is only *eligible* once it is **past the PNR** —
+  its ROB entry is older than ``rob.io.rob_pnr_idx`` (see the ROB Point-of-No-Return logic) — so every
+  op handed to the CII is individually non-speculative, RoCC-style. The cost is latency: a vector
+  arithmetic op cannot start on the CII until older branches have resolved and older loads have
+  disambiguated (the PNR has swept past it).
 
-  1. the head's operands are ready (vector issue slot wakeup), **and**
-  2. the head is **past the PNR** — its ROB entry is older than ``rob.io.rob_pnr_idx`` (see the ROB
-     Point-of-No-Return logic), i.e. guaranteed to commit and no longer squashable.
+  .. note::
 
-  A younger ready op **never** bypasses the head; if the head is not ready *or* still speculative,
-  the queue stalls. This delivers arithmetic ``OP.v``'s to the CII **in program order and only once
-  non-speculative** (see :ref:`vector-execution`). The payoff mirrors RoCC: the in-order coprocessor
-  **never** has to handle a branch-kill or replay of an in-flight op — anything it receives will
-  commit. On a mispredict, squashed ``IQ_V_ALU`` entries are simply dropped from the FIFO before they
-  ever issue. The cost is latency: a vector arithmetic op cannot start on the CII until older
-  branches have resolved and older loads have disambiguated (the PNR has swept past it).
+     **Why this is not a head-only FIFO.** Earlier drafts made ``IQ_V_ALU`` a strict in-order FIFO,
+     presenting only its oldest entry, justified as "it feeds the **in-order** CII in program order."
+     That conflates two different things. The VPU being in-order means it processes **one instruction
+     at a time**; it does *not* require **program-order issue**, because rename has already resolved
+     every register dependence before an op crosses the CII. The three things that could have required
+     program order do not:
+
+     - **vtype/vl delivery** — would require it only if configuration arrived out-of-band via a
+       serializing ``VCONFIG`` write. It does not: vtype/vl/vstart/vxrm ride the **per-instruction
+       issue packet** (:ref:`cii-issue-packet`).
+     - **``vxsat``/``fflags`` precision** — accumulated at commit in ROB order, so unaffected.
+     - **tag/credit model** — tags are opaque and results already "may return out of order."
+
+     The head-only variant had a concrete cost: a segmented store's coprocessor half sits at the head
+     unable to issue until its *own* LSU half has translated its entire element set
+     (:ref:`shared-store-chain`), blocking **every** younger vector arithmetic op behind it for
+     potentially hundreds of cycles of dead VPU time. Age-ordered issue with a per-entry PNR gate
+     removes that head-of-line block while preserving the non-speculative property exactly.
+
+  Squashed ``IQ_V_ALU`` entries are dropped from the queue before they ever issue. Ops **already
+  accepted by the CII** are a separate matter: past-PNR is *not* a commit guarantee, and a ROB-head
+  flush can squash them — see :ref:`cii-flush`.
 
 
 Wakeup Networks
@@ -143,6 +241,14 @@ Only the ``IQ_V_*`` slots are extended; scalar slots are unchanged. A vector slo
   base comparator — is the area/timing cost of the vector slot, and is unavoidable because a source
   group may be a sub-range of, or fragmented across, larger destination groups.
 
+**The match-port budget.** A vector slot matches each of its up-to-``EMUL`` member PRNs per source
+group against **all ``numVecWbPorts`` group-done ports** each cycle, every port carrying up to
+``MAX_MEMBERS`` PRNs, plus **one** VL wakeup port for ``pvl``. The width is not a free parameter: the
+vector wakeup network is ``numVecWbPorts`` wide (midcore.rst §"Busy Table"), so a slot that matched
+fewer ports could miss a group-done. The comparator count per source group is therefore
+``EMUL × numVecWbPorts × MAX_MEMBERS`` — at ``EMUL = MAX_MEMBERS = 8`` that is 64 comparators per
+writeback port per group, which is why the per-member match dominates the slot's area.
+
 An ``OP.v`` asserts ``request`` only when **all** of its operands — scalar and vector — are
 ready:
 
@@ -150,19 +256,42 @@ ready:
 
    request := slot_valid && !iw_issued && scalar_operands_ready && vector_operands_ready
 
-For **``IQ_V_ALU``** the head additionally gates on being non-speculative (RoCC-style), so its grant
-is ``request && head && is_older(rob_idx, rob_pnr_idx)`` — see the in-order, non-speculative FIFO
-in the Issue/Scheduling Stage. ``IQ_V_LOAD``/``IQ_V_STORE`` do not gate on the PNR (vector memory may
+For **``IQ_V_ALU``** each entry additionally gates on being non-speculative (RoCC-style), so its
+eligibility is ``request && is_older(rob_idx, rob_pnr_idx)`` — a **per-entry** gate, applied to every
+slot rather than only to the head, see the Issue/Scheduling Stage.
+``IQ_V_LOAD``/``IQ_V_STORE`` do not gate on the PNR (vector memory may
 issue speculatively; the LSU handles ordering/replay and stores write memory only post-commit).
 
 For vector **stores** the existing mem-slot AGEN/DGEN split is extended: the
-data-generation (DGEN) path is gated on the vector store-data operand ``pvs3`` (matched on
-the vector network) rather than on ``prs2`` as in the scalar mem slot.
+data-generation (DGEN) path is gated on the vector store-data operand (matched on
+the vector network) rather than on ``prs2`` as in the scalar mem slot. **The gated operand is
+selected by ``is_shared``:**
+
+.. code-block::
+
+   dgen_operand := Mux(uop.is_shared, uop.pvtmp, uop.pvs3)
+
+.. warning::
+
+   Gating DGEN unconditionally on ``pvs3`` is **incorrect for a segmented store**, and earlier drafts
+   did exactly that. For a segmented store ``pvs3`` is the **coprocessor** half's source group, and it
+   is ready long before the transpose has run; the LSU half's data source is ``pvtmp``, written *by*
+   the coprocessor. Waking DGEN on ``pvs3`` therefore reads ``pvtmp`` before it is written and stores
+   garbage. DGEN must wake on ``pvtmp``'s group-done whenever ``is_shared`` is set.
+
+**The deselected operand's busy bit does not participate.** When ``is_shared`` is set, ``pvs3``'s
+busy bit is **excluded** from ``vector_operands_ready`` for the LSU half — that half never reads
+``pvs3``, which is the *coprocessor* half's source group. This is the same shape as the ``pvm`` rule
+below: the mux selects the operand, and only the selected one is waited on. Keeping ``pvs3`` in the
+readiness term would happen to work today, because it is ready long before the transpose runs, but
+it would turn that timing accident into a correctness dependence.
 
 The mask ``pvm`` is read conditionally — its busy bit only participates in ``request`` when
 the OP.v is masked (encoded ``vm`` bit clear). Unmasked ops leave ``pvm`` don't-care so a
 stale mask preg is never waited on.
 
+
+.. _issue-vl-delivery:
 
 VL delivery
 -----------
@@ -183,6 +312,8 @@ an issue operand — it rides the ``VConfig`` snapshot from decode.)
 
 
 
+.. _issue-key-features:
+
 Single-Stage Scheduling Key Features
 ------------------------------------
 
@@ -195,9 +326,11 @@ The single-stage approach with extended vector slots offers the following benefi
 3. **A vector ``OP.v`` is allocated and selected once.** There is no second issue stage, so
    there is no double allocation, no second priority-encoder select, and no cross-queue
    kill/replay to keep consistent.
-4. **Enables a detached in-order CII co-processor.** ``IQ_V_ALU`` is a **program-order,
-   non-speculative FIFO** (not age-ordered): like RoCC it issues only instructions **past the PNR**
-   (known-safe), in program order, so the in-order CII never needs branch-kill/replay. Segmented-LS
-   shared instructions rendezvous via the ``pvtmp`` group.
+4. **Enables a detached in-order CII co-processor.** ``IQ_V_ALU`` is **age-ordered with a per-entry
+   past-PNR gate**: like RoCC it issues only instructions that are individually **past the PNR**
+   (non-speculative), so the CII needs no *branch* kill — the PNR cannot sweep past an unresolved
+   branch. It does need a **drain-on-flush** path for ROB-head flushes, because past-PNR is not a
+   commit guarantee (:ref:`cii-flush`). Segmented-LS shared instructions rendezvous via the ``pvtmp``
+   group.
 5. **Cracking of vector instructions in the frontend is unnecessary**, made possible by the
    atomic LMUL vector mapper and AGEN-time element cracking.

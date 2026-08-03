@@ -273,12 +273,6 @@ The CII is loosely-coupled: four unidirectional, credit-metered channels (each a
 `tt_cii_channel` credit FIFO, default depth 16). Handshake is **credit-based** (no
 `ready`); a sender holds a free-running credit counter and stalls at zero.
 
-| Channel | Dir | Payload (per lane) | Notes |
-|---|---|---|---|
-| **Issue** | host→CII | `{tag[8], instr[32], vtype{sew,lmul,vta,vma}, vl, vxrm, src_reuse_hint[3]}` | in-order; `NUM_INST_ISSUE=1`. **vtype/vl/vxrm added** to the packet (SV struct change) since the SV has no CSR channel |
-| **Src-Request** | CII→host | `{tag[8], op_id[8], op_offset[8]}` | *pull* model; `NUM_SRC_REQ=2` |
-| **Src-Data** | host→CII | `{data[VLEN=256]}` | host answers **in request order**; `NUM_SRC_DAT_RSP=2` |
-| **Writeback** | CII→host | `{tag[8], wb_data[256], wb_dst_offset[8], wb_wr_en, wb_status[6], last}` | tagged, may be OoO; `NUM_DST_WB=2`. **`last` bit added** (SV struct change) — the VPU marks the final beat of a tag so the host needn't infer completion by counting |
 
 Type params (`cii_coproc_pkg_t`): `INSTR_T=32b`, `TAG_T=8b` (≤256 in-flight),
 `SRC/DST_DATA_T=256b` (= VLEN), `SRC_ID/OFFSET=8b`, `WB_STATUS=6b` (FP flags). The CII is
@@ -289,12 +283,14 @@ references CV-X-IF, but TT-CII is its own 4-channel protocol, not CVXIF.)
 
 ### What M1 already fixed (the CII contract)
 
-- **`IQ_V_ALU` is an in-order, non-speculative FIFO.** Head-only select; grants only when
-  the head's operands are ready **and** the head is **past the PNR**
-  (`is_older(rob_idx, rob.io.rob_pnr_idx)`), RoCC-style. Squashed entries drop from the
-  FIFO before issue, so the CII needs no branch-kill/replay — **this lets M2 skip the
-  entire speculative model** (shadow table, `cv0–cv31` copy regs, drain-REQ/drop-WB on
-  redirect) described in `tt-cii/docs/specs/protocol/interface_details.adoc`.
+- **`IQ_V_ALU` is age-ordered collapsing with a per-entry past-PNR gate.** Grants only when
+  the entry's operands are ready **and** the entry is **past the PNR**
+  (`is_older(rob_idx, rob.io.rob_pnr_idx)`, applied **per entry**, not head-only), RoCC-style.
+  Squashed entries drop from the queue before issue, so the CII needs no **branch**-kill —
+  **this lets M2 skip the speculative *rename* model** (shadow table, `cv0–cv31` copy regs)
+  described in `tt-cii/docs/specs/protocol/interface_details.adoc`. It does **not** skip
+  drain-REQ/drop-WB on redirect: past-PNR is not a commit guarantee, so a ROB-head flush can
+  squash accepted CII work — that is exactly what Step A9 implements.
 - **One group-done per `OP.v`** (member-PRN vector) drives the ROB single-shot busy-clear,
   Busy-Table clear, and VECTOR wakeup — identical to the LCB's load completion
   (`VecGroupDone{prn[8],mask[8]}`; `core.scala:851,888`).
@@ -303,8 +299,11 @@ references CV-X-IF, but TT-CII is its own 4-channel protocol, not CVXIF.)
   the CII driving the second group-done unblocks full segment LS (M1 deviation #9).
 - **Feeders/wakeup:** `.vx` on INT, `.vf` on FP, vector operands on VECTOR, `pvl` on VL —
   all already delivered to `VecIssueSlot`.
-- **VRF/VL-RF headroom:** `VecRegFile(8R,4W)` — M1 uses reads 1–4 + write 0; **reads 5–7
-  and writes 1–3 are free for the CII**. VL-RF read ports 1–5 free.
+- **VRF/VL-RF headroom:** `VecRegFile(7R,4W)`, statically partitioned and **0-based**
+  (canonical table in `midcore.rst` §Port assignment). M1 owns Load/LCB `R0`–`R2` + `W0`–`W1`
+  and Store `R3`–`R4`; **the CII owns `R5`–`R6` and `W2`–`W3`**. Static partitioning (not
+  arbitration) is required: the Writeback channel is credit-metered with no back-pressure line,
+  so the CII must never stall on a VRF port.
 - **Gating:** behind a new `enableVectorArith` flag (default off); the M1 tie-off
   `assert(!valu_iss_unit.iss_uops(0).valid)` (`core.scala:1491-1501`) is removed only when
   the CII attaches under that flag.
@@ -423,7 +422,8 @@ M1's fixed "dropped vec-store grant" bug).
 #### Step B1 — Issue path (`IQ_V_ALU` → Issue channel)
 
 **Scope.** Remove the M1 assert; advertise `valu_iss_unit.io.fu_types(0)` when CII
-issue-credit > 0 (registered, no comb loop). On grant: allocate an 8b `tag`, emit the
+issue-credit > 0 (registered, no comb loop). On grant: allocate a 4b `tag` (`ciiTagBits`, 16 in
+flight), emit the
 **extended Issue packet** `{tag, instr = uop.debug_inst[31:0], vtype (from uop.vconfig), vl
 (from pvl read), vxrm (from csr.io.vector), src_reuse_hint = 0}` (decision #3 — no separate
 VCONFIG packet), and write a **tag side-table** entry: `{rob_idx, pvdest_grp[8],
@@ -441,13 +441,31 @@ Issue beat carrying the correct vtype/vl.
 #### Step B2 — Operand pull (Src-Request → VRF read → Src-Data)
 
 **Scope.** Service Src-Request: decode `{tag, op_id, op_offset}`. `op_id` →
-{`SRC1`=pvs1_grp, `SRC2`=pvs2_grp, `SRC3`=pvs3_grp, `MASK`=pvm, `SCALAR`, `NONE`};
-`op_offset` = member index. Read the VRF on **read ports 5/6** (registered, 1-cycle) or
-serve the captured scalar from the side-table; push 256b on Src-Data **in the exact order
-requests arrived** (a small in-flight ordering FIFO, since VRF reads are registered).
-Reserve the `NONE` op_id encoding ("no source needed").
+{`NONE`=0, `VS1`=pvs1_grp, `VS2`=pvs2_grp, `VS3`=pvs3_grp, `VM`=pvm, `SCALAR`,
+`STALE_VD`=stale_pvdest_grp} (canonical `cii_caracal_srcid_e` names — earlier
+`SRC1/SRC2/SRC3/MASK` spellings are retired).
 
-**Files modified.** `vec/cii/VecCiiHost.scala`; `exu/core.scala` (VRF read ports 5/6).
+> **Normative (resolved).** `VS3` and `STALE_VD` are **two distinct slots naming two distinct
+> groups**, and the host performs **no** instruction-dependent reinterpretation — it serves whichever
+> slot is requested straight from the per-tag side-table. `pvs3` is an explicitly encoded third
+> source; `stale_pvdest` is the group that held the destination arch vreg before this `OP.v` renamed
+> it. **The coprocessor decides what to pull.** For RMW arithmetic (`vfmacc.vv vd, vs1, vs2` →
+> `vd += vs1*vs2`) the two name the *same* group and the VPU pulls one; when they differ (masked
+> `vadd.vv` under `vma=0`, `vslideup` prefix, `vcompress` tail) the VPU pulls **both**, spending an
+> additional lane. An earlier draft had one `VS3` slot that the *host* resolved to `stale_pvdest`
+> "when the instruction encodes no third source" — that put instruction decoding in the host adapter
+> and made the two-different-groups case **unrepresentable**. Adding slot 6 is a one-value addition
+> to `cii_caracal_srcid_e` (the wire type is already `logic [2:0]`, so 6 and 7 were free; no payload
+> width changes), but it does require the VPU decoder to emit it — a small **SV-side** delta, so this
+> step is not strictly host-only.
+
+`op_offset` = member index. Read the VRF on **read ports `R5`–`R8`** — four lanes, because
+`CII_NUM_SRC_REQ = 4` and the VPU wrapper returns member `k` of `{VS1,VS2,VS3,VM}` in one dat beat,
+so all four can be live in the same cycle (registered, 1-cycle) — or serve the captured scalar from
+the side-table; push 256b on Src-Data **in the exact order requests arrived** (a small in-flight
+ordering FIFO, since VRF reads are registered). Reserve the `NONE` op_id encoding.
+
+**Files modified.** `vec/cii/VecCiiHost.scala`; `exu/core.scala` (VRF read ports `R5`–`R8`).
 
 **Verification (9e4 + 9g).** Trace shows each Src-Request → VRF member read → Src-Data,
 ordering preserved; masked op pulls `pvm`.
@@ -458,7 +476,7 @@ ordering preserved; masked op pulls `pvm`.
 (decision: scalar-dest ops in scope):
 
 - **Vector-dest ops** (`RT_VEC`) — map `{tag, wb_dst_offset}` → `pvdest_grp(wb_dst_offset)`;
-  write the beat **verbatim** to the VRF on **write port 1** (full-mask; the VPU already
+  write the beat **verbatim** to the VRF on **write ports `W2`–`W3`** (full-mask; the VPU already
   applied vta/vma per decision #5). On the beat with the **`last` bit set** (decision #2),
   emit `group_done{prn = pvdest_grp, mask = pvdest_grp_mask}` + `clr_rob{rob_idx}`.
 - **Scalar-dest ops** (`vmv.x.s`, `vfmv.f.s`, `vcpop.m`, `vfirst.m` → `RT_FIX`/`RT_FLT`) —
@@ -468,7 +486,7 @@ ordering preserved; masked op pulls `pvm`.
 
 Accrue `wb_status` FP flags toward `fflags`; free the `tag` on `last`.
 
-**Files modified.** `vec/cii/VecCiiHost.scala`; `exu/core.scala` (VRF write port 1 +
+**Files modified.** `vec/cii/VecCiiHost.scala`; `exu/core.scala` (VRF write port `W2` +
 INT/FP-RF scalar wb port; group_done/clr_rob to the new wakeup/clr ports); `exu/rob.scala`
 (accept CII clr_bsy).
 
@@ -491,13 +509,32 @@ LS regression stays green.
 
 #### Step B5 — Flush, exceptions, `vxrm`/fflags, segment-LS transpose half
 
-**Scope.** Past-PNR issue ⇒ no branch-kill of in-flight CII ops (the SV has no kill line,
-which is consistent). The **coprocessor never flushes** (Track C C5): on a flush it keeps
+**Scope.** Past-PNR issue ⇒ no **branch**-kill of in-flight CII ops (`is_br`/`is_jalr` set
+`starts_unsafe`, so the PNR never sweeps past an unresolved branch; the SV has no kill line, which
+is consistent). It does **not** remove flush recovery: past-PNR is *not* a commit guarantee — a
+ROB-head flush (`MINI_EXCEPTION_MEM_ORDERING`, CSR replay, exception, ERET) squashes accepted CII
+work, per `rob.scala:438-441` (*"the failing load will have been marked safe already"*). The
+contract below is now normative in `cii.rst` §Flush recovery; **all live tags are killed** with no
+age compare, because `io.flush.bits` carries no `rob_idx` and both flush sources fire at the ROB
+head, which no in-flight tag can be older than. The **coprocessor never flushes** (Track C C5): on a flush it keeps
 running accepted ops to completion. So flush handling lives entirely on the **host** — the
 adapter tracks which in-flight tags are killed (`RegNext(rob.io.flush.valid)` marks them),
 then **drops/ignores their writebacks** (and satisfies any src-data still owed with
 don't-care beats) while continuing to sink every channel beat so CII credits are returned
 and neither side stalls. A killed tag is freed from the side-table on its (dropped) `last`
+
+> **Normative (resolved).** Two points that earlier drafts got wrong and this step gets right:
+> the src-data beat owed to a killed tag is **mandatory**, not optional — the VPU is in-order with
+> no kill line, so withholding it makes the VPU wait forever, never emit `last`, never free its tag,
+> and wedge every *surviving* instruction behind it. And the suppression on a killed writeback must
+> cover **all four** effects: the VRF/INT/FP write, `clr_rob`, `VecGroupDone`, and `fflags`/`vxsat`
+> accrual.
+>
+> **Do not reuse this drain-and-discard pattern for the vector LSU.** CII *tags* are not recycled
+> during the drain, but vector destination *PRNs* are returned to the free list on the flush and
+> reallocated within a few cycles — a late LCB write would corrupt a live, unrelated instruction.
+> The LSU path needs real squashing (pointer rollback), see `loadstore.rst` §Squashing the in-flight
+> vector LSU.
 beat. `vxrm`/`vxsat` are read from `csr.io.vector`
 at issue and travel in the **extended Issue packet** (decision #3); `wb_status` fflags
 accrue at commit. For `is_shared` (segment LS), the CII drives the **second** group-done
@@ -569,6 +606,17 @@ wb lands in the correct v12). Two bugs found and one fixed:
      `VecCiiHost` forwarded a stale `vstart=32`; `vstart>vl` made the VPU treat every element
      as pre-start (keep old dest) → result = old dest. Fix: `VecCiiHost` forces `g_vstart=0`
      (M2 issues past-PNR, no mid-instruction fault resume). Result now computes `p0+p1`.
+
+     > **Root cause and proper fix (resolved).** The stale value was a symptom, not the bug: the
+     > `vstart` CSR genuinely was not architecturally maintained. Forcing `vstart=0` in the packet
+     > hides it but is **not** correct — software may set `vstart` with `csrw vstart`, and RVV
+     > requires elements below it to be left unmodified (observable whenever `vd` overlaps a source).
+     > The resolution is: (a) delegate `vstart` to rocket's `usingVector` `CSRFile`, which maintains
+     > it architecturally and clears it on every non-trapping vector instruction; (b) forward the
+     > **real** value in the issue packet and require the VPU to honour it; (c) note that *hardware*
+     > never produces a non-zero `vstart`, because vector LS faults now trap with `vstart = 0` and
+     > restart the whole instruction. See `frontend.rst` §Vector architectural state and
+     > `loadstore.rst` §Per-Element Progress Tracking.
   2. **source-readiness interlock (FIXED).** A `vadd` reading a just-loaded vreg via the CII
      read the VRF before the vector load's write landed → garbage source (passed only with a
      NOP barrier). Root cause: `VecBusyTable`'s source read used only the *registered*
@@ -582,183 +630,6 @@ wb lands in the correct v12). Two bugs found and one fixed:
      `v8` same packet → missed). **`ms12_vadd_expecthang` (no barrier) now `*** PASSED ***`
      — the first end-to-end host↔VPU vector-arith cosim with no workaround**; the NOP variant
      and `ms11a2_pure_vle` still pass.
-
----
-
-## Track C — Refactor the SV VPU to speak the CII (coprocessor side)
-
-Track B is the **host** side of the CII. Track C is the **coprocessor** side: the VPU
-(``src/main/sv/v4/vpu``) is rewired to receive instructions, *pull* source data, and *push*
-results over the same four CII channels — while its execution datapaths stay largely
-unchanged.
-
-### Governing constraint — the VPU regfile is a per-instruction staging buffer
-
-The **architectural** vector register file lives in **BOOM**. The VPU keeps its own
-``reg/tt_vec_regfile.sv`` but repurposes it as a **CII staging buffer**, not architectural
-state: CII ``Src-Data`` beats are written into it at the member address, the datapath reads
-it via its existing iterate addresses (unchanged), and results are drained from the result
-ports to CII Writeback. This is the minimal-change path — ``tt_vec_top``, the datapath, and
-the regfile RTL are all untouched; only the top-level wrapper changes to DMA operands in and
-results out over the CII. (The staging RF need only hold the in-flight instruction's source
-+ dest groups; keeping the existing 32×VLEN RF as-is is simplest and needs no RTL change.)
-
-### What exists / the boundary
-
-- **``tt_vpu_cii_wrapper_top.sv``** — a **stub**: it declares the ``tt_cii.coprocessor``
-  modport + ``debug_wb_vec_*`` and instantiates ``tt_id`` (decode) and ``tt_vec``
-  (``tt_vec_top``), but the CII glue (credit logic, issue unpack, request generation,
-  src-data routing, writeback) is empty and references leftover OVI signals. **This is the
-  file Track C fills in** (and where ``tt_vec_regfile`` is instantiated and driven).
-- **``tt_vec_top.sv`` has a clean boundary** — the regfile is already *external* to it:
-  operands arrive as inputs ``i_vrf_p0/p1/p2_rddata[VLEN]`` + ``i_vrf_vm0_rddata[VLEN]``
-  (v0) + scalar ``i_rf_vex_p0``/``i_fprf_vex_p0``; results leave on
-  ``o_vex_mem_{lqvld,lqdata,lqid,lqexc}_{1c,2c,3c,div}``. It drives per-member iterate
-  addresses ``o_iterate_addrp0/1/2`` that index the (staging) regfile → these map to the CII
-  ``op_offset`` (member index).
-- **vta/vma are hardcoded** ``1'b0`` (``tt_vec_top.sv:1026-1027``, TODO); the VPU already
-  pulls v0 and applies mask + RMW-undisturbed internally. Track C connects real vta/vma
-  (decision #5).
-
-### Design principle
-
-Minimal-invasive: ``tt_vpu_cii_wrapper_top`` becomes the **CII adapter** = issue unpack +
-operand-pull DMA (CII ``Src-Data`` → staging regfile writes) + result drain (result ports →
-CII WB) + a CSR/VCONFIG shadow. ``tt_vec_top``/``tt_id``/``tt_vec_regfile``/``execution/*``
-are untouched except for wiring vta/vma. Because the datapath reads the staging regfile via
-its existing iterate addresses, the operand-delivery and RMW/old-dest paths work **exactly
-as today** — the wrapper just fills the regfile from CII instead of from the old OVI
-load-queue, and drains results to CII instead of the old memory path.
-
-### Cross-track contract (shared with the Track B host)
-
-The op_id encoding MUST match Track B: ``op_id ∈ {SRC1=vs1, SRC2=vs2, SRC3/DEST=vs3 or
-old-dest, MASK=v0, SCALAR, NONE}``; ``op_offset`` = LMUL member index; ``wb_dst_offset`` =
-destination member index. Widening/narrowing (source EEW ≠ destination EEW) changes member
-counts, so the offset accounting must agree on both sides.
-
-.. note::
-
-   **``src_reuse_hint`` is ignored in Milestone 2.** The Issue packet's
-   ``src_reuse_eligible`` field (a hint that a source is unchanged since the CII last read
-   it, allowing the operand pull to be skipped) is **not implemented** on the VPU side for
-   now — the VPU always re-pulls every source operand. Honoring the hint to elide redundant
-   pulls is a later performance optimization.
-
-### Steps
-
-- **C0 — Coprocessor scaffolding + credit FIFOs + op_id contract.** Fill in
-  ``tt_vpu_cii_wrapper_top``: instantiate the CII coprocessor channel FIFOs (reuse
-  ``tt-cii/src/tt_cii_channel.sv``/``tt_cii_fifo.sv``), credit counters for all four
-  channels, and the shared op_id/op_offset map. **Keep the ``tt_vec_regfile`` instance** as
-  the staging buffer; remove only the leftover OVI signal references.
-- **C1 — Issue (CII Issue → ``tt_id`` → ``tt_vec``).** Consume ``iss_valid``/``iss_data``,
-  unpack ``{tag, instr[31:0]}`` (``src_reuse_hint`` ignored), drive ``tt_id.i_if_instrn`` →
-  ``tt_vec`` RTS; map ``tag ↔ ldqid`` so results correlate; drive ``iss_credit`` from RTR
-  readiness; hold a ``tag → {dst member count}`` table.
-- **C2 — VCONFIG / CSR shadow + vta/vma wiring.** Maintain a ``csr_t`` shadow updated by
-  VCONFIG CSR-write packets (vsew/vlmul/vl/vxrm/frm) feeding ``i_csr``; **replace the
-  hardcoded ``i_vta``/``i_vma`` (``tt_vec_top.sv:1026-1027``) with vtype's vta/vma** — this
-  enables decision #5 (the VPU applies tail/mask).
-- **C3 — Operand pull (Src-Request ← decode; Src-Data → datapath inputs).** From the
-  ``vec_autogen`` source enables (``rf_rden0/1/2``, ``usemask``, scalar, RMW-old-dest)
-  generate CII ``req`` beats ``{tag, op_id, op_offset=member}`` for every needed member —
-  **including v0 (MASK) and the old destination group when undisturbed** (this realizes "the
-  VPU pulls the mask"). Since ``src_reuse_hint`` is ignored, **every** source is re-pulled.
-  **A load-phase FSM writes each returned ``dat`` beat into the staging regfile at its
-  member address** (request order), then releases the instruction to ``tt_vec`` — which
-  reads the regfile via its existing ``o_iterate_addrp*`` reads, unchanged. Drive
-  ``req_valid``; consume ``req_credit``/``dat_credit``.
-
-  **As-built (PREFETCH-AT-ISSUE, approach a).** C1 and C3 are merged into one FSM
-  (``S_IDLE→S_WAIT→S_REQ→S_DRAIN→S_HOLD``). Operands are decoded from the *raw* issue insn
-  (``VS1=insn[19:15]``, ``VS2=insn[24:20]``, ``VS3=insn[11:7]``, ``VM=v0``) and prefetched
-  into the staging regfile **before** the instruction is presented to ``tt_id`` (S_HOLD sets
-  ``read_valid``). This is required because ``tt_id``→``tt_vec`` is a *single* combinational
-  RTS/RTR handshake: a first design gated ``tt_id``'s accept on ``operands_ready`` and
-  **deadlocked** — ``o_id_instrn_rtr ← i_vex_id_rtr ← operands_ready ← (load done) ← (tt_id
-  accept)`` is circular. Prefetching decouples operand fetch from that handshake, so the
-  ungated handshake is restored and staging is guaranteed full before ``tt_vec``'s first
-  iterate-read. The writeback tag is keyed by ``vec_autogen.ldqid`` (the lqid ``tt_id``
-  actually assigns and echoes on the result port; ``o_id_vex_lqid`` is undriven in this
-  build).
-
-  **Member walk (EMUL).** ``tt_id`` presents the op once, then REPLAYS it internally once
-  per LMUL member, incrementing ``rf_addrp0/1/2`` (= base+member) and ``ldqid`` (=
-  base_ldqid+member) each member; the datapath reads the staging RF at the incrementing
-  ``rf_addrp``. So the prefetch loops (source × member): it fetches members ``0..NM-1`` of
-  each VS* into staging at ``src_base+member`` (VM/v0 is a single register → member 0 only),
-  where ``NM`` = LMUL (vlmul 0/1/2/3 → 1/2/4/8; fractional → 1). ``dat_credit`` is asserted
-  throughout the request stream (not just at drain) so the dat FIFO never backs up when
-  ``sources×NM`` exceeds the credit depth (LMUL=8 issues 25 requests vs 16 credits). Each
-  member yields one result beat carrying ``ldqid=base+member``; C4 recovers ``wb_dst_offset``
-  and the ``last`` (final-member) marker from per-lqid tables that C3 fills for **all** result
-  members at accept.
-
-  **Widening / narrowing (dest EMUL ≠ src EMUL).** The decode is combinational
-  (``HIGH_PERF_FETCH``), so the wrapper reads ``id_vec_autogen.wdeop`` / ``nrwop`` /
-  ``src1hw`` during prefetch and sizes each operand's fetch independently. Linear staging at
-  ``base+member`` stays correct — ``tt_id``'s replay increments (``addrp*_incr`` masks: full
-  step ``0xff``, half step ``0xaa``) pick the right index per beat. Per-operand member counts
-  (``NM`` = source LMUL): VS1 = NM; VS2 = 2·NM if ``nrwop`` or (``wdeop && src1hw``) else NM;
-  VS3/dest-group = ``dst_nm``; VM = 1. Result beats ``dst_nm`` = ``wdeop ? 2·NM : NM`` (widen
-  dest is 2·NM members; narrow consumes the 2·NM-member wide source but writes NM dest
-  members).
-
-  **Per-op source-set pruning.** The wrapper fetches only the operands the op reads: the
-  combinational decode read-enables gate each source — ``rf_rden0/1/2`` for VS1/VS2/VS3,
-  ``usemask`` for the v0 mask. A disabled source is stepped over with no request. (Note:
-  under tail-/mask-undisturbed vtype, ``rf_rden2`` is set so the datapath reads the old dest
-  group, and that group is correctly staged.) NOTE: this exposed and fixed a latent
-  send-credit bug — the channel returns a credit every cycle ``ds_credit`` is high
-  (``us_credit = ds_credit``, ungated by an actual pop), so the coprocessor's uncapped
-  send-credit counter overflowed its width and wrapped to 0, dropping a writeback beat; the
-  req/wb counters are now capped at the FIFO depth.
-- **C4 — Writeback (result ports → CII Writeback).** Collect
-  ``o_vex_mem_lqdata_{1c,2c,3c,div}`` + ``lqid`` + ``lqexc`` per member; map ``lqid → tag``;
-  drive ``wb_valid``/``wb_data {tag, wb_data (fully-formed, vta/vma applied),
-  wb_dst_offset=member, wb_wr_en, wb_status=fp flags}``; consume ``wb_credit``. Emit exactly
-  the active members. (Results go to CII; the staging regfile is not the architectural RF,
-  so nothing persists across instructions there.)
-- **C5 — Kill/flush: NOT IMPLEMENTED on the coprocessor (by design).** The VPU has **no
-  flush port and no rollback machinery**. On a host redirect/flush the coprocessor simply
-  **keeps running** every instruction already accepted into the CII queues to completion —
-  it continues to drain the issue/req/dat channels, return credits, and emit writebacks as
-  normal. Correctness is the **host's** responsibility: the host **drops/ignores** the
-  writeback (and any src-data owed) for tags belonging to killed instructions, while still
-  sinking their beats so credits are returned and the channels do not stall. This is sound
-  because issue is past-PNR (decision #1) — in the common case nothing is killed anyway, and
-  a VPU-side flush would only save a few cycles of wasted compute at the cost of a
-  reset/drain FSM the coprocessor otherwise never needs. (Host side: see Track B B5.)
-- **C6 — Integration + cosim.** Wire ``tt_vpu_cii_wrapper_top`` ↔ Track B's
-  ``tt_cii_host_wrap.sv`` through the CII credit relay; bring up under VCS+Whisper via the
-  (e4) vector-arith regression. ``debug_wb_vec_*`` feeds the cosim commit trace.
-
-**Track C risks.** RMW/old-dest: pull the prior dest group into the staging regfile when the
-op is RMW so ``tt_vec_top``'s dest read-back works unchanged; iterate↔offset mapping across
-widening/narrowing must match the host's ``pvs*_grp``/``pvdest_grp`` member indexing; the
-load-phase FSM must fully stage the group (or pipeline member k+1 vs compute k) so the
-datapath is never starved when ``dat`` under-runs.
-
-**Track C verification status (as-built).** C0–C4 elaborate cleanly under VCS
-(``vpu/lint_vpu_cii.sh``) and pass a standalone functional smoke test
-(``vpu/fv_vpu_cii.sh`` + ``vpu/tb/cii_fv_tb.sv``): the tb plays the CII **host** through the
-real ``tt_cii`` credit relay, issues ``vadd.vv v3,v2,v1`` (SEW=32, LMUL=1, vl=8, unmasked),
-serves the coprocessor's four source-operand requests, and checks the writeback. The full
-loop runs end-to-end — issue → prefetch operands into staging → ``tt_id`` decode →
-``tt_vec`` compute → writeback — and returns the correct per-lane sums with the correct CII
-``tag``. The **member walk is verified across a 17-config matrix** (``+OP_SEL`` ×
-``+LMUL_LOG2``): ``vadd.vv`` normal (LMUL 1/2/4/8), ``vwaddu.vv`` widening (LMUL 1/2/4 → dst
-2/4/8 members), ``vnsrl.wv`` narrowing (LMUL 1/2/4, 2·NM-member wide source → NM dst members),
-``vadd.vv`` **masked** (LMUL 1/2/4: v0 fetched, inactive lanes keep old dest under vma=0), and
-``vadd.vx`` **scalar** (LMUL 1/2/4/8) — all return the correct per-member results with the
-right ``wb_dst_offset`` and ``last`` on the final member (LMUL=8 exercises 25 requests through
-the 16-deep credit FIFO via the interleaved drain). Scalar operands: ``.vx``/``.vf`` pull rs1
-via a ``SRC_SCALAR`` request onto ``i_if_scalar_opnd``; ``.vi`` immediates need no fetch
-(``tt_vec`` derives them). v0 fetch is gated by ``usemask || ~vm`` (masked ops or
-mask-as-operand ops like vadc/vmerge). C5 is intentionally a no-op on the coprocessor (host
-drops killed-tag writebacks). Remaining: C6 (host↔coproc integration + Whisper cosim),
-scalar-DEST paths (vmv.x.s etc.), and broader coverage (FP, reductions, fixed-point/``vxrm``).
 
 ---
 
@@ -798,7 +669,7 @@ scalar-DEST paths (vmv.x.s etc.), and broader coverage (FP, reductions, fixed-po
 ## Non-goals for Milestone 2 (deferred to M3+)
 
 - Anything requiring the CII spec that isn't captured by the placeholder contract above.
-- VRF banking / port tuning beyond the M1 8R/4W (unless the CII forces it).
+- VRF banking / port tuning beyond the M1 9R/3W (unless the CII forces it).
 - Multi-hart / coherence stress beyond the single-hart RVWMO bar.
 - A memory-compare Whisper cosim hook (recommended follow-on; the (e3) load-back pattern
   is the M2 workaround for the M1 store-data cosim gap).

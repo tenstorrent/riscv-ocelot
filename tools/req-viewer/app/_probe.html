@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>probe: pending</title></head>
+<body style="font:13px monospace;white-space:pre-wrap">
+<div id="log">booting…</div>
+<iframe id="app" src="/" style="width:1400px;height:900px;border:1px solid #ccc"></iframe>
+<script>
+const lines = [];
+const log = (m) => { lines.push(m); document.getElementById('log').textContent = lines.join('\n'); };
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function check(name, cond, extra) {
+  log(`${cond ? 'PASS' : 'FAIL'}  ${name}${extra ? '  — ' + extra : ''}`);
+  return cond;
+}
+
+async function run() {
+  const frame = document.getElementById('app');
+  await new Promise(r => frame.addEventListener('load', r, { once: true }));
+  const win = frame.contentWindow, doc = frame.contentDocument;
+  await sleep(1500);
+
+  check('toolbar stats rendered', /reqs/.test(doc.querySelector('#stats').textContent),
+        doc.querySelector('#stats').textContent);
+  check('doc selector populated', doc.querySelector('#doc-select').options.length > 5,
+        doc.querySelector('#doc-select').options.length + ' docs');
+
+  const page = doc.querySelector('#page');
+  const pdoc = page.contentDocument;
+  check('spec iframe reachable', !!pdoc && !!pdoc.body);
+  const cited = pdoc.querySelectorAll('[data-block].rv-cited');
+  check('cited blocks marked in spec', cited.length > 3, cited.length + ' cited blocks');
+  check('sphinx theme applied',
+        getComputedStyle(pdoc.querySelector('.rst-content p') || pdoc.body).fontFamily.length > 3,
+        getComputedStyle(pdoc.body).fontFamily.slice(0, 40));
+
+  // --- hover ---------------------------------------------------------------
+  const target = cited[Math.min(2, cited.length - 1)];
+  target.dispatchEvent(new pdoc.defaultView.MouseEvent('mouseover',
+      { bubbles: true, view: pdoc.defaultView }));
+  await sleep(250);
+  const cards = doc.querySelectorAll('#reqs-list .card');
+  check('hover populated the requirement pane', cards.length > 0, cards.length + ' cards');
+  check('hovered block highlighted', target.classList.contains('rv-hover'));
+  check('pane subtitle names the source', /cite/.test(doc.querySelector('#reqs-source').textContent),
+        doc.querySelector('#reqs-source').textContent.slice(0, 90));
+
+  // --- hover elsewhere: list follows ---------------------------------------
+  const other = cited[Math.min(6, cited.length - 1)];
+  const before = doc.querySelector('#reqs-list .card .rid').textContent;
+  other.dispatchEvent(new pdoc.defaultView.MouseEvent('mouseover', { bubbles: true }));
+  await sleep(250);
+  const after = doc.querySelector('#reqs-list .card .rid').textContent;
+  check('list follows the hover', before !== after || other === target, `${before} -> ${after}`);
+
+  // --- click to pin --------------------------------------------------------
+  other.dispatchEvent(new pdoc.defaultView.MouseEvent('click', { bubbles: true }));
+  await sleep(250);
+  check('click pinned the block', other.classList.contains('rv-pinned'));
+  check('pin badge visible', !doc.querySelector('#pin-badge').hidden);
+  const pinned = doc.querySelector('#reqs-list .card .rid').textContent;
+  target.dispatchEvent(new pdoc.defaultView.MouseEvent('mouseover', { bubbles: true }));
+  await sleep(250);
+  check('pinned list ignores hover',
+        doc.querySelector('#reqs-list .card .rid').textContent === pinned);
+
+  // --- select a requirement ------------------------------------------------
+  const card = doc.querySelector('#reqs-list .card');
+  card.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  await sleep(500);
+  check('card selected', card.classList.contains('selected'));
+  check('quote marked in spec', pdoc.querySelectorAll('mark.rv-quote').length > 0,
+        pdoc.querySelectorAll('mark.rv-quote').length + ' marks');
+  const markedText = Array.from(pdoc.querySelectorAll('mark.rv-quote'))
+      .map(m => m.textContent).join('').slice(0, 70);
+  log('      marked text: ' + JSON.stringify(markedText));
+  check('nlhdl pane shows the requirement',
+        /req-spec-/.test(doc.querySelector('#nlhdl-body').textContent),
+        doc.querySelector('#nlhdl-body').textContent.replace(/\s+/g, ' ').slice(0, 80));
+  check('rtl pane shows the requirement',
+        /req-spec-/.test(doc.querySelector('#rtl-body').textContent));
+
+  // --- how many quotes can be marked at all? ------------------------------
+  let tried = 0, marked = 0;
+  const reqs = win.RV.index.reqs.filter(r => r.doc === win.RV.doc);
+  for (const req of reqs.slice(0, 60)) {
+    tried++;
+    win.unmark();
+    for (const bid of req.blocks) {
+      const node = pdoc.querySelector('[data-block="' + bid.replace(/:/g, '\\:') + '"]');
+      if (node) win.markQuote(node, req.source.quote_text);
+    }
+    if (pdoc.querySelectorAll('mark.rv-quote').length) marked++;
+  }
+  check('quote spans locatable in the DOM', marked / tried > 0.95,
+        `${marked}/${tried} quotes marked`);
+
+  // --- table-row quotes (list-table renders one cell per column) -----------
+  let rowTried = 0, rowMarked = 0;
+  for (const req of win.RV.index.reqs.filter(r => /^\*\s*-/.test(r.source.quote_text)).slice(0, 25)) {
+    const pd = doc.querySelector('#page').contentDocument;
+    if (req.doc !== win.RV.doc) continue;
+    rowTried++;
+    win.unmark();
+    for (const bid of req.blocks) {
+      const node = pd.querySelector('[data-block="' + bid.replace(/:/g, '\\:') + '"]');
+      if (node) win.markQuote(node, req.source.quote_text);
+    }
+    if (pd.querySelectorAll('mark.rv-quote').length) rowMarked++;
+  }
+  check('table-row quotes markable', rowTried === 0 || rowMarked === rowTried,
+        `${rowMarked}/${rowTried} row quotes marked`);
+
+  // --- idle state ----------------------------------------------------------
+  doc.querySelector('#clear').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  await sleep(200);
+  const chips = doc.querySelectorAll('#reqs-list .chip');
+  check('idle offers family chips', chips.length > 1, chips.length + ' chips');
+  chips[0].dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  await sleep(300);
+  check('family chip lists its requirements',
+        doc.querySelectorAll('#reqs-list .card').length > 0,
+        doc.querySelectorAll('#reqs-list .card').length + ' cards');
+
+  // --- search --------------------------------------------------------------
+  const box = doc.querySelector('#search');
+  box.value = 'credit';
+  box.dispatchEvent(new win.Event('input', { bubbles: true }));
+  await sleep(400);
+  check('search returns hits', doc.querySelectorAll('#reqs-list .card').length > 0,
+        doc.querySelectorAll('#reqs-list .card').length + ' hits');
+
+  // --- cross-doc selection -------------------------------------------------
+  const foreign = win.RV.index.reqs.find(r => r.doc && r.doc !== win.RV.doc);
+  await win.selectReq(foreign.id, true);
+  await sleep(900);
+  check('selecting a req switches spec page', win.RV.doc === foreign.doc,
+        `${foreign.id} -> ${win.RV.doc}`);
+  check('quote marked after page switch',
+        page.contentDocument.querySelectorAll('mark.rv-quote').length > 0);
+
+  // --- clear ---------------------------------------------------------------
+  doc.querySelector('#clear').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  await sleep(250);
+  check('clear empties the pane', doc.querySelectorAll('#reqs-list .card').length === 0);
+  check('clear removes marks', page.contentDocument.querySelectorAll('mark.rv-quote').length === 0);
+
+  // --- splitter ------------------------------------------------------------
+  const h = doc.querySelector('#split-top');
+  const rect = doc.querySelector('#reqs-pane').getBoundingClientRect();
+  h.dispatchEvent(new win.PointerEvent('pointerdown', { bubbles: true, clientY: rect.bottom, pointerId: 1 }));
+  h.dispatchEvent(new win.PointerEvent('pointermove', { bubbles: true, clientY: rect.bottom + 90, pointerId: 1 }));
+  h.dispatchEvent(new win.PointerEvent('pointerup', { bubbles: true, clientY: rect.bottom + 90, pointerId: 1 }));
+  await sleep(200);
+  const grown = doc.querySelector('#reqs-pane').getBoundingClientRect().height;
+  check('top splitter resizes the pane', grown > rect.height + 40,
+        `${Math.round(rect.height)} -> ${Math.round(grown)}`);
+
+  const fails = lines.filter(l => l.startsWith('FAIL')).length;
+  document.title = fails ? `probe: ${fails} FAILED` : 'probe: all passed';
+  log(`\n=== ${lines.filter(l => l.startsWith('PASS')).length} passed, ${fails} failed ===`);
+}
+
+window.addEventListener('error', (e) => log('JS ERROR: ' + e.message));
+run().catch(e => { log('PROBE ERROR: ' + (e && e.stack || e)); document.title = 'probe: ERROR'; });
+</script>
+</body></html>

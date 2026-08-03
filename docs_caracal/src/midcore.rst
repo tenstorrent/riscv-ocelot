@@ -6,6 +6,8 @@ Midcore
 .. |boom| replace:: BOOM
 .. |isa| replace:: RV64GC
 
+.. _midcore-rename:
+
 The Rename Stage
 ----------------
 
@@ -77,10 +79,27 @@ snapshotting are all done once, in order, in the single rename cycle — no spli
 delayed snapshot. The trade-off is purely timing: the vector group mapper now sits on the rename
 critical path (in parallel with scalar rename, so cost = the slower of the two, not the sum).
 
+.. warning::
+
+   **This is the design's principal timing risk and it is not yet bounded.** One cycle now carries,
+   in parallel with scalar rename: the ``EMUL``-wide vector map-table group read, up-to-8-PRN
+   non-contiguous free-list allocation (``allocWidth = coreWidth*8``), and on the order of **25
+   per-member busy-bit reads per lane × ``plWidth``** AND-reduced into group-ready bits (see
+   :ref:`group-done wakeup <group-done>`) — plus the VL rename and the ``pvtmp`` allocation for shared ops. "Cost = the
+   slower of the two" is the right *shape* of the argument but it is not a bound, and if the vector
+   side loses, the whole core's rename stage pays.
+
+   Recommended mitigation: run a **timing spike on the vector mapper + busy table before Milestone 1
+   Step 4 lands**, so the fallback (splitting rename back into two stages, with all the alignment
+   machinery this design deleted) is a known-cost decision rather than a late surprise. Deleting the
+   LMUL tag checker (see the note under Rename Map Table) removes one comparator tree from this path.
+
+.. _rmt:
+
 Rename Map Table (RMT)
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-|boom| maintains two sets of register rename map tables **Speculative RMT** and **Committed RMT**. The Committed RMT is an optional feature, which we we will always keep enabled in |caracal|.
+|boom| maintains two sets of register rename map tables **Speculative RMT** and **Committed RMT**. The Committed RMT is an optional feature, which we will always keep enabled in |caracal|.
 
 1. Speculative RMT — ``map_table``
 
@@ -98,63 +117,33 @@ The vector mapper extends the existing RenameStage implementation to support vec
 
    The Vector Mapper should also get the old stale vdest group and update the OP.v ``stale_pvdest`` field — a ``Vec`` of up to ``EMUL`` stale PRNs, not a single reg, since a vector dest renames a whole group. This will assist in handling tail undisturbed instructions and lets commit free the entire stale group. This stale-group capture happens in the single rename cycle, in parallel with scalar rename (see :ref:`rename-stage`).
 
-The vector mapper adds 1 feature:
+The vector map table stores **one PRN per architectural vreg**, so an ``EMUL``-wide read returns the
+group's current mappings directly and is correct under **arbitrary fragmentation**. That single
+property is what makes the mapper simple: no contiguous-run allocator, no whole-group validity
+check, and no fragmentation-recovery walk.
 
-**1. LMUL TAG Whole Vector Group Checker**
+.. note::
 
-The vector map table stores one PRN per architectural vreg, so an EMUL-wide read returns 
-the group's current mappings directly and is correct under arbitrary fragmentation. On top 
-of this we add an additional structure to the RMT for vector remapping. The LMUL tag checker
-adds a 2 bit tracking table for each of the ARN indexes to track which vector register group 
-the ARN index belongs to. The tag checker table will consume 32x2 bits, and is used to validate 
-that a read group is whole.
+   **Removed: the "LMUL TAG Whole Vector Group Checker."** Earlier drafts added a 32×2-bit
+   per-ARN tag table plus combinational whole-group comparators for every valid base ARN at each
+   LMUL. It has been deleted, for two reasons:
 
-.. list-table::
-   :header-rows: 1
-   :widths: 1 1
+   1. **It gated nothing.** The draft itself concluded that a FALSE result needs no exception and no
+      recovery — "the EMUL-wide read is still correct, so the read simply proceeds" — leaving the
+      structure driving only a performance counter. A per-ARN map table is *always* whole-group
+      correct, so there is nothing to validate.
+   2. **Its test was wrong anyway.** Requiring all eight tags to equal ``2'b11`` classifies a group
+      written by eight independent ``LMUL=1`` instructions as "fragmented," even though that group
+      reads back perfectly.
 
-   * - LMUL
-     - Encoding
-   * - LMUL=1
-     - 2'b00
-   * - LMUL=2
-     - 2'b01
-   * - LMUL=4
-     - 2'b10
-   * - LMUL=8
-     - 2'b11
-
-We can exploit the fact that vector register groups must be begin on ARN indexes that must be a multiple of the effective LMUL. So we build combinational checkers that check whether or not each valid ARN base index represents a whole vector group or not.
-
-For example to check vector group Tags for LMUL = 8:
-
-.. code-block:: python
-
-   LMUL = 8
-   vdest = [0, 8, 16, 24]              # valid vector-group base ARNs for LMUL=8
-   is_whole_vg_8 = [0] * (32 // LMUL)  # one flag per group
-
-   for i, vd in enumerate(vdest):
-       is_whole_vg_8[i] = int(
-           tag_table[vd]     == tag_table[vd + 1] == tag_table[vd + 2] ==
-           tag_table[vd + 3] == tag_table[vd + 4] == tag_table[vd + 5] ==
-           tag_table[vd + 6] == tag_table[vd + 7] == 0b11
-       )
-
-The same combinational check is performed for other LMULs and their valid vdest indexes. For LMUL=1 all ARN indexes would always return true.
-
-If the check for a is_whole_vg_[1,2,4,8] returns TRUE, then the vector mapper can immediately 
-read the RMT and get the most recent vsrc PRN mappings for an entire vgroup and update the OP.v 
-with the PRN indexes.
-
-If the check for a is_whole_vg_[1,2,4,8] returns FALSE, the group has been fragmented by an
-intervening narrower write. Because the map table stores one PRN per architectural vreg, the
-EMUL-wide read is still correct, so no exception is raised and no recovery is needed — the read
-simply proceeds. The checker is retained purely as an **observability counter**: a performance
-counter increments each time a non-whole group is read. This is expected to be extremely rare for
-compiler-generated code, and the counter lets perf analysis quantify how often it happens.
+   Deleting it also removes 32×2 bits of state and a wide comparator tree from the **single-cycle
+   rename critical path**, which is the design's principal timing risk (see :ref:`rename-stage`).
+   If the observability is still wanted, a per-ARN "last-write ``EMUL``" performance counter gives
+   the same signal far more cheaply.
 
 
+
+.. _cii-shared-mapping:
 
 CII Shared Instruction Mapping
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -173,9 +162,22 @@ busy-table / group-done machinery as any vector operand (see :ref:`group-done wa
 
    A segmented load/store consumes **two** vector register groups (``pvdest`` + ``pvtmp``, up to
    ``EMUL`` PRNs each — up to 16 PRNs total), so it is a heavy consumer of vector-PRN resources.
-   Several in-flight segmented ops can pressure the vector free list and back-pressure dispatch; the
-   free list must keep enough headroom that the oldest segmented op can always allocate both groups
-   to guarantee forward progress.
+   Several in-flight segmented ops can pressure the vector free list and back-pressure dispatch.
+
+   **No free-list headroom reservation is required for forward progress.** Rename is in program
+   order, so an ``OP.v`` that cannot allocate simply stalls at rename while every older instruction
+   continues to commit and free its stale group — the oldest op is never the one that starves. The
+   actual requirement is narrower and must be stated explicitly: allocation of ``pvdest`` + ``pvtmp``
+   is **all-or-nothing**. A segmented op must never take a partial group and wait for the remainder,
+   because those held PRNs cannot be freed until it commits, which produces exactly the deadlock the
+   headroom argument was reaching for.
+
+   **A failed allocation stalls the whole dispatch group**, not just the failing ``OP.v``: no uop in
+   the bundle renames that cycle, and the bundle retries intact on the next. This is the coarse rule
+   deliberately — it is trivially order-preserving and needs no per-lane stall mask. The cost is
+   dispatch bandwidth, since older group-mates that could have renamed re-do the attempt each retry
+   cycle; the benefit is that the atomic rename→dispatch actions of :ref:`rename-stage` never have
+   to be applied to a partially renamed bundle.
 
 
 .. _free-list:
@@ -195,6 +197,8 @@ commit reclaim are unchanged from the scalar free list — allocations are bit-v
 setting 8 bits per OP.v needs no new logic, only wider ports (``deallocWidth = commitWidth*8`` to
 free a whole stale group at commit).
 
+
+.. _busy-table:
 
 Busy Table
 ~~~~~~~~~~
@@ -219,8 +223,11 @@ and each side scales like the :ref:`free-list` on set and source-read:
 
 **2. Source reads.**
    Read the busy bit of **each member** of each source group (``pvs1``/``pvs2``/``pvs3`` plus the
-   mask ``pvm``) — on the order of ~25 bit-reads per lane, times ``plWidth``, plus the integer
-   ``pvl`` read. The per-member bits are **AND-ed into one group-ready bit** per operand; the
+   mask ``pvm``) — on the order of ~25 bit-reads per lane, times ``plWidth``, plus the ``pvl``
+   read. **The ``pvl`` bit is read from the VL busy table** (:ref:`vl-vtype-rename`), not the
+   integer one: ``VL`` is renamed into its own register space, so ``pvl`` indexes ``VL_RF`` and
+   has exactly one busy bit, in that table.
+   The per-member bits are **AND-ed into one group-ready bit** per operand; the
    operand wakes only when its **last** member is ready. This per-member match is the dominant
    cost of the vector Busy Table.
 
@@ -246,7 +253,7 @@ vector.
 VL Rename
 ~~~~~~~~~
 
-``VL`` is renamed by the vector mapper into **its own register space** (64 entries), separate from
+``VL`` is renamed by the vl mapper into **its own register space** (64 entries), separate from
 the integer/FP/vector PRFs. **Integer rename is not modified** — the VL value no longer lives in the
 integer RF. It is a one-architectural-register rename with the same structures the scalar rename
 already provides, just one ARN wide. (``VTYPE`` is **not** renamed — it rides the VCFG ``vtype``
@@ -259,7 +266,13 @@ mirror and the per-uOP ``VConfig`` snapshot; only ``VL`` gets a register file.)
   ``ren_br_tags`` event as the other RMTs — no delayed-``br_tag`` path; a ``vset``→dependent pair in
   one dispatch group uses the in-bundle prefix bypass so the dependent picks up the just-renamed
   ``pvl``.
-- **Free list** — 64-bit free vector; a producer allocates a fresh PRN.
+- **Free list** — 64-bit free vector; a producer allocates a fresh PRN. **A producer that finds no
+  free VL PRN stalls at rename**, exactly as an ``OP.v`` short of vector PRNs does
+  (:ref:`cii-shared-mapping`), and is deadlock-free for the same reason: rename is in program order,
+  so older producers keep committing and freeing the pointer each displaces, and the oldest producer
+  is never the one that starves. The 64 entries can genuinely be exhausted — the live count is the
+  one committed pointer plus one per in-flight producer — so any ROB deeper than 63 can reach this
+  stall.
 - **Busy table** — one bit per PRN; set on allocation, cleared by the producer's VL writeback.
 - **Wakeup network** — a dedicated ``VL`` network; vector issue slots match ``pvl`` on it (see the
   Vector Issue Slot).
@@ -274,10 +287,19 @@ mirror and the per-uOP ``VConfig`` snapshot; only ``VL`` gets a register file.)
 **Producers.** Every producer allocates a VL PRN at rename and writes the VL RF, broadcasting ``pvl``
 on the VL wakeup network. Who computes the value differs (see :ref:`vector-rvv-decode`):
 
-- ``vsetivli`` — front-end only: the **VCFG** writes the VL RF at decode (VL is immediate).
+- ``vsetivli`` — front-end only (no EU): the **VCFG** computes VL at decode and the value is written
+  to ``VL_RF[pvl]`` in the **rename** cycle, where ``pvl`` is allocated. No busy bit is set — ``pvl``
+  is born ready. (Earlier drafts said "writes the VL RF at decode"; there is no VL-RF index to write
+  at decode.)
 - ``vsetvli`` / ``vsetvl`` — executed on an **integer ALU EU**: woken by ``rs1`` (and ``rs2`` for
   ``vsetvl``) on the integer network, the ALU computes VL and its writeback targets the VL RF.
 - ``vleff`` — the LSU writes the (possibly trimmed) VL on completion.
+
+Every producer sets the ``is_vl_producer`` bit
+(:ref:`dual-destination rule <vset-dual-dest>`), which is **orthogonal to
+``dst_rtype``**: a ``vset`` with ``rd != x0`` writes *both* the integer RF (``pdst``) and the VL RF
+(``pvl``) from one result bus, and with ``rd == x0`` it writes only the VL RF while ``dst_rtype`` reads
+``RT_ZERO``. VL-producing is therefore never inferable from ``dst_rtype``.
 
 Reading the integer ``AVL`` source is an ordinary integer RF **read** — it does not touch integer
 rename. When ``rd != x0`` the vset also writes ``rd`` as a normal integer destination (unchanged),
@@ -289,6 +311,8 @@ at rename) as an implicit operand, and the ``vtype`` snapshot for its config. Th
 immediate vset forms); ``vsetvl`` (register ``vtype``) still serializes via ``is_unique`` because the
 mapper needs ``vtype`` at decode.
 
+
+.. _rob-vec:
 
 Reorder Buffer (ROB)
 ~~~~~~~~~~~~~~~~~~~~~
@@ -331,16 +355,40 @@ Out-of-order vector load (VLS)
    PRN of the group is assembled, the LCB emits **one** group-done carrying the group's member-PRN vector.
    The ROB clears ``rob_bsy`` on that single event — no per-entry completion counter is added.
    The same group-done drives the Busy-Table clear and the vector wakeup (see :ref:`group-done wakeup <group-done>`),
-   so the three structures stay consistent by construction. Vector **stores** clear via a single
-   ``lsu_clr_bsy`` once the whole active element set has translated/disambiguated (they write no
-   VRF); scalar ops are unchanged.
+   so the three structures stay consistent by construction. A **non-shared** vector store clears via
+   a single ``lsu_clr_bsy`` once its whole active element set has translated/disambiguated (it writes
+   no VRF); scalar ops are unchanged. A **shared** store's LSU half is the exception — see below.
 
 Shared instruction (segmented LS)
    A shared instruction occupies **two issue slots** — one in the CII IQ (coprocessor half) and
    one in the vector load/store IQ (LSU half) — but **a single ROB entry**. This is the **only**
    case that waits for more than one completion, and it needs just a **1-bit "other half pending"
-   flag**, not a counter: the entry clears ``rob_bsy`` only when **both** the LSU group-done and
-   the coprocessor group-done have arrived. The two halves are sequenced through the ``pvtmp`` group
+   flag**, not a counter: the entry clears ``rob_bsy`` only when **both** halves' completion events
+   have arrived. Which event each half emits depends on whether it writes the VRF: a segmented
+   **load**'s LSU half writes ``pvtmp`` and so emits a real **group-done**, while a segmented
+   **store**'s LSU half writes no VRF and so signals **``lsu_clr_bsy``**. The coprocessor half always
+   emits a group-done.
+
+   **A shared store's LSU half defers its completion until after DGEN has read ``pvtmp``**, not to
+   the translate/disambiguate point that governs a non-shared store. Signalling at translate would
+   claim the half is done while it still has to obtain its store data from the coprocessor, and it
+   would invert the fixed order below.
+
+   **The flag is set at dispatch**, when the Decoder's ``is_shared`` is seen, and cleared when the
+   **second** completion arrives. Both completions can never land in the same cycle: the consumer
+   half is woken *by* the producer's ``pvtmp`` group-done, so it issues and executes strictly
+   afterwards. No same-cycle case needs handling.
+
+   .. note::
+
+      The two halves always complete in a **fixed order** — producer half, then consumer half —
+      because the consumer is woken by the producer's ``pvtmp`` group-done: LSU-then-CII for a
+      segmented load, and (per the dependency chain in :ref:`shared-store-chain`) CII-then-LSU for a
+      segmented store. The flag is therefore equivalent to "wait for the **consumer** half";
+      the producer's completion is implied. It is kept as an explicit flag for clarity and as a
+      cross-check, not because either order is possible.
+
+   The two halves are sequenced through the ``pvtmp`` group
    in the VRF — the producer (LSU for a segmented load, coprocessor for a segmented store) writes
    ``pvtmp``, whose group-done wakes the consumer's IQ slot (see the CII Shared Instruction
    Scheduling section). For a segmented **store** the LSU half's actual D$ writes are still
@@ -351,6 +399,14 @@ not memory-safe until **all** of its element addresses have disambiguated, so th
 single **group-safe** event (when the last element address has been LCAM-checked) that clears
 ``rob_unsafe`` — not a per-sub-access clear.
 
+A vector **store** clears ``rob_unsafe`` on the same shape of event: one group-safe when the last of
+its element addresses has been LCAM-checked. A **shared** instruction needs **only** the LSU half's
+group-safe — the coprocessor half performs no memory access, so it carries no speculation hazard, and
+requiring a second group-safe from it would deadlock: that half cannot issue until the PNR has passed
+the entry, which needs ``rob_unsafe`` already cleared (:ref:`shared-store-chain`).
+
+
+.. _vec-commit:
 
 Commit
 ~~~~~~
@@ -360,17 +416,23 @@ stale vector pregs, not one. Because allocation is non-contiguous, the ROB carri
 stale PRNs captured at rename (an explicit stale group, not a base+count) alongside the new
 ``pvdest``. This couples to the free-list deallocation path described in :ref:`free-list`.
 
+**Every ROB entry provides ``MAX_MEMBERS`` = 8 stale-PRN slots.** A vector entry uses ``EMUL`` of
+them and leaves the remainder don't-care; a scalar entry uses one, for its stale ``pdst``. The width
+is therefore ``8 × log2(numVecPhysRegisters)`` bits per entry — about 56 bits at the default 96 PRNs
+— paid on every entry including scalar ones. Sizing the slots to the worst-case ``EMUL`` is what lets
+commit free the group with no second structure and no per-entry indirection.
+
 
 .. _snapshots:
 
 Checkpoint RMT Snapshots
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-BOOM implements a branch snaphot mechnism to roll back the RMT upon branch mispredicts in a 
+BOOM implements a branch snapshot mechanism to roll back the RMT upon branch mispredicts in a 
 single cycle. A copy of the speculative scalar RMTs is taken per outstanding branch 
 (upto maxBrCount entries).
 
-We will reuse this mecahnism for the vector mapper.
+We will reuse this mechanism for the vector mapper.
 
 The vector mapper takes a snapshot of the speculative vector RMT on the same event the scalar
 RMT is branch-snapshotted (per outstanding branch, up to maxBrCount). There is no periodic
@@ -390,39 +452,74 @@ snapshot — the per-ARN map table needs no fragmentation-recovery walk.
      - ``com_map_table``
      - 1 cycle, flushes everything in flight
    * - Normal
-     - ``remap_table``
-     - advance
+     - ``map_table``
+     - the vector RMT advances through its remap requests
 
 
 
+
+.. _precise-vec-exc:
 
 Precise exceptions for vector ops
 ---------------------------------
 
-A vector load/store can fault partway through its element stream (e.g. element *k* raises a page fault). 
-Because the whole instruction is one ROB entry, the trap must be made restartable by recording ``vstart = k`` 
-for the **oldest** faulting element. The single ``rob_exception`` bit is therefore augmented on the VLS path 
-with the faulting element index (carried in on the LSU exception port).
+A vector load/store can fault partway through its element stream (e.g. element *k* raises a page
+fault). Because the whole instruction is one ROB entry, the trap must be made restartable. |caracal|
+does this the **simplest correct way: it traps with ``vstart = 0`` and restarts the whole
+instruction.**
 
-On trap, ``vstart`` is written from this index so the instruction resumes mid-stream per the RVV 1.0 spec. 
-CII arithmetic ops, which complete atomically, raise exceptions at instruction granularity and need no element index.
+.. warning::
 
-On vector loads if we load upto *k* elements and an exception occurs, we do not need to 
-restore the remaining VL - *k* elements and can treat it as tail agnostic. 
-This is thanks to the relaxation of rules for precise exception handling in section 17.1 RVV Specification.
+   **Do not resume at ``vstart = k``.** Earlier drafts latched the oldest faulting element index and
+   trapped with ``vstart = k`` so the instruction could resume mid-stream. That is **not
+   implementable in this microarchitecture and silently corrupts data.** Elements ``0..k-1`` were
+   written into ``pvdest``, a *freshly allocated* physical group. The faulting instruction never
+   commits, so ``pvdest`` is never installed in ``com_map_table``; the exception path restores
+   ``map_table := com_map_table`` and returns the whole group to the free list. Architectural ``vd``
+   still maps to ``stale_pvdest``, so **those k elements are gone.** Resuming at ``vstart = k`` then
+   re-executes only ``k..VL-1``, leaving ``0..k-1`` holding pre-instruction values — while RVV
+   requires them to hold the loaded data. The result is silent wrong data on any page-crossing
+   gather.
+
+Because **nothing was architecturally written**, ``vstart = 0`` is a legal trap value and a full
+restart is correct: loads are idempotent, and stores have not touched memory (they drain only
+post-commit). The consequences for the rest of the design are simplifications:
+
+- The faulting-element index is **not** carried to the ROB and **not** written to ``vstart``. The
+  LSU exception port reports a plain precise exception, like a scalar load.
+- ``fault_elem`` survives only as (a) the *stop* signal for the element cursor and (b) a
+  debug/performance counter. See :ref:`elem-progress`.
+- The cost is re-draining elements ``0..k-1`` after the handler returns. Forward progress is
+  unaffected.
+
+CII arithmetic ops complete atomically and raise exceptions at instruction granularity, so they need
+no element index either.
+
+.. note::
+
+   The RVV §17.1 justification that appeared here has been **removed**. That relaxation concerns
+   elements *after* the faulting element (letting the un-loaded tail be treated as agnostic). It says
+   nothing about elements *before* it, which is the case that actually mattered.
+
+``vleff`` is unaffected: it does not trap for a fault at element ``i > 0``, it trims VL — a genuinely
+different mechanism (see :ref:`elem-progress`).
 
 
 Segmented Load/Store (Shared Instruction)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Segmented load/stores commit data up to the point of exception. Because the ``pvtmp`` group is an
-ordinary VRF group freed at commit, a faulting (non-committing) shared instruction needs **no special
-temp cleanup** — its ``pvtmp`` group is reclaimed by the standard free-list flush/rollback path like
-any uncommitted allocation. For a segmented **load** the loaded elements before the fault are written
-into ``pvtmp`` and the coprocessor transposes them into ``pvdest`` (tail elements may hold junk). For
-a segmented **store** the coprocessor writes ``pvtmp`` and the LSU writes memory only up to the
-faulting element.
+Because the ``pvtmp`` group is an ordinary VRF group freed at commit, a faulting (non-committing)
+shared instruction needs **no special temp cleanup** — its ``pvtmp`` group is reclaimed by the
+standard free-list flush/rollback path like any uncommitted allocation.
 
+Consistent with ``vstart = 0`` above, a faulting segmented load/store **does not commit partial
+data**: both ``pvdest`` and ``pvtmp`` are uncommitted physical groups, and a segmented store's memory
+writes are post-commit, so the fault leaves no architectural trace and the whole instruction restarts.
+(Earlier drafts stated that segmented load/stores "commit data up to the point of exception"; that is
+not achievable for the same reason ``vstart = k`` is not.)
+
+
+.. _regfiles-bypass:
 
 The Register Files and Bypass Network
 -------------------------------------
@@ -445,10 +542,32 @@ parameterization.
      - 128
    * - Vector (VEC)
      - 32
-     - 128
+     - 96
    * - VL
      - 1
      - 64
+
+.. note::
+
+   **Vector-PRN capacity is a published architectural limit, not just an area knob.** 32 of the 96
+   vector PRNs are always held by the committed map table — the RMT maps all 32 architectural vregs
+   at all times, regardless of the current ``LMUL`` — and an ``LMUL=8`` ``OP.v`` takes 8 at once. So
+   at most ``(96 − 32) / 8 = 8`` ``LMUL=8`` groups can be in flight, and a segmented op takes two
+   groups (``pvdest`` + ``pvtmp``, 16 PRNs), so at most 4 of those. Size this against a target
+   memory-level parallelism and state the derived in-flight limit wherever the parameter is
+   documented.
+
+   **Nothing enforces the bound explicitly** — it is a consequence of free-list capacity, not a
+   credit. At the bound an ``OP.v`` simply finds too few free PRNs and **stalls at rename**, under the
+   ordinary all-or-nothing allocation rule (see :ref:`cii-shared-mapping`). There is **no**
+   group-credit counter, and none should be added: it would duplicate state the free list already
+   holds.
+
+The VRF as specified is ``96 × 256 b`` = 24 kbit of standard-cell flops carrying **12 ports**
+(9R/3W), banked 4×64 b. That is a large structure to build from flops, and it should be given an
+area/timing estimate before the implementation commits to a flop-based file rather than a
+latch/SRAM-based banked one. Note that dropping 128 → 96 PRNs cut the array by 8 kbit while the
+port count went 11 → 12, so the port-driven area term grew relative to the storage term.
 
 ``VL`` is **renamed into its own register file** (default 64 entries), not stored in the integer RF.
 It is a one-architectural-register rename space with its own map table (a current-PRN pointer +
@@ -477,6 +596,8 @@ addresses ``pvtmp`` exactly as it addresses any other vector PRN — reads, writ
 branch/commit reclaim all go through the existing vector register machinery.
 
 
+.. _midcore-segmented-load:
+
 Segmented Load
 ~~~~~~~~~~~~~~
 
@@ -488,6 +609,8 @@ The ``pvtmp`` group is the **destination** of the LSU half and the **source** of
 3. The coprocessor reads ``pvtmp`` from the VRF, performs the transpose, and writes the final result
    to the ``pvdest`` group.
 
+
+.. _midcore-segmented-store:
 
 Segmented Store
 ~~~~~~~~~~~~~~~
@@ -503,16 +626,23 @@ of the LSU half.
 
 
 
+.. _spec-wakeups:
+
 Speculative Wakeups
 ~~~~~~~~~~~~~~~~~~~
 
 With the single unified issue stage there is no separate scalar/vector scheduling stage to steer
 speculative wakeups to, so the policy is split by **operand class** instead:
 
-- **Scalar feeders of a vector slot** (base/stride/VL on the integer network, the ``.vf`` scalar on
+- **Scalar feeders of a vector slot** (base/stride on the integer network, the ``.vf`` scalar on
   the FP network) participate in |boom|'s existing **speculative load-hit wakeup** unchanged. A vector
   uOP waiting on a scalar-load result is woken speculatively just like any integer/FP consumer, and is
   re-busied through the same machinery if the load later misses.
+- **``pvl``** wakes on **actual completion**, on its own **VL** wakeup network — *not* on the integer
+  network and *not* speculatively. No VL producer has the fixed short load-use latency that makes
+  speculation profitable: ``vsetivli``'s ``pvl`` is born ready, ``vsetvli``/``vsetvl`` have
+  deterministic integer-ALU latency, and ``vleff`` publishes its trimmed VL only after a long,
+  variable vector-load stream. So VL needs no re-busy or replay machinery either.
 - **Vector operands** (``pvs*``, ``pvm`` on the vector wakeup network) wake only on **actual
   completion**, not speculatively. A vector-load producer completes via the Load Coalescing Buffer
   after a long, variable, streaming latency, and a vector-arithmetic producer completes in program
@@ -522,56 +652,179 @@ speculative wakeups to, so the policy is split by **operand class** instead:
 
 
 
+.. _vector-regfile:
+
 The Vector Register File
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The vector physical register file will be parameterizable with default support for
-128 PRNs, 8 Read Ports, and 4 Write Ports. The vector register file (VRF) will be
+96 PRNs, **9 Read Ports, and 3 Write Ports** (see :ref:`vrf-ports` for the canonical
+port assignment). The vector register file (VRF) will be
 implemented using standard cell flip flops, with a banked architecture. A vector register
 will split across 4 banks of 64 (VLEN/4) bits. This each port will have its own
 decoder and support forwarding for single cycle reads, if a write port writes
-to the same PRN.  
+to the same PRN.
+
+**Bank count is fixed at 4 and bank width is ``VLEN/4``**; the array is
+``numVecPhysRegisters × VLEN``. The ``64 b``, ``96 × 256 b`` and 24 kbit figures quoted here and in
+:ref:`regfiles-bypass` are the ``VLEN = 256`` instances of those formulas, not independent constants.
+
+**Neither of the two conflicts a 12-port file invites can arise, for two different reasons.**
+
+- **Two write ports never target the same PRN.** Every PRN is the destination of exactly one
+  producer, and rename always allocates a *fresh* group, so ``W0``/``W1`` (the LCB's lanes, one write
+  per destination PRN) and ``W2`` (the coprocessor) can never name the same register — including for a
+  shared instruction, where one half writes ``pvtmp`` and the other ``pvdest``, two distinct groups.
+  No write arbitration or priority is required.
+- **Read ports never conflict over a bank.** Banking splits the register's **width**, not the port
+  count: a VRF read is a full ``VLEN``, so *every* port spans all four banks, and each bank carries
+  all 12 ports at ``VLEN/4`` bits. "Several read ports addressing one bank" is the normal case, not a
+  hazard, which is why each port has its own per-bank decoder.
 
 .. note::
   The VRF is only initialized by the usingRVV switch.
 
+.. _vrf-ports:
+
+Port assignment (canonical, 0-based)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Ports are **statically partitioned**, not arbitrated. This table is the single source of truth;
+:doc:`cii` and :doc:`loadstore` refer to it rather than restating port numbers.
+
 .. list-table::
    :header-rows: 1
-   :widths: 1 1 1
+   :widths: 22 44 34
 
    * - Functional Unit
-     - PRF Read Ports
-     - PRF Write Ports
-   * - CoProcessor
-     - 4
-     - 2
+     - Read Ports
+     - Write Ports
+   * - Load Unit / LCB
+     - ``R0`` index, ``R1`` mask, ``R2`` ``stale_pvdest``
+     - ``W0``–``W1``, tracking ``lsuWidth`` (``W0`` only at ``lsuWidth = 1``)
    * - Store Unit
-     - 2
-     - 0
-   * - Load Unit
-     - 2
-     - 2
+     - ``R3`` store data, ``R4`` mask/index
+     - — (a store *reads* the VRF and writes memory; it never writes the VRF)
+   * - CoProcessor (CII)
+     - ``R5``–``R8`` (the four Src-Request pull lanes)
+     - ``W2``
 
-Write-port breakdown: **4 total** = CoProcessor 2 (arithmetic results) + Load Unit 2 (the Load
-Coalescing Buffer's one-write-per-destination-PRN, dual-lane on Mega). The **Store Unit has 0 write
-ports** — a store *reads* vector data from the VRF and writes it to memory; it never writes the VRF.
-Read-port breakdown: **8 total** = CoProcessor 4 (``pvs1``/``pvs2``/old-``vd``/``pvm``) + Store Unit 2
-(store data + mask/index) + Load Unit 2 (index + mask). Segmented-LS temporaries (``pvtmp``) are
-ordinary VRF groups and use these same ports — the LSU/coprocessor read or write ``pvtmp`` on the
-ports already counted (it is a destination for one half and a source for the other), adding no new
-ports.
+**The write-port count follows ``lsuWidth``**, so the total is **9R / 2W** at ``lsuWidth = 1`` and
+**9R / 3W** at ``lsuWidth = 2``. Every figure below is the ``lsuWidth = 2`` case. Binding the count
+to the parameter rather than to configuration names covers any configuration, including those below
+Medium, without this table having to track a config list.
 
-**Tail/mask-undisturbed reads its budget from these same ports — no extra ports are added:**
+``R1`` and ``R4`` each have **exactly one reader**. On the load path that reader is ``ld_vAGEN_1``,
+which performs the mask read for **every** access class including unit-stride, and carries the mask
+with the ``nOP.v`` to the stage 2 Packer rather than letting the Packer read the VRF itself — see
+:ref:`vector-agen`. Without that, a US ``OP.v`` in stage 2 and an SSI ``OP.v`` in stage 1 would be
+two concurrent readers of ``R1``, which a statically partitioned file cannot serve.
 
-- **Arithmetic** tail/mask-undisturbed merges are done **inside the CII coprocessor**, which reads
-  the old ``vd`` on the read port already counted above (``old-vd`` of the CoProcessor's 4 reads) and
-  merges the inactive lanes before writing back. No additional port.
-- **Load** tail/mask fill is done **inside the LCB** before its single ``W0`` write
-  (:ref:`load-coalesce`); the inactive-lane source comes from the assembly entry, not a new VRF read.
+``R4`` serves both the store mask and the store index because **the two reads never need the same
+cycle**: one ``VLEN``-wide read of ``v0`` yields the mask bits for every element of the access, so the
+mask is read **once per ``OP.v``** and latched, while index members are read as the walk advances.
+An indexed masked store therefore needs no second port.
+
+Both coprocessor figures are **derived from the frozen SV
+contract**, not chosen here — ``tt_cii_caracal_pkg.svh`` is the authority and the host must match it:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 18 52
+
+   * - Frozen constant
+     - Value
+     - Consequence for the VRF
+   * - ``CII_NUM_SRC_REQ`` / ``CII_NUM_SRC_DAT_RSP``
+     - 4
+     - **Four** coprocessor read ports (``R5``–``R8``). The VPU wrapper returns "member ``k`` of
+       ``{VS1, VS2, VS3, VM}`` in one dat beat", so all four lanes can be live in the same cycle.
+   * - ``CII_NUM_DST_WB``
+     - 1
+     - **One** coprocessor write port (``W2``). The constant is flagged *must match the*
+       ``tt_cii_interface`` *default* — the relay's ``type(wb_data)`` resolves against it, so an
+       override that differs is a port-connection mismatch.
+
+.. warning::
+
+   Earlier drafts said **7R/4W**, on the reasoning that "the CoProcessor needs 2 read ports, not 4"
+   because a *pull* interface "can consume at most two VRF reads per cycle". That argument was wrong
+   in both directions once the SV froze: the pull interface has **four** lanes, and it has **one**
+   write port, not two. Note that ``tt_cii_caracal_pkg.svh`` also contradicts itself here — the
+   inline comment on ``CII_NUM_SRC_REQ = 4`` still reads "2 VRF read ports for CII (5,6)". The
+   **value** is authoritative, not the comment.
+
+``R2`` is likewise not in the oldest drafts: it is the LCB's read of ``stale_pvdest``, required for
+tail-/mask-undisturbed loads — see below.
+
+Segmented-LS temporaries (``pvtmp``) are ordinary VRF groups and use these same ports — the
+LSU/coprocessor read or write ``pvtmp`` on the ports already listed (it is a destination for one half
+and a source for the other), adding no new ports.
+
+Because the partition is static, **the CII can never stall on a VRF write port**: it owns ``W2``
+outright. That invariant is load-bearing, because the CII Writeback channel is credit-metered and has
+no back-pressure line — a port conflict would have nowhere to go. One port suffices precisely because
+``CII_NUM_DST_WB = 1``: the coprocessor cannot present two result beats in one cycle, so a second
+port would never be driven.
+
+.. _old-vd:
+
+Undisturbed lanes always come from ``stale_pvdest``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Under renaming, ``pvdest`` is a **fresh** group; the destination's previous contents live in
+``stale_pvdest``. One rule therefore governs every undisturbed case in the machine:
+
+.. important::
+
+   ``stale_pvdest`` is the architectural old-``vd`` group and is the **only** source of undisturbed
+   lanes (``vta = 0`` tail, ``vma = 0`` masked-off, and any ``vstart > 0`` prefix). A consumer needing
+   old-``vd`` reads ``stale_pvdest`` — **never** ``pvs3``.
+
+``pvs3`` and ``stale_pvdest`` are **two independent ``MicroOp`` fields naming two independent physical
+groups**, and both are exposed to the coprocessor as **separate CII source slots**:
+
+- ``pvs3`` is the group holding an **explicitly encoded third source operand** — the store-data
+  register of ``vse.v vs3, (rs1)``, for instance.
+- ``stale_pvdest`` is the group that held the destination architectural vreg **before this ``OP.v``
+  renamed it**. It exists for *every* vector op with a destination, whether or not that op encodes a
+  third source.
+
+They **coincide** for read-modify-write arithmetic, and that is the common case: ``vfmacc.vv vd, vs1,
+vs2`` computes ``vd += vs1 * vs2``, so its third source *is* the old destination and both fields name
+the same group. They **diverge** whenever an instruction needs old-``vd`` for merging but its third
+source is something else, or has no third source at all — a masked ``vadd.vv`` under ``vma = 0``, a
+``vslideup`` whose untouched prefix comes from old-``vd``, a ``vcompress`` tail.
+
+.. important::
+
+   Because the two fields are separate, the **coprocessor decides what to pull**. It has four
+   Src-Request lanes (``CII_NUM_SRC_REQ = 4``) and issues a request per slot it actually needs. When
+   ``pvs3`` and ``stale_pvdest`` are the same group it pulls **one**; when they differ it pulls
+   **both**, spending an additional lane. The host never collapses the two or guesses which was
+   meant — it simply serves whichever slot is requested from the per-tag side-table. See
+   :ref:`cii-operands`.
+
+- **Arithmetic** merges happen **inside the CII coprocessor**, which pulls old-``vd`` as the
+  ``STALE_VD`` operand slot (and ``pvs3`` separately, on the ``VS3`` slot, if the instruction encodes
+  a third source).
+- **Load** tail/mask fill happens **inside the LCB** before its ``W0`` write
+  (:ref:`load-coalesce`): the LCB **pre-loads each assembly entry from the corresponding
+  ``stale_pvdest`` member on ``R2``**, then overlays arriving elements. Only members that actually
+  contain inactive lanes are pre-loaded — with ``VL`` known at execute that is typically the single
+  partially-covered register plus any fully-inactive tail registers, not all 8. The pre-load overlaps
+  the load's memory latency, so it is not latency-critical, and it preserves one ``W0`` write and one
+  group-done per PRN.
+
+  .. note::
+
+     Earlier drafts said the inactive-lane source "comes from the assembly entry, not a new VRF read"
+     and gave the Load Unit only ``index`` + ``mask`` read ports. Nothing initialized the assembly
+     entry, so a ``vta = 0`` load with ``VL`` short of a full register (e.g. ``vle32.v v8, (a0)`` with
+     ``vl=3``, ``SEW=32``, ``VLEN=256``) would have written junk into the undisturbed tail. ``R2``
+     closes that hole.
+
 - **The standalone ``VL = 0`` / fully-inactive ``vta = 0`` group copy** ``pvdest ← stale_pvdest``
-  (see the VL == 0 case study) **reuses the Load Unit's 2R/2W ports**, which are idle when no load is
-  draining. It therefore fits in the 8R/4W budget with no new ports; under contention it arbitrates
-  behind active load drains (the copy is rare and not latency-critical).
-
-So the 8R/4W budget above is the **complete** Goal-1 VRF port requirement; tail-undisturbed handling
-does not widen it.
+  (see the VL == 0 case study) uses the Load Unit's ports, which are idle when no load is draining;
+  under contention it arbitrates behind active load drains (the copy is rare and not
+  latency-critical).

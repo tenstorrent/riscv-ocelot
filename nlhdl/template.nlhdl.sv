@@ -44,3 +44,14 @@ from Tenstorrent Inc.
 
 <|end_dependencies|>
 
+// Required only for `mode: edit_existing` in hierarchy.yaml — i.e. when the
+// sections above describe a DELTA against pre-existing RTL rather than a whole
+// module. Bounds what the implementor may change. Delete this whole section for
+// a new module (`mode: new`) or a regeneration (`mode: edit_generated`).
+<|begin_edit_scope|>
+  Target:           <file and module being edited>
+  In scope:         <signals / blocks / ports the change may touch>
+  Must not regress: <behavior that stays bit- and cycle-identical>
+  Interface delta:  <new or widened ports/parameters only>
+<|end_edit_scope|>
+

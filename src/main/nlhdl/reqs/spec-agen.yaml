@@ -1,0 +1,1086 @@
+family: agen
+description: >
+  Vector address and store-data generation: OP.v to nOP.v cracking, packer, skipper,
+  walker, index and mask streams, and DGEN.
+spec_sources:
+  - docs_caracal/src/execution.rst
+
+groups:
+  a: the vector LS AGEN stage — placement, cracking, and unit inventory
+  b: the two-stage vAGEN split
+  c: the Packer / Skipper / Walker generators
+  d: store data generation (vDGEN)
+  e: mask application in AGEN
+
+reqs:
+
+  # --- a: stage placement, cracking, unit inventory ---------------------------
+
+  - id: spec-agen.a1
+    kind: structure
+    statement: >
+      The vector LS AGEN stage must sit between the IQ_V_LOAD/IQ_V_STORE issue queues and
+      the unified load/store unit.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-ls-agen
+      heading: "Vector LS AGEN stage"
+      quote: >
+        This stages sits between the ``IQ_V_LOAD``/``IQ_V_STORE`` issue queues and the
+        Unified Load Store Unit.
+
+  - id: spec-agen.a2
+    kind: function
+    statement: >
+      The vector LS AGEN stage must crack load/store OP.v instructions into nOP.v that
+      access memory at element granularity.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-ls-agen
+      heading: "Vector LS AGEN stage"
+      quote: >
+        Its primary purpose is to perform cracking of L/S OP.v instructions into nOP.v which
+        access memory at the element granularity.
+
+  - id: spec-agen.a3
+    kind: function
+    statement: >
+      The vector LS AGEN stage must crack OP.v instructions based on EMUL.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-ls-agen
+      heading: "Vector LS AGEN stage"
+      quote: >
+        It also cracks OP.v instructions based on EMUL, so nOP.v also tracks to which PRN and
+        offset within the PRN the memory access should read or write to.
+
+  - id: spec-agen.a4
+    kind: interface
+    statement: >
+      Each nOP.v must track the PRN and the offset within that PRN that its memory access
+      targets.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-ls-agen
+      heading: "Vector LS AGEN stage"
+      quote: >
+        It also cracks OP.v instructions based on EMUL, so nOP.v also tracks to which PRN and
+        offset within the PRN the memory access should read or write to.
+    notes: >
+      The "should read or write to" in the quote was ruled non-normative usage on 2026-07-31
+      — it is a relative clause naming the access target, not a preference about the design.
+      The obligation is the stated fact that the nOP.v tracks the PRN and offset.
+
+  - id: spec-agen.a5
+    kind: interface
+    statement: >
+      The vector LS AGEN stage must output its nOP.v bundles to dedicated queues within the
+      LSU.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-ls-agen
+      heading: "Vector LS AGEN stage"
+      quote: >
+        The vector LS AGEN stage outputs these nOP.v bundles which may be very large to
+        dedicated queues with in the LSU.
+
+  - id: spec-agen.a6
+    kind: structure
+    statement: >
+      The vector AGEN stage must contain the load vAGEN, the store vAGEN and the store vDGEN.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        The vector AGEN stage contains the load vAGEN, store vAGEN/vDGEN.
+
+  - id: spec-agen.a7
+    kind: function
+    statement: >
+      OP.v's issued by the CII issue queue must be forwarded directly to the coprocessor over
+      the CII interface.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        Vector OP.v's issued by the CII IQ are directly forwarded to the co-processor via the
+        CII interface.
+    notes: >
+      Stated here as the negative constraint on this family: a CII-issued OP.v does not pass
+      through the vector AGEN stage. The coprocessor-side issue contract is spec-cii's.
+
+  - id: spec-agen.a8
+    kind: structure
+    statement: >
+      The design must reuse the Load/Store Packer, Load/Store Skipper and Load/Store Walker
+      AGEN units from bobtail.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        We reuse the Load/StorePacker, Load/StoreSkipper, Load/StoreWalker AGEN units from
+        bobtail.
+
+  # --- b: the two-stage vAGEN split -------------------------------------------
+  #
+  # These eight requirements quote the paragraph at execution.rst:80-89. That paragraph
+  # follows the Walker subsection with no intervening heading, so it is structurally part of
+  # §"Walker" even though it describes the vAGEN stage as a whole — hence heading: "Walker"
+  # here and in the coverage ledger. Flagged as a spec formatting issue, not drift.
+
+  - id: spec-agen.b1
+    kind: structure
+    statement: >
+      The vAGEN must be split into two stages.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        |caracal| splits the vAGEN into two stages.
+
+  - id: spec-agen.b2
+    kind: structure
+    statement: >
+      The first vAGEN stage must be placed after the issue stage.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        The first stage is after the issue stage (the ``IQ_V_LOAD``/``IQ_V_STORE`` queues)
+        where load and store OP.v's are issued to ld_vAGEN_1 and st_vagen_1, respectively.
+
+  - id: spec-agen.b3
+    kind: structure
+    statement: >
+      Load OP.v's must be issued to ld_vAGEN_1 and store OP.v's to st_vagen_1.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        The first stage is after the issue stage (the ``IQ_V_LOAD``/``IQ_V_STORE`` queues)
+        where load and store OP.v's are issued to ld_vAGEN_1 and st_vagen_1, respectively.
+
+  - id: spec-agen.b4
+    kind: structure
+    statement: >
+      The stage 1 vAGENs must contain only the Skipper and Walker generators.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        The stage 1 vAGENs will only contain the Skipper and Walker generators.
+    notes: >
+      The spec's stated reason is to optimize the common unit-stride load/store case and to
+      reduce pressure on the load and store queues.
+
+  - id: spec-agen.b5
+    kind: function
+    statement: >
+      In stage 1 AGEN only strided, indexed and segmented load/stores must have their
+      effective addresses calculated and expanded into nOP.v bundles.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        Thus in stage 1 AGEN only strided, indexed, and segmented load stores will have
+        effective addresses calculated and expanded into nOP.v bundles to be sent to the load
+        store unit.
+
+  - id: spec-agen.b6
+    kind: function
+    statement: >
+      A unit-strided OP.v load/store must be encoded in a single nOP.v.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        Unit strided OP.v load stores will be encoded in a single nOP.v containing the
+        effective base address, effective stride, and is_unit_stride flag set high.
+
+  - id: spec-agen.b7
+    kind: interface
+    statement: >
+      A unit-strided nOP.v must carry the effective base address, the effective stride and
+      the is_unit_stride flag set high.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        Unit strided OP.v load stores will be encoded in a single nOP.v containing the
+        effective base address, effective stride, and is_unit_stride flag set high.
+
+  - id: spec-agen.b8
+    kind: function
+    statement: >
+      The stage 2 Packer must generate all of the effective nOP.v just-in-time at the
+      load/store queues in the unified LSU.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        The stage 2 AGEN's Packer will see that this nOP.v is a unit stride operation and
+        generate all of the effective nOP.v *just-in-time* at the load/store queues in the
+        Unified Load Store Unit.
+
+  # --- c: the Packer / Skipper / Walker generators ----------------------------
+
+  - id: spec-agen.c1
+    kind: function
+    statement: >
+      The Packer must handle contiguous and unit-stride loads with no indexing.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Packer"
+      quote: >
+        Handles the fastest, densest case: contiguous/unit-stride loads with no indexing.
+
+  - id: spec-agen.c2
+    kind: function
+    statement: >
+      The Packer must pack multiple segments and multiple elements into each DMEM-width
+      packet.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Packer"
+      quote: >
+        It packs multiple segments and multiple elements into each DMEM-width packet,
+
+  - id: spec-agen.c3
+    kind: function
+    statement: >
+      The Packer must advance a single EEW_CTR by whichever of VL, vreg boundary, DMEM
+      boundary, segment or mask is hit first.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Packer"
+      quote: >
+        advancing a single EEW_CTR by whichever constraint (VL, vreg boundary, DMEM boundary,
+        segment, or mask) is hit first.
+
+  - id: spec-agen.c5
+    kind: function
+    statement: >
+      The Packer must not support indexed loads.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Packer"
+      quote: >
+        the reused Packer is extended to **suppress** those accesses
+        instead, per the mask rule above. Does not support indexed loads.
+
+  - id: spec-agen.c6
+    kind: function
+    statement: >
+      The Skipper must handle non-indexed, non-unit-stride accesses whether or not a mask is
+      present.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Skipper"
+      quote: >
+        Handles **non-indexed, non-unit-stride accesses** — strided and segmented — whether or not a mask
+        is present
+    notes: >
+      Widened on 2026-08-03 from "masked, non-indexed loads" in two directions: to both
+      directions (the generators are selected by access class, spec-agen.c26) and to the
+      unmasked case (masking is an optimization, not a selection criterion). This resolved the
+      question of which generator handles an unmasked non-indexed strided access: the Skipper.
+
+  - id: spec-agen.c7
+    kind: function
+    statement: >
+      The Skipper must skip masked-off elements rather than fetch them.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Skipper"
+      quote: >
+        where masked-off elements should be skipped rather than fetched.
+    notes: >
+      The "should" in the quote was ruled a real requirement on 2026-07-31: skipping rather
+      than fetching is the behaviour that distinguishes the Skipper from the Packer, which
+      per spec-agen.c23 must suppress those accesses. Fetch-and-flag is bobtail's behaviour,
+      mined as the now-retired spec-agen.c4 before the 2026-07-31 mask rule.
+
+  - id: spec-agen.c8
+    kind: function
+    statement: >
+      The Skipper must pack whole segments per element.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Skipper"
+      quote: >
+        It packs whole segments per element but uses the mask bits (via a priority encoder) to
+        jump past runs of disabled elements in power-of-2 strides, emitting "fake" packets for
+        skipped regions.
+
+  - id: spec-agen.c9
+    kind: structure
+    statement: >
+      The Skipper must use a priority encoder over the mask bits.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Skipper"
+      quote: >
+        It packs whole segments per element but uses the mask bits (via a priority encoder) to
+        jump past runs of disabled elements in power-of-2 strides, emitting "fake" packets for
+        skipped regions.
+
+  - id: spec-agen.c10
+    kind: function
+    statement: >
+      The Skipper must jump past runs of disabled elements in power-of-2 strides.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Skipper"
+      quote: >
+        It packs whole segments per element but uses the mask bits (via a priority encoder) to
+        jump past runs of disabled elements in power-of-2 strides, emitting "fake" packets for
+        skipped regions.
+
+  - id: spec-agen.c11
+    kind: function
+    statement: >
+      The Skipper must emit fake packets for skipped regions.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Skipper"
+      quote: >
+        It packs whole segments per element but uses the mask bits (via a priority encoder) to
+        jump past runs of disabled elements in power-of-2 strides, emitting "fake" packets for
+        skipped regions.
+
+  - id: spec-agen.c24
+    kind: function
+    statement: >
+      The Skipper must be used instead of the Packer whenever the access is not unit-stride.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Skipper"
+      quote: >
+        Use this instead of the packer whenever the access is not unit-stride
+    notes: >
+      Supersedes the retired spec-agen.c12, whose trigger was the presence of a mask. Resolved
+      on 2026-08-03: the Packer/Skipper boundary is unit-stride versus not, and masking selects
+      nothing.
+
+  - id: spec-agen.c13
+    kind: function
+    statement: >
+      The Skipper must be used instead of the Walker when there is no index.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Skipper"
+      quote: >
+        instead of the walker whenever there is no index.
+
+  - id: spec-agen.c14
+    kind: function
+    statement: >
+      The Walker must handle indexed accesses.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        Handles **indexed accesses**
+        by walking through elements one at a time
+    notes: >
+      Widened from "loads" to "accesses" on 2026-08-03 per spec-agen.c26.
+
+  - id: spec-agen.c25
+    kind: structure
+    statement: >
+      The Walker must not be used as the fallback for a non-indexed access.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        The Walker is **not** the fallback for a non-indexed access: its per-element offset comes from the
+        index interface, and a strided access has no index vector to drive it.
+    notes: >
+      Supersedes the retired spec-agen.c15, which made the Walker the general
+      element-by-element fallback. Resolved on 2026-08-03 the other way: the Skipper is the
+      non-indexed generator (spec-agen.c6), because the Walker's per-element offset comes from
+      the index interface and a strided access has no index vector to drive it.
+
+  - id: spec-agen.c16
+    kind: function
+    statement: >
+      The Walker must walk through elements one at a time.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        by walking through
+        elements one at a time, taking a per-element byte offset and mask bit
+        from the index interface.
+
+  - id: spec-agen.c17
+    kind: interface
+    statement: >
+      The Walker must take a per-element byte offset and mask bit from the index interface.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        taking a per-element byte offset and mask bit
+        from the index interface.
+
+  - id: spec-agen.c18
+    kind: function
+    statement: >
+      The Walker must pack segments per element.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        Segments are still packed per element, but each element gets its own computed address
+        and direction; to avoid stall/wait states it won't release the final segment or start
+        until the next index arrives.
+
+  - id: spec-agen.c19
+    kind: function
+    statement: >
+      The Walker must compute its own address and direction for each element.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        Segments are still packed per element, but each element gets its own computed address
+        and direction; to avoid stall/wait states it won't release the final segment or start
+        until the next index arrives.
+
+  - id: spec-agen.c20
+    kind: function
+    statement: >
+      The Walker must not release the final segment or start until the next index arrives.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        Segments are still packed per element, but each element gets its own computed address
+        and direction; to avoid stall/wait states it won't release the final segment or start
+        until the next index arrives.
+    notes: >
+      The spec's stated reason is to avoid stall/wait states.
+
+  - id: spec-agen.c21
+    kind: function
+    statement: >
+      The Walker must be used for any indexed or indexed-masked access.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        Use this for any indexed or
+        indexed-masked access
+    notes: >
+      Widened from "loads" to "accesses" on 2026-08-03 per spec-agen.c26.
+
+  - id: spec-agen.c22
+    kind: function
+    statement: >
+      The Walker must not support non-indexed accesses.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        it does not support non-indexed accesses, which the skipper handles.
+    notes: >
+      Widened on 2026-08-03 from "non-indexed masked loads" to all non-indexed accesses, which
+      is the complement of spec-agen.c21 under the access-class selection rule. The spec's
+      reason the Walker cannot be the non-indexed fallback is spec-agen.c25's replacement,
+      spec-agen.c27.
+
+  - id: spec-agen.c26
+    kind: structure
+    statement: >
+      The AGEN generator must be selected by access class rather than by direction.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        **The generator is selected by access class, not by direction.** The three rules below hold
+        identically on the load and store paths
+    notes: >
+      Resolved 2026-08-03: the three selection rules were written for loads only while the units
+      reused are Load/Store variants. They are identical on both paths. The only asymmetries the
+      spec names are the mask/index read ports (spec-agen.c28, c29) and that the store path also
+      runs st_vdgen, which is group d.
+
+  - id: spec-agen.c27
+    kind: function
+    statement: >
+      ``ld_vAGEN_1`` must read the index vector on ``R0``.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        ``ld_vAGEN_1`` performs both vector reads that feed these generators: the **index vector** on ``R0``
+        and the **mask** on ``R1``
+    notes: >
+      Resolved 2026-08-03: the spec described where the store vDGEN reads its operands but never
+      the load-side index read, nor which stage performed it. The port numbers are owned by
+      midcore.rst §"Port assignment", which is the vrf family's; cited here, not restated.
+
+  - id: spec-agen.c28
+    kind: function
+    statement: >
+      ``ld_vAGEN_1`` must read the mask on ``R1``.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        ``ld_vAGEN_1`` performs both vector reads that feed these generators: the **index vector** on ``R0``
+        and the **mask** on ``R1``
+
+  - id: spec-agen.c29
+    kind: function
+    statement: >
+      ``st_vagen_1`` must read both the mask and the index through ``R4``.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Walker"
+      quote: >
+        On the store path ``st_vagen_1`` reads both through ``R4``.
+    notes: >
+      One port serves both jobs on the store path, unlike the load path's separate R0 and R1.
+      Whether that is sufficient for an indexed masked store is recorded in open_questions.
+
+  # --- d: store data generation (vDGEN) ---------------------------------------
+
+  - id: spec-agen.d1
+    kind: structure
+    statement: >
+      The store vDGEN must operate alongside st_vagen_1.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        st_vdgen for vector stores data generation works along side st_vagen_1.
+
+  - id: spec-agen.d2
+    kind: interface
+    statement: >
+      The store vDGEN must read source vector operands from the vector register file.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        The st_vdgen will read from the vector register file for source vector operands or the
+        FP/INT register file for scalar source operands
+
+  - id: spec-agen.d3
+    kind: interface
+    statement: >
+      The store vDGEN must read scalar source operands from the FP/INT register file.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        The st_vdgen will read from the vector register file for source vector operands or the
+        FP/INT register file for scalar source operands
+
+  - id: spec-agen.d4
+    kind: function
+    statement: >
+      For an SSI store the vDGEN must read and buffer the entire vPRN read value.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        SSI_Q's are ELEN wide so the st_vdgen reads and buffers the entire vPRN read value,
+        and generates a address and 64 bit data bundle that will be issued to the LSU SSI
+        address and data queues.
+    notes: >
+      The preceding sentence states only that the vDGEN *may* read an entire vPRN for SSI
+      accesses; that is an allowance. The obligation is the stated fact quoted here, which
+      follows from the SSI queues being ELEN wide.
+
+  - id: spec-agen.d5
+    kind: interface
+    statement: >
+      For an SSI store the vDGEN must generate an address and 64-bit data bundle issued to
+      the LSU SSI address and data queues.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        SSI_Q's are ELEN wide so the st_vdgen reads and buffers the entire vPRN read value,
+        and generates a address and 64 bit data bundle that will be issued to the LSU SSI
+        address and data queues.
+
+  - id: spec-agen.d6
+    kind: function
+    statement: >
+      The vDGEN's nOP.v bundles must be dispatched to the LSU store queues in order.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        These nOP.v bundles must be dispatched to the LSU store queues in-order and
+        atomically.
+
+  - id: spec-agen.d7
+    kind: function
+    statement: >
+      The vDGEN's nOP.v bundles must be dispatched to the LSU store queues atomically.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        These nOP.v bundles must be dispatched to the LSU store queues in-order and
+        atomically.
+
+  - id: spec-agen.d8
+    kind: function
+    statement: >
+      Each nOP.v must be processed in program and memory order.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        Each nOP.v must be processed in program and memory order, to maintain precise
+        exception tracking via VSTART.
+    notes: >
+      The spec's stated reason is to maintain precise exception tracking via VSTART.
+
+  - id: spec-agen.d10
+    kind: interface
+    statement: >
+      Each effective address must be paired with the data of the element that st_vagen_1
+      selected.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        As data within vPRN's is already packed each effective address is paired with the data of
+        the element that ``st_vagen_1`` selected.
+    notes: >
+      Supersedes the retired spec-agen.d9, which asserted a consecutive-element correspondence
+      that holds only when no mask is active — see spec-agen.d15.
+
+  - id: spec-agen.d11
+    kind: function
+    statement: >
+      The store vDGEN must not re-derive which elements survive masking.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        The ``st_vdgen`` **must not re-derive which elements
+        survive masking**: it consumes the **same mask-derived element cursor** as ``st_vagen_1``, so the
+        address and data bundles stay paired element-for-element and a masked-off element is skipped in
+        both streams.
+
+  - id: spec-agen.d12
+    kind: interface
+    statement: >
+      The store vDGEN must consume the same mask-derived element cursor as st_vagen_1.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        The ``st_vdgen`` **must not re-derive which elements
+        survive masking**: it consumes the **same mask-derived element cursor** as ``st_vagen_1``, so the
+        address and data bundles stay paired element-for-element and a masked-off element is skipped in
+        both streams.
+    notes: >
+      The cursor originates in AGEN, which suppresses address generation for masked-off
+      elements (spec-agen.e6, spec-agen.e7). Sharing it is what keeps the two streams aligned
+      without a second mask evaluation.
+
+  - id: spec-agen.d13
+    kind: interface
+    statement: >
+      The address and data bundles must stay paired element-for-element.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        The ``st_vdgen`` **must not re-derive which elements
+        survive masking**: it consumes the **same mask-derived element cursor** as ``st_vagen_1``, so the
+        address and data bundles stay paired element-for-element and a masked-off element is skipped in
+        both streams.
+
+  - id: spec-agen.d14
+    kind: function
+    statement: >
+      A masked-off element must be skipped in both the address stream and the data stream.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        The ``st_vdgen`` **must not re-derive which elements
+        survive masking**: it consumes the **same mask-derived element cursor** as ``st_vagen_1``, so the
+        address and data bundles stay paired element-for-element and a masked-off element is skipped in
+        both streams.
+
+  - id: spec-agen.d15
+    kind: function
+    statement: >
+      With no mask active the element cursor must advance consecutively, one bundle per
+      consecutive element of the vPRN.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-dgen
+      heading: "Vector DGEN"
+      quote: >
+        With no mask active the cursor advances consecutively, one bundle per consecutive
+        element of the vPRN.
+
+  - id: spec-agen.e1
+    kind: interface
+    statement: >
+      Both AGEN stages must read the vector mask.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        **Both AGEN stages must read the vector mask and apply it during address generation.**
+
+  - id: spec-agen.e2
+    kind: function
+    statement: >
+      Both AGEN stages must apply the vector mask during address generation.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        **Both AGEN stages must read the vector mask and apply it during address generation.**
+
+  - id: spec-agen.e12
+    kind: interface
+    statement: >
+      Stage 1 must perform the mask read for every access class including unit-stride.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        **Stage 1 performs the mask read for every access class, including unit-stride.** The stage 2 Packer
+        does **not** read the VRF
+    notes: >
+      Supersedes the retired spec-agen.e3, which had the stage 2 US Packer reading the VRF
+      itself. Resolved on 2026-08-03: that would give the load mask port two concurrent readers
+      — a US OP.v in stage 2 and an SSI OP.v in stage 1 — which a statically partitioned file
+      cannot serve. See spec-agen.e13 and spec-vrf group g.
+
+  - id: spec-agen.e13
+    kind: interface
+    statement: >
+      The mask must travel with the unit-stride ``nOP.v`` to the stage 2 Packer.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        a US ``OP.v`` already passes through stage 1, where it is encoded into a
+        single ``nOP.v``, so ``ld_vAGEN_1`` reads ``v0`` there and the mask travels with that ``nOP.v`` to
+        the Packer.
+    notes: >
+      The spec records the cost: up to VLMAX mask bits on the US nOP.v, wide but one bundle per
+      OP.v.
+
+  - id: spec-agen.e14
+    kind: timing
+    statement: >
+      The mask must be read once per ``OP.v`` and latched.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        The mask read happens **once per ``OP.v``** and is latched: a single ``VLEN``-wide read of ``v0``
+        yields the mask bits for every element of the access.
+    notes: >
+      Resolved 2026-08-03. This cadence is what makes the store path's single R4 sufficient for
+      both the mask and the index (spec-agen.c29): index members are read as the walk advances,
+      so the two reads never need the same cycle.
+
+  - id: spec-agen.e4
+    kind: structure
+    statement: >
+      The load-path AGEN mask read must use VRF read port R1.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        The mask is
+        read through the unit's VRF mask read port — ``R1`` on the load path, ``R4`` on the store path (see
+        :ref:`vrf-ports`)
+    notes: >
+      The canonical port assignment is midcore.rst §"Port assignment (canonical, 0-based)",
+      owned by spec-vrf.
+
+  - id: spec-agen.e5
+    kind: structure
+    statement: >
+      The store-path AGEN mask read must use VRF read port R4.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        The mask is
+        read through the unit's VRF mask read port — ``R1`` on the load path, ``R4`` on the store path (see
+        :ref:`vrf-ports`)
+
+  - id: spec-agen.e6
+    kind: function
+    statement: >
+      AGEN must suppress address generation for a masked-off element.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        both stages **suppress address generation for masked-off elements**: a
+        masked-off
+        element produces no ``nOP.v``, and therefore no D$ access, no TLB translation and no LCAM
+        search.
+
+  - id: spec-agen.e7
+    kind: function
+    statement: >
+      A masked-off element must produce no nOP.v.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        both stages **suppress address generation for masked-off elements**: a
+        masked-off
+        element produces no ``nOP.v``, and therefore no D$ access, no TLB translation and no LCAM
+        search.
+    notes: >
+      The stated consequences of producing no nOP.v are no D$ access, no TLB translation and
+      no LCAM search; they follow from this requirement rather than standing alone.
+
+  - id: spec-agen.e8
+    kind: function
+    statement: >
+      A masked-off store element must leave memory unmodified.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        A masked-off **store** element must
+        leave memory unmodified, and the source ``vPRN``'s inactive lanes hold coprocessor data
+        rather than the memory's prior contents, so an access that reached the D$ would clobber
+        bytes the instruction never wrote.
+    notes: >
+      From the section's important block. This is the obligation that makes applying the mask in
+      AGEN rather than downstream necessary; it also resolves the masked-US-store hazard raised
+      against spec-memord.b5.
+
+  - id: spec-agen.e9
+    kind: function
+    statement: >
+      A masked-off load element must not raise a memory exception.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        A masked-off **load** element must not raise a memory
+        exception, so an access that reached the TLB could fault on an address the instruction never
+        architecturally touches.
+
+  - id: spec-agen.c23
+    kind: function
+    statement: >
+      The Packer must suppress accesses for masked-off lanes rather than flag them.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Packer"
+      quote: >
+        the bobtail unit fetches masked-off
+        lanes and merely flags them, so the reused Packer is extended to **suppress** those accesses
+        instead, per the mask rule above.
+    notes: >
+      Supersedes the retired spec-agen.c4. The bobtail Packer flags rather than suppresses, so the
+      reused unit requires extension.
+
+  - id: spec-agen.e11
+    kind: interface
+    statement: >
+      A consumer of the element cursor must not evaluate the vector mask again.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-agen
+      heading: "Vector AGEN"
+      quote: >
+        The resulting cursor is the **single owner** of which elements survive: both the
+        ``st_vdgen`` on the store path (see :ref:`vector-dgen`) and the Load Coalescing Buffer on the load
+        path (see :ref:`load-coalesce`) consume that cursor rather than evaluating the mask again.
+    notes: >
+      The store-side consumer contract is spec-agen.d11-d14; the load-side consumer contract
+      is spec-lsu group e, which owns the LCB.
+
+coverage:
+
+  # The 10 sections of execution.rst that agen does not own are assigned to core and cii in
+  # families.yaml, and the chapter title is unowned — none of them are ledgered here.
+  - file: docs_caracal/src/execution.rst
+    heading: "Vector LS AGEN stage"
+    anchor: vector-ls-agen
+    reqs: [spec-agen.a1, spec-agen.a2, spec-agen.a3, spec-agen.a4, spec-agen.a5]
+
+  - file: docs_caracal/src/execution.rst
+    heading: "Vector AGEN"
+    anchor: vector-agen
+    reqs: [spec-agen.a6, spec-agen.a7, spec-agen.a8,
+           spec-agen.e1, spec-agen.e2, spec-agen.e12, spec-agen.e13, spec-agen.e14, spec-agen.e4, spec-agen.e5,
+           spec-agen.e6, spec-agen.e7, spec-agen.e8, spec-agen.e9,
+           spec-agen.e11]
+
+  - file: docs_caracal/src/execution.rst
+    heading: "Packer"
+    anchor: vector-agen
+    reqs: [spec-agen.c1, spec-agen.c2, spec-agen.c3, spec-agen.c5, spec-agen.c23,
+           spec-agen.c26, spec-agen.c27, spec-agen.c28, spec-agen.c29]
+
+  - file: docs_caracal/src/execution.rst
+    heading: "Skipper"
+    anchor: vector-agen
+    reqs: [spec-agen.c6, spec-agen.c7, spec-agen.c8, spec-agen.c9, spec-agen.c10,
+           spec-agen.c11, spec-agen.c24, spec-agen.c13]
+
+  # Also carries the two-stage vAGEN paragraph (execution.rst:80-89), which follows this
+  # subsection with no intervening heading — hence group b lands in this ledger entry.
+  - file: docs_caracal/src/execution.rst
+    heading: "Walker"
+    anchor: vector-agen
+    reqs: [spec-agen.c14, spec-agen.c25, spec-agen.c16, spec-agen.c17, spec-agen.c18,
+           spec-agen.c19, spec-agen.c20, spec-agen.c21, spec-agen.c22,
+           spec-agen.b1, spec-agen.b2, spec-agen.b3, spec-agen.b4, spec-agen.b5,
+           spec-agen.b6, spec-agen.b7, spec-agen.b8]
+
+  - file: docs_caracal/src/execution.rst
+    heading: "Vector DGEN"
+    anchor: vector-dgen
+    reqs: [spec-agen.d1, spec-agen.d2, spec-agen.d3, spec-agen.d4, spec-agen.d5,
+           spec-agen.d6, spec-agen.d7, spec-agen.d8, spec-agen.d10, spec-agen.d11,
+           spec-agen.d12, spec-agen.d13, spec-agen.d14, spec-agen.d15]
+
+retired:
+
+  - id: spec-agen.e3
+    statement: >
+      The stage 1 Skipper and Walker and the stage 2 US Packer must each read v0 through
+      their unit's VRF mask read port.
+    retired_because: >
+      Having the stage 2 Packer read the VRF gives the load mask port two concurrent readers, a
+      US OP.v in stage 2 and an SSI OP.v in stage 1, which midcore.rst §"Port assignment" cannot
+      serve because ports are statically partitioned and never arbitrated. Resolved on
+      2026-08-03: stage 1 performs the read for every access class and the mask travels with the
+      US nOP.v. Superseded by spec-agen.e12 and e13.
+
+  - id: spec-agen.c12
+    statement: >
+      The Skipper must be used instead of the Packer when a mask is present.
+    retired_because: >
+      The Packer/Skipper boundary is unit-stride versus not, not masked versus unmasked. As
+      written it left an unmasked non-indexed strided access matching no generator's rule, which
+      is the open question resolved on 2026-08-03. Superseded by spec-agen.c24.
+
+  - id: spec-agen.c15
+    statement: >
+      The Walker must serve as the general element-by-element fallback.
+    retired_because: >
+      Resolved the other way on 2026-08-03. The Walker's per-element offset comes from the index
+      interface, and a non-indexed access has no index vector to drive it, so the Skipper is the
+      non-indexed generator. execution.rst §"Walker" now says so explicitly. Superseded by
+      spec-agen.c25.
+
+  - id: spec-agen.e10
+    statement: >
+      The mask-derived element cursor must be the single owner of which elements survive.
+    retired_because: >
+      A design principle ("the mask-derived element cursor must be the single owner of which elements survive") with no distinguishable RTL to tag. The checkable content is spec-agen.e11 (both consumers use the cursor rather than re-evaluating the mask) and spec-agen.e6/e7.
+
+  - id: spec-agen.c4
+    statement: >
+      The Packer must still fetch masked-off lanes and flag them.
+    retired_because: >
+      execution.rst "Vector AGEN" gained an explicit mask rule on 2026-07-31 requiring both AGEN
+      stages to read the vector mask and suppress address generation for masked-off elements, and
+      the Packer bullet was amended to match. Fetching and flagging is now the bobtail behaviour
+      the reused unit must be extended away from. Superseded by spec-agen.c23.
+
+  - id: spec-agen.d9
+    statement: >
+      Each effective address must correspond to one consecutive element of the vPRN.
+    retired_because: >
+      execution.rst §"Vector DGEN" was amended on 2026-07-31 once AGEN began applying the vector
+      mask (spec-agen.e2, e6): with masked-off elements suppressed, the generated addresses are a
+      subset of the element stream and no longer correspond to consecutive vPRN elements. The
+      DGEN now shares the AGEN's mask-derived element cursor. Superseded by spec-agen.d10, with
+      the unmasked case preserved as spec-agen.d15.
+
+# The three questions originally recorded against this family were resolved on 2026-08-03:
+#   store-side selection rules -> identical, selection is by access class; spec-agen.c26
+#   unmasked non-indexed strided -> the Skipper; c12/c15 retired, spec-agen.c24/c25 issued
+#   where the load index/mask are read -> ld_vAGEN_1 on R0/R1; spec-agen.c27-c29
+#
+# The two VRF port-sharing questions filed here on 2026-08-03 were resolved the same day, once
+# the vrf family took up its own open questions against the same port table:
+#   store R4 serving mask and index -> sufficient; the mask is read once per OP.v and latched
+#     while index members are read as the walk advances, so the two never need one cycle.
+#     spec-agen.e14, spec-vrf.g19.
+#   R1 with two readers -> stage 1 performs the mask read for every access class including
+#     unit-stride, and the mask travels with the US nOP.v; the stage 2 Packer does not read the
+#     VRF. spec-agen.e3 retired, spec-agen.e12/e13 issued, spec-vrf.g18.

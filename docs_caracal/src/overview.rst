@@ -1,3 +1,5 @@
+.. _caracal-overview:
+
 Overview
 ========
 
@@ -19,10 +21,12 @@ This document provides an overview of the |caracal| micro-architecture, its rela
    Overview of Caracal Microarchitecture.
 
 
+.. _boom-relationship:
+
 Relationship to BOOMv4 and Chipyard
 ------------------------------------
 
-|caracal| is a fork of BOOMv4 [5/20/2026] with a clean-slate re-architecture to support RVV 1.0 and OOO vector load/store. The scalar pipeline is largely unchanged from BOOMv4, with the front-end and back-end stages extended to support vector instructions and state. |caracal| remains compatible with the Chipyard ecosystem, allowing it to be used as a drop-in core for Chipyard SoC designs and simulations.
+|caracal| is a fork of BOOMv4 [5/20/2026] with a clean-slate re-architecture to support RVV 1.0 and OOO vector load/store. The scalar pipeline is modified from BOOMv4, with the **decode/rename** and back-end stages extended to support vector instructions and state. The fetch front-end and branch predictor are **unchanged** — see the table below and :ref:`caracal-pipeline`. |caracal| remains compatible with the Chipyard ecosystem, allowing it to be used as a drop-in core for Chipyard SoC designs and simulations.
 
 
 .. figure:: ../figures/boom_overlay.png
@@ -44,8 +48,10 @@ The following table shows which modules have been modified to support RVV1.0 ins
      - Extended
    * - Integer execution
      - Extended (``usingRVV``): the integer ALU EU also executes ``vsetvli``/``vsetvl``, computing
-       VL (and VTYPE for ``vsetvl``) and writing the VL RF + VL wakeup network. Bit-identical to
-       |boom| when ``usingRVV`` is off.
+       VL (and VTYPE for ``vsetvl``) and writing the VL RF + VL wakeup network. Such a uop has
+       **two destinations in two rename spaces** (``pdst`` in the INT RF, ``pvl`` in the VL RF),
+       marked by the new ``is_vl_producer`` bit — see :ref:`the dual-destination rule
+       <vset-dual-dest>`. Bit-identical to |boom| when ``usingRVV`` is off.
    * - FP execution
      - Unchanged
    * - Vector (RVV) execution
@@ -54,6 +60,14 @@ The following table shows which modules have been modified to support RVV1.0 ins
      - Extended
    * - Memory system
      - Unchanged
+   * - Vector architectural CSR state
+     - Delegated. ``vtype`` (incl. ``vill``), ``vl``, ``vstart``, ``vxrm``, ``vxsat``, ``vcsr``,
+       ``vlenb`` and ``mstatus.VS`` (dirty tracking + the ``VS=Off`` illegal-instruction gate)
+       come from rocket-chip's ``CSRFile`` under ``usingVector`` (``csr.io.vector``).
+       |caracal| owns only the speculative VCFG ``vtype`` mirror and the VL register file —
+       see :ref:`vector-csr-ownership`.
+
+.. _caracal-pipeline:
 
 The Caracal Pipeline
 --------------------
@@ -63,12 +77,14 @@ The Caracal Pipeline
 
    The Caracal pipeline, note greyed area are identical to BOOMv4.
 
-|caracal| keeps |boom| v4's 13-stage out-of-order pipeline intact and threads
+|caracal| keeps |boom| v4's out-of-order pipeline intact and threads
 a vector path through it. Everything is gated on the ``usingRVV`` core parameter
 (``common/parameters.scala``), so with vectors disabled the core elaborates as
-stock |boom| v4. The stages below follow an instruction from fetch to commit;
-greyed stages in the figure are bit-identical to |boom| v4, and each
-description calls out only where the vector path attaches.
+stock |boom| v4. **The stage list below is authoritative**: each entry follows an instruction
+from fetch to commit and opens with that stage's status — *Identical*, *Extended*, *New*, or
+*Reuses … unchanged* — so which stages are bit-identical to |boom| v4 is checkable from this text
+alone. The greying in the figure above illustrates the same partition and is not a separate claim.
+Each description then calls out only where the vector path attaches.
 
 Fetch (F0–F5)
    Identical to |boom| v4. The six-stage front-end (next-PC select, I$ access,
@@ -86,11 +102,14 @@ Decode
    Unit (VCFG)** keeps the running ``vtype`` mirror so younger vector uop's
    snapshot it (and derive ``EMUL``) without a CSR read; it does **not** mirror ``vl``.
    VL is renamed into the VL register file and delivered to consumers via ``pvl`` (read at
-   execute), for **all** vset forms — ``vsetivli`` and ``vsetvli`` (``rs1=x0``) compute VL from
-   the immediate/VLMAX and write the VL RF just like register-sourced ``vsetvli``. ``vsetvl``
-   (both vtype and VL from registers) is serialized via
-   |boom|'s ``is_unique`` so the vtype mirror is correct before younger vector uop's decode
-   (the mapper needs vtype→EMUL). Decode also sets the ``iq_type`` routing bits for the
+   execute). ``vsetivli`` is **front-end only** (both vtype and AVL are immediate): the VCFG
+   computes VL at decode and the value is written to ``VL_RF[pvl]`` in the **rename** cycle,
+   where ``pvl`` is allocated — there is no decode-stage VL-RF write and no back-end EU.
+   ``vsetvli``/``vsetvl`` execute on an integer ALU EU. ``vsetvl``
+   (both vtype and VL from registers) is marked **both** ``is_unique`` **and**
+   ``flush_on_commit``: ``is_unique`` alone does *not* order the vtype mirror against younger
+   decode (see :ref:`vector-rvv-decode`), so the mirror is recovered from the committed VCFG
+   shadow on the post-commit flush. Decode also sets the ``iq_type`` routing bits for the
    new vector issue queues (``IQ_V_LOAD/IQ_V_STORE/IQ_V_ALU``, widened in
    ``common/consts.scala``).
 
@@ -98,7 +117,7 @@ Rename
    Extended. The scalar integer/FP map tables, free lists, and busy tables are
    the |boom| v4 design **unchanged** — integer rename is not modified. |caracal| adds a
    third register class — ``RT_VEC`` (``common/consts.scala``) — and a vector physical
-   register file (``numVecPhysRegs``, default 128) renamed alongside INT and FP, mapping the
+   register file (``numVecPhysRegs``, default 96) renamed alongside INT and FP, mapping the
    logical ``lvs*/lvd/lvm`` specifiers to physical ``pvs*/pvdest/pvm``. ``VL`` is renamed into
    **its own register file** (default 64) with its own map table, free list, busy table, wakeup
    network, and commit logic (see the VL Rename section); the VL value is not held in the integer
@@ -113,11 +132,12 @@ Dispatch (Rename2)
 Issue
    Extended. The age-ordered issue-unit logic is reused; |caracal| instantiates
    additional vector issue queues (``IQ_V_LOAD``, ``IQ_V_STORE``, ``IQ_V_ALU``)
-   alongside the scalar ``IQ_MEM/IQ_UNQ/IQ_ALU/IQ_FP``. ``IQ_V_LOAD``/``IQ_V_STORE``
-   stay **age-ordered collapsing** (vector memory is OoO); ``IQ_V_ALU`` is instead an
-   **in-order, non-speculative FIFO** — like RoCC it feeds the in-order CII coprocessor in program
-   order and only issues instructions **past the PNR** (known-safe, guaranteed to commit), so the CII
-   needs no branch-kill/replay. Only the queue set and operand-readiness tracking are widened to
+   alongside the scalar ``IQ_MEM/IQ_UNQ/IQ_ALU/IQ_FP``. All three vector queues
+   are **age-ordered collapsing**; ``IQ_V_ALU`` adds a **per-entry past-PNR eligibility
+   gate** — like RoCC it issues only instructions that are individually non-speculative. That
+   removes **branch**-kill from the CII (the PNR cannot sweep past an unresolved branch) but not
+   flush recovery: past-PNR is *not* a commit guarantee, so the CII needs the drain-on-flush
+   contract in :ref:`cii-flush`. Only the queue set and operand-readiness tracking are widened to
    cover vector physical registers.
 
 Register Read
@@ -155,8 +175,12 @@ Memory (LSU)
    arbiter** (scalar-priority floor + anti-starvation, also gating the LCAM and TLB ports),
    and are ordered against scalar loads/stores by **bidirectional cross-queue disambiguation**
    — vector element addresses are routed through the LCAM in both directions. A Load Coalescing
-   Buffer assembles per-element responses into one VRF write per destination register, and
-   per-element progress tracking makes faults precise (``vstart``). See the Loadstore chapter.
+   Buffer assembles per-element responses into one VRF write per destination register. Element
+   faults trap with ``vstart = 0`` and restart the whole instruction — legal because the
+   destination group is a *fresh* physical group that is never installed architecturally, so no
+   partial result is visible (see :ref:`elem-progress`). Element-queue capacity is reserved in
+   **program order at dispatch**, which is what makes the queues both deadlock-free and
+   squashable by pointer rollback. See the Loadstore chapter.
 
 Writeback
    Extended. Scalar results write back to the INT/FP regfiles exactly as in
@@ -171,5 +195,10 @@ Commit
    in program order through the same head-pointer/exception machinery as scalar
    ops. Precise vector state (``vtype``/``vl``) is recovered on redirect/exception via
    the per-uop ``vconfig`` snapshot rather than a separate rollback path.
+
+   A ROB-head flush (exception, ``MINI_EXCEPTION_MEM_ORDERING``, CSR replay, ERET) **can**
+   squash work the CII has already accepted, because the PNR is not a commit guarantee — see
+   :ref:`cii-flush`. Branch mispredicts cannot, because ``is_br``/``is_jalr`` set
+   ``starts_unsafe`` and the PNR never sweeps past an unresolved branch.
 
 .. =====================================================================
