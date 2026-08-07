@@ -47,6 +47,49 @@
 #      This invariant is also a v2 plan ground rule. A violation is reviewable.
 #
 # -----------------------------------------------------------------------------
+# REQUIREMENT CORPUS — what `reqs:` on each node below means
+# -----------------------------------------------------------------------------
+# src/main/nlhdl/reqs/ holds 1162 live requirements across 10 families, derived
+# from the .rst spec by /spec-to-reqs. Every one is allocated to exactly one node
+# below (1065) or entered in `reqs_out_of_scope:` with a reason (97).
+#
+# ALLOCATION IS NOT IMPLEMENTATION. `reqs:` here says "this module OWES this
+# obligation". The claim that code SATISFIES it is the requirement-tag comment
+# (the "at-req" prefix documented by spec-to-reqs, followed by the ID) placed in
+# the nlhdl source and carried into the RTL. The two are separate records on
+# purpose: the gap between them is the work outstanding, which is why this file
+# is a plan and not a status. As of this amendment nothing is tagged yet — plan
+# step R4 is where the citation map is established.
+#
+# BARE IDS ONLY BELOW. The spec-to-reqs validator greps .yaml files for that tag
+# prefix as a literal token, so writing a tagged ID anywhere in this file — even
+# inside a comment, even as a counter-example — registers as an implementation
+# claim and inflates coverage before a line of RTL exists. That is why the
+# paragraph above spells the prefix out in words rather than as itself.
+#
+# ===> AMENDMENT (this revision) — NINE NODES ADDED, 49 non-blackbox -> 58.
+#      The previous map allocated no requirements at all. Reading the corpus
+#      against it surfaced three kinds of gap, and each new node names one:
+#        1. MECHANISMS WITH NO OWNER. VecGroupCopy (the VL==0 / fully-inactive
+#           destination-group copy, 13 reqs) and VecOrderHold (the
+#           predicted-overlap hold, 6 reqs) were specified in loadstore.rst and
+#           had nowhere to live. These are the ones that would have been
+#           discovered during bring-up.
+#        2. NODES OVER THE REVIEWABILITY BAR. VecIssueSlot (56), VecRegFile
+#           (48), VConfigUnit (44), VecCiiWriteback (41) and VecCrossLsuSnoop
+#           (40+) each split along a seam the corpus already draws:
+#           VecGroupReady, VecStoreDgenPath, VecRegFileBank, VtypeTable,
+#           VecCiiComplete, VecStoreForward.
+#        3. A MISSING DIRECTION. The CII host had a node per channel direction
+#           except Issue; VecCiiIssue closes that.
+#      Three nodes remain over 40 by deliberate choice, and the reason differs:
+#      `Rob` (85) and `LSU` (45) are edit_existing, where most reqs are
+#      must-not-regress constraints discharged collectively by the edit_scope's
+#      out-of-scope list rather than per-line logic; `VecPipeline` (49) is the
+#      container, whose reqs are wiring topology and design-wide invariants
+#      checked by cross-file inspection (plan step R3), not logic in one file.
+#
+# -----------------------------------------------------------------------------
 # SPEC OF RECORD
 # -----------------------------------------------------------------------------
 # docs_caracal/src/*.rst. Load-bearing anchors:
@@ -109,6 +152,12 @@ interfaces:
       # ---- decode feed (vector decode lives inside VecPipeline) ------------
       - { name: dec_insns,          dir: fwd, width: "32 * coreWidth" }
       - { name: dec_valids,         dir: fwd, width: coreWidth }
+      # ADDED (amendment). VConfigUnit requires FIRE, not validity: the vtype
+      # mirror must advance only on a lane that actually leaves decode. On a
+      # partially-firing bundle, updating on `dec_valids` makes the mirror
+      # DOUBLE-ABSORB a vset when the bundle re-presents, so younger uOPs snapshot
+      # a vtype that was applied twice.
+      - { name: dec_fire,           dir: fwd, width: coreWidth }
       - { name: dec_uops_in,        dir: fwd, width: "MicroOp * coreWidth" }
       - { name: dec_uops_out,       dir: bwd, width: "MicroOp * coreWidth" }
       - { name: dec_vec_illegal,    dir: bwd, width: coreWidth }
@@ -117,23 +166,119 @@ interfaces:
       - { name: ren2_mask,          dir: fwd, width: coreWidth }
       - { name: dis_fire,           dir: fwd, width: coreWidth }
       - { name: dis_ready,          dir: bwd, width: 1 }
+      # ADDED (D2). The three vector issue queues are wired NATIVELY from
+      # `dispatcher.io.dis_uops(i)` under `CompactingDispatcher`, so per-queue
+      # capacity crosses the seam on its own per-lane wires instead of being folded
+      # into the single `dis_ready` bit. `dis_ready` now carries the whole-bundle
+      # ALLOCATION conditions only (both `alloc_ok`s and `vlsu.dis_ok`).
+      # Ordering is {IQ_V_LOAD, IQ_V_STORE, IQ_V_ALU} x coreWidth.
+      - { name: dis_vec_valids,     dir: fwd, width: "coreWidth * 3" }
+      - { name: dis_vec_ready,      dir: bwd, width: "coreWidth * 3" }
+      # ===> ADDED (amendment). THE SEAM HAD NO RETURN PATH FOR THE RENAMED UOP.
+      #      `Rob` stores a full MicroOp (rob.scala:364) and VecRenameSpace frees
+      #      `stale_pvdest`/`pvtmp` off `commit_uops` — so the vector PRNs MUST be
+      #      present in `rob.io.enq_uops`, and nothing carried them back. Consumed
+      #      by `rob.io.enq_uops` ONLY: writing it back into `dis_uops` is a
+      #      per-field combinational loop, and per-field patching is exactly the
+      #      1101-line braiding v2 exists to delete.
+      - { name: dis_uops_out,       dir: bwd, width: "MicroOp * coreWidth" }
       # ---- speculation / recovery -----------------------------------------
       - { name: brupdate,           dir: fwd, width: BrUpdateInfo }
       - { name: rob_pnr_idx,        dir: fwd, width: robAddrSz }
+      # ADDED (amendment). BOOM's age comparison is 3-arg: IsOlder(a, b, head).
+      # `spec-issue.g21`/`e13` say an IQ_V_ALU entry's eligibility is
+      # `is_older(rob_idx, rob_pnr_idx)`, which is not computable from the two
+      # indices alone — the ROB is circular, so the head is what disambiguates
+      # wrap. Without it every pnrGate slot would need its own (wrong) 2-arg
+      # comparison and the past-PNR gate would invert across a wrap boundary,
+      # letting a YOUNGER-than-PNR op reach the coprocessor. That is precisely
+      # the speculation the CII must never see.
+      - { name: rob_head_idx,       dir: fwd, width: robAddrSz }
       - { name: rob_flush,          dir: fwd, width: 1 }
       - { name: rob_flush_kill,     dir: fwd, width: 1 }
+      # ADDED: VConfigUnit's quiescent-state check (mirror == architectural vtype)
+      # is vacuous without it — tying it false silently disables the assertion.
+      - { name: rob_empty,          dir: fwd, width: 1 }
       # ---- commit ---------------------------------------------------------
       - { name: commit_valids,      dir: fwd, width: coreWidth }
       - { name: commit_uops,        dir: fwd, width: "MicroOp * coreWidth" }
       - { name: commit_rollback,    dir: fwd, width: 1 }
       # ---- completion back into the ROB (group-done) -----------------------
-      - { name: vec_clr_bsy,        dir: bwd, width: "robAddrSz + 1" }
+      # WIDENED to ONE LANE PER PRODUCER (amendment). `vec_clr_bsy` had TWO
+      # producers — the LSU/LCB group-done and VecCiiComplete — on a single
+      # Valid, and NEITHER can be back-pressured: the CII frees its tag in the
+      # same cycle it completes, so a clear lost to arbitration is unrecoverable
+      # and the ROB entry never retires. Lanes, not an arbiter.
+      #   lane 0 = LCB group-done, lane 1 = VecCiiComplete, lane 2 = VecGroupCopy
+      - { name: vec_clr_bsy,        dir: bwd, width: "(robAddrSz + 1) * numVecClrPorts" }
       - { name: vec_clr_unsafe,     dir: bwd, width: "robAddrSz + 1" }
       - { name: vec_xcpt,           dir: bwd, width: VecException }
+      # ===> ADDED (amendment). The CSR side effects of vector arithmetic had no
+      #      path to commit. `fflags` and `vxsat` accrue per ROB entry and are
+      #      applied at COMMIT, not at writeback — pulsing
+      #      `csr.io.vector.set_vxsat` at writeback is not flush-safe, since a
+      #      past-PNR CII op can still be squashed by a ROB-head flush.
+      #      NOTE for the Rob delta: rob.scala:405 asserts
+      #      `!rob_fflags(row_idx).valid`, so a vector op must write the existing
+      #      per-entry fflags slot ONCE — a second write per entry fires the
+      #      assert. That is why a CII scalar-dest writeback must leave
+      #      `ExeUnitResp.fflags` invalid and route flags here instead.
+      - { name: vec_rob_flags,      dir: bwd, width: "VecRobFlags * numVecClrPorts" }
       # ---- scalar feeders: vector ops read INT/FP for base/stride/.vx/.vf ---
-      - { name: int_rf_read_req,    dir: bwd, width: "pregSz * 3" }
-      - { name: int_rf_read_rsp,    dir: fwd, width: "xLen * 3" }
+      # WIDENED 3 -> 5 (amendment, in two steps). Four are for the two
+      # VecScalarOperandRead instances, each needing TWO concurrent INT reads
+      # (base prs1 + stride prs2 in parallel) — serializing base and stride is
+      # what forced the single-FSM operand read in the previous attempt.
+      # ===> THE FIFTH IS VecCiiIssue's, and an earlier revision of this comment
+      #      wrongly said it needed none "because it captures .vx/.vf BY VALUE
+      #      from the bypass". `spec-cii.f24` does say "captured from the INT/FP
+      #      bypass at issue", but in BOOM the bypass network sits ON TOP OF a
+      #      register-file read — it is not a substitute for one. And the CII case
+      #      is the worst possible one for a bypass-only capture: IQ_V_ALU is
+      #      PAST-PNR gated, so a granted op is OLD, and its scalar producer has
+      #      almost always retired and left the bypass network entirely. Capturing
+      #      from the bypass alone would read a stale or unrelated value with no
+      #      error. `spec-cii.f41` ("delivered by value rather than by address")
+      #      is about what crosses the CII, not about how the host obtains it.
+      # ===> AND IT MUST BE PER-LANE `Decoupled`, NOT A BARE ADDRESS. BoomCore
+      #      found that `iregfile.io.arb_read_reqs` is `Flipped(Decoupled)` and
+      #      `PartiallyPortedRF` DENIES by index priority. The INT RF is
+      #      deliberately partially ported (numIrfReadPorts = 3 on Medium against
+      #      ~10 logical readers), so denial is ROUTINE, not exceptional — and no
+      #      placement or affordable port count fixes it, since 5 > 3. Every scalar
+      #      EU already holds its address until fire; the vector readers must too,
+      #      with the response registered at t+1 off the GRANTED address. A bare
+      #      address here would silently read whatever the arbiter granted instead.
+      - { name: int_rf_read_req,    dir: bwd, width: "DecoupledReadReq * 5" }
+      - { name: int_rf_read_rsp,    dir: fwd, width: "xLen * 5" }
       - { name: int_wakeups,        dir: fwd, width: IntWakeupBus }
+      # ===> ADDED (amendment). `spec-vrf.e4` requires the `.vf` scalar feeder of a
+      #      vector slot to be woken on the FP wakeup network, and VecIssueSlot
+      #      keeps FP `.vf` comparators — but only `int_wakeups` was declared, so
+      #      there was no FP readiness path at all and a `.vf` op could never
+      #      become ready. FpPipeline's delta adds no new network: this is a tap of
+      #      the EXISTING `io.wakeups`, fanned out by BoomCore.
+      - { name: fp_wakeups,         dir: fwd, width: FpWakeupBus }
+      # ===> ADDED (amendment). The INT WRITEBACK TAP, carrying {addr, data} per
+      #      INT write port — NOT the same thing as `int_wakeups`, which carries
+      #      readiness without data. Without this the M1 stale-scalar-base bug is
+      #      unfixable: the vector LS is woken speculatively, so
+      #      VecScalarOperandRead's INT-RF read can fire the same cycle the base
+      #      GPR's writeback commits, and the INT RF is a registered Mem read with
+      #      no read-during-write bypass — giving a stale base. The forward needs
+      #      the DATA. Width must include the `enableVectorArith` scalar-dest write
+      #      port, or a base produced by `vmv.x.s` is missed.
+      - { name: int_wb_snoop,       dir: fwd, width: "IntWbSnoop * numIrfWritePorts" }
+      # D4: back to ONE lane. An earlier revision had two, the second for
+      # VecScalarOperandRead's store instance — but `spec-agen.d3`'s FP leg is
+      # UNREACHABLE. execution.rst cites `vfmul.vf` as a store DGEN reading an FP
+      # scalar; `vfmul.vf` is vector-scalar FP arithmetic dispatched to the CII, not
+      # a store. NO RVV store form takes an FP scalar: store data is always `vs3`,
+      # and the scalar operands are rs1 (base) / rs2 (stride), both integer.
+      # The single remaining reader is VecCiiIssue's `.vf`.
+      # Note this also DISSOLVES the A30 fast-wakeup window: IQ_V_ALU is past-PNR
+      # gated, so a granted CII op is older than the PNR and its FP producer has
+      # genuinely written back — there is no bypass window left to close.
       - { name: fp_rf_read_req,     dir: bwd, width: pregSz }
       - { name: fp_rf_read_rsp,     dir: fwd, width: xLen }
       # ---- scalar-dest writeback (vmv.x.s, vcpop.m, vfirst.m, vfmv.f.s) ----
@@ -144,8 +289,24 @@ interfaces:
       - { name: csr_frm,            dir: fwd, width: 3 }
       - { name: csr_vs_dirty,       dir: bwd, width: 1 }
       # ---- vset: the dual-destination rule (is_vl_producer) ----------------
-      - { name: vset_resp,          dir: fwd, width: ExeUnitResp }
-      - { name: vl_wakeup,          dir: bwd, width: "vlPregSz + 1" }
+      # D8: REPLICATED per ALU EU. `aluWidth == coreWidth` on every tier, so with
+      # Small dropped (D3) the matrix is Medium(2)/Large(3)/Mega(4) and aluWidth is
+      # NEVER 1 — every config replicates. ALUExeUnit advertises the vset FU on
+      # every ALU EU instance and its reject list forbids an id-conditional
+      # advertisement, so two vsets can write back in one cycle. Arbitrating is not
+      # an option: a single-shot VL wakeup lost to arbitration is a PERMANENT HANG.
+      # Cheap here specifically because the VL RF is 64x9b, not 96x256b.
+      - { name: vset_resp,          dir: fwd, width: "ExeUnitResp * aluWidth" }
+      # WIDENED to 2 LANES, never arbitrated: the ALU `vset` writeback and the
+      # `vleff` VL trim are independent producers and neither can be
+      # back-pressured. `vsetivli` needs no lane (pvl is born ready).
+      - { name: vl_wakeup,          dir: bwd, width: "(vlPregSz + 1) * numVlWakeupPorts" }
+      # ADDED: the VL-RF COMMIT READ DATA. rename.h21 requires the architectural
+      # `vl` CSR to be written precisely at commit, and decode.i17 forbids any
+      # path that carries VL outside the VL register file — so the value must come
+      # back across this seam. The read ADDRESS is selected inside VecPipeline from
+      # `commit_uops`, so no address member is needed.
+      - { name: commit_vl,          dir: bwd, width: "vecVLSz + 1" }
       # ---- memory: the vector LSU's own D$ port + ordering hooks -----------
       - { name: lsu_vec,            dir: bwd, width: VecLsuCoreIO }
       - { name: lsu_fencei_rdy_vec, dir: bwd, width: 1 }
@@ -172,6 +333,126 @@ interfaces:
 top: BoomCore
 
 # =============================================================================
+# LIVE REQUIREMENTS THIS MAP DELIBERATELY DOES NOT ALLOCATE
+# =============================================================================
+# The corpus under src/main/nlhdl/reqs/ holds 1162 live requirements across 10
+# families. Every one of them is either in some module's `reqs:` above or in this
+# ledger — 1065 allocated, 97 here. An unallocated requirement is an ERROR, not
+# an omission, because it is the one failure the rest of the flow cannot see: it
+# is never written into an nlhdl file, never tagged, and therefore never missed.
+# A reason is something a reviewer can disagree with; silence is not.
+#
+# Note what is NOT in here. "Must be unchanged from BOOM v4" is ledgered only
+# where NO node targets the file in question, so nothing this flow writes could
+# ever carry the tag. Where such a requirement lands on a file that IS an
+# `edit_existing` target, it is ALLOCATED to that node instead: its
+# `<|begin_edit_scope|>` out-of-scope / must-not-regress list is exactly the
+# artifact that discharges it, and that is a claim worth tagging.
+# =============================================================================
+reqs_out_of_scope:
+
+  # --- unmodified-frontend (6 live reqs) ---
+  - reqs: [spec-core.b1, spec-core.e1, spec-core.e2, spec-core.e3, spec-core.e4, spec-decode.a2]
+    reason: >
+      Front-end fetch, TAGE prediction and the pre-decode path are untouched:
+      no node in this map targets v4/ifu/**, so nothing this flow writes can
+      carry a tag. Discharged by gate (f), usingRVV=false bit-identical to
+      pre-Caracal v4.
+
+  # --- unmodified-scalar-rename (18 live reqs) ---
+  - reqs: [spec-core.e7, spec-rename.a8, spec-rename.a9, spec-rename.c2, spec-rename.c3,
+           spec-rename.c4, spec-rename.c5, spec-rename.c6, spec-rename.c7, spec-rename.c8,
+           spec-rename.g3, spec-rename.g4, spec-rename.g5, spec-rename.i8, spec-rename.h3,
+           spec-rename.h24, spec-decode.c23, spec-vrf.c4]
+    reason: >
+      The scalar INT/FP rename space (v4/exu/rename-stage.scala, map/free/busy
+      tables and their branch snapshots) is not a target of any node — v2 adds
+      VecRenameSpace in parallel rather than extending it. The vector
+      analogues of these obligations are the rename d/f/g/i groups, which ARE
+      allocated.
+
+  # --- unmodified-scalar-exec (12 live reqs) ---
+  - reqs: [spec-core.e14, spec-core.e16, spec-core.e17, spec-core.e20, spec-core.f2,
+           spec-core.i1, spec-core.i2, spec-issue.e2, spec-issue.f2, spec-issue.g2,
+           spec-vrf.a2, spec-vrf.a3]
+    reason: >
+      Scalar regfile read, bypass, mul/div, branch unit, FPU, scalar
+      writeback, and the scalar issue queues/slots. v2 adds parallel vector
+      structures (VecIssueUnit/VecIssueSlot/VecRegFile) and edits none of
+      these files. Discharged by gate (f).
+
+  # --- unmodified-memory-system (2 live reqs) ---
+  - reqs: [spec-core.b7, spec-lsu.k1]
+    reason: >
+      The D$, MSHRs, TLB and TileLink below the LSU are unchanged.
+      VecDcacheArbiter sits OUTSIDE the cache (lsu.k2, allocated) and presents
+      the same dmem.req interface (lsu.k3, allocated), so the memory system
+      itself needs no delta and no node targets it.
+
+  # --- rocket-csrfile (6 live reqs) ---
+  - reqs: [spec-decode.f3, spec-decode.g1, spec-decode.g3, spec-decode.g4, spec-decode.g5,
+           spec-decode.g11]
+    reason: >
+      Vector architectural CSR state (vtype incl. vill, vl, vstart, vxrm,
+      vxsat, vcsr, vlenb, mstatus.VS dirty tracking, the VS=Off gate,
+      write_flush and the vstart=0-on-completion reset) is rocket-chip's
+      CSRFile under usingVector — a different repo, outside this map. Caracal
+      owns only the speculative VCFG mirror and the VL RF (decode.g6/g7,
+      allocated). The host-side binding through csr.io.vector IS allocated, to
+      BoomCore (decode.g2).
+
+  # --- vpu-internal (29 live reqs) ---
+  - reqs: [spec-cii.h1, spec-cii.h2, spec-cii.h4, spec-cii.h5, spec-cii.h6, spec-cii.h7,
+           spec-cii.h8, spec-cii.h9, spec-cii.h10, spec-cii.h11, spec-cii.h12, spec-cii.h13,
+           spec-cii.h14, spec-cii.h15, spec-cii.h16, spec-cii.h17, spec-cii.h18, spec-cii.h19,
+           spec-cii.h20, spec-cii.h21, spec-cii.h22, spec-cii.h23, spec-cii.h24, spec-cii.h25,
+           spec-cii.h26, spec-cii.e25, spec-cii.b10, spec-cii.b12, spec-cii.b13]
+    reason: >
+      Coprocessor-internal (the VPU behind the CII). Plan section 3: v2 writes
+      NO VPU RTL; tt_vpu_cii_wrapper_top and its subtree are blackboxes,
+      already verified by cii_fv_tb.sv. Nothing this flow writes can tag them.
+
+  # --- vpu-decoder-cross-team (8 live reqs) ---
+  - reqs: [spec-cii.f15, spec-cii.f16, spec-cii.f17, spec-cii.f18, spec-cii.f20, spec-vrf.j10,
+           spec-vrf.j11, spec-vrf.j12]
+    reason: >
+      Which source slots the coprocessor PULLS is a VPU-decoder decision,
+      including emitting the new CII_SRC_STALE_VD slot. Cross-team, outside
+      this plan (plan section 3 and the risk table). Stageable: the host
+      serves slot 6 correctly before the VPU ever requests it. The host's side
+      of the same seam — never conflating or guessing the slots — IS
+      allocated, to VecCiiOperandServer (cii.f11-f14, vrf.j13-j15).
+
+  # --- boom-orderfail-baseline (14 live reqs) ---
+  - reqs: [spec-memord.a12, spec-memord.a13, spec-memord.c1, spec-memord.c2, spec-memord.c3,
+           spec-memord.c10, spec-memord.c11, spec-memord.c12, spec-memord.c13, spec-memord.c14,
+           spec-memord.c15, spec-memord.c25, spec-memord.c26, spec-memord.d1]
+    reason: >
+      BOOM's existing ordering-violation machinery: the memory-dependence
+      predictor, squash-and-refetch (not selective replay),
+      MINI_EXCEPTION_MEM_ORDERING not reaching the trap vector, the
+      ftq_idx/pc_lob refetch redirect, and conservative younger-squash. v2
+      extends what FIRES this path (memord.a14, allocated to LSU) but the
+      recovery mechanism itself needs no delta. memord.d1 is the design rule
+      that motivates VecCiiFlush, whose reqs ARE allocated.
+
+  # --- superseded-ovi-agen (2 live reqs) ---
+  - reqs: [spec-agen.a8, spec-agen.c11]
+    reason: >
+      PLAN-VS-CORPUS CONFLICT, resolved in the plan's favour and reported.
+      execution.rst still specifies the inherited bobtail
+      Packer/Skipper/Walker cross-product by name (agen.a8) and its fake-
+      packet accounting for skipped regions (agen.c11). Plan section 2 deletes
+      those six modules (2110 lines, divergent load/store mask support) and
+      replaces them with VecElemAgen / VecRangeAgen / VecBeatExpander cut by
+      pipeline position. Every BEHAVIOURAL agen requirement is allocated to
+      the module that now performs it; only these two, which mandate the
+      superseded module IDENTITY, are unallocatable. agen.c11 additionally
+      contradicts agen.e7 (a masked-off element must produce no nOP.v): v2
+      completes by total bytes, so no fake packet is needed. NEXT STEP: amend
+      execution.rst, then /spec-to-reqs extract to retire these two.
+
+# =============================================================================
 # MODULE REGISTRY
 # =============================================================================
 modules:
@@ -190,6 +471,10 @@ modules:
     mode: edit_existing
     target: src/main/scala/v4/common/micro-op.scala
     group: pkg_boom
+    reqs: [spec-core.c4, spec-core.c11, spec-core.c12, spec-core.h8, spec-decode.c18,
+           spec-decode.c25, spec-decode.d6, spec-rename.d5, spec-rename.e6, spec-rename.h18,
+           spec-vrf.c7, spec-vrf.j1, spec-vrf.j2, spec-vrf.j4, spec-vrf.j5, spec-vrf.j6,
+           spec-agen.a4, spec-lsu.f1, spec-lsu.f2, spec-lsu.f3, spec-lsu.f4]
     # DELTA: is_vec; lvs1/lvs2/lvs3/lvd/lvm; pvs1/pvs2/pvs3/pvdest/stale_pvdest/
     # pvm/pvtmp/pvl + busy bits; v_eew/v_emul/v_seg_nf; vconfig snapshot;
     # is_shared; is_vl_producer (ORTHOGONAL to dst_rtype — see vset-dual-dest);
@@ -209,6 +494,7 @@ modules:
     mode: edit_existing
     target: src/main/scala/v4/common/consts.scala
     group: pkg_boom
+    reqs: [spec-core.e8]
     # DELTA: RT_VEC (dst_rtype/lrs*_rtype widened 2b -> 3b); IQ_V_LOAD /
     # IQ_V_STORE / IQ_V_ALU appended to the IQ_* space (IQ_SZ 4 -> 7).
 
@@ -218,6 +504,7 @@ modules:
     mode: edit_existing
     target: src/main/scala/v4/common/parameters.scala
     group: pkg_boom
+    reqs: [spec-core.a7, spec-core.a8]
     depends_on: [VectorParams]
     # DELTA: enableVector + vector: Option[VectorParams]; derived usingRVV,
     # numVecPhysRegs/vecPregSz, numVlPhysRegs/vlPregSz, vecVLen, maxVecVL;
@@ -229,9 +516,28 @@ modules:
     mode: edit_existing
     target: src/main/scala/v4/common/config-mixins.scala
     group: pkg_boom
+    reqs: [spec-core.a4, spec-rename.c1, spec-lsu.a12, spec-lsu.h2]
     depends_on: [VectorParams, BoomCoreParams]
-    # DELTA: WithVector; WithNSmallBoomsVector; Mega overrides
+    # DELTA: WithVector; per-tier width overrides; Mega overrides
     # (vecIssueGrantWidth=2, dcacheArbiterMode="dual-dynamic").
+    #
+    # D3: there is NO WithNSmallBoomsVector. SmallBoom is OUT of the vector matrix,
+    # which is now Medium/Large/Mega, for two independent reasons:
+    #   (1) CompactingDispatcher cannot elaborate at coreWidth=1 — IQ_MEM is forced
+    #       to issueWidth>=2 by require(memWidth>=2) while dispatchWidth=coreWidth=1,
+    #       so require(dispatchWidth>=issueWidth) is require(1>=2). Widening is
+    #       blocked by parameters.scala:275, require(dispatchWidth<=coreWidth).
+    #   (2) allocWidth = coreWidth*8 = 8, but a shared OP.v needs 2*maxGroupSize=16
+    #       PRNs all-or-nothing — a DEADLOCK, not a stall.
+    # "Small forbids segmented vector LS" was rejected as architecturally invalid:
+    # segmented load/store is base RVV 1.0 and spec-core.a2 requires RVV 1.0.
+    #
+    # D2: vector configs must select CompactingDispatcher, NOT BasicDispatcher.
+    # BasicDispatcher's ready is not masked by iq_type
+    # (ren_readys = ...map(_.ready).reduce(_&_)), so a full IQ_V_LOAD would stall
+    # PURE-SCALAR lanes carrying no vector uop — threatening gate (d) and P6.
+    # CompactingDispatcher already masks: "the queue is considered ready if the uop
+    # doesn't use it". Costs a Compactor per queue (7).
 
   # --- New Caracal declarations ---------------------------------------------
   VectorParams:
@@ -240,6 +546,10 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/VectorParams.scala
     group: pkg_vec
+    reqs: [spec-decode.a8, spec-decode.a9, spec-decode.a10, spec-rename.h1, spec-rename.h2,
+           spec-vrf.a1, spec-vrf.a4, spec-vrf.a5, spec-vrf.b2, spec-vrf.b3, spec-vrf.b4,
+           spec-vrf.b6, spec-lsu.b2, spec-lsu.b16, spec-lsu.b17, spec-cii.a16, spec-cii.a19,
+           spec-cii.b4]
     # numVecPhysRegisters = 96 (was 128). The RMT maps all 32 architectural vregs
     # at all times regardless of current LMUL, so 32 PRNs are permanently
     # committed-state: (96 - 32) / 8 = 8 LMUL=8 groups in flight, and a segmented
@@ -263,6 +573,8 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/VecBundles.scala
     group: pkg_vec
+    reqs: [spec-core.g2, spec-issue.f6, spec-lsu.a14, spec-lsu.a15, spec-agen.a5, spec-cii.a6,
+           spec-cii.a8, spec-cii.a10, spec-cii.a12, spec-cii.a14, spec-cii.a15]
     depends_on: [MicroOp, VectorParams]
     # VecPipelineIO (realizes the vec_pipeline_io interface above); VecGroupDone
     # (member-PRN vector — ONE event drives ROB busy-clear + Busy-Table clear +
@@ -275,6 +587,12 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/VecTrace.scala
     group: pkg_vec
+    # NO reqs, deliberately. This is the one node in the map with an empty
+    # allocation, and it is structural: the corpus specifies no tracing
+    # obligation, because tracing is a ground rule of the implementation plan
+    # (rule 11) rather than an architectural requirement in the .rst. An empty
+    # list here is a decision, not an allocation someone forgot.
+    reqs: []
     depends_on: [MicroOp]
     # There are NO unit tests in this project (ground rule 10) — every module is
     # validated only through end-to-end VCS+Whisper regressions. Guarded printf
@@ -286,6 +604,31 @@ modules:
     # Whisper cosim trace, and greppable.
 
   # --- Frozen SV contracts (blackbox packages, never written) ---------------
+
+  # --- The vtype decode table: ONE declaration, bound by every lane ----------
+  # NEW NODE (v2 amendment). `kind: package`, not a module, and deliberately so:
+  # decode.d10 requires the VCFG to handle the NxWide decoder width, i.e. the
+  # vtype decode is evaluated once per decode lane, and ALUUnit evaluates it
+  # again at execute for a register-sourced vset. A Module would have to be
+  # instantiated coreWidth+1 times to express a pure function; a package
+  # declaration is bound by all of them with no instance at all.
+  # Owns exactly the vtype -> {VLMAX, EMUL, vill} mapping and nothing else, so
+  # the legality rules live in ONE place instead of being restated in
+  # VConfigUnit (decode-stage mirror), VsetDecode (immediate forms) and ALUUnit
+  # (register-sourced forms) — three copies of a vill rule is three chances to
+  # disagree.
+  VtypeTable:
+    kind: package
+    source: src/main/nlhdl/pkg/VtypeTable.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/VtypeTable.scala
+    group: pkg_vec
+    reqs: [spec-decode.a11, spec-decode.a12, spec-decode.a13, spec-decode.a14, spec-decode.c2,
+           spec-decode.d10]
+    depends_on: [VectorParams]
+    # The LMUL table is constrained by VLMAX >= 1: any SEW/LMUL pair giving
+    # VLMAX = VLEN*LMUL/SEW < 1 sets vill, as does SEW > ELEN and the reserved
+    # vlmul=3'b100 encoding. VL for an immediate-AVL form is min(uimm, VLMAX).
   tt_cii_caracal_pkg:
     kind: package
     source: src/main/nlhdl/sv/tt_cii_caracal_pkg.nlhdl.sv
@@ -293,6 +636,8 @@ modules:
     target_hdl: sv
     target: src/main/sv/v4/tt-cii/src/tt_cii_caracal_pkg.svh
     group: coproc
+    reqs: [spec-cii.a3, spec-cii.a7, spec-cii.a9, spec-cii.a11, spec-cii.a13, spec-cii.b3,
+           spec-cii.f19, spec-vrf.h2, spec-vrf.h5, spec-vrf.h6, spec-vrf.j3]
     # THE contract both sides bind to. Facts the Chisel host must match exactly
     # (host-side constants are DERIVED from these, never redeclared):
     # CII_TAG_W=4 (16 tags); CII_NUM_INST_ISSUE=1;
@@ -343,6 +688,10 @@ modules:
     mode: edit_existing
     target: src/main/scala/v4/exu/core.scala
     group: host
+    reqs: [spec-core.e9, spec-core.e10, spec-core.e11, spec-core.e15, spec-core.e21,
+           spec-decode.g2, spec-decode.h7, spec-rename.b9, spec-rename.i1, spec-issue.a1,
+           spec-issue.a2, spec-issue.a3, spec-issue.a4, spec-issue.a5, spec-issue.a6,
+           spec-issue.a7, spec-issue.c2, spec-memord.f8, spec-memord.f9]
     depends_on: [MicroOp, ScalarOpConstants, BoomCoreParams, VecBundles]
     instantiates:
       - module: VecPipeline
@@ -360,6 +709,22 @@ modules:
     mode: edit_existing
     target: src/main/scala/v4/exu/rob.scala
     group: host
+    reqs: [spec-core.c6, spec-core.c14, spec-core.c15, spec-core.e22, spec-core.e23,
+           spec-core.f7, spec-core.h5, spec-core.h7, spec-core.i9, spec-core.i10,
+           spec-rename.b4, spec-rename.e2, spec-rename.h21, spec-decode.h5, spec-rob.a1,
+           spec-rob.a2, spec-rob.a3, spec-rob.a4, spec-rob.a5, spec-rob.a6, spec-rob.a7,
+           spec-rob.a8, spec-rob.a9, spec-rob.b1, spec-rob.b2, spec-rob.b3, spec-rob.b4,
+           spec-rob.b5, spec-rob.b6, spec-rob.b7, spec-rob.c2, spec-rob.c3, spec-rob.c4,
+           spec-rob.c8, spec-rob.d1, spec-rob.d2, spec-rob.d3, spec-rob.d4, spec-rob.d5,
+           spec-rob.d15, spec-rob.d19, spec-rob.d20, spec-rob.d21, spec-rob.d7, spec-rob.d8,
+           spec-rob.d14, spec-rob.e4, spec-rob.e6, spec-rob.f1, spec-rob.f2, spec-rob.f3,
+           spec-rob.f4, spec-rob.f5, spec-rob.f6, spec-rob.g1, spec-rob.g2, spec-rob.g3,
+           spec-rob.g4, spec-rob.g5, spec-rob.g6, spec-rob.g7, spec-rob.g8, spec-rob.g9,
+           spec-rob.g10, spec-rob.g11, spec-rob.g12, spec-rob.h1, spec-rob.h2, spec-rob.h3,
+           spec-rob.h4, spec-issue.c5, spec-issue.c6, spec-issue.c7, spec-issue.c8,
+           spec-issue.d5, spec-issue.d16, spec-issue.d17, spec-issue.d18, spec-memord.c7,
+           spec-memord.c8, spec-memord.c9, spec-cii.i2, spec-lsu.f10, spec-lsu.f11,
+           spec-lsu.f12]
     depends_on: [MicroOp, ScalarOpConstants]
     # DELTA: dst_rtype widened to 3b for RT_VEC; `vec_clr_bsy` single-shot
     # group-done busy-clear (an RT_VEC load has no iresp writeback to clear
@@ -374,6 +739,15 @@ modules:
     mode: edit_existing
     target: src/main/scala/v4/lsu/lsu.scala
     group: host
+    reqs: [spec-core.e19, spec-rename.b5, spec-rename.b6, spec-rename.b7, spec-rename.b8,
+           spec-lsu.a1, spec-lsu.a2, spec-lsu.a3, spec-lsu.a4, spec-lsu.a6, spec-lsu.a7,
+           spec-lsu.a8, spec-lsu.a9, spec-lsu.a10, spec-lsu.a11, spec-lsu.j9, spec-lsu.k2,
+           spec-lsu.k3, spec-lsu.k5, spec-memord.a1, spec-memord.a3, spec-memord.a4,
+           spec-memord.a5, spec-memord.a6, spec-memord.a7, spec-memord.a14, spec-memord.a18,
+           spec-memord.a20, spec-memord.c4, spec-memord.c5, spec-memord.c6, spec-memord.e1,
+           spec-memord.e2, spec-memord.f1, spec-memord.f2, spec-memord.f3, spec-memord.f5,
+           spec-memord.f10, spec-memord.f11, spec-memord.f14, spec-memord.f15, spec-memord.f16,
+           spec-memord.f19, spec-memord.f20, spec-memord.f21]
     depends_on: [MicroOp, VecBundles, VectorParams]
     # DELTA: expose the VecLsuCoreIO tap (LDQ/STQ placeholder alloc, LCAM port,
     # DTLB port, D$ port); route vector element addresses through the LCAM in
@@ -393,6 +767,9 @@ modules:
     mode: edit_existing
     target: src/main/scala/v4/exu/decode.scala
     group: host
+    reqs: [spec-core.c1, spec-core.c2, spec-core.e5, spec-core.e6, spec-core.f8,
+           spec-decode.a1, spec-decode.a5, spec-decode.e3, spec-decode.e4, spec-decode.f1,
+           spec-decode.f2, spec-memord.f6, spec-memord.f7, spec-memord.f17, spec-memord.f18]
     depends_on: [MicroOp, ScalarOpConstants]
     # DELTA: `v_legal` gate routing RVV opcodes to VecDecode; merge the vector
     # MicroOp fields back in; mark `vsetvl` BOTH is_unique AND flush_on_commit
@@ -406,7 +783,10 @@ modules:
     mode: edit_existing
     target: src/main/scala/v4/exu/execution-units/functional-unit.scala
     group: host
-    depends_on: [MicroOp, ScalarOpConstants]
+    reqs: [spec-decode.c10, spec-decode.c11, spec-decode.c12, spec-decode.c14, spec-decode.c15,
+           spec-decode.c17, spec-decode.c19, spec-decode.c20, spec-decode.e5, spec-decode.i10,
+           spec-vrf.c2, spec-vrf.c3, spec-issue.h5, spec-issue.h6]
+    depends_on: [MicroOp, ScalarOpConstants, VtypeTable]
     # DELTA (usingRVV-gated): execute vsetvli/vsetvl — compute VL (and VTYPE for
     # vsetvl) and, for these uops, target the VL RF + drive the VL wakeup net.
     # TWO destinations in TWO rename spaces (pdst in INT RF, pvl in VL RF), so
@@ -422,6 +802,7 @@ modules:
     mode: edit_existing
     target: src/main/scala/v4/exu/execution-units/execution-unit.scala
     group: host
+    reqs: [spec-decode.c7]
     depends_on: [ScalarOpConstants]
     # DELTA: advertise the widened iq_type/fu_types so vset routes to the ALU EU.
 
@@ -431,6 +812,7 @@ modules:
     mode: edit_existing
     target: src/main/scala/v4/exu/fp-pipeline.scala
     group: host
+    reqs: [spec-core.b4, spec-vrf.e4]
     depends_on: [MicroOp]
     # DELTA: an FP RF read port + wakeup tap so `.vf` scalar feeders reach the
     # vector pipeline. Vector ops ride the EXISTING FP wakeup network; no new
@@ -446,6 +828,15 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/VecPipeline.scala
     group: vec
+    reqs: [spec-core.a2, spec-core.a3, spec-core.a5, spec-core.a6, spec-core.c9, spec-core.d5,
+           spec-core.f6, spec-core.g1, spec-core.g3, spec-core.i3, spec-core.i4, spec-core.i5,
+           spec-core.i6, spec-core.i7, spec-core.i8, spec-rename.b10, spec-rename.b11,
+           spec-rename.e11, spec-rename.h15, spec-decode.b4, spec-decode.c22, spec-decode.i4,
+           spec-vrf.c11, spec-vrf.i4, spec-rob.c5, spec-rob.d10, spec-rob.d11, spec-issue.c9,
+           spec-issue.d1, spec-issue.d14, spec-issue.e1, spec-issue.e3, spec-issue.e4,
+           spec-issue.e5, spec-issue.f1, spec-issue.f3, spec-issue.f4, spec-issue.f5,
+           spec-issue.f7, spec-issue.f8, spec-issue.f9, spec-issue.f10, spec-issue.f12,
+           spec-issue.f13, spec-issue.h1, spec-cii.j1, spec-cii.j2, spec-cii.j3, spec-cii.d14]
     depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
     instantiates:
       - { module: VecDecode,     instance: vdec }
@@ -503,7 +894,12 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/decode/VecDecode.scala
     group: vec_decode
-    depends_on: [MicroOp, VecBundles, VecTrace]
+    reqs: [spec-decode.a3]
+    # VtypeTable added: the MEMORY destination group size (LMUL*EEW/SEW, x NFIELDS
+    # for segments, LMUL for indexed) can only be computed here — VLSDecode reads
+    # no vtype and VDecode claims only arithmetic lanes. Binding it here decodes
+    # the rule once instead of open-coding a fourth EMUL derivation.
+    depends_on: [MicroOp, VecBundles, VecTrace, VtypeTable]
     instantiates:
       - { module: VDecode,     instance: arith }
       - { module: VLSDecode,   instance: ls }
@@ -516,7 +912,10 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/decode/VDecode.scala
     group: vec_decode
-    depends_on: [MicroOp, VecTrace]
+    reqs: [spec-core.c3, spec-core.c5, spec-core.c7, spec-core.c8, spec-decode.a4,
+           spec-decode.a6, spec-decode.a7, spec-decode.b1, spec-decode.b2, spec-decode.b3,
+           spec-decode.d1, spec-issue.c4]
+    depends_on: [MicroOp, VecTrace, VtypeTable]
     # Single-cycle combinational, ONE uOP per instruction. NO cracking and no
     # micro-op expansion: an OP.v stays one uOP through decode/rename/ROB/issue
     # and is expanded into nOP.v only inside the vector LS AGEN.
@@ -527,12 +926,26 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/decode/VLSDecode.scala
     group: vec_decode
+    reqs: [spec-lsu.g5, spec-agen.c5, spec-agen.c13, spec-agen.c21, spec-agen.c22,
+           spec-agen.c25, spec-agen.c26, spec-lsu.g11]
     depends_on: [MicroOp, VecTrace]
     # Statically-decoded access descriptor: v_eew, mop, nf, and the
     # unit-stride/strided/indexed/segment/whole-register/mask flags. This
-    # descriptor is what selects VecRangeAgen vs VecElemAgen downstream.
-    # `vleff` is NOT is_unique (see elem-progress) and is NOT a VL producer
-    # until the real fault-trim path exists.
+    # descriptor is what selects VecRangeAgen vs VecElemAgen downstream. It rides
+    # the MicroOp (fields v_mop / v_is_* / v_idx_eew) because none of its
+    # consumers depends on this node — see the MicroOp delta, section 4b.
+    # `vleff` is NOT is_unique (see elem-progress).
+    #
+    # CORRECTED (was: "and is NOT a VL producer until the real fault-trim path
+    # exists"). `vleff` IS a VL producer — loadstore.rst and spec-lsu.g6/g7 say
+    # it writes its final element count to its VL-RF destination and wakes pvl in
+    # dependents, and plan §Phase G states the same. The old wording was a
+    # staging note that read as a design statement, and it contradicted two
+    # requirements allocated to other nodes (VlRegFile, VecLoadCoalescingBuffer).
+    # Staging is real but belongs in the plan's step table, not here: the VL-RF
+    # write port for it is declared from day one and simply never fires until
+    # step G4 lands. Do not retrofit it later as an arbiter on the ALU write
+    # port — decode.c27 forbids arbitrated VL-RF write ports.
 
   VsetDecode:
     kind: module
@@ -540,7 +953,11 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/decode/VsetDecode.scala
     group: vec_decode
-    depends_on: [MicroOp, VecTrace]
+    reqs: [spec-decode.c3, spec-decode.c5, spec-decode.c6, spec-decode.c8, spec-decode.c9,
+           spec-decode.c13, spec-decode.c16, spec-decode.c26, spec-decode.d8, spec-decode.e1,
+           spec-decode.i11, spec-decode.i12, spec-decode.i13, spec-decode.i14, spec-decode.i15,
+           spec-decode.i16]
+    depends_on: [MicroOp, VecTrace, VtypeTable]
     # Three shapes, three paths:
     #   vsetivli — FRONT-END ONLY (both vtype and AVL are immediate). VCFG
     #              computes VL at decode; the VL-RF write happens in the RENAME
@@ -556,7 +973,15 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/decode/VConfigUnit.scala
     group: vec_decode
-    depends_on: [MicroOp, VecTrace]
+    reqs: [spec-core.b8, spec-core.d1, spec-core.d2, spec-core.d3, spec-decode.c1,
+           spec-decode.d2, spec-decode.d3, spec-decode.d4, spec-decode.d5, spec-decode.d9,
+           spec-decode.d11, spec-decode.d12, spec-decode.d13, spec-decode.e2, spec-decode.f4,
+           spec-decode.g6, spec-decode.g7, spec-decode.g8, spec-decode.g9, spec-decode.g10,
+           spec-decode.g12, spec-decode.g13, spec-decode.h1, spec-decode.h2, spec-decode.h3,
+           spec-decode.h4, spec-decode.h6, spec-decode.h8, spec-decode.h9, spec-decode.h10,
+           spec-decode.h11, spec-decode.h12, spec-decode.h13, spec-decode.h14, spec-decode.h15,
+           spec-rename.h6, spec-vrf.c5, spec-vrf.c6, spec-vrf.c8]
+    depends_on: [MicroOp, VecTrace, VtypeTable]
     # The speculative decode-stage `vtype` MIRROR (the VCFG mirror). NOT
     # architectural state — rocket's CSRFile owns vtype/vl/vstart/vxrm/vxsat/
     # vcsr/vlenb/mstatus.VS under usingVector. This unit owns exactly two
@@ -580,6 +1005,13 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/rename/VecRenameSpace.scala
     group: vec_rename
+    reqs: [spec-rename.a1, spec-rename.a2, spec-rename.a3, spec-rename.a4, spec-rename.a5,
+           spec-rename.a6, spec-rename.a7, spec-rename.a11, spec-rename.b1, spec-rename.b2,
+           spec-rename.b3, spec-rename.d1, spec-rename.e1, spec-rename.e3, spec-rename.e5,
+           spec-rename.e13, spec-rename.e16, spec-rename.h5, spec-rename.h9, spec-rename.h10,
+           spec-rename.h26, spec-rename.i2, spec-rename.i3, spec-rename.i4, spec-rename.i12,
+           spec-rename.i13, spec-decode.c21, spec-decode.c24, spec-decode.i2, spec-decode.i3,
+           spec-decode.i5, spec-decode.i8, spec-decode.i9]
     depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
     instantiates:
       - { module: VecMapTable,  instance: maptable }
@@ -613,6 +1045,12 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/rename/VecMapTable.scala
     group: vec_rename
+    reqs: [spec-core.h4, spec-rename.a10, spec-rename.d2, spec-rename.d3, spec-rename.d4,
+           spec-rename.d6, spec-rename.d7, spec-rename.d8, spec-rename.d9, spec-rename.d10,
+           spec-rename.d11, spec-rename.d12, spec-rename.d13, spec-rename.d14, spec-rename.e10,
+           spec-rename.h7, spec-rename.h8, spec-rename.h19, spec-rename.h20, spec-rename.i5,
+           spec-rename.i6, spec-rename.i7, spec-rename.i9, spec-rename.i10, spec-rename.i11,
+           spec-rename.i15, spec-vrf.i1, spec-vrf.i2, spec-vrf.i3, spec-vrf.j7, spec-vrf.j8]
     depends_on: [VecBundles, VectorParams, VecTrace]
     # Maps architectural vreg -> physical GROUP (base PRN + size). NO per-PRN
     # LMUL tag table and NO whole-group checker: an earlier draft carried a
@@ -628,13 +1066,41 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/rename/VecFreeList.scala
     group: vec_rename
+    reqs: [spec-rename.e4, spec-rename.e8, spec-rename.e9, spec-rename.e14, spec-rename.e15,
+           spec-rename.f1, spec-rename.f2, spec-rename.f3, spec-rename.f4, spec-rename.f5,
+           spec-rename.f6, spec-rename.f7, spec-rename.f8, spec-rename.f9, spec-rename.f10,
+           spec-rename.f11, spec-rename.f12, spec-rename.f13, spec-rename.h11, spec-rename.h17,
+           spec-rename.h22, spec-vrf.b11, spec-vrf.d7, spec-issue.c3]
     depends_on: [VecBundles, VectorParams, VecTrace]
     # ALL-OR-NOTHING group allocation. A shared instruction needs pvdest AND
     # pvtmp; it allocates both or neither, then stalls. That is the entire
     # forward-progress requirement — no headroom reservation is needed, because
     # rename is in program order, so stalling is safe (hence no
     # `numVecTmpGroups`).
-    # Capacity note: (128 - 32) / 8 = 12 concurrently-renamable LMUL=8 groups.
+    # Capacity: read `maxRenamableGroups`/`maxRenamableSegGroups` from
+    # VectorParams; do NOT recompute. At the 96-PRN default those are 8 and 4
+    # ((96-32)/8). An earlier revision said "(128 - 32) / 8 = 12" — the
+    # pre-amendment 128-PRN sizing.
+    #
+    # ===> CLOSED by decision D3 — no parameter change was needed.
+    #      rename.f5 fixes `allocWidth = coreWidth*8`, and a SHARED OP.v needs up
+    #      to 2*maxGroupSize = 16 distinct PRNs in ONE cycle (pvdest AND pvtmp,
+    #      all-or-nothing). At coreWidth == 1 the pool is 8, so such an op could
+    #      never allocate — a DEADLOCK, not a stall. **SmallBoom is therefore out
+    #      of the vector matrix entirely** (it also cannot elaborate
+    #      CompactingDispatcher), so coreWidth >= 2 always and allocWidth >= 16
+    #      exactly meets the requirement. The elaboration
+    #      `require(allocWidth >= 2*maxGroupSize)` stays as the guard and now
+    #      documents WHY Small has no vector config.
+    #      The alternative "Small forbids segmented vector LS" was REJECTED as
+    #      architecturally invalid: segmented load/store is base RVV 1.0 and
+    #      spec-core.a2 requires RVV 1.0, so such a core would be non-conformant.
+    #      Perf note: at Medium, allocWidth = 16 and ONE shared OP.v consumes the
+    #      entire allocation window, so nothing else in that bundle allocates that
+    #      cycle. A stall, not a deadlock.
+    # Freeing pvtmp at commit (rename.e9) needs a SECOND dealloc bank beside the
+    # stale bank, since commit cannot stall; f12's commitWidth*8 covers the stale
+    # bank only.
 
   VecBusyTable:
     kind: module
@@ -642,6 +1108,11 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/rename/VecBusyTable.scala
     group: vec_rename
+    reqs: [spec-core.h3, spec-rename.e7, spec-rename.e12, spec-rename.g1, spec-rename.g6,
+           spec-rename.g7, spec-rename.g8, spec-rename.g9, spec-rename.g10, spec-rename.g11,
+           spec-rename.g12, spec-rename.g15, spec-rename.g16, spec-rename.g17, spec-rename.g18,
+           spec-rename.g21, spec-rename.g22, spec-rename.g23, spec-rename.g24, spec-rename.g25,
+           spec-rename.g26, spec-rename.h12, spec-rename.h13, spec-rename.h14, spec-vrf.d6]
     depends_on: [VecBundles, VectorParams, VecTrace]
     # Cleared by the SAME group-done event that clears rob_bsy and drives the
     # vector wakeup network — one event, three consumers, no per-PRN path.
@@ -655,6 +1126,12 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/issue/VecIssueUnit.scala
     group: vec_issue
+    reqs: [spec-core.e12, spec-core.f10, spec-core.f11, spec-core.f12, spec-core.f14,
+           spec-core.h6, spec-issue.e6, spec-issue.e7, spec-issue.e8, spec-issue.e9,
+           spec-issue.e10, spec-issue.e11, spec-issue.e12, spec-issue.e13, spec-issue.e14,
+           spec-issue.d6, spec-issue.d7, spec-issue.d15, spec-cii.d1, spec-cii.d2, spec-cii.d3,
+           spec-cii.d4, spec-cii.d12, spec-cii.d13, spec-cii.i5, spec-cii.i7, spec-cii.i9,
+           spec-cii.i13]
     depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
     instantiates:
       - { module: VecIssueSlot, instance: slots, count: numEntries }
@@ -675,13 +1152,122 @@ modules:
     # so this is an assertion, not a stall condition. Nothing here may consult a
     # `busy` from VecLsu (see the vec_lsu invariant).
 
+  # D6: gates issue on `stale_pvdest` readiness via a FIFTH VecGroupReady instance
+  # (`rdy_vold`) on the IQ_V_LOAD and IQ_V_ALU slots, plus a fifth group in the
+  # per-member side channel. stale_pvdest is the PREVIOUS mapping of the destination
+  # arch vregs, so its producer is older — and age-ordered issue grants oldest-READY,
+  # which does not mean an older producer finished. The LCB pre-loads from it on R2
+  # (vta=0/vma=0) and the coprocessor may pull STALE_VD, so both queues can read a
+  # BUSY group. An aggregate bit is UNSAFE: stale_pvdest can span up to 8 producers
+  # (LMUL=1 writes v0, then LMUL=8 renames v0..v7), so per-member matching is
+  # required exactly as for pvs* (rename.g20). Conservative for IQ_V_ALU: the host
+  # cannot know whether the VPU will pull STALE_VD and no VPU signal exists, so any
+  # CII op with a vector destination waits. New requirement pending in spec-issue g.
   VecIssueSlot:
     kind: module
     source: src/main/nlhdl/vec/issue/VecIssueSlot.nlhdl.scala
     mode: new
     output: src/main/scala/v4/vec/generated/issue/VecIssueSlot.scala
     group: vec_issue
+    # D6 landed: spec-issue.g35-g39 are the stale_pvdest readiness obligations, now real
+    # IDs (issue.rst 'The Vector Issue Slot' gained the prose they quote).
+    reqs: [spec-core.e13, spec-core.f5, spec-rename.g2, spec-rename.h16, spec-issue.g1,
+           spec-issue.g3, spec-issue.g4, spec-issue.g5, spec-issue.g6, spec-issue.g7,
+           spec-issue.g8, spec-issue.g9, spec-issue.g10, spec-issue.g11, spec-issue.g19,
+           spec-issue.g20, spec-issue.g21, spec-issue.g29, spec-issue.g30, spec-issue.g31,
+           spec-issue.g32, spec-issue.f11, spec-issue.f14, spec-issue.f15, spec-issue.h2,
+           spec-issue.c11, spec-issue.c14, spec-rob.d12, spec-decode.i6, spec-vrf.e1,
+           spec-vrf.e2, spec-vrf.e3, spec-vrf.e5, spec-vrf.e6, spec-lsu.l2, spec-lsu.l5,
+           spec-issue.g35, spec-issue.g36, spec-issue.g37, spec-issue.g38, spec-issue.g39]
     depends_on: [MicroOp, VecBundles, VecTrace]
+    instantiates:
+      # Four identical per-group readiness matchers — one per vector source
+      # operand. The slot itself keeps only the scalar-feeder comparators (INT
+      # base/stride/.vx, FP .vf, VL pvl), because those ride BOOM's SPECULATIVE
+      # load-hit wakeup while vector operands never wake speculatively
+      # (vrf.e2 vs vrf.e9). That policy split is the module boundary.
+      - { module: VecGroupReady, instance: rdy_vs1, params: { isMask: false } }
+      - { module: VecGroupReady, instance: rdy_vs2, params: { isMask: false } }
+      - { module: VecGroupReady, instance: rdy_vs3, params: { isMask: false } }
+      - { module: VecGroupReady, instance: rdy_vm,  params: { isMask: true  } }
+      # D6: the FIFTH matcher, gating on `stale_pvdest` readiness. LOAD and ALU
+      # slots only — a store has no vector destination, hence no stale group.
+      # Without it, IQ_V_LOAD (whose LCB pre-loads from stale_pvdest on R2 for
+      # vta=0/vma=0) and IQ_V_ALU (whose coprocessor may pull STALE_VD) can be
+      # granted while that group is still BUSY: stale_pvdest is the PREVIOUS
+      # mapping of the destination arch vregs, so its producer is older, and
+      # age-ordered issue grants oldest-READY, not oldest-COMPLETE.
+      - { module: VecGroupReady, instance: rdy_vold, count: "isStoreSlot ? 0 : 1",
+          params: { isMask: false } }
+      # Store slots only. `count: 0` in load/ALU slots — this holds store-only
+      # sequencing state (two grant bits + the is_shared operand mux) and must
+      # not appear in a slot that has no DGEN path.
+      - { module: VecStoreDgenPath, instance: dgen_path, count: "isStoreSlot ? 1 : 0" }
+
+  # --- Per-source-group readiness: ONE definition, one instance per operand ---
+  # NEW NODE (v2 amendment). Split out of VecIssueSlot, which was carrying 56
+  # requirements — too many for one reviewable nlhdl file, and most of them were
+  # the same per-member match restated per operand.
+  #
+  # A vector source operand is a GROUP of up to 8 member PRNs, each with its own
+  # busy bit, and it wakes only when its LAST member is ready (rename.g14,
+  # issue.g17). That is a per-member match against every group-done port,
+  # AND-reduced to one group-ready bit — identical logic for pvs1, pvs2, pvs3
+  # and pvm. Define once, instantiate four times.
+  #
+  # Why this is not a single base comparator (issue.g18): a consumer may read a
+  # SUB-RANGE of a producer's in-flight group, so the match has to be per member
+  # against the group-done's member-PRN vector, not base-address equality.
+  VecGroupReady:
+    kind: module
+    source: src/main/nlhdl/vec/issue/VecGroupReady.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/issue/VecGroupReady.scala
+    group: vec_issue
+    reqs: [spec-rename.g13, spec-rename.g14, spec-rename.g19, spec-rename.g20, spec-issue.g12,
+           spec-issue.g13, spec-issue.g14, spec-issue.g15, spec-issue.g16, spec-issue.g17,
+           spec-issue.g18, spec-issue.g33, spec-issue.g34, spec-vrf.e7, spec-vrf.e8,
+           spec-vrf.e9, spec-vrf.e10]
+    depends_on: [VecBundles, VectorParams, VecTrace]
+    # Matches each member PRN against all `numVecWbPorts` group-done ports every
+    # cycle (issue.g33). Vector operands are NEVER woken speculatively
+    # (vrf.e9) — that policy split is why this is a separate matcher from the
+    # slot's scalar-feeder comparators, which DO ride BOOM's speculative
+    # load-hit wakeup unchanged (vrf.e2).
+
+  # --- The vector store slot's second grant path ------------------------------
+  # NEW NODE (v2 amendment). Also split out of VecIssueSlot. A vector store's
+  # issue slot has TWO independently grantable paths, AGEN and DGEN
+  # (issue.d10, d13), and must tolerate a long, variable delay between them
+  # (issue.d12) because for a SEGMENTED store the data does not exist until the
+  # coprocessor half has written pvtmp — steps 1 and 6 of the six-step chain in
+  # issue.rst `shared-store-chain`.
+  #
+  # Held as its own node because it is the one part of the slot with its own
+  # sequencing state (two grant bits plus an operand mux) and because it is
+  # instantiated ONLY in iq_v_store slots — folding it into VecIssueSlot would
+  # put store-only state in the load and ALU slots.
+  VecStoreDgenPath:
+    kind: module
+    source: src/main/nlhdl/vec/issue/VecStoreDgenPath.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/issue/VecStoreDgenPath.scala
+    group: vec_issue
+    reqs: [spec-core.f13, spec-issue.d10, spec-issue.d11, spec-issue.d12, spec-issue.d13,
+           spec-issue.g22, spec-issue.g23, spec-issue.g24, spec-issue.g25, spec-issue.g26,
+           spec-issue.g27, spec-issue.g28, spec-issue.c12, spec-issue.c13, spec-cii.i6,
+           spec-cii.i12]
+    depends_on: [MicroOp, VecBundles, VecTrace]
+    # ===> THE DGEN OPERAND IS SELECTED BY is_shared, and getting this wrong is
+    #      one of the M1 bugs: the gated operand is `pvtmp` when is_shared is
+    #      set and `pvs3` otherwise (issue.g25, g26). Gating DGEN
+    #      unconditionally on pvs3 (issue.g27) reads the wrong group for a
+    #      shared op and deadlocks the chain, because pvs3's group-done never
+    #      comes. Correspondingly pvs3's busy bit must be EXCLUDED from the LSU
+    #      half's vector_operands_ready when is_shared is set (issue.g32).
+    # AGEN is granted before DGEN (issue.d11) and never as a single grant
+    # (issue.d13). The chain has no circular wait (issue.d14) precisely because
+    # AGEN's operands are all older than the store.
 
   # ===========================================================================
   # REGISTER FILES
@@ -692,7 +1278,18 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/regfile/VecRegFile.scala
     group: vec_regfile
+    reqs: [spec-core.d4, spec-core.h1, spec-core.h2, spec-vrf.c9, spec-vrf.c10, spec-vrf.d1,
+           spec-vrf.d2, spec-vrf.d3, spec-vrf.d4, spec-vrf.d5, spec-vrf.f1, spec-vrf.f2,
+           spec-vrf.f3, spec-vrf.f9, spec-vrf.g1, spec-vrf.g9, spec-vrf.g10, spec-vrf.g11,
+           spec-vrf.g13, spec-vrf.g14, spec-vrf.g15, spec-vrf.g16, spec-vrf.g17, spec-vrf.g18,
+           spec-vrf.g19, spec-vrf.g20, spec-vrf.g21, spec-vrf.g22, spec-vrf.g23, spec-vrf.h3,
+           spec-vrf.h4, spec-cii.f25, spec-cii.f26, spec-cii.f29, spec-cii.f30, spec-cii.g2,
+           spec-lsu.m6, spec-lsu.m7]
     depends_on: [VectorParams, VecTrace]
+    instantiates:
+      # The storage array is four banks of VLEN/4 = 64b (vrf.f6, f10, f11); this
+      # node owns only the port partition, the write-mask fan-out and the bypass.
+      - { module: VecRegFileBank, instance: bank, count: 4 }
     # ===> 96 PRNs, 9R / 3W. RESOLVED; spec updated to match (midcore.rst
     #      `vrf-ports`). 96 x VLEN=256b = 24 kbit of flops, 12 ports.
     #
@@ -704,7 +1301,10 @@ modules:
     #   R1  Load/LCB   mask v0
     #   R2  Load/LCB   stale_pvdest  <- undisturbed lanes; see `old-vd`
     #   R3  Store      pvs3 store data (DGEN)
-    #   R4  Store      mask v0
+    #   R4  Store      mask v0 AND the store index vector (ONE port, TWO readers:
+    #                 VecMaskStream and VecIdxGen — see midcore.rst `vrf-ports`,
+    #                 spec-vrf.g8/g19. An earlier revision of this comment listed
+    #                 the mask only; the .rst is canonical and lists both.)
     #   R5  CoProc     CII src lane 0
     #   R6  CoProc     CII src lane 1
     #   R7  CoProc     CII src lane 2
@@ -731,12 +1331,46 @@ modules:
     # at most 4 of those. Tighter than the old 128 — 12 groups -> 8 — so the
     # free-list stall rate is worth watching in the (9e2) LS regression.
 
+  # --- The VRF storage array: one bank, instantiated four times ---------------
+  # NEW NODE (v2 amendment). Split out of VecRegFile, which was carrying 38
+  # requirements spanning two unrelated concerns: WHO owns which port (a
+  # contract, canonical in midcore.rst `vrf-ports`) and HOW the array is built
+  # (flops, banks, decoders, read-during-write forwarding).
+  #
+  # This node is the second one. A vector register splits across 4 banks of
+  # VLEN/4 = 64 bits (vrf.f6, f10, f11); each port has its own decoder
+  # (vrf.f7); every read port spans all four banks (vrf.f14).
+  #
+  # Keeping it separate also confines the design's #2 risk. The cross-cutting
+  # risk table lists VRF AREA — 96 x 256b = 24 kbit of flops with 12 ports,
+  # where port count now dominates the storage term — and the open question is
+  # whether a flop-based file survives, or whether this becomes latch- or
+  # SRAM-banked. That decision changes THIS node only; the port partition above
+  # it is unaffected either way.
+  VecRegFileBank:
+    kind: module
+    source: src/main/nlhdl/vec/regfile/VecRegFileBank.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/regfile/VecRegFileBank.scala
+    group: vec_regfile
+    reqs: [spec-vrf.f4, spec-vrf.f5, spec-vrf.f6, spec-vrf.f7, spec-vrf.f8, spec-vrf.f10,
+           spec-vrf.f11, spec-vrf.f12, spec-vrf.f13, spec-vrf.f14]
+    depends_on: [VectorParams, VecTrace]
+    # Read-during-write forwarding is REQUIRED, not an optimization (vrf.f8):
+    # reads are single-cycle, so a write to the PRN being read in the same cycle
+    # must forward. Two write ports never target the same PRN (vrf.f13), which
+    # is what lets the write path be a plain per-byte-masked OR rather than a
+    # priority mux — assert it.
+
   VlRegFile:
     kind: module
     source: src/main/nlhdl/vec/regfile/VlRegFile.nlhdl.scala
     mode: new
     output: src/main/scala/v4/vec/generated/regfile/VlRegFile.scala
     group: vec_regfile
+    reqs: [spec-decode.c4, spec-decode.c27, spec-decode.c28, spec-decode.c29, spec-decode.i1,
+           spec-decode.i7, spec-decode.i17, spec-decode.i18, spec-rename.h4, spec-rename.h23,
+           spec-rename.h25, spec-vrf.c1, spec-issue.h4, spec-lsu.g6, spec-lsu.g8]
     depends_on: [VectorParams, VecTrace]
     # 64 x ~9b. Kept separate from VecRegFile despite sharing the rename space
     # definition: 64x9b of flops with a handful of ports has nothing structurally
@@ -779,12 +1413,29 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecLsu.scala
     group: vec_lsu
+    reqs: [spec-core.c10, spec-agen.a1, spec-agen.a2, spec-agen.a3, spec-agen.a6, spec-agen.b1,
+           spec-agen.b2, spec-agen.b3, spec-agen.b4, spec-rob.c6, spec-rob.c7, spec-rob.c9,
+           spec-rob.d13, spec-rob.d17, spec-rob.e1, spec-rob.e2, spec-rob.e3, spec-rob.e5,
+           spec-issue.d2, spec-issue.d4, spec-lsu.a13, spec-lsu.j5, spec-lsu.j7, spec-lsu.j8,
+           spec-lsu.j11, spec-lsu.k10, spec-lsu.l1, spec-lsu.l7, spec-lsu.l8, spec-lsu.l9]
     depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
     instantiates:
       - { module: VecQueueReservation, instance: resv }
       # --- operand read: per-direction, never shared -----------------------
       - { module: VecScalarOperandRead, instance: ld_opnd, params: { isStore: false } }
       - { module: VecScalarOperandRead, instance: st_opnd, params: { isStore: true } }
+      # --- mask streaming: ONE per direction, SHARED by both agens ----------
+      # ===> HOISTED HERE (amendment). VecMaskStream was originally instantiated
+      #      inside VecElemAgen, but that left the UNIT-STRIDE path with no mask
+      #      reader at all: spec-agen.e12 requires stage 1 to read the mask for
+      #      EVERY access class including unit-stride, and VecRangeAgen has no
+      #      mask reader of its own. Duplicating the reader was not an option
+      #      either — spec-vrf.g18 requires R1 and R4 to have EXACTLY ONE reader
+      #      each. So the streamer sits at this level, one per direction, feeding
+      #      both that direction's element agen and its range agen. It owns R1
+      #      (load) / R4 (store, shared with the store index) outright.
+      - { module: VecMaskStream, instance: ld_msk, params: { isStore: false } }
+      - { module: VecMaskStream, instance: st_msk, params: { isStore: true  } }
       # --- fill side -------------------------------------------------------
       - { module: VecElemAgen,  instance: ld_elem_agen,  params: { isStore: false } }
       - { module: VecElemAgen,  instance: st_elem_agen,  params: { isStore: true } }
@@ -792,20 +1443,36 @@ modules:
       - { module: VecRangeAgen, instance: st_range_agen, params: { isStore: true } }
       # --- the six element queues: ONE definition, SIX instances -----------
       # Naming follows the spec: {ld,st}_{SSI,US}_{ADDR,DATA}_Q.
-      - { module: VecElemQueue, instance: ld_SSI_ADDR_Q, params: { entries: ssiQueueEntries, width: addrWidth,  reserved: true } }
-      - { module: VecElemQueue, instance: st_SSI_ADDR_Q, params: { entries: ssiQueueEntries, width: addrWidth,  reserved: true } }
-      - { module: VecElemQueue, instance: st_SSI_DATA_Q, params: { entries: ssiQueueEntries, width: eLen,       reserved: true } }
-      - { module: VecElemQueue, instance: ld_US_ADDR_Q,  params: { entries: usQueueEntries,  width: rangeWidth, reserved: true } }
-      - { module: VecElemQueue, instance: st_US_ADDR_Q,  params: { entries: usQueueEntries,  width: rangeWidth, reserved: true } }
-      - { module: VecElemQueue, instance: st_US_DATA_Q,  params: { entries: usQueueEntries,  width: vLen,       reserved: true } }
+      # isStore has NO default deliberately — defaulting it would silently give a
+      # store queue LOAD freeing semantics. hasXlatePass is true only for the two
+      # store ADDRESS queues, which take a second pass: execute translates and
+      # writes the PA back into the entry, commit-drain reads it again.
+      - { module: VecElemQueue, instance: ld_SSI_ADDR_Q, params: { entries: ssiQueueEntries, width: addrWidth,  reserved: true, isStore: false, hasXlatePass: false } }
+      - { module: VecElemQueue, instance: st_SSI_ADDR_Q, params: { entries: ssiQueueEntries, width: addrWidth,  reserved: true, isStore: true, hasXlatePass: true } }
+      - { module: VecElemQueue, instance: st_SSI_DATA_Q, params: { entries: ssiQueueEntries, width: eLen,       reserved: true, isStore: true, hasXlatePass: false } }
+      - { module: VecElemQueue, instance: ld_US_ADDR_Q,  params: { entries: usQueueEntries,  width: rangeWidth, reserved: true, isStore: false, hasXlatePass: false } }
+      - { module: VecElemQueue, instance: st_US_ADDR_Q,  params: { entries: usQueueEntries,  width: rangeWidth, reserved: true, isStore: true, hasXlatePass: true } }
+      - { module: VecElemQueue, instance: st_US_DATA_Q,  params: { entries: usQueueEntries,  width: vLen,       reserved: true, isStore: true, hasXlatePass: false } }
       # --- drain side ------------------------------------------------------
       - { module: VecBeatExpander, instance: ld_beat, params: { isStore: false } }
       - { module: VecBeatExpander, instance: st_beat, params: { isStore: true } }
       - { module: VecDgen,         instance: dgen }
       - { module: VecLoadCoalescingBuffer, instance: lcb }
+      # --- the no-execution path (v2 amendment) ----------------------------
+      # A VL=0 or fully-inactive vta=0 OP.v writes its freshly-renamed pvdest
+      # group with no memory traffic at all. 13 reqs that had no owner before.
+      # Borrows the Load Unit's VRF ports and always LOSES to an active drain.
+      - { module: VecGroupCopy,     instance: gcopy }
       # --- shared memory-system plumbing -----------------------------------
       - { module: VecDcacheArbiter, instance: arb }
+      # --- memory ordering: three mechanisms, not one (v2 amendment) --------
+      # ST->LD search (raises order_fail) / LD->ST forward (returns data) /
+      # predicted-overlap hold (waits). Split because they are different
+      # mechanisms landing in different phase-G steps, and because one node
+      # carrying all of memord was 40+ reqs.
       - { module: VecCrossLsuSnoop, instance: snoop }
+      - { module: VecStoreForward,  instance: fwd }
+      - { module: VecOrderHold,     instance: hold }
       - { module: VecSquashUnit,    instance: squash }
 
   VecQueueReservation:
@@ -814,6 +1481,15 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecQueueReservation.scala
     group: vec_lsu
+    reqs: [spec-issue.b1, spec-issue.b2, spec-issue.b3, spec-issue.b4, spec-issue.b5,
+           spec-issue.b6, spec-issue.b7, spec-issue.b8, spec-issue.c1, spec-lsu.b4,
+           spec-lsu.b5, spec-lsu.b14, spec-lsu.b15, spec-lsu.d12, spec-lsu.d13, spec-lsu.j6,
+           # D9/D10: the reservation rule split by direction. b18 = the load quantum
+           # min(worstCase, ldResvMembers * VLEN/EEW); b19 = the store worst case.
+           spec-lsu.b18, spec-lsu.b19,
+           # spec-issue.b9 is the same load-quantum obligation stated from the issue side;
+           # spec-issue.b2 is now STORE-ONLY (D9/D10 split it by direction).
+           spec-issue.b9]
     depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
     # Claims element-queue capacity IN PROGRAM ORDER AT DISPATCH, sized to the
     # worst-case active element count from EMUL/EEW, releasing the surplus at
@@ -844,9 +1520,16 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecScalarOperandRead.scala
     group: vec_lsu
+    # spec-agen.d3 was RETIRED — its FP half was unreachable and its integer half named the
+    # wrong subject (the vDGEN). Reissued as spec-agen.d16, which names this module's job.
+    reqs: [spec-agen.d16, spec-issue.d3, spec-issue.h3, spec-lsu.m1]
     depends_on: [MicroOp, VecBundles, VecTrace]
-    # Reads the scalar feeders (base, stride, .vx/.vf) plus the mask and index
-    # vectors for this direction. Instantiated PER DIRECTION — `addvector` had a
+    # Reads the scalar feeders (base, stride, .vx/.vf) and resolves VL for this
+    # direction, and supplies the mask/index group PRNs onward.
+    # CLARIFIED: it does NOT itself perform the mask/index VRF reads. Those are
+    # per-member reads issued as the element walk advances, so they belong to
+    # VecMaskStream (R1/R4) and VecIdxGen (R0/R4), which own the corresponding
+    # port requirements. A per-OP.v operand-read stage cannot serialize members. Instantiated PER DIRECTION — `addvector` had a
     # single shared, fire-and-forget VecLSRegRead with a load-priority mux, and
     # when both queues granted in the same cycle the store's grant was silently
     # lost (worked around by making the store not advertise FC_AGEN whenever the
@@ -864,10 +1547,21 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecElemAgen.scala
     group: vec_lsu
+    # D12(3): the six vleff fault/trim reqs (lsu.g1-g4/g9/g10) MOVED to
+    # VecRangeAgen. `vle<eew>ff.v` is architecturally UNIT-STRIDE, so its OP.v
+    # self-selects into the range agen, never here. Architect-pass mis-allocation.
+    reqs: [spec-core.c13, spec-agen.b5, spec-agen.c6, spec-agen.c7, spec-agen.c8,
+           spec-agen.c10, spec-agen.c14, spec-agen.c16, spec-agen.c18, spec-agen.c19,
+           spec-agen.c20, spec-agen.c24, spec-agen.e2, spec-agen.e6, spec-agen.e7,
+           spec-agen.e8, spec-agen.e9, spec-agen.e11, spec-lsu.b11, spec-lsu.f5, spec-lsu.f8,
+           spec-lsu.f9, spec-lsu.j1, spec-rob.g13]
     depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
     instantiates:
-      - { module: VecIdxGen,     instance: idx }
-      - { module: VecMaskStream, instance: msk }
+      # isStore MUST be forwarded: the child's VRF read port number depends on
+      # direction (load reads the index on R0, store reads it on R4).
+      - { module: VecIdxGen,     instance: idx, params: { isStore: isStore } }
+      # NOTE: VecMaskStream is NOT instantiated here. It was hoisted to VecLsu —
+      # see the comment on the `ld_msk`/`st_msk` instances there.
     # FILL side, SSI patterns (strided / indexed / segmented). Emits one element
     # address per ACTIVE element into *_SSI_ADDR_Q. Absorbs the inherited
     # Skipper and Walker: masked-skip and indexed differ only in where the
@@ -881,7 +1575,8 @@ modules:
     #     avoid wait states mid-stream.
     #   - Same rule for the index vector: do not start an element access whose
     #     index entry is not yet staged.
-    #   - VecIdxGen serializes the index vector into per-element SIGNED offsets.
+    #   - VecIdxGen serializes the index vector into per-element UNSIGNED offsets
+    #     (corrected: see the VecIdxGen entry).
     #   - Element counting must complete by TOTAL BYTES (vl << eew), handling a
     #     partial final member. A hardcoded 8-member walk streams phantom
     #     members after a 1-member op and stalls (this was the back-to-back
@@ -896,6 +1591,15 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecRangeAgen.scala
     group: vec_lsu
+    # D12(3): gained lsu.g1-g4/g9/g10 from VecElemAgen — vleff is unit-stride, so
+    # the fault/trim policy belongs to the agen that actually sees it. Element-0
+    # fault = normal precise trap with vstart=0; fault at i>0 does NOT trap, VL is
+    # trimmed to i, the op completes with what it loaded, nothing else
+    # architectural is cleared, and only element-0 raises rob_exception. The
+    # trimmed count reaches VlRegFile.W_lsu via lcb.io.vl_wb (VecLsu settled the
+    # two candidate producers down to one).
+    reqs: [spec-agen.b6, spec-agen.b7, spec-agen.e13, spec-lsu.c3, spec-lsu.c4, spec-lsu.d5,
+           spec-lsu.g1, spec-lsu.g2, spec-lsu.g3, spec-lsu.g4, spec-lsu.g9, spec-lsu.g10]
     depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
     # FILL side, unit-stride. Emits exactly ONE range entry describing
     # [base, base + VL*EEW) into *_US_ADDR_Q. Also covers whole-register
@@ -910,8 +1614,17 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecIdxGen.scala
     group: vec_lsu
+    reqs: [spec-agen.c17, spec-agen.c27, spec-agen.c29, spec-vrf.g2]
     depends_on: [VecBundles, VectorParams, VecTrace]
-    # Serializes an index vector register group into per-element signed offsets.
+    # Serializes an index vector register group into per-element UNSIGNED
+    # (zero-extended) byte offsets.
+    # ===> CORRECTED. Earlier revisions of this map and of the plan said SIGNED.
+    #      RVV 1.0 indexed offsets are UNSIGNED: spike's VI_LDST_GET_INDEX reads
+    #      them as uint8_t/uint16_t/uint32_t/uint64_t. Whisper is the cosim
+    #      reference, so sign-extension would diverge on any index whose top EEW
+    #      bit is set — and the divergence would look like an addressing bug in
+    #      the LSU rather than an extension bug. Keep the extension in ONE named
+    #      function so a future correction stays a one-line change.
 
   VecMaskStream:
     kind: module
@@ -919,6 +1632,8 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecMaskStream.scala
     group: vec_lsu
+    reqs: [spec-agen.c9, spec-agen.c28, spec-agen.e1, spec-agen.e4, spec-agen.e5,
+           spec-agen.e12, spec-agen.e14, spec-vrf.g3, spec-vrf.g8]
     depends_on: [VecBundles, VectorParams, VecTrace]
     # Streams v0 mask bits at element granularity, with the one-entry lookahead
     # the agen's hazard rule depends on.
@@ -929,6 +1644,9 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecElemQueue.scala
     group: vec_lsu
+    reqs: [spec-lsu.a5, spec-lsu.b1, spec-lsu.b3, spec-lsu.b6, spec-lsu.b7, spec-lsu.b8,
+           spec-lsu.b9, spec-lsu.b10, spec-lsu.c2, spec-lsu.d1, spec-lsu.d2, spec-lsu.d3,
+           spec-lsu.d4, spec-lsu.d8, spec-lsu.d11, spec-lsu.i3, spec-lsu.j10, spec-lsu.k7]
     depends_on: [VecBundles, VectorParams, VecTrace]
     # ONE definition, SIX instances. The decoupling structure that makes the
     # group invariant possible: the fill side pushes and retires; the drain side
@@ -952,6 +1670,8 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecBeatExpander.scala
     group: vec_lsu
+    reqs: [spec-agen.b8, spec-agen.c1, spec-agen.c2, spec-agen.c3, spec-agen.c23, spec-lsu.c5,
+           spec-lsu.c6, spec-lsu.d6, spec-lsu.f13, spec-lsu.j2, spec-lsu.j3, spec-lsu.k8]
     depends_on: [VecBundles, VectorParams, VecTrace]
     # DRAIN side. Pops a queue entry and issues D$ accesses.
     #   - US range entry  -> coalesce contiguous elements into D$-port-width
@@ -969,6 +1689,10 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecDgen.scala
     group: vec_lsu
+    reqs: [spec-agen.d1, spec-agen.d2, spec-agen.d4, spec-agen.d5, spec-agen.d6, spec-agen.d7,
+           spec-agen.d8, spec-agen.d10, spec-agen.d11, spec-agen.d12, spec-agen.d13,
+           spec-agen.d14, spec-agen.d15, spec-vrf.g7, spec-lsu.d7, spec-lsu.d9, spec-lsu.d10,
+           spec-issue.d9]
     depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
     # Reads store data from the source vPRN at EXECUTE time (VRF port R3) into
     # st_*_DATA_Q. Captured this early, the source vPRN needs NO PIN — it frees
@@ -987,6 +1711,12 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecLoadCoalescingBuffer.scala
     group: vec_lsu
+    reqs: [spec-lsu.e1, spec-lsu.e2, spec-lsu.e3, spec-lsu.e4, spec-lsu.e5, spec-lsu.e6,
+           spec-lsu.e8, spec-lsu.e9, spec-lsu.e10, spec-lsu.e11, spec-lsu.e12, spec-lsu.e13,
+           spec-lsu.e14, spec-lsu.e15, spec-lsu.e16, spec-lsu.e17, spec-lsu.e18, spec-lsu.e19,
+           spec-lsu.e20, spec-lsu.e21, spec-lsu.e22, spec-lsu.e23, spec-lsu.e24, spec-lsu.e25,
+           spec-lsu.f14, spec-lsu.f15, spec-lsu.g7, spec-lsu.j4, spec-vrf.g4, spec-vrf.i5,
+           spec-vrf.i6, spec-vrf.i7, spec-rob.d16, spec-lsu.l3, spec-lsu.l4]
     depends_on: [VecBundles, VectorParams, VecTrace]
     # Turns out-of-order, <=ELEN per-element D$ responses into ONE VRF write per
     # destination PRN (W0) and ONE group-done per instruction. Owns the per-group
@@ -1008,12 +1738,59 @@ modules:
     # from the incoming nop — issue.vec_wakeup -> iss_uops -> decode -> AGEN ->
     # nop -> group_done closes a combinational loop.
 
+  # --- The VL == 0 / fully-inactive destination group copy --------------------
+  # NEW NODE (v2 amendment). This mechanism had NO owner anywhere in the
+  # previous map, and it is 13 live requirements of `loadstore.rst`, not an edge
+  # case to be discovered during bring-up.
+  #
+  # THE PROBLEM. Only an immediate-AVL vset resolves VL in the front end; for
+  # every other form a VL = 0 op still reaches issue, where pvl resolves to 0
+  # (lsu.m1). Its pvdest group is already renamed and freshly allocated, and its
+  # ROB entry cannot commit until that group is architecturally correct
+  # (lsu.m3) — but with VL = 0 the LSU executes no element at all (lsu.m2), so
+  # nothing would ever write it. With vta = 0 the new group must equal the OLD
+  # value of the architectural vreg group (lsu.m4). Something has to copy
+  # stale_pvdest into pvdest with no memory traffic whatsoever.
+  #
+  # THE SHAPE. One VLEN-wide copy per group member (lsu.m5), completing with a
+  # single group-done like any other producer (lsu.m8). It reuses the Load
+  # Unit's existing VRF ports and adds NONE (lsu.m6, m7) — which is what makes
+  # it compatible with the canonical port table rather than an amendment to it.
+  VecGroupCopy:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecGroupCopy.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecGroupCopy.scala
+    group: vec_lsu
+    reqs: [spec-lsu.m2, spec-lsu.m3, spec-lsu.m4, spec-lsu.m5, spec-lsu.m8, spec-lsu.m9,
+           spec-lsu.m10, spec-lsu.m11, spec-lsu.m12, spec-lsu.m13, spec-lsu.m14]
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
+    # ===> IT MUST NEVER STEAL BANDWIDTH FROM A REAL LOAD. Because it borrows the
+    #      Load Unit's ports, those ports are arbitrated by a STRICT-PRIORITY
+    #      mux (lsu.m13) in which an active load drain ALWAYS wins (lsu.m14).
+    #      The copy is pure catch-up work with no consumer waiting on latency,
+    #      so it is the correct loser. A round-robin here would let a VL=0 op
+    #      displace a real element return.
+    # ===> SCOPE, and this is the easy mistake: the standalone copy is ONLY for
+    #      the no-execution case — VL = 0, or a fully-inactive vta = 0 group
+    #      (lsu.m12). The ORDINARY masked / partial-tail case (lsu.m11) is NOT
+    #      this module: those inactive lanes are pre-loaded from stale_pvdest on
+    #      R2 inside the LCB, overlapped with the load's memory latency (see
+    #      VecLoadCoalescingBuffer). Routing the ordinary case through here
+    #      would resurrect exactly the serial copy prologue v2 exists to delete.
+    # With vta = 1 there is nothing to preserve, so the entry takes the
+    # complete-without-execute path and emits its group-done immediately
+    # (lsu.m9, m10) — no copy, no VRF traffic.
+
   VecDcacheArbiter:
     kind: module
     source: src/main/nlhdl/vec/lsu/VecDcacheArbiter.nlhdl.scala
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecDcacheArbiter.scala
     group: vec_lsu
+    reqs: [spec-lsu.h1, spec-lsu.h3, spec-lsu.h4, spec-lsu.h5, spec-lsu.h6, spec-lsu.h7,
+           spec-lsu.h8, spec-lsu.h9, spec-lsu.h10, spec-lsu.h11, spec-memord.b9,
+           spec-memord.b18]
     depends_on: [VecBundles, VectorParams, VecTrace]
     # PRIORITY ROUND-ROBIN with a scalar-priority floor plus anti-starvation,
     # gating the D$ port, the LCAM port, and the TLB port together.
@@ -1032,6 +1809,13 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecCrossLsuSnoop.scala
     group: vec_lsu
+    reqs: [spec-memord.a2, spec-memord.a15, spec-memord.a19, spec-memord.a22, spec-memord.b1,
+           spec-memord.b2, spec-memord.b3, spec-memord.b4, spec-memord.b5, spec-memord.b8,
+           spec-memord.b20,
+           # The two-tier search that makes a19 implementable: a26 = the conservative
+           # per-STQ-entry address bound (correctness backstop, no false negatives);
+           # a27 = the exact comparators over st_US_ADDR_Q plus the SSI snoop window.
+           spec-memord.a26, spec-memord.a27]
     depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
     # BIDIRECTIONAL cross-queue disambiguation: vector element addresses are
     # routed through the LCAM in both directions, so scalar ops see vector
@@ -1043,12 +1827,94 @@ modules:
     # An order-fail replay raises MINI_EXCEPTION_MEM_ORDERING at the ROB head,
     # which can squash past-PNR coprocessor work — see VecCiiFlush.
 
+  # --- LD -> ST forwarding out of the vector store data queues ----------------
+  # NEW NODE (v2 amendment). Split out of VecCrossLsuSnoop, which was carrying
+  # both directions of cross-queue ordering at once. The two directions are
+  # genuinely different mechanisms — one raises order_fail, the other returns
+  # DATA — and they land in different plan steps (G1 vs G3).
+  #
+  # A load address that matches an OLDER vector store must be given that store's
+  # data (memord.a21), read out of the st_*_DATA_Q (memord.a15) — the STQ entry
+  # holds no vector store data at all.
+  VecStoreForward:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecStoreForward.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecStoreForward.scala
+    group: vec_lsu
+    reqs: [spec-memord.a21, spec-memord.a23, spec-memord.a24, spec-memord.a25, spec-memord.b6,
+           spec-memord.b7, spec-memord.b10, spec-memord.b14, spec-memord.b15, spec-memord.b21,
+           spec-memord.c21, spec-memord.c22]
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
+    # Rules that are easy to get subtly wrong:
+    #   - Forward from an older vector store of EITHER class, US or SSI
+    #     (memord.a23). Where several already-generated elements of the same SSI
+    #     store alias one scalar load, the YOUNGEST matching element supplies
+    #     the data (memord.a24) — an older element's value is stale.
+    #   - A store element generated AFTER a load has already forwarded, and
+    #     aliasing it, must set that load's order_fail through its own ST->LD
+    #     search (memord.a25). Forwarding is not a commitment; the replay path
+    #     is still the floor.
+    #   - VECTOR-TO-VECTOR forwarding is attempted ONLY when both sides are
+    #     unit-stride (memord.b14); between two SSI accesses it is not attempted
+    #     at all (memord.b10) and the ordering hold covers the case instead
+    #     (see VecOrderHold).
+    #   - A partial cover replays the load rather than returning half an operand
+    #     (memord.b6, b7), exactly as BOOM already does for scalars.
+    #   - Forwarding from a US store is qualified by the store's active BYTE
+    #     mask (memord.b21). Note the asymmetry with ordering, which is
+    #     deliberately mask-OBLIVIOUS (memord.b20, VecCrossLsuSnoop): a
+    #     conservative ordering match is safe, a wrong forwarded byte is not.
+
+  # --- The predicted-overlap hold --------------------------------------------
+  # NEW NODE (v2 amendment). Six requirements that previously had no owner, and
+  # the one part of memory ordering that is neither a search nor a forward.
+  #
+  # THE CASE. A younger vector load overlaps an older vector store that is still
+  # draining, in a combination that does NOT forward — SSI/SSI, or US/SSI. There
+  # is no data to hand over, so the load must WAIT until that store's elements
+  # have drained and then read the updated line (memord.b11, b12).
+  VecOrderHold:
+    kind: module
+    source: src/main/nlhdl/vec/lsu/VecOrderHold.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/lsu/VecOrderHold.scala
+    group: vec_lsu
+    reqs: [spec-memord.b11, spec-memord.b12, spec-memord.b13, spec-memord.b16, spec-memord.b17,
+           spec-memord.b19]
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
+    # Built entirely out of machinery BOOM already has, which is why it is small:
+    # the overlap PREDICTION is BOOM's existing memory-dependence predictor
+    # (memord.b16) and the hold itself is the younger load's existing per-load
+    # store-dependency block pointed at the older vector store entry
+    # (memord.b17). No new predictor, no new CAM.
+    #   - RELEASE is by the older store's ELEMENT CURSOR completing its active
+    #     element set (memord.b19) — not by the store committing, and not by a
+    #     timer.
+    #   - A held load is not granted the LCAM or the D$ port (memord.b18). That
+    #     is a seam with VecDcacheArbiter, which owns the suppression; this
+    #     module only decides who is held.
+    # ===> NOT A CORRECTNESS MECHANISM, and the distinction matters for how it
+    #      is reviewed. The hold is a PERFORMANCE mechanism that avoids a
+    #      squash; the order_fail replay path remains the correctness floor for
+    #      any load that slips through before the dependence is detected
+    #      (memord.b13). A conservative or even a wrong prediction here costs
+    #      cycles, never data.
+    # ===> AND IT MAY NOT INTRODUCE A DEADLOCK. It holds a YOUNGER load behind an
+    #      OLDER store only, so the wait graph follows program order and cannot
+    #      cycle. A hold in the other direction would deadlock against the
+    #      in-order commit that frees the store's reservation.
+
   VecSquashUnit:
     kind: module
     source: src/main/nlhdl/vec/lsu/VecSquashUnit.nlhdl.scala
     mode: new
     output: src/main/scala/v4/vec/generated/lsu/VecSquashUnit.scala
     group: vec_lsu
+    reqs: [spec-lsu.f6, spec-lsu.f7, spec-lsu.i1, spec-lsu.i2, spec-lsu.i4, spec-lsu.i5,
+           spec-lsu.i6, spec-lsu.i7, spec-lsu.i8, spec-lsu.i9, spec-lsu.i10, spec-memord.c16,
+           spec-memord.c17, spec-memord.c18, spec-memord.c19, spec-memord.c20, spec-memord.c23,
+           spec-memord.c24, spec-memord.e3, spec-memord.e4, spec-memord.e5]
     depends_on: [MicroOp, VecBundles, VecTrace]
     # Squashes the vector LSU on mispredict and flush: POINTER ROLLBACK on all
     # six element queues plus LCB entry invalidation by ldq_idx.
@@ -1069,11 +1935,21 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/cii/VecCiiHost.scala
     group: vec_cii
+    reqs: [spec-core.e18, spec-agen.a7, spec-cii.a1, spec-cii.a2, spec-cii.a4, spec-cii.a5,
+           spec-cii.a18, spec-cii.b1, spec-cii.b2, spec-cii.b5, spec-cii.b6, spec-cii.b7,
+           spec-cii.b9, spec-cii.c1, spec-cii.c3, spec-cii.c8, spec-cii.c9, spec-cii.f35,
+           spec-cii.f36, spec-cii.f37, spec-cii.f39, spec-cii.f43]
     depends_on: [MicroOp, VecBundles, VectorParams, VecTrace]
     instantiates:
+      # One node per channel direction. `iss` was added in the v2 amendment:
+      # the other three directions each had a module and the Issue direction did
+      # not, which left 26 reqs (the whole issue-packet contract) inside the
+      # container alongside the BlackBox binding.
       - { module: VecCiiTagTable,      instance: tags }
-      - { module: VecCiiOperandServer, instance: opnd }
-      - { module: VecCiiWriteback,     instance: wb }
+      - { module: VecCiiIssue,         instance: iss }    # host -> cop  (Issue)
+      - { module: VecCiiOperandServer, instance: opnd }   # cop  -> host (Src-Req/Dat)
+      - { module: VecCiiWriteback,     instance: wb }     # cop  -> host (Writeback)
+      - { module: VecCiiComplete,      instance: done }   # last-beat completion
       - { module: VecCiiFlush,         instance: flush }
       - { module: tt_cii_host_wrap,    instance: coproc, reset: core_rst_n }
     # Binds the SV stack via HasBlackBoxPath pointing at src/main/sv/v4/**
@@ -1088,12 +1964,69 @@ modules:
     #      checksum guard that FAILS the build on drift, never a silent copy.
     # Host-side constants are DERIVED from tt_cii_caracal_pkg, never redeclared.
 
+  # --- The Issue channel: tag allocation, the issue packet, credit metering ----
+  # NEW NODE (v2 amendment). The previous map decomposed the CII host into
+  # TagTable / OperandServer / Writeback / Flush — one node per direction EXCEPT
+  # the issue direction, which was left inside VecCiiHost along with the
+  # BlackBox binding. That was the asymmetry to fix: the issue path is 26 live
+  # requirements, including the whole of the issue-packet contract (cii.k*).
+  #
+  # On grant it allocates a 4-bit tag, records the side-table entry, and emits
+  # the extended Issue packet (cii.d6-d8).
+  VecCiiIssue:
+    kind: module
+    source: src/main/nlhdl/vec/cii/VecCiiIssue.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/cii/VecCiiIssue.scala
+    group: vec_cii
+    reqs: [spec-cii.c10, spec-cii.c11, spec-cii.c12, spec-cii.c13, spec-cii.c14, spec-cii.d6,
+           spec-cii.d7, spec-cii.d9, spec-cii.d10, spec-cii.d11, spec-cii.f24, spec-cii.f27,
+           spec-cii.f40, spec-cii.f41, spec-cii.k1, spec-cii.k2, spec-cii.k3, spec-cii.k4,
+           spec-cii.k5, spec-cii.k6, spec-cii.k7, spec-cii.k8, spec-cii.k9, spec-cii.k10,
+           spec-cii.k11, spec-decode.d7]
+    depends_on: [MicroOp, VecBundles, VectorParams, VecTrace, tt_cii_caracal_pkg]
+    # THE ISSUE PACKET carries the FULL dynamic vector context, per instruction
+    # (cii.k1) — which is what buys the design out of a serializing VCONFIG CSR
+    # write to the coprocessor (cii.d9, d10) and lets the VPU hold no
+    # cross-instruction configuration state. Field by field, each from a
+    # DIFFERENT place, and mixing them up is silent corruption:
+    #   insn   32b  the raw RVV word from uop.debug_inst          (cii.k2)
+    #   vtype   8b  {vsew,vlmul,vta,vma} from uop.vconfig — the DECODE-time
+    #               speculative mirror snapshot, not a CSR read     (cii.k3)
+    #   vl      9b  from the VL-RF read of uop.pvl — the RENAMED VL (cii.k4)
+    #   vstart  9b  read from the vstart CSR at issue               (cii.k5)
+    #   vxrm    2b  from csr.io.vector                              (cii.k8)
+    #   frm     3b  from fcsr.frm                                   (cii.k9)
+    #   tag     4b  prefix                                          (cii.k10)
+    # ===> vstart MUST NOT be forced to 0 (cii.k6) even though hardware never
+    #      produces a non-zero vstart (cii.k7): software can write it, and the
+    #      VPU honours it by leaving lower elements untouched. Forcing 0 here
+    #      would silently corrupt a resumed instruction.
+    # src_reuse is driven to 0 on every source (cii.k11); the VPU ignores it and
+    # always re-pulls.
+    #
+    # CREDIT METERING — the reason `fu_types` exists on this node. The adapter
+    # advertises fu_types ONLY when a real issue credit is available (cii.c10),
+    # from a local mirror of the issue FIFO's occupancy (cii.c11, c12), and that
+    # gate is REGISTERED (cii.c13). Accounting must be exact (cii.c14): the CII
+    # channels have no ready line (cii.b3), so an over-advertised credit is not
+    # back-pressured — it is a dropped instruction.
+    # Scalar .vx/.vf operands are captured BY VALUE from the INT/FP bypass at
+    # issue into the side-table (cii.f24, f41); the coprocessor can address no
+    # register file, so a late read is not available to it.
+
   VecCiiTagTable:
     kind: module
     source: src/main/nlhdl/vec/cii/VecCiiTagTable.nlhdl.scala
     mode: new
     output: src/main/scala/v4/vec/generated/cii/VecCiiTagTable.scala
     group: vec_cii
+    # spec-cii.f5-f8, f10 arrived here from VecCiiOperandServer via D12 case 3 —
+    # the op_id -> PRN mux is emitted in this node's Source-Request resolve.
+    reqs: [spec-cii.b8, spec-cii.b11, spec-cii.d8, spec-cii.d16, spec-cii.d17, spec-cii.d18,
+           spec-cii.d19, spec-cii.d20, spec-cii.d21, spec-cii.d22, spec-cii.d23, spec-cii.e22,
+           spec-cii.e23, spec-cii.e24, spec-cii.f38, spec-cii.f11,
+           spec-cii.f5, spec-cii.f6, spec-cii.f7, spec-cii.f8, spec-cii.f10]
     depends_on: [MicroOp, VecBundles, VecTrace]
     # 16 entries (CII_N_TAGS), 4-bit tag (CII_TAG_W). The CII NEVER carries
     # physical register numbers: sources are named by an abstract op_id (source
@@ -1112,6 +2045,15 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/cii/VecCiiOperandServer.scala
     group: vec_cii
+    # D12 case 3: spec-cii.f5-f8 and f10 (the op_id -> PRN resolution mapping) were
+    # RE-ALLOCATED to VecCiiTagTable, which is where the mux is emitted. This node
+    # keeps the OUTCOME of each slot via f4, f9, f12 and vrf.j13/j14.
+    reqs: [spec-cii.e13, spec-cii.e14, spec-cii.e15, spec-cii.f1, spec-cii.f2, spec-cii.f3,
+           spec-cii.f4, spec-cii.f9,
+           spec-cii.f12, spec-cii.f13, spec-cii.f14, spec-cii.f21, spec-cii.f22,
+           spec-cii.f23, spec-cii.f31, spec-cii.f32, spec-cii.f33, spec-cii.f34, spec-cii.f44,
+           spec-cii.f45, spec-cii.f46, spec-vrf.h7, spec-vrf.i8, spec-vrf.i9, spec-vrf.j13,
+           spec-vrf.j14, spec-vrf.j15]
     depends_on: [VecBundles, VecTrace]
     # Services Src-Request -> VRF/scalar read -> Src-Data, in order, on VRF read
     # ports R5-R8 (four lanes, CII_NUM_SRC_REQ = 4).
@@ -1154,6 +2096,10 @@ modules:
     mode: new
     output: src/main/scala/v4/vec/generated/cii/VecCiiWriteback.scala
     group: vec_cii
+    reqs: [spec-cii.e16, spec-cii.e17, spec-cii.f42, spec-cii.g1, spec-cii.g3, spec-cii.g4,
+           spec-cii.g6, spec-cii.g7, spec-cii.g8, spec-cii.g16, spec-cii.g17, spec-cii.g18,
+           spec-cii.g19, spec-cii.g20, spec-cii.g21, spec-cii.g22, spec-cii.i1, spec-cii.i4,
+           spec-cii.i8, spec-cii.i10, spec-cii.i11]
     depends_on: [VecBundles, VecTrace]
     # Places writeback beats by wb_status.dst_kind: CII_DST_VEC -> VRF W2 at
     # pvdest_grp(wb_dst_offset); CII_DST_INT -> INT RF (vmv.x.s, vcpop.m,
@@ -1162,12 +2108,55 @@ modules:
     # A `last` beat for a killed tag is consumed and its four effects suppressed
     # (no VRF write, no group-done, no rob clear, no CSR side effect).
 
+  # --- Last-beat completion, split from beat placement ------------------------
+  # NEW NODE (v2 amendment). Split out of VecCiiWriteback (41 reqs). The seam is
+  # the `last` bit: the coprocessor MARKS the final beat of a tag (cii.g9), and
+  # the host must NOT infer completion by counting beats (cii.g15) — the
+  # Writeback channel deliberately carries no expected-count field (cii.g23).
+  #
+  # So completion needs almost nothing from placement: one bit on the beat plus
+  # the tag's side-table entry. That low coupling is what makes this a clean
+  # split, and it is the reason the equivalent split was NOT made in
+  # VecLoadCoalescingBuffer — there, assembly and completion share the per-entry
+  # byte-valid bitmap, and cutting between them would put a shared counter on a
+  # module boundary.
+  VecCiiComplete:
+    kind: module
+    source: src/main/nlhdl/vec/cii/VecCiiComplete.nlhdl.scala
+    mode: new
+    output: src/main/scala/v4/vec/generated/cii/VecCiiComplete.scala
+    group: vec_cii
+    reqs: [spec-cii.e18, spec-cii.e19, spec-cii.e20, spec-cii.e21, spec-cii.g5, spec-cii.g9,
+           spec-cii.g10, spec-cii.g11, spec-cii.g12, spec-cii.g13, spec-cii.g14, spec-cii.g15,
+           spec-cii.g23, spec-cii.i3, spec-rob.c1, spec-rob.d18, spec-rob.g14, spec-rob.g15,
+           spec-rob.g16, spec-issue.d8]
+    depends_on: [VecBundles, VecTrace]
+    # On the `last` beat of a live vector-destination op it emits, ONCE:
+    #   - one VecGroupDone carrying the member-PRN vector   (cii.g10)
+    #   - one ROB busy-clear for rob_idx                    (cii.g11)
+    #   - the tag free                                      (cii.g12)
+    # There is NO per-member ROB completion (cii.g14) — same group-done contract
+    # as the LCB, and the reason the ROB needs no per-entry counter.
+    # fflags accrue toward commit (cii.g5); vxsat is the sticky saturation bit.
+    #
+    # ===> ALL FOUR EFFECTS ARE SUPPRESSED FOR A KILLED TAG (cii.g13, e18-e21),
+    #      and this is the second half of the drain contract in VecCiiFlush: the
+    #      beat is still POPPED and its credit still returned (that is
+    #      VecCiiWriteback's cii.e16), but no group-done, no ROB clear, no CSR
+    #      side effect. A killed tag is freed on its dropped last beat exactly
+    #      like a live one (cii.e21) — the tag lifetime is identical, only the
+    #      effects differ. Freeing it early would let it be reallocated before
+    #      its beats stop arriving.
+
   VecCiiFlush:
     kind: module
     source: src/main/nlhdl/vec/cii/VecCiiFlush.nlhdl.scala
     mode: new
     output: src/main/scala/v4/vec/generated/cii/VecCiiFlush.scala
     group: vec_cii
+    reqs: [spec-cii.d5, spec-cii.e1, spec-cii.e2, spec-cii.e3, spec-cii.e4, spec-cii.e5,
+           spec-cii.e6, spec-cii.e7, spec-cii.e8, spec-cii.e9, spec-cii.e10, spec-cii.e11,
+           spec-cii.e12, spec-cii.e26, spec-cii.e27]
     depends_on: [VecBundles, VecTrace]
     # THE DRAIN-ON-FLUSH CONTRACT. Past-PNR issue removes BRANCH-kill but NOT
     # flush recovery: past-PNR is not a commit guarantee. rob.scala:436-442
@@ -1205,6 +2194,7 @@ modules:
     target_hdl: sv
     output: src/main/sv/v4/generated/tt_cii_host_wrap.sv
     group: coproc
+    reqs: [spec-cii.c2, spec-cii.c4, spec-cii.c5, spec-cii.c6, spec-cii.c7]
     reset: core_rst_n
     depends_on: [tt_cii_caracal_pkg]
     instantiates:

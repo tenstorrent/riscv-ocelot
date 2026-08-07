@@ -251,15 +251,21 @@ reqs:
   - id: spec-decode.c1
     kind: function
     statement: >
-      The VCFG must resolve vsetivli at decode in a single cycle.
+      The VCFG must resolve a vsetivli with rd == x0 at decode in a single cycle.
     source:
       file: docs_caracal/src/frontend.rst
       anchor: vector-rvv-decode
       heading: "VSET Special Handling"
       quote: >
-        Only ``vsetivli`` is **front-end only**: both VTYPE and AVL are immediate, so the VCFG
-        resolves it at decode in a single cycle — updating the ``vtype`` mirror and computing
-        ``VL = min(uimm, VLMAX)`` — with **no back-end issue slot or EU**.
+        A ``vsetivli`` **with ``rd == x0``** is **front-end only**: both VTYPE and AVL are
+        immediate, so the VCFG resolves it at decode in a single cycle — updating the ``vtype``
+        mirror and computing ``VL = min(uimm, VLMAX)`` — with **no back-end issue slot or EU**.
+    notes: >
+      Statement narrowed and quote refreshed after the frontend.rst correction: the section
+      previously said "only ``vsetivli`` is front-end only" without qualification, which cannot
+      hold for ``rd != x0`` because ``rd`` must receive the new ``vl`` and there is no front-end
+      integer-register-file write port. That case is routed down the ALU path uniformly with
+      ``vsetvli``.
 
   - id: spec-decode.c2
     kind: function
@@ -270,22 +276,28 @@ reqs:
       anchor: vector-rvv-decode
       heading: "VSET Special Handling"
       quote: >
-        Only ``vsetivli`` is **front-end only**: both VTYPE and AVL are immediate, so the VCFG
-        resolves it at decode in a single cycle — updating the ``vtype`` mirror and computing
-        ``VL = min(uimm, VLMAX)`` — with **no back-end issue slot or EU**.
+        A ``vsetivli`` **with ``rd == x0``** is **front-end only**: both VTYPE and AVL are
+        immediate, so the VCFG resolves it at decode in a single cycle — updating the ``vtype``
+        mirror and computing ``VL = min(uimm, VLMAX)`` — with **no back-end issue slot or EU**.
 
   - id: spec-decode.c3
     kind: structure
     statement: >
-      A vsetivli must not occupy a back-end issue slot or execution unit.
+      A vsetivli with rd == x0 must not occupy a back-end issue slot or execution unit.
     source:
       file: docs_caracal/src/frontend.rst
       anchor: vector-rvv-decode
       heading: "VSET Special Handling"
       quote: >
-        Only ``vsetivli`` is **front-end only**: both VTYPE and AVL are immediate, so the VCFG
-        resolves it at decode in a single cycle — updating the ``vtype`` mirror and computing
-        ``VL = min(uimm, VLMAX)`` — with **no back-end issue slot or EU**.
+        A ``vsetivli`` **with ``rd == x0``** is **front-end only**: both VTYPE and AVL are
+        immediate, so the VCFG resolves it at decode in a single cycle — updating the ``vtype``
+        mirror and computing ``VL = min(uimm, VLMAX)`` — with **no back-end issue slot or EU**.
+    notes: >
+      Statement narrowed and quote refreshed after the frontend.rst correction: the section
+      previously said "only ``vsetivli`` is front-end only" without qualification, which cannot
+      hold for ``rd != x0`` because ``rd`` must receive the new ``vl`` and there is no front-end
+      integer-register-file write port. That case is routed down the ALU path uniformly with
+      ``vsetvli``.
 
   - id: spec-decode.c4
     kind: timing

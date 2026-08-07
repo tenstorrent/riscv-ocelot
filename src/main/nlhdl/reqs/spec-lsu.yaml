@@ -356,8 +356,11 @@ reqs:
       heading: "Strided, Segmented, Indexed Queue"
       quote: >
         A load completes out of the Load Coalescing Buffer (:ref:`load-coalesce`) and does not
-        gate on commit, so the ``ld_SSI_ADDR_Q`` may be drained in waves and a load whose
-        active element count exceeds its reservation is streamed through it.
+        gate on commit, so it reserves for **squashability**, not deadlock avoidance
+    notes: >
+      Quote refreshed after the loadstore.rst amendment for decisions D9/D10, which split the
+      reservation rule by direction. The obligation is unchanged; the amendment made explicit
+      that this property is WHY a load may under-reserve, where a store may not.
 
   - id: spec-lsu.b11
     kind: function
@@ -369,12 +372,48 @@ reqs:
       anchor: ssi-queues
       heading: "Strided, Segmented, Indexed Queue"
       quote: >
-        A load completes out of the Load Coalescing Buffer (:ref:`load-coalesce`) and does not
-        gate on commit, so the ``ld_SSI_ADDR_Q`` may be drained in waves and a load whose
-        active element count exceeds its reservation is streamed through it.
+        a load whose active element count exceeds that reservation is streamed through
+        ``ld_SSI_ADDR_Q`` in waves.
     notes: >
-      That the ld_SSI_ADDR_Q *may* be drained in waves is an allowance, not an obligation, so
-      it is not a separate requirement.
+      Quote refreshed after the D9/D10 amendment. NOTE THAT THIS REQUIREMENT WAS PREVIOUSLY
+      UNREACHABLE: under a worst-case reservation for every direction,
+      worstCase = EMUL * VLEN/EEW = LMUL * VLEN/SEW = VLMAX >= VL >= active count, so the
+      precondition could never hold and the streaming path was dead code. The amendment makes
+      loads under-reserve deliberately (see spec-lsu.b18), which is what brings this obligation
+      into force.
+
+  - id: spec-lsu.b18
+    kind: function
+    statement: >
+      A load must reserve min(worstCase, ldResvMembers * VLEN/EEW) element-queue entries at
+      dispatch.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        A load therefore reserves ``min(worstCase, ldResvMembers * VLEN/EEW)`` entries, with
+        ``ldResvMembers`` defaulting to **4**
+    notes: >
+      The default of 4 is stated by the spec, so it is part of the requirement. The quantum is
+      EEW-relative rather than a flat entry count because the AGEN produces one element per
+      cycle while the drain consumes up to lsuWidth per cycle.
+
+  - id: spec-lsu.b19
+    kind: function
+    statement: >
+      A store must reserve its full worst-case active element count at dispatch.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        unlike a store, which has the deadlock exposure described above and must reserve the
+        full worst case.
+    notes: >
+      Previously implicit in spec-issue.b2, which applied one rule to both directions. The
+      amendment states the store half explicitly because the four-step deadlock argument in
+      this section depends on it and does NOT apply to loads.
 
   - id: spec-lsu.b14
     kind: function
@@ -2179,7 +2218,8 @@ coverage:
     anchor: ssi-queues
     reqs: [spec-lsu.b1, spec-lsu.b2, spec-lsu.b3, spec-lsu.b4, spec-lsu.b5, spec-lsu.b6,
            spec-lsu.b7, spec-lsu.b8, spec-lsu.b9, spec-lsu.b10, spec-lsu.b11,
-           spec-lsu.b14, spec-lsu.b15, spec-lsu.b16, spec-lsu.b17]
+           spec-lsu.b14, spec-lsu.b15, spec-lsu.b16, spec-lsu.b17,
+           spec-lsu.b18, spec-lsu.b19]
 
   - file: docs_caracal/src/loadstore.rst
     heading: "Unit-Strided Queue"

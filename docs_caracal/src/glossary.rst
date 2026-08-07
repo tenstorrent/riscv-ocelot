@@ -127,7 +127,9 @@ Glossary
 
    reservation
       Capacity in a vector element queue claimed **in program order at dispatch**, sized to the
-      worst-case active element count from ``EMUL``/``EEW``, with the surplus released at execute
+      reserved element count — the worst case from ``EMUL``/``EEW`` for a store, and
+      ``min(worstCase, ldResvMembers * VLEN/EEW)`` for a load (decision D9/D10) — with the
+      surplus released at execute
       once ``VL`` is known. It provides two unrelated properties: deadlock freedom for stores
       (:ref:`ssi-queues`) and squash-by-pointer-rollback for all four queues (:ref:`vec-squash`).
 

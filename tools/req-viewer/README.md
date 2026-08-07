@@ -24,6 +24,16 @@ the *only cited prose* toggle persist in `localStorage`.
 ```sh
 cd docs_caracal && make html          # once, and after any spec edit
 python3 tools/req-viewer/serve.py     # http://localhost:8765
+
+# To Kill the Server
+# by port (also tells you the PID)
+ss -ltnp | grep 8765
+
+# by name
+pkill -f 'req-viewer/serve.py'
+
+# specific port, if you run several
+pkill -f 'req-viewer/serve.py --port 8765'
 ```
 
 Flags: `--port`, `--host`, `--no-build` (serve the existing index), and `--html-dir` /

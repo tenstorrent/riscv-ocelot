@@ -155,7 +155,12 @@ Execute
    |boom| v4 functional units, untouched. The integer ALU EU is **extended (gated by
    ``usingRVV``)** to execute ``vsetvli``/``vsetvl``: it computes VL (and VTYPE for ``vsetvl``)
    from its integer source(s) and, for these uops, its writeback targets the **VL RF** and drives
-   the VL wakeup network (and updates the VCFG ``vtype`` mirror for ``vsetvl``). With ``usingRVV``
+   the VL wakeup network. It does **not** write the VCFG ``vtype`` mirror — there is no
+   execute-time mirror write anywhere in the design; recovery is committed-shadow plus
+   ``flush_on_commit`` refetch (see :doc:`frontend`, VCFG mirror recovery). An earlier
+   revision of this sentence claimed the ALU "updates the VCFG ``vtype`` mirror for
+   ``vsetvl``", contradicting :doc:`frontend`; the frontend text is authoritative and a
+   reviewer should reject an execute-time mirror write port. With ``usingRVV``
    off the ALU is bit-identical to |boom|. Vector arithmetic is **not**
    executed on a BOOM EU: vector-ALU uop's are issued in program order over the
    **Tenstorrent Custom Instruction Interface (tt_CII)** to an in-order vector

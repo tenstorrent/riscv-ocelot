@@ -28,7 +28,9 @@ bug they document is a test case for v2.
 | What | Where |
 |---|---|
 | Architecture spec of record | `docs_caracal/src/*.rst` (built HTML under `docs_caracal/_build/html`) |
-| Module map / design authority | `src/main/nlhdl/hierarchy.yaml` |
+| Module map / design authority | `src/main/nlhdl/hierarchy.yaml` — 63 nodes, and the allocation of all 1162 live requirements |
+| Requirement corpus | `src/main/nlhdl/reqs/` — `families.yaml` + 10 `spec-<family>.yaml` |
+| Requirement flow | `spec-to-reqs/SKILL.md` (`curate`/`extract`/`validate`/`trace`) |
 | NL_HDL format + flow | `nlhdl/SKILL.md`, `nlhdl/references/{format,gen-nlhdl,gen-rtl,inspect-hierarchy}.md` |
 | Frozen CII contract | `src/main/sv/v4/tt-cii/src/tt_cii_caracal_pkg.svh` |
 | Verified coprocessor | `src/main/sv/v4/vpu/tt_vpu_cii_wrapper_top.sv`, tb `src/main/sv/v4/vpu/tb/cii_fv_tb.sv` |
@@ -111,7 +113,7 @@ rest is ported, mostly with small deltas.
 | `lsu/VecAgenStage1.scala` | 426 | **Split** into `VecElemAgen` / `VecRangeAgen`. |
 | `lsu/VecMemQueues.scala` | 120 | **Split** into `VecElemQueue` (×6) + `VecQueueReservation`. |
 | `lsu/VecLSRegRead.scala` | 176 | **De-shared** into `VecScalarOperandRead` ×2. Keep the INT-writeback snoop/forward. |
-| `cii/VecCiiHost.scala` | — | **Decomposed** into `VecCiiHost` + TagTable / OperandServer / Writeback / Flush. |
+| `cii/VecCiiHost.scala` | — | **Decomposed** into `VecCiiHost` + TagTable / **Issue** / OperandServer / Writeback / **Complete** / Flush — one node per channel direction, plus last-beat completion. |
 | `lsu/VecLoadCoalescingBuffer.scala` | 121 | Port + **extend**: `R2` stale pre-load, per-byte write mask. |
 | `lsu/VecDgen.scala` | 179 | Port + **fix**: `is_shared` operand mux, total-bytes completion. |
 | `lsu/CrossLsuSnoop.scala` | 86 | Port + **extend** to bidirectional. |
@@ -168,33 +170,72 @@ The three stages run strictly in order:
 
 | Stage | What | Exit condition |
 |---|---|---|
-| **1. Author** | Every `.nlhdl.*` file for all 49 non-blackbox nodes | `inspect-hierarchy` clean; no module left unwritten |
+| **0. Architect** | `hierarchy.yaml`: the node set, and every live requirement allocated | `inspect-hierarchy` clean; 0 unallocated requirements |
+| **1. Author** | Every `.nlhdl.*` file for all 58 non-blackbox nodes | `inspect-hierarchy` clean; no module left unwritten |
 | **2. Review** | The complete set, read against the `.rst` specs as one artifact | Every seam agreed on both sides; every requirement traced |
 | **3. Generate** | RTL, **phase by phase**, each phase gated before the next starts | Per-phase gate green ([§6](#6-verification-gates)) |
 
+**Stage 0 is done, and it changed the node count: 49 non-blackbox nodes → 58.**
+`/nlhdl architect` allocated all **1162** live requirements in `src/main/nlhdl/reqs/`
+— **1065** to a specific node, **97** to the map's `reqs_out_of_scope:` ledger, **0**
+unallocated. Allocating them is what exposed the gaps, and each of the nine added nodes
+names one:
+
+| Added node | Why it exists |
+|---|---|
+| `VecGroupCopy` | **13 requirements with no owner at all.** A `VL = 0` op still reaches issue for every non-immediate-AVL form, its `pvdest` group is already renamed, and its ROB entry cannot commit until that group is architecturally correct — but with `VL = 0` the LSU executes no element, so nothing would ever write it. `loadstore.rst` specifies a `stale_pvdest` → `pvdest` group copy on the Load Unit's ports. The previous map had nowhere to put it. |
+| `VecOrderHold` | **6 requirements with no owner.** A younger vector load overlapping an older draining vector store in a combination that does not forward (SSI/SSI, US/SSI) must *wait*, released by the store's element cursor completing. Neither a search nor a forward, so it fell between `VecCrossLsuSnoop` and the arbiter. |
+| `VecCiiIssue` | The CII host had a node per channel direction **except Issue** — 26 requirements, including the entire issue-packet contract (`cii.k*`), left inside the container next to the BlackBox binding. |
+| `VecGroupReady`, `VecStoreDgenPath` | `VecIssueSlot` was carrying **56** requirements. The corpus splits them: per-member group readiness (identical for `pvs1/2/3`/`pvm` — define once, instantiate four times) and the store-only AGEN/DGEN dual-grant path. |
+| `VecRegFileBank` | `VecRegFile` was carrying **48**, spanning two unrelated things: *who owns which port* (a contract, canonical in `midcore.rst`) and *how the array is built*. The split also confines the VRF-area risk — flops vs latch/SRAM banking changes this node only. |
+| `VtypeTable` | `VConfigUnit` was carrying **44**. The `vtype` → `{VLMAX, EMUL, vill}` rules were restated in three places (`VConfigUnit`, `VsetDecode`, `ALUUnit`); now a `kind: package` all three bind to. Three copies of a `vill` rule is three chances to disagree. |
+| `VecStoreForward` | Split from `VecCrossLsuSnoop`, which held both directions of cross-queue ordering. One raises `order_fail`, the other returns **data**; they land in different steps (G1 vs G3). |
+| `VecCiiComplete` | `VecCiiWriteback` was carrying **41**. Completion is driven by the beat's `last` bit and must *not* be inferred by counting beats, so it needs almost nothing from beat placement — a clean seam. |
+
+Three nodes stay above 40 requirements deliberately, for two different reasons.
+`Rob` (85) and `LSU` (45) are `edit_existing`: most of their obligations are
+*must-not-regress* constraints discharged collectively by the `<|begin_edit_scope|>`
+out-of-scope list, not per-line logic — their line budgets in [§11](#11-file-touch-summary)
+are unchanged. `VecPipeline` (49) is the container: its requirements are wiring topology
+and design-wide invariants checked by cross-file inspection in **R3**, not logic in one file.
+
 The reason to finish all authoring first is that an interface defect is only visible from both
 sides at once. Writing `VecLsu`'s spec in isolation cannot reveal that `host/LSU`'s delta spec
-expects a different handshake; reading the two together can, and reading all 49 together is the
+expects a different handshake; reading the two together can, and reading all 58 together is the
 only point at which a *design-wide* invariant — ground rule 6, the VRF port partition, the
 `pvtmp` rendezvous — can actually be checked rather than assumed.
+
+Stage 0 is the same argument applied one level up, and it earned its keep: allocating the
+corpus is what turned "the LSU is where v2's redesign lives" into a specific finding that two
+of its mechanisms had no module at all. Neither `VecGroupCopy` nor `VecOrderHold` would have
+been noticed by writing the fourteen `vec/lsu/` specs one at a time — they are visible only
+against the requirement list.
 
 ### 4.1 Layout
 
 ```
 src/main/nlhdl/
-├── hierarchy.yaml                     # the module map (DONE)
-├── pkg/      MicroOp, ScalarOpConstants, BoomCoreParams, BoomConfigMixins,
-│             VectorParams, VecBundles, VecTrace
-├── host/     BoomCore, Rob, LSU, DecodeUnit, ALUUnit, ALUExeUnit, FpPipeline
-├── vec/      VecPipeline
-│   ├── decode/   VecDecode, VDecode, VLSDecode, VsetDecode, VConfigUnit
-│   ├── rename/   VecRenameSpace, VecMapTable, VecFreeList, VecBusyTable
-│   ├── issue/    VecIssueUnit, VecIssueSlot
-│   ├── regfile/  VecRegFile, VlRegFile
-│   ├── lsu/      VecLsu + 15 modules
-│   └── cii/      VecCiiHost, VecCiiTagTable, VecCiiOperandServer,
-│                 VecCiiWriteback, VecCiiFlush
-└── sv/       tt_cii_host_wrap, tt_cii_caracal_pkg
+├── hierarchy.yaml                     # the module map + requirement allocation (DONE)
+├── reqs/                              # the requirement corpus, 1162 live (DONE)
+├── pkg/   8   MicroOp, ScalarOpConstants, BoomCoreParams, BoomConfigMixins,
+│             VectorParams, VecBundles, VecTrace, VtypeTable
+├── host/  7   BoomCore, Rob, LSU, DecodeUnit, ALUUnit, ALUExeUnit, FpPipeline
+├── vec/   1   VecPipeline
+│   ├── decode/  5  VecDecode, VDecode, VLSDecode, VsetDecode, VConfigUnit
+│   ├── rename/  4  VecRenameSpace, VecMapTable, VecFreeList, VecBusyTable
+│   ├── issue/   4  VecIssueUnit, VecIssueSlot, VecGroupReady, VecStoreDgenPath
+│   ├── regfile/ 3  VecRegFile, VecRegFileBank, VlRegFile
+│   ├── lsu/    17  VecLsu, VecQueueReservation, VecScalarOperandRead,
+│   │                VecElemAgen, VecRangeAgen, VecIdxGen, VecMaskStream,
+│   │                VecElemQueue, VecBeatExpander, VecDgen,
+│   │                VecLoadCoalescingBuffer, VecGroupCopy, VecDcacheArbiter,
+│   │                VecCrossLsuSnoop, VecStoreForward, VecOrderHold,
+│   │                VecSquashUnit
+│   └── cii/     7  VecCiiHost, VecCiiIssue, VecCiiTagTable,
+│                    VecCiiOperandServer, VecCiiWriteback, VecCiiComplete,
+│                    VecCiiFlush
+└── sv/    2   tt_cii_host_wrap, tt_cii_caracal_pkg
+                                                             total 58 nodes
 ```
 
 File naming is `<module_name>.nlhdl.<hdl>` — `.scala` for Chisel, `.sv` for SystemVerilog.
@@ -280,7 +321,7 @@ The two stages have different failure costs, so they use different models:
 | Stage | Model | Why |
 |---|---|---|
 | 1. Author nlhdl | strongest available | A spec defect propagates into RTL, tests, and every consumer of the seam. This is where design judgement lives. |
-| 2. Review | strongest available | Same reason, plus cross-file reasoning over 49 files. |
+| 2. Review | strongest available | Same reason, plus cross-file reasoning over 58 files. |
 | 3. `gen-rtl` | **cheapest model that passes the phase gate** | Mechanical translation from a settled spec to Chisel/SV. The nlhdl file is the contract and [§6](#6-verification-gates) is the check, so a weaker model's errors are caught by the gate rather than shipped. |
 
 Start Stage 3 on the cheapest tier and escalate **per phase, only on gate failure** — a phase
@@ -315,7 +356,13 @@ tier choice safe, and it is not negotiable per phase.
    is needed for forward progress, because rename is in program order so an op that cannot
    allocate simply stalls; the requirement is that `pvdest`+`pvtmp` allocation is
    all-or-nothing. Default tier under test is `MediumBoomV4VectorConfig`; must elaborate
-   cleanly at Small/Large/Mega too.
+   cleanly at **Medium/Large/Mega**. **SmallBoom is NOT in the vector matrix (D3)** —
+   at `coreWidth = 1`, `CompactingDispatcher` cannot elaborate (`IQ_MEM` is forced to
+   `issueWidth >= 2` by `require(memWidth >= 2)` while `dispatchWidth = coreWidth = 1`,
+   and `parameters.scala:275` forbids widening it) *and* `allocWidth = 8` cannot serve a
+   shared `OP.v`'s all-or-nothing 16 PRNs, which is a deadlock. "Small forbids segmented
+   vector LS" was rejected as architecturally invalid: segmented load/store is base
+   RVV 1.0 and rule 1 of §1 requires RVV 1.0.
 5. **No frontend cracking; atomic group rename; OoO across queues.** A vector instruction is
    a single `OP.v` through decode/rename/ROB/issue. The mapper renames a whole `LMUL`/`EMUL`
    group atomically (≤ 8 PRNs per `vdest`); element cracking into `nOP.v` happens only in the
@@ -330,7 +377,15 @@ tier choice safe, and it is not negotiable per phase.
 6. **⇒ THE VECTOR-LSU INVARIANT (new in v2).** **No module in the vector LSU may hold state
    scoped to "the current instruction," and no module may export a `busy` that gates issue.**
    In-flight state lives only in (a) the six `VecElemQueue` instances, whose capacity was
-   reserved at dispatch in program order, and (b) the LCB's per-PRN assembly entries.
+   reserved at dispatch in program order, (b) the LCB's per-PRN assembly entries, and
+   **(c) `VecLsu`'s per-LDQ/STQ-entry descriptor pending table (added by D5)**.
+   (c) was added because nothing throttled the *producer* of a multi-cycle element walk:
+   the `iss -> VecScalarOperandRead -> agen` chain has no `ready` anywhere, yet an SSI walk
+   takes up to `vl` cycles and an INT-RF read can be denied by `PartiallyPortedRF`. (c) is
+   the same *kind* of state as (a) — per-queue-entry, capacity reserved at dispatch, no
+   `busy` exported, structurally un-overflowable. Qualifying the `FC_AGEN` grant instead was
+   rejected as a `busy` under another name, which is exactly what gate H4 greps for.
+   *The rule is amended in the text rather than letting a table appear that the rule forbids.*
    `VecElemAgen` keeps an element cursor but retires it the moment the last element is pushed
    into the queue — it never waits on a D$ response or on completion, so it cannot gate the
    next instruction. Issue eligibility is purely "is there a reservation," decided at dispatch.
@@ -364,9 +419,16 @@ tier choice safe, and it is not negotiable per phase.
     unaffected), one line per key event, each line tagged with module name and `rob_idx` (plus
     `pvdest`/`pvl`/`vl`/`v_emul` where relevant) so stages correlate with each other and with
     the Whisper trace, and greppable.
-12. **End-to-end ELF tests go through VCS with the Whisper cosim sidecar — never Verilator.**
+12. **Vector configs use `CompactingDispatcher`, not `BasicDispatcher` (D2).** A vector
+    config does not elaborate otherwise — the three `IQ_V_*` `issueParams` entries fall
+    through `core.scala:837-849` to `require(false)`. And `BasicDispatcher`'s ready is not
+    masked by `iq_type`, so wiring the vector queues in under it would let a full
+    `IQ_V_LOAD` stall **pure-scalar lanes carrying no vector uop**, threatening gate (d) and
+    P6. `CompactingDispatcher` already masks correctly ("the queue is considered ready if
+    the uop doesn't use it"). Costs a `Compactor` per queue.
+13. **End-to-end ELF tests go through VCS with the Whisper cosim sidecar — never Verilator.**
     New ELFs are appended to `sims/vcs/tests_regr/*.txt`.
-13. **`hierarchy.yaml` is the design authority.** Adding a module, a VRF port, or an
+14. **`hierarchy.yaml` is the design authority.** Adding a module, a VRF port, or an
     instantiation means amending the map **first**. In particular the `vrf-ports` partition is
     canonical: nothing adds a VRF port without amending `midcore.rst` and the map.
 
@@ -397,13 +459,56 @@ the output is not a third option.
 | **c** | **Chipyard build with vector enabled** — catches diplomacy/parameter-ripple breakage an isolated `sbt compile` misses: `cd /root/my-chipyard/sims/vcs && make CONFIG=MediumBoomV4VectorConfig -j$(nproc) debug` |
 | **d** | **Scalar perf regression with vector enabled** — proves the scalar datapath is unbroken by live vector plumbing. Required at *every* step, including steps that add no executable vector behavior: `./run_regr_rvv_scalar.sh MediumBoomV4VectorConfig` |
 | **e** | **Vector regression, phased.** (e1) `vset` smoke — required from step D3 on, must pass before any LS test is attempted. (e2) `vset` + load/store — from step E7 on. (e3) memory-ordering suite — from step G3 on. (e4) vector-arith suite — from step F5 on. Earlier steps may skip the phases that do not yet apply. |
-| **f** | **`usingRVV=false` bit-identical to pre-Caracal v4.** Elaborate `MediumBoomV4Config` (vector mixin not applied); RTL diff against the pre-Caracal baseline must be empty, ignoring only `@[...]` source locators and `$error` message line numbers. |
+| **f** | **`usingRVV=false` identical to the RE-BASELINED reference, except for the enumerated encoding widths.** Elaborate the plain `Small`/`Medium`/`MegaBoomV4Config` (vector mixin not applied) and run `docs_caracal/v2-rebaseline/gate-f-check.py --pre <rebaseline> --post <fresh>`; it must report **zero violations**. Normalization ignores only `@[...]` source locators, the `firtool` banner, and assertion strings embedding `file:line`. The check is *structural* for modules carrying the widened fields and *strict textual equality* for all others — see that directory's README, including what it does not prove. **RELAXED from "bit-identical to pre-Caracal v4" — see §6a for why, the exact exception, and the artifact it depends on.** |
 | **g** | The step's listed artifacts pass, and its trace output shows the expected instruction flow in the (d)/(e) logs, cross-checked against Whisper. |
 | **h** | **Performance gate.** The step's stated numeric target in [§7](#7-performance-targets) is met, or the step fails. New in v2. |
 
 Additionally, for every `edit_existing` step: the report must include **a diff of the touched
 hunks plus an explicit statement of what was left untouched**, and the added-line count must
 be within the step's stated budget.
+
+---
+
+### 6a. Gate (f) is a bounded exception, not bit-identity (decision D1)
+
+Gate (f) originally claimed `usingRVV=false` is **bit-identical to pre-Caracal BOOM v4**.
+That is **false by construction** and cannot be fixed cheaply: `ScalarOpConstants` is a bare
+Scala `trait` with no `Parameters` in scope, so it widens the register-type space and `IQ_SZ`
+**unconditionally**, and `MicroOp` and `Rob` must track it.
+
+**The exception, exhaustively. Nothing outside this list is permitted to differ:**
+
+| What | From | To |
+|---|---|---|
+| `RT_FIX`/`RT_FLT`/`RT_X`/`RT_ZERO` | `UInt(2.W)` | `UInt(3.W)` (values 0..3 unchanged) |
+| `IQ_SZ`, hence `MicroOp.iq_type` | 4 | 7 |
+| `MicroOp.dst_rtype`/`lrs1_rtype`/`lrs2_rtype` | `UInt(2.W)` | `UInt(3.W)` |
+| `Rob`'s compact `dst_rtype` | 2b | tracks `MicroOp` |
+
+**New step, and gate (f) is meaningless without it.** A0 has a sibling, **step A1**: generate
+and check in a **re-baselined reference** (`docs_caracal/v2-rebaseline/`) — pre-Caracal BOOM v4
+plus exactly the widenings above and no vector logic. Every later step's (f) claim diffs
+against that. Without the artifact, "identical except the enumerated widths" is unfalsifiable
+and the guarantee that makes every other step cheap to review evaporates.
+
+A1 checks in **two** artifacts, not one, because a lone post-widening reference cannot be
+audited — it already contains the exception, so diffing against it cannot show whether the
+widening dragged anything else along. `prebaseline` (before the widening) is the anchor;
+`rebaseline` (after it, still no vector logic) is what later steps diff against; and the
+`prebaseline`↔`rebaseline` diff is the check that proves the exception is bounded. Tooling and
+the exact method are in `docs_caracal/v2-rebaseline/README.md`; the checker is
+`gate-f-check.py`, which is structural rather than textual because widening `dst_rtype`
+renumbers bit positions in every bundle that packs a `MicroOp`.
+
+*Rejected:* parameterizing the encodings so a non-vector build emits 2-bit rtypes. Cleaner,
+but the `RT_*`/`IQ_*` trait is consumed during `issueParams` construction before
+`Parameters` exists.
+
+**⚠ A passing gate (f) does NOT prove the `IQ_V_*` defaults exist.** `DecodeUnit` does
+`uop := io.enq.uop`, and `io.enq.uop` comes from a bundle the frontend sets `:= DontCare`.
+Without six explicit default assignments, every *scalar* uop carries three don't-care
+vector-queue routing bits into dispatch — mis-routing, not just an X in a waveform. A
+don't-care bit can elaborate bit-identically and still mis-route.
 
 ---
 
@@ -458,24 +563,26 @@ strict serialization — steps with no dependency edge in `hierarchy.yaml` may p
 
 ### Phase N — Author every nlhdl spec (Stage 1)
 
-All 49 non-blackbox nodes: 37 `new`, 12 `edit_existing`. **No RTL is generated in this phase.**
+All 58 non-blackbox nodes: 46 `new`, 12 `edit_existing`. **No RTL is generated in this phase.**
 Steps are grouped by subsystem only so the work is reviewable in chunks; N1–N7 must all complete
-before Phase R.
+before Phase R. Each node's `reqs:` list in `hierarchy.yaml` is the checklist for its spec — the
+IDs it must cite are already decided, so authoring is not also a scoping exercise.
 
 | Step | Kind | Scope |
 |---|---|---|
-| **N1** | nlhdl | `pkg/` — all seven: `VectorParams`, `VecBundles`, `VecTrace` (`new`); `MicroOp`, `ScalarOpConstants`, `BoomCoreParams`, `BoomConfigMixins` (`edit_existing`, each with `<|begin_edit_scope|>`). |
+| **N1** | nlhdl | `pkg/` — all eight: `VectorParams`, `VecBundles`, `VecTrace`, **`VtypeTable`** (`new`); `MicroOp`, `ScalarOpConstants`, `BoomCoreParams`, `BoomConfigMixins` (`edit_existing`, each with `<|begin_edit_scope|>`). |
 | **N2** | nlhdl | `vec/decode/` — `VecDecode`, `VDecode`, `VLSDecode`, `VsetDecode`, `VConfigUnit`; plus `host/DecodeUnit` (`edit_existing`). |
-| **N3** | nlhdl | `vec/rename/` (`VecRenameSpace`, `VecMapTable`, `VecFreeList`, `VecBusyTable`), `vec/regfile/` (`VecRegFile`, `VlRegFile`), `vec/issue/` (`VecIssueUnit`, `VecIssueSlot`). |
+| **N3** | nlhdl | `vec/rename/` (4), `vec/regfile/` (`VecRegFile`, **`VecRegFileBank`**, `VlRegFile`), `vec/issue/` (`VecIssueUnit`, `VecIssueSlot`, **`VecGroupReady`**, **`VecStoreDgenPath`**). |
 | **N4** | nlhdl | `vec/VecPipeline`; `host/BoomCore`, `host/Rob`, `host/ALUUnit`, `host/ALUExeUnit`, `host/FpPipeline` (all `edit_existing`). |
-| **N5** | nlhdl | All 14 `vec/lsu/` specs — including `VecCrossLsuSnoop` and `VecSquashUnit`, whose RTL does not land until Phases G and E8 — plus `host/LSU` (`edit_existing`). |
-| **N6** | nlhdl | `vec/cii/` (5 specs) + `sv/tt_cii_host_wrap` (`new`) + `sv/tt_cii_caracal_pkg` (`edit_existing`, one added enum value). |
-| **N7** | nlhdl | Sweep: `inspect-hierarchy` clean, every `hierarchy.yaml` node has a source file, every file cites its `.rst` anchor and the requirement IDs it discharges. |
+| **N5** | nlhdl | All **17** `vec/lsu/` specs — including `VecCrossLsuSnoop`, **`VecStoreForward`**, **`VecOrderHold`** and `VecSquashUnit`, whose RTL does not land until Phases G and E8 — plus `host/LSU` (`edit_existing`). |
+| **N6** | nlhdl | `vec/cii/` (**7** specs) + `sv/tt_cii_host_wrap` (`new`) + `sv/tt_cii_caracal_pkg` (`edit_existing`, one added enum value). |
+| **N7** | nlhdl | Sweep: `inspect-hierarchy` clean, every `hierarchy.yaml` node has a source file, every file cites its `.rst` anchor and every requirement ID allocated to it. |
 
-**N5 is the phase's centre of gravity** — the LSU is where v2's redesign lives, and its 15 specs
+**N5 is the phase's centre of gravity** — the LSU is where v2's redesign lives, and its 17 specs
 must be written and read as a set against `loadstore.rst`. Note that `VecCrossLsuSnoop` is
 authored here even though its RTL is Phase G: under the old plan its spec had no authoring step
-at all, which is exactly the gap that design-wide-first closes.
+at all, which is exactly the gap that design-wide-first closes. `VecGroupCopy` and `VecOrderHold`
+are the same gap one level deeper — they had no *node*, let alone an authoring step.
 
 ### Phase R — Review the complete set (Stage 2)
 
@@ -484,7 +591,7 @@ at all, which is exactly the gap that design-wide-first closes.
 | **R1** | review | Every spec against its `.rst`. Disagreement means the `.rst` wins, or the `.rst` is fixed first. |
 | **R2** | review | Every `hierarchy.yaml` edge read from both sides — same handshake, widths, back-pressure direction. |
 | **R3** | review | Design-wide invariants across all files at once: ground rule 6, the `vrf-ports` partition, the `pvtmp` rendezvous, `usingRVV` gating of every baseline delta. |
-| **R4** | review | Requirement coverage: every live req in `src/main/nlhdl/reqs/` cited by some spec or recorded as out of v2 scope. Artifact: the citation map. |
+| **R4** | review | Requirement coverage: every live req in `src/main/nlhdl/reqs/` **cited by the spec of the node it is allocated to**. Stage 0 already fixed *which* node owes what and ledgered the 97 that are out of scope; R4 checks the specs actually discharge their share, and it is the step that turns allocation into citation. Artifact: the citation map. |
 
 **Phase R is a hard gate on all of Phase A–H.** It may iterate; it may not be skipped for a
 subsystem "to unblock" its RTL.
@@ -494,7 +601,27 @@ subsystem "to unblock" its RTL.
 | Step | Kind | Scope |
 |---|---|---|
 | **A0** | measure | Baseline measurement per [§7](#7-performance-targets). Artifact: `docs_caracal/v2-baseline.md`. **Blocks gate (h) everywhere; do this first — it needs no nlhdl and may run during Phase N.** |
-| **A2** | Chisel | Generate the four `new`/`edit_existing` Caracal packages (specs from **N1**) + apply the baseline package deltas. Add Chipyard configs `MediumBoomV4VectorConfig`, `MegaBoomV4VectorConfig`. |
+| **A1** | reference | **Gate (f) re-baselined reference** per [§6a](#6a-gate-f-is-a-bounded-exception-not-bit-identity-decision-d1) and decision D1. Artifact: `docs_caracal/v2-rebaseline/`. Two halves — `./regen.sh prebaseline` needs no nlhdl and **may run during Phase N** (done); `./regen.sh rebaseline` runs **immediately after A2** and the `--pre`/`--post` diff between them is what discharges D1. **Blocks gate (f) everywhere.** |
+| **A2** | Chisel | Generate the four `new` Caracal packages `VectorParams`, `VecBundles`, `VecTrace`, **`VtypeTable`** (specs from **N1**) + apply the baseline package deltas. Add Chipyard configs `MediumBoomV4VectorConfig`, `MegaBoomV4VectorConfig`. |
+
+**A1 is what makes gate (f) mean something.** A0 and A1 are the same shape — a checked-in
+artifact that a later gate compares against, produced before the code it judges exists. The
+`prebaseline`↔`rebaseline` diff must report *every* difference as the enumerated encoding
+widths and nothing else; that single check is the evidence that the unavoidable `RT_*`/`IQ_SZ`
+widening is bounded. Every later vectors-off build is then checked against `rebaseline`.
+See `docs_caracal/v2-rebaseline/README.md` for what the check does and does not prove — in
+particular it does **not** discharge A23 (don't-care `IQ_V_*` routing bits elaborate
+bit-identically and still mis-route).
+
+*Discovered while generating the A1 anchor, and it blocks all of Phase A:* the working tree
+does not compile. `generators/chipyard/.../BoomConfigs.scala` is committed against the M1/M2
+boom (`9f67941b`, which has `src/main/scala/v4/vec/`) and calls `WithVector`,
+`boom.v4.vec.common.VectorParams`, `enableVectorArith`, `dcacheArbiterMode` and
+`WithBoomDebugHarness` — none of which exist on the v2 branch `Caracal/addvector2`
+(`2d7cf02e`). `WithBoomDebugHarness` is mixed into the *plain* V4 configs too, so **no** config
+currently elaborates, vector or not. A1's `regen.sh` works around this by neutralizing those
+mixins temporarily; **A2 must fix it for real**, since it is A2 that re-adds the Chipyard
+vector configs.
 
 **Package notes** (authored in N1, generated in A2).
 `MicroOp` gains `is_vec`; `lvs1/lvs2/lvs3/lvd/lvm`; `pvs1/pvs2/pvs3/pvdest/stale_pvdest/pvm/pvtmp/pvl`
@@ -538,8 +665,8 @@ mis-sized PRN group. The LMUL table is constrained by `VLMAX ≥ 1`.
 | Step | Kind | Scope |
 |---|---|---|
 | **C2** | Chisel | Generate the rename space and its three internals (specs from **N3**). |
-| **C3** | Chisel | Generate `VecRegFile` (96 PRNs, **9R/3W**, banked 4×64b, per-byte write mask, single-cycle read with write-forwarding) and `VlRegFile`. |
-| **C4** | Chisel | Generate `VecIssueUnit` ×3 + `VecIssueSlot`. |
+| **C3** | Chisel | Generate `VecRegFile` (96 PRNs, **9R/3W**, per-byte write mask) + **`VecRegFileBank`** ×4 (VLEN/4 = 64b of flops each, own decoder per port, single-cycle read with write-forwarding) and `VlRegFile`. |
+| **C4** | Chisel | Generate `VecIssueUnit` ×3 + `VecIssueSlot` + **`VecGroupReady`** ×4 per slot + **`VecStoreDgenPath`** (store slots only). |
 
 **Notes.**
 `VecRenameSpace` is **one definition, two instances** — BOOM already does this for INT and FP
@@ -615,7 +742,7 @@ implementation, because that seam is what rule 6 depends on.
 | **E3** | Chisel | `VecScalarOperandRead` ×2, `VecIdxGen`, `VecMaskStream`. |
 | **E4** | Chisel | `VecElemAgen` ×2 (fill, SSI) and `VecRangeAgen` ×2 (fill, US). |
 | **E5** | Chisel | `VecBeatExpander` ×2 (drain, coalescing) + `VecDcacheArbiter`. **P1 and P2 land here.** |
-| **E6** | Chisel | `VecLoadCoalescingBuffer` + `VecDgen`. **P5 lands here.** |
+| **E6** | Chisel | `VecLoadCoalescingBuffer` + `VecDgen` + **`VecGroupCopy`**. **P5 lands here.** |
 | **E7** | Chisel | `VecLsu` container + the `LSU` delta. **Gate (e2) must pass. P3, P4, P7 land here.** |
 | **E8** | Chisel | `VecSquashUnit`. |
 
@@ -631,7 +758,10 @@ such failure mode; they are reserved in program order for the *other* reason, sq
 by bring-up, not design, and are not optional:
 - Do not start, and do not emit, an element access whose **mask** bit is not yet staged.
 - Same for the **index** entry.
-- `VecIdxGen` serializes the index vector into per-element **signed** offsets.
+- `VecIdxGen` serializes the index vector into per-element **unsigned** (zero-extended)
+  offsets. *(Corrected: RVV 1.0 indexed offsets are unsigned — spike reads them as
+  `uint8_t`/`uint16_t`/`uint32_t`. Signed extension would diverge against the Whisper
+  cosim reference on any index with the top EEW bit set.)*
 - Complete by **total bytes** (`vl << eew`), handling a partial final member.
 
 > **⚠ Bugs to not re-introduce (all four from the M1 log).**
@@ -659,6 +789,19 @@ the DTLB like any other access — bare-physical makes cross-queue disambiguatio
 overlapping the load's memory latency, replacing the serial `sCopyRd`/`sCopyWr` prologue. Only
 members that actually contain inactive lanes are pre-loaded.
 
+**`VecGroupCopy` is the `VL = 0` case, and it is *not* the masked/tail case above.** Only an
+immediate-AVL `vset` resolves VL in the front end; for every other form a `VL = 0` op reaches
+issue with `pvl` resolving to 0. Its `pvdest` group is already renamed and its ROB entry cannot
+commit until that group is architecturally correct — but with `VL = 0` the LSU executes no
+element, so nothing would otherwise write it. With `vta = 0` it does one VLEN-wide copy per group
+member from `stale_pvdest` and completes with a single group-done; with `vta = 1` there is nothing
+to preserve, so it takes the complete-without-execute path and emits group-done immediately.
+It borrows the Load Unit's VRF ports and adds **none**, so a **strict-priority** mux gives an
+active load drain the ports unconditionally — the copy is catch-up work with no consumer waiting
+on latency, so it is the correct loser. Routing the *ordinary* masked/partial-tail case through
+here instead of the LCB's overlapped `R2` pre-load would resurrect exactly the serial copy
+prologue v2 exists to delete.
+
 `LSU` delta: expose the `VecLsuCoreIO` tap; route vector element addresses through the LCAM in
 **both** directions; fold `vec_lsu_empty` into `fencei_rdy`
 (`io.core.fencei_rdy := !stq_nonempty && io.dmem.ordered && vec_lsu_empty` — the old head-side
@@ -683,9 +826,9 @@ stale `pvdest` corrupts whatever now owns that PRN.
 | Step | Kind | Scope |
 |---|---|---|
 | **F2** | SV | Generate `tt_cii_host_wrap.sv` (specs from **N6**); apply the `tt_cii_caracal_pkg` delta. Bind via `HasBlackBoxPath` against `src/main/sv/v4/**`. Verify the tb still passes. |
-| **F3** | Chisel | `VecCiiTagTable` + `VecCiiHost` skeleton; issue path (`IQ_V_ALU` → Issue channel), credit-metered. |
+| **F3** | Chisel | `VecCiiTagTable` + `VecCiiHost` skeleton + **`VecCiiIssue`** — the issue path (`IQ_V_ALU` → Issue channel): tag allocation, the full issue packet, credit-metered `fu_types`. |
 | **F4** | Chisel | `VecCiiOperandServer` — Src-Request → VRF read (`R5`–`R8`) / scalar from side-table → Src-Data, **in the exact order requests arrived** (a small ordering FIFO covers the registered 1-cycle VRF read). |
-| **F5** | Chisel | `VecCiiWriteback` — beats by `dst_kind` to VRF `W2` / INT RF / FP RF; accrue `vxsat`/`fflags`; on `last`, one group-done. **Gate (e4) must pass.** |
+| **F5** | Chisel | `VecCiiWriteback` — beats by `dst_kind` to VRF `W2` / INT RF / FP RF — plus **`VecCiiComplete`**: accrue `vxsat`/`fflags`, and on `last` one group-done + one ROB clear + the tag free. **Gate (e4) must pass.** |
 | **F6** | Chisel | `VecCiiFlush` — the drain-on-flush contract. |
 | **F7** | Chisel | Segmented-LS transpose half: the `is_shared` two-half op, `pvtmp` rendezvous, and the six-step chain in `issue.rst` `shared-store-chain`. |
 
@@ -716,9 +859,9 @@ which put instruction decoding in the adapter and made the diverging case unrepr
 
 | Step | Kind | Scope |
 |---|---|---|
-| **G1** | Chisel | `VecCrossLsuSnoop`: US **range-overlap** check (one per instruction) + SSI **per-element** search, both directions. |
-| **G2** | Chisel | ST→LD ordering via the existing `order_fail` replay path; the SSI→SSI serialization edge case. |
-| **G3** | Chisel | LD→ST forwarding out of the vector store **data** queues. **Gate (e3) must pass.** |
+| **G1** | Chisel | `VecCrossLsuSnoop`: US **range-overlap** check (one per instruction) + SSI **per-element** search, both directions. Ordering searches are deliberately mask-**oblivious**. |
+| **G2** | Chisel | ST→LD ordering via the existing `order_fail` replay path; **`VecOrderHold`** for the non-forwarding overlap (SSI→SSI, US→SSI) — BOOM's existing mem-dep predictor plus the load's existing per-load store-dependency block, released by the older store's element cursor completing, with the arbiter suppressing a held load's LCAM/D$ grant. |
+| **G3** | Chisel | **`VecStoreForward`** — LD→ST forwarding out of the vector store **data** queues, qualified by the store's active byte mask, youngest matching SSI element wins, vector→vector only when both sides are unit-stride. **Gate (e3) must pass.** |
 | **G4** | Chisel | Real `vleff` fault-trim + `vstart` handling. |
 | **G5** | Chisel | Mega: wide vector cache port + `dual-dynamic` arbiter mode. |
 
@@ -760,6 +903,40 @@ serializing it would be a large and gratuitous cost.
 
 ---
 
+## 9a. Open spec defect: `execution.rst` still specifies the superseded AGEN units
+
+Stage 0 found one genuine **plan-vs-corpus conflict**, and it is in the spec, not the plan.
+`execution.rst` still describes the inherited bobtail AGEN structure by name, so two live
+requirements mandate module *identity* that [§2](#2-what-went-wrong-and-what-v2-does-differently)
+deletes:
+
+| ID | Statement | Why it cannot be allocated |
+|---|---|---|
+| `spec-agen.a8` | "The design must reuse the Load/Store Packer, Load/Store Skipper and Load/Store Walker AGEN units from bobtail." | Those six modules (2110 lines) are exactly what v2 replaces with `VecElemAgen` / `VecRangeAgen` / `VecBeatExpander`, cut by pipeline position instead of by the direction × class cross-product whose duplication had already produced divergent mask support between the load and store Packers. |
+| `spec-agen.c11` | "The Skipper must emit fake packets for skipped regions." | Fake packets existed so a hardcoded member walk could account for skipped elements. v2 completes by **total bytes** (`vl << eew`), so there is nothing to account for — and the requirement contradicts `spec-agen.e7`, "a masked-off element must produce no `nOP.v`", which *is* allocated. |
+
+Everything else in the `agen` family **is** allocated, because the behaviours survive the
+rename — the units moved, the obligations did not:
+
+| `execution.rst` unit | v2 node | Requirements carried over |
+|---|---|---|
+| Packer (stage 2, just-in-time at the queues) | `VecBeatExpander` | `b8`, `c1`–`c3`, `c23`; `lsu.c5`, `c6`, `d6`, `j2`, `k8` |
+| Skipper (mask-skip, priority encoder, power-of-2 jumps) | `VecElemAgen` + `VecMaskStream` | `c6`–`c10`, `c24`, `e1`–`e14` |
+| Walker (indexed, per-element index lookahead) | `VecElemAgen` + `VecIdxGen` | `c14`, `c16`–`c20`, `c27`–`c29` |
+| Unit-stride single `nOP.v` | `VecRangeAgen` | `b6`, `b7`, `e13` |
+| vDGEN | `VecDgen` | all of `d*` |
+
+Note that `spec-agen.c26` — "the AGEN generator must be selected by access class rather than by
+direction" — is not merely compatible with v2, it is v2's central structural claim.
+
+**Owner and next step:** amend `execution.rst` to describe the fill/drain split, then re-run
+`/spec-to-reqs extract` so `agen.a8` and `agen.c11` are retired with a tombstone naming their
+successors. Until that lands they sit in the map's `superseded-ovi-agen` ledger entry. **Do not
+implement them**, and do not quietly drop them either — a ledgered conflict is reviewable, a
+deleted requirement is not.
+
+---
+
 ## 10. Cross-cutting risks
 
 | Risk | Severity | Mitigation |
@@ -777,12 +954,31 @@ serializing it would be a large and gratuitous cost.
 
 ## 11. File-touch summary
 
-**Design artifacts (new):** `src/main/nlhdl/hierarchy.yaml` + **49** `.nlhdl.*` files:
-`pkg/` 7, `host/` 7, `vec/` 1, `vec/decode/` 5, `vec/rename/` 4, `vec/issue/` 2,
-`vec/regfile/` 2, `vec/lsu/` 14, `vec/cii/` 5, `sv/` 2.
+**Design artifacts:** `src/main/nlhdl/hierarchy.yaml` and `src/main/nlhdl/reqs/` (both done)
++ **58** `.nlhdl.*` files: `pkg/` 8, `host/` 7, `vec/` 1, `vec/decode/` 5, `vec/rename/` 4,
+`vec/issue/` 4, `vec/regfile/` 3, `vec/lsu/` 17, `vec/cii/` 7, `sv/` 2.
 
-**Generated Chisel (new):** **36** nodes under `src/main/scala/v4/vec/generated/` —
-33 modules + 3 packages (`VectorParams`, `VecBundles`, `VecTrace`).
+**Generated Chisel (new):** **45** nodes under `src/main/scala/v4/vec/generated/` —
+41 modules + 4 packages (`VectorParams`, `VecBundles`, `VecTrace`, `VtypeTable`).
+
+**Requirement allocation** (the map is authoritative; see `hierarchy.yaml`):
+
+| | Count |
+|---|---|
+| Live requirements in `src/main/nlhdl/reqs/` (10 families) | 1162 |
+| Allocated to a node's `reqs:` | 1065 |
+| In `reqs_out_of_scope:` with a reason | 97 |
+| **Unallocated** | **0** |
+
+The 97 ledgered fall into nine groups, and the two that matter for planning are
+**`vpu-internal`** (26 + 1 — the coprocessor behind the CII, which v2 writes none of) and
+**`vpu-decoder-cross-team`** (7 — which slots the VPU pulls, including emitting `STALE_VD`;
+the risk table's cross-team item). The rest are "unchanged from BOOM v4" obligations landing
+on files **no node targets** (the front end, `rename-stage.scala`, the scalar EUs, the memory
+system) plus rocket-chip's `CSRFile`. Where such a requirement lands on a file that *is* an
+`edit_existing` target it is **allocated**, not ledgered: that node's
+`<|begin_edit_scope|>` must-not-regress list is the artifact discharging it, and gate (f) is
+the check. This is why `Rob` and `LSU` carry more requirements than their line budgets suggest.
 
 **Baseline Chisel (`edit_existing`, targeted deltas only):**
 

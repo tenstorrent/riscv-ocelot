@@ -97,9 +97,15 @@ vector CSRs — ``vstart``, ``vxrm``, ``vxsat``, ``vcsr``, ``vl``, ``vtype``, an
 ``vlenb`` — live in the normal CSR file and are updated precisely at commit (``vstart``/``vxrm``/
 ``vxsat`` are read from the CSR file at execute, not snapshotted in the uOP).
  
-**Where each vset executes.** Only ``vsetivli`` is **front-end only**: both VTYPE and AVL are
-immediate, so the VCFG resolves it at decode in a single cycle — updating the ``vtype`` mirror and
-computing ``VL = min(uimm, VLMAX)`` — with **no back-end issue slot or EU**.
+**Where each vset executes.** A ``vsetivli`` **with ``rd == x0``** is **front-end only**: both
+VTYPE and AVL are immediate, so the VCFG resolves it at decode in a single cycle — updating the
+``vtype`` mirror and computing ``VL = min(uimm, VLMAX)`` — with **no back-end issue slot or EU**.
+
+.. note:: **Corrected.** An earlier revision said "only ``vsetivli`` is front-end only" without
+   qualification. That cannot hold for ``vsetivli`` with ``rd != x0``: ``rd`` must receive the new
+   ``vl``, and there is no front-end integer-register-file write port. That case is therefore
+   routed down the ALU path uniformly with ``vsetvli``, which keeps ``is_vl_producer``
+   single-meaning at writeback at the cost of the ALU needing an immediate AVL source.
 
 .. important::
 

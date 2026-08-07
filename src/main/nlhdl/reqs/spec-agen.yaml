@@ -603,20 +603,30 @@ reqs:
       anchor: vector-dgen
       heading: "Vector DGEN"
       quote: >
-        The st_vdgen will read from the vector register file for source vector operands or the
-        FP/INT register file for scalar source operands
+        The st_vdgen reads store data from the vector register file only: RVV store data is
+        always the vector operand ``vs3``.
+    notes: >
+      Quote refreshed after the execution.rst amendment for decision D4; the obligation itself
+      is unchanged. The amendment narrowed the paragraph to vector-only reads, which strengthens
+      this requirement rather than altering it.
 
-  - id: spec-agen.d3
+  - id: spec-agen.d16
     kind: interface
     statement: >
-      The store vDGEN must read scalar source operands from the FP/INT register file.
+      The store address-generation path must read a store's scalar base and stride operands from
+      the integer register file.
     source:
       file: docs_caracal/src/execution.rst
       anchor: vector-dgen
       heading: "Vector DGEN"
       quote: >
-        The st_vdgen will read from the vector register file for source vector operands or the
-        FP/INT register file for scalar source operands
+        the scalar operands of a store are ``rs1`` (base address) and ``rs2`` (stride), both
+        integer, and both read by st_vagen_1 rather than by st_vdgen.
+    notes: >
+      Reissued in place of retired spec-agen.d3, which named the wrong subject (the vDGEN) and
+      the wrong register file (FP/INT). Both changed, so the obligation is a different one and
+      takes a new ID rather than reusing d3. Any RTL tag still citing d3 must move here; that is
+      a gen-nlhdl action, since this skill never writes tags.
 
   - id: spec-agen.d4
     kind: function
@@ -1012,11 +1022,22 @@ coverage:
   - file: docs_caracal/src/execution.rst
     heading: "Vector DGEN"
     anchor: vector-dgen
-    reqs: [spec-agen.d1, spec-agen.d2, spec-agen.d3, spec-agen.d4, spec-agen.d5,
+    reqs: [spec-agen.d1, spec-agen.d2, spec-agen.d4, spec-agen.d5,
            spec-agen.d6, spec-agen.d7, spec-agen.d8, spec-agen.d10, spec-agen.d11,
-           spec-agen.d12, spec-agen.d13, spec-agen.d14, spec-agen.d15]
+           spec-agen.d12, spec-agen.d13, spec-agen.d14, spec-agen.d15, spec-agen.d16]
 
 retired:
+  - id: spec-agen.d3
+    statement: >
+      The store vDGEN must read scalar source operands from the FP/INT register file.
+    retired_because: >
+      execution.rst "Vector DGEN" was corrected under decision D4 and now states that st_vdgen
+      reads the vector register file ONLY. The old text cited ``vfmul.vf`` as an example of a
+      store DGEN reading an FP scalar, but ``vfmul.vf`` is vector-scalar floating-point
+      arithmetic dispatched to the CII and is not a store; no RVV store form takes an FP scalar
+      operand at all. The integer half was also mis-attributed: a store's ``rs1`` base and
+      ``rs2`` stride are read by st_vagen_1, not by st_vdgen. Both the subject and the register
+      file were wrong, so this is retired rather than narrowed. Superseded by spec-agen.d16.
 
   - id: spec-agen.e3
     statement: >

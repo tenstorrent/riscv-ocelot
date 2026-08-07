@@ -73,9 +73,28 @@ opportunistically at execute. That is a correctness requirement, not a tuning ch
   — they cannot be streamed/freed mid-instruction. The worst-case single-instruction element count
   with ``VLEN=256`` is ~256 element-accesses (``SEW=8`` × ``LMUL=8`` = 256; segmented
   ``NF*EMUL ≤ 8`` also caps at 256).
-- **Loads may stream.** A load completes out of the Load Coalescing Buffer (:ref:`load-coalesce`)
-  and does not gate on commit, so the ``ld_SSI_ADDR_Q`` may be drained in waves and a load whose
-  active element count exceeds its reservation is streamed through it.
+- **Loads may stream, and they deliberately UNDER-RESERVE so that they do** (decision D9/D10).
+  A load completes out of the Load Coalescing Buffer (:ref:`load-coalesce`) and does not gate on
+  commit, so it reserves for **squashability**, not deadlock avoidance — unlike a store, which has
+  the deadlock exposure described above and must reserve the full worst case.
+
+  A load therefore reserves ``min(worstCase, ldResvMembers * VLEN/EEW)`` entries, with
+  ``ldResvMembers`` defaulting to **4**, and a load whose active element count exceeds that
+  reservation is streamed through ``ld_SSI_ADDR_Q`` in waves.
+
+  .. note:: **Why an explicit quantum, and why it is not the worst case.** With a worst-case
+     reservation this clause is *unreachable*: ``worstCase = EMUL * VLEN/EEW = LMUL * VLEN/SEW =
+     VLMAX >= VL >= active count``, so the active count can never exceed the reservation and the
+     streaming path would be dead code. Under-reserving is deadlock-free because
+     :ref:`ssi-queues` gives each region **within-region circular reuse and never an extension
+     past its tail** — an older load's region sits ahead of a younger one's, drains first, and
+     refills into its *own* region, so no younger reservation can block it; and squashability
+     survives because the region is still contiguous and program-ordered, merely smaller.
+     The quantum is EEW-relative rather than a flat entry count because the AGEN produces one
+     element per cycle while the drain consumes up to ``lsuWidth`` per cycle, so too small a
+     reservation lets the AGEN starve the drain. At 512 entries, ``EMUL=8``, ``SEW=8``:
+     ``ldResvMembers`` of 2 gives 8 loads in flight, 4 gives 4, and **8 or more collapses back to
+     the worst case** (since ``EMUL <= 8`` always) and makes the mechanism dead again.
 
 .. danger::
 
@@ -302,6 +321,20 @@ between scalar and vector memory ops is maintained in **both** directions:
 - **A vector store address is withheld from disambiguation until its data is captured.** An address
   queue entry is not presented to the LCAM until its corresponding ``st_*_DATA_Q`` entry is valid, so
   a forwarding match can never hit a store whose data has not yet been captured.
+
+.. warning:: **"Searched against the vector store address queues" is not a broadcast compare.**
+   ``st_SSI_ADDR_Q`` is a 512-entry ``SyncReadMem`` with no per-entry age, so a 512-way
+   comparator array is neither synthesizable nor intended. The search is **two-tier**:
+
+   1. a per-STQ-entry **conservative address bound** (lo/hi) maintained as elements are
+      generated — a strict superset, so it yields no false negatives and is the correctness
+      backstop; plus
+   2. **exact** comparators over all 16 ``st_US_ADDR_Q`` entries and a bounded window of the most
+      recently presented SSI element addresses (``ssiSnoopWindow``, default 16, legal at 0).
+
+   A tier-1 hit with no tier-2 candidate falls into |boom|'s existing "matched a store I cannot
+   forward from, so sleep and retry" path, which is why ``ssiSnoopWindow`` is a pure performance
+   knob and setting it to 0 is correct-but-slow rather than wrong.
 - **Scalar LD/ST vs. scalar ST/LD.** Unchanged from |boom|.
 
 Which pairs forward:
@@ -361,8 +394,15 @@ The hold reuses existing |boom| machinery rather than adding a structure:
 
 - **Known** — an LCAM match between an already-generated store element address (or the store's US
   range) and the load's address.
-- **Predicted** — |boom|'s existing memory-dependence predictor, the same one reused for
-  memory-dependency speculation below.
+- **Predicted** — the outcome of |boom|'s existing memory-dependence *machinery*, consumed on a
+  port rather than re-implemented.
+
+  .. warning:: **Corrected.** BOOM v4 as vendored here has **no trained store-set predictor** —
+     there is no SSIT and no LFST. What exists is match-driven blocking in ``lsu.scala``: an
+     ``ldst_addr_matches`` hit that fails to forward sets ``block_load_wakeup``, backed by a
+     15-cycle ``store_blocked_counter``. A generator told to "use BOOM's memory-dependence
+     predictor" will hunt for a table that is not there. The hold consumes that existing outcome
+     on an input port, so if a trained predictor is added later it drives the same port unchanged.
 - **Held by** — the younger load's existing per-load store-dependency block on the older vector store
   entry; the held load is simply not granted the LCAM / D$ port by the arbiter
   (:ref:`dcache-arbiter`). No new queue or state is added.

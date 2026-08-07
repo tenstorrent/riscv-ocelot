@@ -136,18 +136,22 @@ reqs:
   - id: spec-issue.b2
     kind: function
     statement: >
-      A vector load or store must not dispatch unless its target address queue has room for
-      its worst-case active element count.
+      A vector store must not dispatch unless its address and data queues have room for its
+      worst-case active element count.
     source:
       file: docs_caracal/src/issue.rst
       anchor: vec-queue-reservation
       heading: "Vector element-queue reservation (in program order)"
       quote: >
-        A vector load/store may not dispatch
-        unless its target address queue (and, for stores, data queue) has room for its **worst-case active
-        element count**, computed from ``EMUL`` and ``EEW``
+        **A vector store** may not dispatch unless its address queue AND its data queue have room
+        for its **worst-case active element count**, computed from ``EMUL`` and ``EEW``
     notes: >
-      The "and, for stores, data queue" half of the same sentence is spec-lsu.d13.
+      NARROWED TO STORES by decision D9/D10; the load half is now spec-issue.b9. The previous
+      wording applied the worst-case rule to both directions, which made the load-streaming clause
+      spec-lsu.b11 unreachable, since worstCase = EMUL * VLEN/EEW = VLMAX >= VL >= active count.
+      The store rule cannot be relaxed: the four-step deadlock argument in loadstore.rst
+      `ssi-queues` depends on the oldest store already holding its full capacity.
+      The data-queue half is also spec-lsu.d13.
 
   - id: spec-issue.b3
     kind: function
@@ -159,12 +163,31 @@ reqs:
       anchor: vec-queue-reservation
       heading: "Vector element-queue reservation (in program order)"
       quote: >
-        has room for its **worst-case active
-        element count**, computed from ``EMUL`` and ``EEW`` — both known at decode
+        for its **worst-case active element count**, computed from ``EMUL`` and ``EEW`` — both
+        known at decode
     notes: >
       Both EMUL and EEW are known at decode, so the count needs no VL. The parenthesised
       worked example (SEW=8, LMUL=8 at VLEN=256 giving 256 elements) is illustrative; the
       per-configuration element count itself is spec-lsu.b15.
+
+  - id: spec-issue.b9
+    kind: function
+    statement: >
+      A vector load must reserve min(worstCase, ldResvMembers * VLEN/EEW) element-queue entries at
+      dispatch.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: vec-queue-reservation
+      heading: "Vector element-queue reservation (in program order)"
+      quote: >
+        **A vector load** reserves ``min(worstCase, ldResvMembers * VLEN/EEW)`` entries, with
+        ``ldResvMembers`` defaulting to **4**, and streams the remainder in waves.
+    notes: >
+      Added by decision D9/D10 as the load half of the split described in spec-issue.b2. The
+      default of 4 is stated by the spec, so it is part of the requirement. A load reserves for
+      squashability, not deadlock avoidance — it completes out of the LCB without gating on commit
+      — so it has no deadlock exposure to protect. The same obligation is stated from the LSU side
+      as spec-lsu.b18, and the store counterpart as spec-lsu.b19.
 
   - id: spec-issue.b4
     kind: function
@@ -1622,6 +1645,86 @@ reqs:
 
   # --- i: single-stage scheduling invariants ----------------------------------
 
+  - id: spec-issue.g35
+    kind: function
+    statement: >
+      An IQ_V_LOAD or IQ_V_ALU entry must not be granted until its stale_pvdest group is ready.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        An ``IQ_V_LOAD`` or ``IQ_V_ALU`` entry must
+        therefore not be granted until its ``stale_pvdest`` group is ready.
+    notes: >
+      stale_pvdest is an IMPLICIT source: no source field of the instruction names it, but an
+      IQ_V_LOAD reads it for the LCB's R2 undisturbed-lane pre-load under vta=0/vma=0, and an
+      IQ_V_ALU reads it whenever the coprocessor pulls the STALE_VD slot. Age-ordered issue does
+      not make this redundant — the queues grant the oldest READY entry, not the oldest COMPLETE
+      one — and the failure is silent, since the preserved lanes would instead hold whatever the
+      free list last left in that PRN.
+
+  - id: spec-issue.g36
+    kind: interface
+    statement: >
+      A vector issue slot must match stale_pvdest against the vector wakeup network.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        It is matched on the **vector**
+        wakeup network exactly as ``pvs1``/``pvs2``/``pvs3``/``pvm`` are.
+    notes: >
+      No new network is added; stale_pvdest rides the existing vector wakeup network on the same
+      terms as the encoded source groups.
+
+  - id: spec-issue.g37
+    kind: structure
+    statement: >
+      An IQ_V_STORE slot must not carry a stale_pvdest matcher.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        ``IQ_V_STORE`` carries no such
+        matcher: a store has no vector destination, so it has no stale group.
+
+  - id: spec-issue.g38
+    kind: structure
+    statement: >
+      The stale_pvdest readiness match must be per member rather than a single aggregate busy bit.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        A single aggregate busy
+        bit cannot express "waiting on the third of eight", and one group-done cannot clear it
+        correctly.
+    notes: >
+      stale_pvdest may span up to MAX_MEMBERS producers — an LMUL=1 OP.v writing v0 followed by an
+      LMUL=8 OP.v renaming v0-v7 gives a stale group installed by up to eight instructions. Same
+      argument as the per-member matching required for pvs* (spec-issue.g18).
+
+  - id: spec-issue.g39
+    kind: function
+    statement: >
+      Every IQ_V_ALU entry with a vector destination must wait on stale_pvdest readiness.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        Every ``IQ_V_ALU`` entry with a
+        vector destination must therefore wait on ``stale_pvdest`` readiness, including the ops that
+        will never pull it.
+    notes: >
+      Deliberately conservative: whether the coprocessor pulls STALE_VD is the VPU decoder's
+      decision, the issue packet carries no hint of it, and no back-channel exists. The host cannot
+      narrow the gate, so it waits for every vector-destination CII op.
+
 coverage:
 
   # issue.rst has no assignments block in families.yaml, so the legacy rule applies and all
@@ -1644,7 +1747,8 @@ coverage:
     heading: "Vector element-queue reservation (in program order)"
     anchor: vec-queue-reservation
     reqs: [spec-issue.b1, spec-issue.b2, spec-issue.b3, spec-issue.b4,
-           spec-issue.b5, spec-issue.b6, spec-issue.b7, spec-issue.b8]
+           spec-issue.b5, spec-issue.b6, spec-issue.b7, spec-issue.b8,
+           spec-issue.b9]
 
   - file: docs_caracal/src/issue.rst
     heading: "CII Shared Instruction Scheduling"
@@ -1694,7 +1798,9 @@ coverage:
            spec-issue.g21, spec-issue.g22, spec-issue.g23, spec-issue.g24, spec-issue.g25,
            spec-issue.g26, spec-issue.g27, spec-issue.g28, spec-issue.g29, spec-issue.g30,
            spec-issue.g31,
-           spec-issue.g32, spec-issue.g33, spec-issue.g34]
+           spec-issue.g32, spec-issue.g33, spec-issue.g34,
+           spec-issue.g35, spec-issue.g36, spec-issue.g37, spec-issue.g38,
+           spec-issue.g39]
 
   - file: docs_caracal/src/issue.rst
     heading: "VL delivery"

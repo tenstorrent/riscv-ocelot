@@ -59,6 +59,28 @@ Once vector load store instructions are issued from the ``IQ_V_LOAD``/``IQ_V_STO
 The vector AGEN stage contains the load vAGEN, store vAGEN/vDGEN. Vector OP.v's issued by 
 the CII IQ are directly forwarded to the co-processor via the CII interface.
 
+.. warning:: **Superseded (Caracal v2).** This section still describes the inherited bobtail
+   Load/Store Packer, Skipper and Walker units. v2 **deletes all six** (2110 lines, whose
+   direction x class duplication had already produced divergent mask support between the load and
+   store Packers, forcing masked stores onto the slower Skipper as a workaround) and replaces them
+   with three units cut **by pipeline position, not by direction**:
+
+   * ``VecElemAgen`` — fill side, SSI (strided / indexed / segmented): one element address per
+     *active* element. Absorbs both the Skipper and the Walker, which differ only in where the
+     address comes from, not in what they emit.
+   * ``VecRangeAgen`` — fill side, unit-stride: exactly ONE range entry per instruction.
+   * ``VecBeatExpander`` — **drain** side: coalesces contiguous elements into D$-width accesses
+     just-in-time. The previous attempt put the Packer on the *fill* side, so nothing coalesced
+     late and every access was one 64-bit beat per element.
+
+   Direction is a **parameter**, so each agen is instantiated twice and the two directions never
+   arbitrate — the load-priority mux is what silently dropped store grants. Every *behavioural*
+   obligation below survives and is allocated to whichever unit now performs it; only the two
+   requirements that mandate the superseded module **identity** are retired. The skip is
+   additionally **class-conditional** — strided/segmented only, never indexed — because
+   ``VecIdxGen``'s per-element handshake pulses once per element *including masked-off ones*, so
+   a power-of-2 skip and a one-element-at-a-time indexed walk cannot both hold on that path.
+
 We reuse the Load/StorePacker, Load/StoreSkipper, Load/StoreWalker AGEN units from bobtail.
 
 **The generator is selected by access class, not by direction.** The three rules below hold
@@ -157,9 +179,17 @@ all of the effective nOP.v *just-in-time* at the load/store queues in the Unifie
 Vector DGEN
 ~~~~~~~~~~~
 
-st_vdgen for vector stores data generation works along side st_vagen_1. The st_vdgen will read from the
-vector register file for source vector operands or the FP/INT register file for scalar source operands
-, for instance vfmul.vf. 
+st_vdgen for vector stores data generation works along side st_vagen_1. The st_vdgen reads store data
+from the vector register file only: RVV store data is always the vector operand ``vs3``.
+
+.. note:: **Corrected (decision D4).** An earlier revision of this paragraph said st_vdgen may
+   also read "the FP/INT register file for scalar source operands, for instance ``vfmul.vf``".
+   That is wrong on both counts. ``vfmul.vf`` is a vector-scalar *floating-point multiply* —
+   arithmetic, dispatched to the CII — and is not a store at all. **No RVV store form takes an
+   FP scalar operand**: store data is always ``vs3``, and the scalar operands of a store are
+   ``rs1`` (base address) and ``rs2`` (stride), both integer, and both read by
+   st_vagen_1 rather than by st_vdgen. The store-side FP read port has therefore been deleted.
+
 
 
 For strided, indexed, and segmented (SSI) load/stores, st_vdgen may read an entire vPRN and alongside

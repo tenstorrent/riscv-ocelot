@@ -30,11 +30,28 @@ Vector element-queue reservation (in program order)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Dispatch acquires one more thing for a vector memory ``OP.v``: **capacity in the vector element
-queues**, reserved in program order alongside the LDQ/STQ slot. A vector load/store may not dispatch
-unless its target address queue (and, for stores, data queue) has room for its **worst-case active
-element count**, computed from ``EMUL`` and ``EEW`` — both known at decode (e.g. ``SEW=8, LMUL=8`` at
-``VLEN=256`` → ``8 × 256/8 = 256`` elements). At execute, once ``VL`` is read from the VL RF, the
-**unused portion of the reservation is released**.
+queues**, reserved in program order alongside the LDQ/STQ slot. The amount reserved differs by
+direction, and the reason is structural rather than a tuning choice:
+
+- **A vector store** may not dispatch unless its address queue AND its data queue have room for its
+  **worst-case active element count**, computed from ``EMUL`` and ``EEW`` — both known at decode
+  (e.g. ``SEW=8, LMUL=8`` at ``VLEN=256`` → ``8 × 256/8 = 256`` elements). The four-step deadlock
+  argument in :ref:`ssi-queues` depends on the oldest store already holding its full capacity.
+- **A vector load** reserves ``min(worstCase, ldResvMembers * VLEN/EEW)`` entries, with
+  ``ldResvMembers`` defaulting to **4**, and streams the remainder in waves. A load reserves for
+  **squashability**, not deadlock avoidance — it completes out of the Load Coalescing Buffer without
+  gating on commit — so it has no deadlock exposure to protect against.
+
+At execute, once ``VL`` is read from the VL RF, the **unused portion of the reservation is
+released**.
+
+.. note:: **Corrected (decision D9/D10).** An earlier revision of this paragraph applied the
+   worst-case rule to *both* directions — "a vector load/store may not dispatch unless its target
+   address queue … has room for its worst-case active element count". That made the load-streaming
+   clause in :ref:`ssi-queues` **unreachable**, because
+   ``worstCase = EMUL * VLEN/EEW = LMUL * VLEN/SEW = VLMAX >= VL >= active count``, so a load's
+   active count can never exceed a worst-case reservation. The split above is what brings that
+   clause into force. See :ref:`ssi-queues` for why under-reserving a load is deadlock-free.
 
 **The release is tail-only.** The Vector AGEN — the stage that reads ``VL`` — may return the unused
 portion **only while the reserving ``OP.v``'s region is still the youngest in that queue**, in which
@@ -154,6 +171,14 @@ All queues issue in a **single** scheduling stage; |caracal| does **not** add a 
 stage, and a non-shared vector ``OP.v`` occupies exactly one issue slot in one queue and is granted **once**,
 when all of its operands (scalar feeders and vector registers) are ready. The *selection policy*,
 however, differs by queue:
+
+.. note:: **Read "granted once" as once per EXECUTION RESOURCE, not as a literal grant count.**
+   A vector **store** slot is granted **twice** — AGEN, then DGEN — and must be
+   (:ref:`shared-store-chain`); the ``squash_grant`` / re-busy replay is likewise a second grant
+   of the same select. A generator that asserted ``PopCount(grants per slot) == 1`` over an
+   entry's lifetime would break every vector store. The obligation the "once" is protecting is
+   that an ``OP.v`` is *allocated and selected* once — there is no second issue stage — not that
+   a slot fires exactly one grant.
 
 - **``IQ_MEM``/``IQ_UNQ``/``IQ_ALU``/``IQ_FP`` and ``IQ_V_LOAD``/``IQ_V_STORE``** reuse |boom|'s
   **age-ordered collapsing** Issue Queue and its priority-encoder select unchanged — they grant the
@@ -289,6 +314,40 @@ it would turn that timing accident into a correctness dependence.
 The mask ``pvm`` is read conditionally — its busy bit only participates in ``request`` when
 the OP.v is masked (encoded ``vm`` bit clear). Unmasked ops leave ``pvm`` don't-care so a
 stale mask preg is never waited on.
+
+**``stale_pvdest`` is an implicit source operand, and it must be waited on.** A vector ``OP.v``
+with a vector destination reads its own ``stale_pvdest`` group — the group that held the
+destination architectural vreg before this ``OP.v`` renamed it (:ref:`old-vd`) — even though no
+source field of the instruction names it. An ``IQ_V_LOAD`` entry reads it when the Load Coalescing
+Buffer pre-loads undisturbed lanes on ``R2`` under ``vta = 0``/``vma = 0``
+(:ref:`load-coalesce`), and an ``IQ_V_ALU`` entry reads it whenever the coprocessor pulls the
+``STALE_VD`` source slot (:ref:`cii-operands`). An ``IQ_V_LOAD`` or ``IQ_V_ALU`` entry must
+therefore not be granted until its ``stale_pvdest`` group is ready. It is matched on the **vector**
+wakeup network exactly as ``pvs1``/``pvs2``/``pvs3``/``pvm`` are. ``IQ_V_STORE`` carries no such
+matcher: a store has no vector destination, so it has no stale group.
+
+.. danger::
+
+   **Age-ordered issue does not make this redundant.** ``stale_pvdest`` names the *previous*
+   mapping of the destination arch vregs, so its producer is always an older instruction — but the
+   vector issue queues grant the oldest **ready** entry, which is not the oldest **complete** one.
+   An older producer that has not yet emitted its group-done leaves the stale group busy while a
+   younger consumer is granted, and both the ``R2`` pre-load and the ``STALE_VD`` pull then read an
+   unwritten PRN. The failure is silent: the lanes that should have been preserved instead contain
+   whatever the free list last left in that register.
+
+**The ``stale_pvdest`` match must be per member, not an aggregate bit.** ``stale_pvdest`` may span
+up to ``MAX_MEMBERS`` producers: if an ``LMUL = 1`` ``OP.v`` writes ``v0`` and a later
+``LMUL = 8`` ``OP.v`` renames ``v0``–``v7``, the latter's stale group is the current mapping of
+eight architectural vregs, installed by up to eight different instructions. A single aggregate busy
+bit cannot express "waiting on the third of eight", and one group-done cannot clear it correctly.
+This is the same argument that forces per-member matching on ``pvs*`` above.
+
+**The ``IQ_V_ALU`` gate is deliberately conservative.** Whether the coprocessor actually pulls
+``STALE_VD`` for a given op is the VPU decoder's decision and is not visible to the host — the
+issue packet carries no hint of it, and no back-channel exists. Every ``IQ_V_ALU`` entry with a
+vector destination must therefore wait on ``stale_pvdest`` readiness, including the ops that will
+never pull it.
 
 
 .. _issue-vl-delivery:

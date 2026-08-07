@@ -311,6 +311,44 @@ reqs:
 
   # --- b: search granularity, and the store/load hold --------------------------
 
+  - id: spec-memord.a26
+    kind: structure
+    statement: >
+      A load's search against the vector store address queues must maintain a per-STQ-entry
+      conservative address bound as its correctness backstop.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        a per-STQ-entry **conservative address bound** (lo/hi) maintained as elements are
+        generated — a strict superset, so it yields no false negatives and is the correctness
+        backstop
+    notes: >
+      Added after the loadstore.rst amendment that made spec-memord.a19 implementable. A literal
+      reading of a19 implies a broadcast compare over st_SSI_ADDR_Q, which VecElemQueue
+      elaborates as a 512-entry SyncReadMem with no per-entry age — neither synthesizable nor
+      intended.
+
+  - id: spec-memord.a27
+    kind: structure
+    statement: >
+      A load's search must additionally use exact comparators over the unit-stride store address
+      queue and a bounded window of recently presented SSI element addresses.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-order
+      heading: "Memory Ordering and Disambiguation"
+      quote: >
+        **exact** comparators over all 16 ``st_US_ADDR_Q`` entries and a bounded window of the
+        most recently presented SSI element addresses (``ssiSnoopWindow``, default 16, legal at
+        0).
+    notes: >
+      A tier-1 hit with no tier-2 candidate falls into BOOM's existing "matched a store I cannot
+      forward from, so sleep and retry" path, which is why ssiSnoopWindow is a pure performance
+      knob and 0 is correct-but-slow rather than wrong. The window size and the 16 US entries are
+      stated by the spec, so they are part of the requirement.
+
   - id: spec-memord.b1
     kind: structure
     statement: >
@@ -561,17 +599,23 @@ reqs:
   - id: spec-memord.b16
     kind: structure
     statement: >
-      Overlap prediction for the hold must use |boom|'s existing memory-dependence predictor.
+      Overlap prediction for the hold must consume the outcome of |boom|'s existing
+      memory-dependence machinery on an input port.
     source:
       file: docs_caracal/src/loadstore.rst
       anchor: mem-order
       heading: "Memory Ordering and Disambiguation"
       quote: >
-        **Predicted** — |boom|'s existing memory-dependence predictor, the same one reused for
-        memory-dependency speculation below.
+        **Predicted** — the outcome of |boom|'s existing memory-dependence *machinery*,
+        consumed on a port rather than re-implemented.
     notes: >
-      The same predictor is reused for memory-dependency speculation generally
-      (spec-memord.a12); this requirement is its use as the predicted trigger for the hold.
+      Statement restated after the loadstore.rst correction. The previous wording said "must use
+      BOOM's existing memory-dependence PREDICTOR", which named a structure BOOM v4 as vendored
+      here DOES NOT HAVE — there is no SSIT and no LFST. What exists is match-driven blocking in
+      lsu.scala: an ldst_addr_matches hit that fails to forward sets block_load_wakeup, backed by
+      a 15-cycle store_blocked_counter. Consuming the outcome on a port means a trained predictor
+      added later drives the same port unchanged. Related: spec-memord.a12 requires that
+      memory-dependency speculation reuse the existing path generally.
 
   - id: spec-memord.b17
     kind: structure
@@ -1362,6 +1406,7 @@ coverage:
            spec-memord.a12, spec-memord.a13, spec-memord.a14,
            spec-memord.a18, spec-memord.a19, spec-memord.a20, spec-memord.a21,
            spec-memord.a22, spec-memord.a23, spec-memord.a24, spec-memord.a25,
+           spec-memord.a26, spec-memord.a27,
            spec-memord.b1, spec-memord.b2, spec-memord.b3, spec-memord.b4, spec-memord.b5,
            spec-memord.b6, spec-memord.b7, spec-memord.b8, spec-memord.b9, spec-memord.b10,
            spec-memord.b11, spec-memord.b12, spec-memord.b13, spec-memord.b14,
