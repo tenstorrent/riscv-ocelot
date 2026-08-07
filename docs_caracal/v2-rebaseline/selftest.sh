@@ -58,13 +58,80 @@ emit "$PRE"  GainsInst "  input [1:0] io_uop_dst_rtype," "  Sub sub_0 (" "  );"
 emit "$POST" GainsInst "  input [2:0] io_uop_dst_rtype," "  Sub sub_0 (" "  );" \
                        "  VecThing vt_0 (" "  );"
 
-# --- 10. VIOLATION: touched module gains a statement
-emit "$PRE"  GainsStmt "  input [1:0] io_uop_dst_rtype," "  assign a = 1'h0;"
-emit "$POST" GainsStmt "  input [2:0] io_uop_dst_rtype," "  assign a = 1'h0;" "  assign b = 1'h1;"
+# --- 10. VIOLATION: touched module gains real (named, non-temp) logic
+emit "$PRE"  GainsStmt "  input [1:0] io_uop_dst_rtype," "  wire a;" "  assign a = 1'h0;"
+emit "$POST" GainsStmt "  input [2:0] io_uop_dst_rtype," "  wire a;" "  assign a = 1'h0;" \
+                       "  wire vec_thing;" "  assign vec_thing = 1'h1;"
 
 # --- 11. VIOLATION: signal removed from a touched module
 emit "$PRE"  LosesSig "  input [1:0] io_uop_dst_rtype," "  wire keepme;" "  assign keepme = 1'h0;"
 emit "$POST" LosesSig "  input [2:0] io_uop_dst_rtype," "  assign keepme = 1'h0;"
+
+# ===========================================================================
+# The three firtool-artifact normalizations, each with its SHARPNESS twin.
+# A normalization that also swallows a real change is worse than no
+# normalization, so every "must be clean" case below is paired with a "must
+# still fail" case that differs only in being a genuine design change.
+# ===========================================================================
+
+# --- 12. RANDOMIZE init block differs -> CLEAN (simulation-only)
+emit "$PRE"  RandOnly "  reg [3:0] q;" "  always_ff @(posedge clock) q <= d;" \
+  '`ifdef ENABLE_INITIAL_REG_' "    logic [31:0] _RANDOM[0:56];" "    initial begin" \
+  "      for (logic [5:0] i = 6'h0; i < 6'h39; i += 6'h1) begin" "        _RANDOM[i] = \`RANDOM;" \
+  "      end" "      q = _RANDOM[6'h7][29:23];" "    end" '`endif'
+emit "$POST" RandOnly "  reg [3:0] q;" "  always_ff @(posedge clock) q <= d;" \
+  '`ifdef ENABLE_INITIAL_REG_' "    logic [31:0] _RANDOM[0:61];" "    initial begin" \
+  "      for (logic [5:0] i = 6'h0; i < 6'h3E; i += 6'h1) begin" "        _RANDOM[i] = \`RANDOM;" \
+  "      end" "      q = _RANDOM[6'h9][11:5];" "    end" '`endif'
+
+# --- 12b. SHARPNESS: real logic change OUTSIDE the randomize block -> VIOLATION
+emit "$PRE"  RandSharp "  reg [3:0] q;" "  assign q = 4'h1;" \
+  '`ifdef ENABLE_INITIAL_REG_' "    q = _RANDOM[6'h7][29:23];" '`endif'
+emit "$POST" RandSharp "  reg [3:0] q;" "  assign q = 4'h2;" \
+  '`ifdef ENABLE_INITIAL_REG_' "    q = _RANDOM[6'h9][11:5];" '`endif'
+
+# --- 13. firtool temporaries renumber -> CLEAN
+emit "$PRE"  TempsOnly "  input [1:0] io_uop_dst_rtype," "  wire [3:0] _GEN_7;" \
+                       "  wire [3:0] _foo_bar_T_12;" "  wire [3:0] keep;" "  assign keep = _GEN_7;"
+emit "$POST" TempsOnly "  input [2:0] io_uop_dst_rtype," "  wire [3:0] _GEN_9;" \
+                       "  wire [3:0] _foo_bar_T_44;" "  wire [3:0] keep;" "  assign keep = _GEN_9;"
+
+# --- 13b. SHARPNESS: a NAMED signal added among temp churn -> VIOLATION
+emit "$PRE"  TempSharp "  input [1:0] io_uop_dst_rtype," "  wire [3:0] _GEN_7;"
+emit "$POST" TempSharp "  input [2:0] io_uop_dst_rtype," "  wire [3:0] _GEN_9;" \
+                       "  wire [255:0] vec_wb_data;"
+
+# --- 13c. SHARPNESS: a PORT removed among temp churn -> VIOLATION
+emit "$PRE"  PortSharp "  input [1:0] io_uop_dst_rtype," "  output io_real_port," "  wire [3:0] _GEN_7;"
+emit "$POST" PortSharp "  input [2:0] io_uop_dst_rtype," "  wire [3:0] _GEN_9;"
+
+# --- 14. RAM module renamed by its widened payload -> CLEAN (same depth)
+emit "$PRE"  ram_4x527 "  input [8:0] R0_addr," "  output [526:0] R0_data;"
+emit "$POST" ram_4x533 "  input [8:0] R0_addr," "  output [532:0] R0_data;"
+
+# --- 14b. SHARPNESS: a RAM at a NEW DEPTH is new memory -> VIOLATION
+emit "$POST" ram_16x64 "  input [3:0] R0_addr," "  output [63:0] R0_data;"
+
+# --- 15. packed container grows by a whole number of packed uops -> CLEAN
+#     Rob's compact uop packs dst_rtype only: +1 per lane, here 2 lanes.
+emit "$PRE"  Rob "  input [1:0] io_uop_dst_rtype," "  wire [59:0] rob_compact_uop_wdata_0;"
+emit "$POST" Rob "  input [2:0] io_uop_dst_rtype," "  wire [61:0] rob_compact_uop_wdata_0;"
+#     A queue entry packs a whole MicroOp: +6 (3 rtype + 3 iq_type).
+emit "$PRE"  Queue4_STQEntry "  input [1:0] io_uop_dst_rtype," "  wire [526:0] _ram_ext_R0_data;"
+emit "$POST" Queue4_STQEntry "  input [2:0] io_uop_dst_rtype," "  wire [532:0] _ram_ext_R0_data;"
+
+# --- 15b. SHARPNESS: growth that is NOT a whole number of packed uops -> VIOLATION
+#     +5 is not a multiple of MICROOP_DELTA(6): something else changed too.
+emit "$PRE"  Queue9_STQEntry "  input [1:0] io_uop_dst_rtype," "  wire [526:0] _ram_ext_R0_data;"
+emit "$POST" Queue9_STQEntry "  input [2:0] io_uop_dst_rtype," "  wire [531:0] _ram_ext_R0_data;"
+
+# --- 15c. SHARPNESS: an UNLISTED container may not grow at all -> VIOLATION
+emit "$PRE"  VecQueueEntry "  input [1:0] io_uop_dst_rtype," "  wire [526:0] _ram_ext_R0_data;"
+emit "$POST" VecQueueEntry "  input [2:0] io_uop_dst_rtype," "  wire [532:0] _ram_ext_R0_data;"
+
+# --- 15d. SHARPNESS: a packed container may not SHRINK -> VIOLATION
+emit "$PRE"  Rob_1 "  input [1:0] io_uop_dst_rtype," "  wire [59:0] rob_compact_uop_wdata_0;"
+emit "$POST" Rob_1 "  input [2:0] io_uop_dst_rtype," "  wire [53:0] rob_compact_uop_wdata_0;"
 
 OUT=$("$HERE/gate-f-check.py" --pre "$T/pre" --post "$T/post" -v 2>&1)
 echo "$OUT"
@@ -85,8 +152,23 @@ expect_v  width-change       BadWidth
 expect_v  width-change       WrongDelta
 expect_v  module-added       VecPipeline
 expect_v  instances-differ   GainsInst
-expect_v  statements-differ  GainsStmt
+expect_v  signal-added       GainsStmt
 expect_v  signal-removed     LosesSig
+# the three firtool-artifact normalizations, and their sharpness twins
+expect_ok RandOnly
+expect_v  tier1-differs      RandSharp
+expect_ok TempsOnly
+expect_v  signal-added       TempSharp
+expect_v  port-removed       PortSharp
+expect_ok ram_4x527
+expect_ok ram_4x533
+expect_v  module-added       ram_16x64
+# packed containers of a MicroOp / compact uop
+expect_ok Rob.sv
+expect_ok Queue4_STQEntry
+expect_v  width-change       Queue9_STQEntry
+expect_v  width-change       VecQueueEntry
+expect_v  width-change       Rob_1
 grep -q 'GATE (f) FAIL' <<<"$OUT" && echo "  ok   overall verdict FAIL" \
   || { echo "  FAIL overall verdict should be FAIL"; fail=1; }
 

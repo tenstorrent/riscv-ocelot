@@ -483,7 +483,17 @@ Scala `trait` with no `Parameters` in scope, so it widens the register-type spac
 | `RT_FIX`/`RT_FLT`/`RT_X`/`RT_ZERO` | `UInt(2.W)` | `UInt(3.W)` (values 0..3 unchanged) |
 | `IQ_SZ`, hence `MicroOp.iq_type` | 4 | 7 |
 | `MicroOp.dst_rtype`/`lrs1_rtype`/`lrs2_rtype` | `UInt(2.W)` | `UInt(3.W)` |
-| `Rob`'s compact `dst_rtype` | 2b | tracks `MicroOp` |
+| `Rob`'s compact `dst_rtype` | 2b | tracks `MicroOp` (and `compactUopWidth`, which sizes `rob_compact_uop_mem`, therefore +1b) |
+| `decode.scala`'s `decode_default` rs1/rs2 regtype don't-cares | `DC(2)` | `DC(3)` — *added at A2* |
+
+*The last row was added during A2 and is not optional.* `DecodeLogic` refuses to pad a
+`BitPat` containing don't-cares, so a stale `DC(2)` fails elaboration outright
+(`Cannot pad 'BitPat(??)' to '3' bits because it has don't cares`) for **every** config,
+vector or not — the widening cannot be landed without it. Note the cross-phase consequence:
+this line lives in `decode.scala`, the `DecodeUnit` node's file, which is otherwise Phase B2 —
+just as the `Rob` row lives in D3's file. **A widening that is unconditional by construction
+has an unconditional blast radius, and it does not respect phase boundaries.** Any step that
+touches the `RT_*` or `IQ_*` encodings must re-check this list rather than assume it is closed.
 
 **New step, and gate (f) is meaningless without it.** A0 has a sibling, **step A1**: generate
 and check in a **re-baselined reference** (`docs_caracal/v2-rebaseline/`) — pre-Caracal BOOM v4
@@ -1015,3 +1025,87 @@ Record per phase, in addition:
 | **Generation tier** — which model generated this phase's RTL, and whether it was escalated | [§4.6](#46-model-tiers) makes the tier a variable; a later correctness question needs to know which tier produced the code. |
 | **Gate (i) failures** — spec defect vs generation defect, and the fix | Distinguishes "the cheap tier is too weak here" from "the spec was wrong", which is the signal for whether the tier policy is working. |
 | **Spec defects found during Stage 3** | A defect that survived Phase R is a review escape. Counting them is how the Stage-2 checklist gets better. |
+
+---
+
+### Phase A — as built
+
+**Generation tier.** All eight A2 nlhdl nodes were generated on **Sonnet**, per
+[§4.6](#46-model-tiers). **No phase escalation was needed** — every failure below was a spec
+defect or a stale-interface race, not a translation error. The stronger tier was used only
+for work the tier policy assigns to it anyway: amending the nlhdl specs, the non-nlhdl
+chipyard config repair, and the four post-generation compile fixes.
+
+**A0** was already complete (`docs_caracal/boomv4_baseline_perf.md`). **A1's anchor half**
+(`prebaseline`) was verified reproducible: `gate-f-check.py --verify` matched the checked-in
+manifest on all three configs (616 / 643 / 613 modules), `selftest.sh` passed 13/13, and
+boom's `src/main/scala` was confirmed byte-identical between the pinned `2d7cf02e` and the
+current `ac61029e`.
+
+#### Spec defects found during Stage 3 — seven, all review escapes from Phase R
+
+| # | Node | Defect | Resolution |
+|---|---|---|---|
+| 1 | `VectorParams` / `BoomCoreParams` | `numVlWakeupPorts` was specified as `aluWidth + 1`, and two `require`s as functions of `coreWidth` / `lsuWidth` — none of which a zero-dependency `VectorParams` can see. Forced a mandatory field, which made `VectorParams()` uncompilable — and `BoomCoreParams`'s spec **requires** constructing exactly that default instance. Self-contradictory across two specs. | Both specs amended. New `BoomCoreParams` spec section **2b** owns all three, where the operands are in scope. `VectorParams` carries a `DELEGATED (A2)` note at each site. Obligations unchanged, only location. |
+| 2 | `VectorParams` / `VecBundles` | `VecBundles`'s spec requires every CII width to derive from a mirror of a `tt_cii_caracal_pkg.svh` localparam and names four. Only three were mirrored (`CII_TAG_W`→`ciiTagBits`, `CII_VL_W`→derived `vecVLSz`, `CII_MEMBER_W`→`log2Ceil(maxMembers)`). **`CII_NUM_SRC_SLOTS` had no mirror at all**, so `src_reuse_hint`'s width had nothing to derive from — while the spec explicitly forbids writing it as a literal. | `ciiNumSrcSlots: Int = 4` added to `VectorParams` (spec + output) and re-exported on the trait. |
+| 3 | `VecBundles` | Five `VecPipelineIO` fields (`vec_rob_flags`, `int_rf_read_req`, `int_wakeups`, `fp_wakeups`, `int_wb_snoop`) have types (`VecRobFlags`, `DecoupledReadReq`, `IntWakeupBus`, `FpWakeupBus`, `IntWbSnoop`) **defined in no spec anywhere**. `VecPipeline` and `Rob` both assert they belong in `VecBundles`; `VecBundles` never declared them. | Omitted rather than invented. **Owner: D2.** Fix the specs first, then regenerate. |
+| 4 | `VecBundles` | Spec types `csr_vector` as `freechips.rocketchip.rocket.CSRVectorIO`. **No such class exists** — rocket declares the port anonymously (`new Bundle { ... }`, `rocket/CSR.scala:310`), so there is no name to reference and no way to declare the field without restating rocket's bundle and letting it drift. | Field omitted with a flagged comment. Ground rule 9 is unaffected (the state is still rocket's; only the Chisel handle is unresolved). **Owner: D2**, where `csr.io.vector` is in scope. |
+| 5 | `VecBundles` | `VecCiiTagEntry` is listed in `hierarchy.yaml` as one of this package's bundles, but the spec's own dependencies section already concedes it has no declaration site and `VecCiiTagTable` claims it locally. | Not declared, matching the spec's own stated position. **Owner: F3.** |
+| 6 | `MicroOp` | The edit scope's must-not-regress bullet says the `usingRVV=false` bundle is bit-identical with "identical widths" **unqualified**, which contradicts the same scope's own interface-delta table listing the three ungated `*_rtype` widenings. A literal reading forbids the one change the node exists to make. | Wording defect. Resolved per the interface-delta table + [§6a](#6a-gate-f-is-a-bounded-exception-not-bit-identity-decision-d1). Spec should read "identical except the three enumerated `*_rtype` widenings". |
+| 7 | `MicroOp` | Two interface-delta entries give neither identifier nor width (the nOP.v dest-PRN and byte-offset fields), and `VecElemCursor`'s three fields have no width — unlike every other row in that table. | Named `v_split_dst_prn` / `v_split_dst_byte_off`, cursor fields sized `vecVLSz`, all documented inline. A later LCB/AGEN delta must reconcile the identifiers. |
+| 8 | **this plan, [§6a](#6a-gate-f-is-a-bounded-exception-not-bit-identity-decision-d1)** | **The exception table is incomplete as a change list.** It enumerates the four *field* widths that widen, but not the decode-table don't-care literals that must track them. `decode.scala:65`'s `decode_default` pads the rs1/rs2 regtype columns with `DC(2)`. A stale `DC(2)` does not merely mis-size — `DecodeLogic` refuses to pad a `BitPat` containing don't-cares, so elaboration fails outright with `Cannot pad 'BitPat(??)' to '3' bits because it has don't cares`, **for every config, vector or not**. | `DC(2)` → `DC(3)` on both columns. §6a amended with a fifth row. |
+
+#### Process defect: a stale-interface race between parallel generations
+
+`BoomCoreParams` and the `VectorParams` regeneration were dispatched concurrently. The
+former read `VectorParams.scala` **before** the latter rewrote it, coded against the removed
+`numVlWakeupPorts` field, and produced a file that could not compile. Not a model failure —
+an orchestration one.
+
+> **Rule for later phases: never dispatch a node concurrently with a regeneration of one of
+> its `depends_on:` nodes.** A dependency's interface must be settled before a dependent
+> reads it. This is the RTL-generation analogue of the seam rule that motivates
+> [§4.4](#44-stage-2--review-the-complete-set) step 2.
+
+#### Deviations from the plan as written
+
+| Deviation | Why |
+|---|---|
+| **`Rob`'s compact `dst_rtype` widened at A2, not D3.** | [§6a](#6a-gate-f-is-a-bounded-exception-not-bit-identity-decision-d1)'s exception table lists it as row 4, so A1's `rebaseline` cannot be generated without it. Left at 2b it would silently truncate `RT_VEC` (4) to `RT_FIX` (0) through the ROB. Minimal change: the field width and the `compactUopWidth` literal that sizes `rob_compact_uop_mem`. No other `Rob` logic touched — the rest of the `Rob` delta remains D3's. |
+| **`WithBoomDebugHarness` dropped, not restored.** | It exists only on the M1/M2 boom and no Phase-N spec describes it, so re-creating it would be unspecified RTL outside A2's scope. It was mixed into the **plain** V4 configs too, which is why its absence broke every config. **Must return as a specified node before gate (e) can run at D3** — this is a real blocker on the cosim regressions, not a cleanup. |
+| **M1/M2 `*VectorArithConfig` / `*VectorSnoopConfig` removed.** | They passed `enableVectorArith` / `vecScalarSnoopEnable` as `VectorParams` fields; in v2 those are `BoomCoreParams` sub-flags with their own fragments. A2's stated scope is the two configs only. Re-add by composing fragments at Phase F / G. |
+| **`BoomConfigMixins` 93 lines vs ~60 budget.** | Six classes (`WithVector` + two per-tier + two sub-flag fragments) plus four `//@req-` lines. Structural, not padding. |
+| **`BoomCoreParams` 93 lines vs ~90 budget.** | Within noise. |
+
+#### A1 close-out: D1 discharged, and what it cost
+
+`GATE (f) PASS -- every difference is the enumerated exception`, on all three tiers. Module
+sets identical (613/616/643, the "no vector logic" half of D1); **Tier 1 strict clean over
+537 / 538 / 557 modules with 0 differing**; 6495 allowed deltas; 0 violations.
+
+Getting there required fixing the **checker**, not the design. Its first run reported **986
+violations of which zero were design changes** — it was counting `firtool` artifacts. Four
+classes were normalized (`ENABLE_INITIAL_*` randomization blocks, `_GEN_*`/`_T_*` temporaries,
+`ram_<d>x<w>` module names, and packed containers of a `MicroOp`), each with a **sharpness
+twin** in `selftest.sh` that must still fail — 26 assertions, all passing. The full rationale
+and the two new limitations this buys are in `docs_caracal/v2-rebaseline/README.md`.
+
+> **The instrument was the problem, and that is worth remembering.** A gate reporting 88%
+> false positives is not a strict gate; it is a gate nobody will read by Phase E. Tier 1 went
+> from 15 modules differing to 0 — it got *sharper*, not weaker.
+
+#### Known gaps carried out of Phase A
+
+- **Gate (c) is unreachable until D2, independent of A2.** `core.scala:131` hardcodes
+  `BasicDispatcher`, so a vector config's three `IQ_V_*` `issueParams` entries fall through
+  `core.scala:837-849` to `require(false)`. Decision **D2** (switch to `CompactingDispatcher`)
+  is owned by step D2's `BoomCore` delta. `MediumBoomV4VectorConfig` and
+  `MegaBoomV4VectorConfig` are therefore declared but do not yet elaborate — noted in
+  `BoomConfigs.scala` itself.
+- **Gate (b) `make checkstyle` is not clean, and was not clean before A2.** 32 pre-existing
+  scalastyle errors on the pristine tree (trailing whitespace, tabs in `lsu.scala`, and four
+  scalastyle *parser* failures on `core.scala`, `decode.scala`, `regfile.scala` and
+  `parameters.scala` — the last from a trailing comma before `)` that predates Caracal).
+  Verified by running scalastyle in a throwaway `HEAD` worktree and diffing the error sets
+  offset-normalized: **identical**. A2 adds zero new errors. The gate as written is
+  unachievable on this tree; the falsifiable form is "no new error", which holds.

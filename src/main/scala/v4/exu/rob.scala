@@ -306,12 +306,15 @@ class Rob(
     val ftq_idx = UInt(log2Ceil(ftqSz).W)
     val uses_ldq = Bool()
     val uses_stq = Bool()
-    val dst_rtype = UInt(2.W)
+    // Tracks MicroOp.dst_rtype, widened 2b -> 3b by the RT_VEC encoding in
+    // ScalarOpConstants. Must stay in step with it: a 2b field here would
+    // truncate RT_VEC (4) to RT_FIX (0) on the way through the ROB.
+    val dst_rtype = UInt(3.W)
     val ldst = UInt(lregSz.W)
     val pdst = UInt(maxPregSz.W)
     val stale_pdst = UInt(maxPregSz.W)
   }
-  val compactUopWidth = 1 + log2Ceil(ftqSz) + 1 + 1 + 2 + lregSz + maxPregSz + maxPregSz
+  val compactUopWidth = 1 + log2Ceil(ftqSz) + 1 + 1 + 3 + lregSz + maxPregSz + maxPregSz
   def compact_to_uop(compact: RobCompactUop, uop: MicroOp): MicroOp = {
     val out = WireInit(uop)
     out.is_fencei := compact.is_fencei

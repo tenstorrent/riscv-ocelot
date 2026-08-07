@@ -139,6 +139,35 @@ from Tenstorrent Inc.
   `maxPregSz` the same way, so this section should read as more of the same
   rather than as a new mechanism.
 
+  ---- 2b. What VectorParams states but cannot itself express (added at A2) ----
+
+  Three obligations are written in the VectorParams spec and DELEGATED here,
+  because each is defined in terms of a BoomCoreParams quantity — `aluWidth`,
+  `coreWidth`, `lsuWidth` — that a zero-dependency `case class VectorParams`
+  cannot see. They are not new obligations and not a scope increase; only their
+  location moved, and VectorParams carries a `DELEGATED (A2)` note at each site
+  pointing here. All three are `usingRVV`-gated, so a vectors-off build is
+  unaffected and gate (f) is untouched.
+
+  1. Derive `numVlWakeupPorts = aluWidth + 1` on the trait — a per-ALU vset
+     writeback plus the vleff trim (decision D8, replicate rather than
+     arbitrate). It is DERIVED here, never a `VectorParams` field: making it a
+     field would force it to be mandatory (no honest tier-independent default),
+     and that would make `VectorParams()` — the default instance section 2 above
+     is specified to construct — uncompilable.
+
+  2. Require `numVlPhysRegs >= 1 + coreWidth`, so a full dispatch group of VL
+     producers can allocate plus the one committed pointer.
+
+  3. Require `ldResvMembers * vecVLen / 8 >= lsuWidth * 2` (the `eew_min = 8`
+     case, which is the binding one), so a tier that widens `lsuWidth` without
+     revisiting the load reservation quantum fails the build rather than
+     silently starving the drain and undercutting target P2.
+
+  // Note the shape difference: (1) is a derived value the design reads, (2) and
+  // (3) are pure elaboration checks that read nothing. Both kinds belong on the
+  // trait for the same reason — it is the first scope where both operands exist.
+
   ---- 3. Sub-flags, so tracks can land independently ----
 
   Add two further `Boolean` fields to `BoomCoreParams`, both defaulting to

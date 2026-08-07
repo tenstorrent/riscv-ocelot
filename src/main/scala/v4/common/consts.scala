@@ -110,18 +110,23 @@ trait ScalarOpConstants
   val IS_F3  = 7.U(3.W)  // funct3
 
   // Decode Stage Control Signals
-  val RT_FIX   = 0.U(2.W)
-  val RT_FLT   = 1.U(2.W)
-  val RT_X     = 2.U(2.W) // not-a-register (prs1 = lrs1 special case)
-  val RT_ZERO  = 3.U(2.W)
+  //@req-spec-core.e8
+  val RT_FIX   = 0.U(3.W)
+  val RT_FLT   = 1.U(3.W)
+  val RT_X     = 2.U(3.W) // not-a-register (prs1 = lrs1 special case)
+  val RT_ZERO  = 3.U(3.W)
+  val RT_VEC   = 4.U(3.W)
 
 
   // IQT type
-  val IQ_SZ  = 4
+  val IQ_SZ  = 7
   val IQ_MEM = 0
   val IQ_UNQ = 1
   val IQ_ALU = 2
   val IQ_FP  = 3
+  val IQ_V_LOAD  = 4
+  val IQ_V_STORE = 5
+  val IQ_V_ALU   = 6
 
   // Functional unit select
   // bit mask, since a given execution pipeline may support multiple functional units

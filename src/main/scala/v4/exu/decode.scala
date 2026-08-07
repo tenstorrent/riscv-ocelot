@@ -62,7 +62,12 @@ object DecodeTables
               //               |  |  |               |       |       |       |  |     |  |  |  |         |  |  |      |       |        | | | ren2 | | | | | | fast | | |
               //               |  |  |               |       |       |       |  |     |  |  |  |         |  |  |      |       |        | | | | ren3 | | | | | |  | | | |
               //               |  |  |               |       |       |       |  |     |  |  |  |         |  |  |      |       |        | | | | |  | | | | | | |  | | | |
-                          List(N, N, DC(FC_SZ)     , RT_X  , DC(2) , DC(2) , X, IS_N, X, X, X, M_X,      N, X, CSR.X, DW_X  , FN_X   , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X)
+              // The two DC() widths here are the rs1/rs2 REGTYPE columns and must track
+              // the RT_* encoding width in ScalarOpConstants, widened 2 -> 3 by RT_VEC.
+              // A stale DC(2) does not merely mis-size: DecodeLogic refuses to pad a
+              // BitPat containing don't-cares, so it fails elaboration outright with
+              // "Cannot pad 'BitPat(??)' to '3' bits" -- for EVERY config, vector or not.
+                          List(N, N, DC(FC_SZ)     , RT_X  , DC(3) , DC(3) , X, IS_N, X, X, X, M_X,      N, X, CSR.X, DW_X  , FN_X   , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X)
 
   def X32_table: Seq[(BitPat, List[BitPat])] = { import Instructions32._; Seq(
     SLLI               -> List(Y, N, fc2oh(FC_ALU) , RT_FIX, RT_FIX, RT_X  , N, IS_I, N, N, N, M_X     , N, N, CSR.N, DW_XPR, FN_SL  , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X),

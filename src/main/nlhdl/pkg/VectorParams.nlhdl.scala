@@ -115,6 +115,19 @@ from Tenstorrent Inc.
   Fixed at 8, matching `MAX_MEMBERS` in the same package. It is exposed as a
   parameter only so that every module reads one name instead of writing 8.
 
+  // ADDED AT A2. VecBundles' spec requires every CII width to derive from a
+  // mirror of a tt_cii_caracal_pkg.svh localparam, naming four: CII_TAG_W,
+  // CII_NUM_SRC_SLOTS, CII_VL_W and CII_MEMBER_W. Three were already covered
+  // — CII_TAG_W by `ciiTagBits`, CII_VL_W by the derived `vecVLSz`, and
+  // CII_MEMBER_W by `log2Ceil(maxMembers)`. CII_NUM_SRC_SLOTS had no mirror
+  // at all, so VecBundles had nowhere to read it from and pinned a bare
+  // literal instead. That is the gap this field closes.
+  `ciiNumSrcSlots` is the number of hintable coprocessor source slots. Default
+  4, and again not a free choice: it must equal `CII_NUM_SRC_SLOTS` in the
+  frozen package. It sizes the `src_reuse_hint` bit-per-slot field (which is
+  therefore FOUR bits, not three) and, via `log2Ceil(ciiNumSrcSlots + 1)`, the
+  `op_id` field whose extra encoding is the unused-lane case.
+
   ---- Per-tier width knobs ----
 
   `dcacheArbiterMode` is a string, either "single" or "dual-dynamic". It selects
@@ -147,8 +160,10 @@ from Tenstorrent Inc.
   //      would be unreachable, and the streaming path would be DEAD CODE in the most
   //      instantiated leaf in the subtree. At 512 entries / EMUL=8 / SEW=8:
   //      2 -> 8 loads in flight, 4 -> 4 loads, 8 -> 2 loads (i.e. no streaming at all).
-  Require `ldResvMembers * vLen/eew_min >= lsuWidth * 2` at elaboration, so a tier that
-  widens `lsuWidth` without revisiting the quantum fails the build rather than starving.
+  // DELEGATED (A2): `require(ldResvMembers * vLen/eew_min >= lsuWidth * 2)` is stated
+  // here but CANNOT be checked here — `lsuWidth` is a BoomCoreParams quantity and this
+  // node has no dependencies. BoomCoreParams owns the check; see its logic section.
+  // The obligation is unchanged, only its location.
 
   ---- Port counts named by requirements but previously declared nowhere ----
 
@@ -157,8 +172,17 @@ from Tenstorrent Inc.
   defaulted independently by two nodes.
   `numVecClrPorts` (default 3) is the ROB busy-clear lane count, one per producer,
   never arbitrated: a lost clear is unrecoverable and the ROB entry never retires.
-  `numVlWakeupPorts` is `aluWidth + 1` — a per-ALU vset writeback plus the vleff trim
-  (see decision D8, replicate rather than arbitrate).
+
+  ===> `numVlWakeupPorts` IS NOT A FIELD OF THIS CASE CLASS. It is `aluWidth + 1` — a
+       per-ALU vset writeback plus the vleff trim (decision D8, replicate rather than
+       arbitrate) — and `aluWidth` is a BoomCoreParams quantity this node cannot see.
+       It is DERIVED on the BoomCoreParams trait alongside the other re-exports, not
+       passed in. Declaring it here as a mandatory field would make `VectorParams()`
+       — the default instance BoomCoreParams is specified to construct when
+       `enableVector` is true and `vector` is `None` — uncompilable, and giving it a
+       tier-independent default would be a lie for every tier but one.
+
+  ===> EVERY FIELD OF THIS CASE CLASS MUST HAVE A DEFAULT, for that same reason.
   <|end_parameters|>
 
   <|begin_ports|>
@@ -233,8 +257,10 @@ from Tenstorrent Inc.
   group can ever be renamed; without it the machine cannot make forward
   progress on a wide group and would deadlock at rename rather than stall.
 
-  Require `numVlPhysRegisters >= 1 + coreWidth` so a full dispatch group of VL
-  producers can allocate, plus the one committed pointer.
+  // DELEGATED (A2): `require(numVlPhysRegisters >= 1 + coreWidth)` — a full dispatch
+  // group of VL producers must be able to allocate, plus the one committed pointer.
+  // `coreWidth` is a BoomCoreParams quantity this node cannot see, so BoomCoreParams
+  // owns the check. The obligation is unchanged, only its location.
 
   ---- Element-queue depth is an architectural limit ----
 

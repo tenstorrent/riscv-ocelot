@@ -18,6 +18,7 @@ import freechips.rocketchip.tile._
 import boom.v4.ifu._
 import boom.v4.exu._
 import boom.v4.lsu._
+import boom.v4.vec.generated.VectorParams
 
 // ---------------------
 // BOOM Config Fragments
@@ -687,3 +688,95 @@ class WithSWBPD extends Config((site, here, up) => {
     case other => other
   }
 })
+
+/**
+  *  Vector (Caracal) configs below
+  */
+
+//@req-spec-core.a4
+// Composable vector fragment: maps over up(TilesLocated(InSubsystem)) in the
+// same shape as every other fragment here, so it composes in any position,
+// e.g. `new WithVector ++ new WithNMediumBooms(1)`. Sets enableVector/vector
+// and APPENDS the three vector issue queues; every other core field
+// (fetchWidth, decodeWidth, numRobEntries, PRF/LDQ/STQ sizes, ...) is left
+// untouched. Defaults describe the Medium-tier machine.
+class WithVector(
+  numVecPhysRegisters: Int = VectorParams().numVecPhysRegisters,
+  numVlPhysRegisters: Int = VectorParams().numVlPhysRegisters,
+  ssiQueueEntries: Int = VectorParams().ssiQueueEntries,
+  usQueueEntries: Int = VectorParams().usQueueEntries,
+  lcbEntries: Int = VectorParams().lcbEntries,
+  vecIssueEntries: Int = VectorParams().vecIssueEntries,
+  vecIssueGrantWidth: Int = VectorParams().vecIssueGrantWidth,
+  dcacheArbiterMode: String = VectorParams().dcacheArbiterMode,
+  lsuWidth: Int = 1
+) extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+      enableVector = true,
+      vector = Some(VectorParams(
+        numVecPhysRegisters = numVecPhysRegisters,
+        numVlPhysRegisters  = numVlPhysRegisters,
+        ssiQueueEntries     = ssiQueueEntries,
+        usQueueEntries      = usQueueEntries,
+        lcbEntries          = lcbEntries,
+        vecIssueEntries     = vecIssueEntries,
+        vecIssueGrantWidth  = vecIssueGrantWidth,
+        dcacheArbiterMode   = dcacheArbiterMode
+      )),
+      lsuWidth = lsuWidth,
+      // APPEND to the tier's existing issueParams, never rebuild it: the
+      // four scalar entries are counted-by-iqType in HasBoomCoreParameters
+      // and a tier's carefully-sized scalar queues must survive untouched.
+      issueParams = tp.tileParams.core.issueParams ++ Seq(
+        IssueParams(issueWidth=vecIssueGrantWidth, numEntries=vecIssueEntries, iqType=IQ_V_LOAD,  dispatchWidth=tp.tileParams.core.decodeWidth),
+        IssueParams(issueWidth=vecIssueGrantWidth, numEntries=vecIssueEntries, iqType=IQ_V_STORE, dispatchWidth=tp.tileParams.core.decodeWidth),
+        IssueParams(issueWidth=vecIssueGrantWidth, numEntries=vecIssueEntries, iqType=IQ_V_ALU,   dispatchWidth=tp.tileParams.core.decodeWidth)
+      )
+    )))
+    case other => other
+  }
+})
+
+//@req-spec-lsu.a12
+//@req-spec-lsu.h2
+// Large: WithNLargeBooms leaves lsuWidth at its default of 1, so raise it to
+// 2 HERE (not there) in step with dcacheArbiterMode="dual-dynamic" and
+// vecIssueGrantWidth=2. Legal: the Large tier's IQ_MEM issueWidth is already
+// 2 (require(memWidth >= lsuWidth) in HasBoomCoreParameters).
+class WithLargeBoomsVector extends Config(
+  new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic", vecIssueGrantWidth = 2)
+)
+
+//@req-spec-lsu.a12
+//@req-spec-lsu.h2
+// Mega: same triple as Large. Idempotent on lsuWidth -- WithNMegaBooms
+// already sets it to 2 on the scalar tier.
+class WithMegaBoomsVector extends Config(
+  new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic", vecIssueGrantWidth = 2)
+)
+
+// Sub-flags, so Track A (vector LSU) and Track B (CII arith / cross-LSU
+// snoop) land independently. Both require enableVector at elaboration.
+class WithVectorArith extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+      enableVectorArith = true
+    )))
+    case other => other
+  }
+})
+
+class WithVecScalarSnoop extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+      vecScalarSnoopEnable = true
+    )))
+    case other => other
+  }
+})
+
+//@req-spec-rename.c1
+// No fragment here adds an option to disable the committed rename map table
+// (rename-maptable.scala declares com_map_table unconditionally); vector
+// flush recovery depends on it always being present.

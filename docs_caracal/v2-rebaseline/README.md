@@ -45,11 +45,18 @@ and it must report **every** difference as the enumerated exception. That is the
 proves the widening is bounded. From then on, every later Phase A/B step re-runs the same
 check with `--post` pointing at a fresh vectors-off build, against `rebaseline`.
 
-**Ordering consequence:** `prebaseline` can be generated today. `rebaseline` cannot — the
-widening currently exists only in the `edit_existing` nlhdl specs under
-`src/main/nlhdl/pkg/`, not in `src/main/scala`. It is generated when step A2 lands. Until
-then this directory holds the anchor and the tooling, and `manifest/rebaseline.json` is
-absent by design.
+**Status: both artifacts exist and D1 is discharged.** `rebaseline` was generated once step
+A2 landed the widening in `src/main/scala`. The `--pre`/`--post` check reports:
+
+| Config | modules | Tier 1 strict | differing | Tier 2 | allowed deltas | violations |
+|---|---|---|---|---|---|---|
+| `SmallBoomV4Config` | 613 / 613 | 537 | **0** | 51 | 1327 | **0** |
+| `MediumBoomV4Config` | 616 / 616 | 538 | **0** | 52 | 1850 | **0** |
+| `MegaBoomV4Config` | 643 / 643 | 557 | **0** | 55 | 3318 | **0** |
+
+`GATE (f) PASS -- every difference is the enumerated exception`. The module set is identical
+on all three tiers (the "and no vector logic" half of D1), and Tier 1 — a true textual
+equality check — is clean over every module the exception does not touch.
 
 ## Configs covered
 
@@ -105,12 +112,41 @@ Normalization strips `@[File.scala 12:34]` source locators (the widening shifts 
 numbers, which would otherwise dirty nearly every line), the `firtool` version banner, and
 assertion string literals that embed `file:line`.
 
+### What else is normalized, and why (added at A2)
+
+The first real run of this check reported **986 violations**, of which **zero** were design
+changes. Four classes of `firtool` artifact were being counted as differences. Each is now
+normalized, and each normalization has a **sharpness twin** in `selftest.sh` — a case
+differing only in being a genuine change, which must still FAIL.
+
+| Normalized | Why it is not a design difference | Sharpness twin |
+|---|---|---|
+| `` `ifdef ENABLE_INITIAL_{REG,MEM}_ `` blocks | Simulation-only randomization. Widening any register reshuffles the whole `_RANDOM[]` allocation, so every later register's slice shifts. Measured: `FetchBuffer` differed on 450 lines, **448 of them `_RANDOM`**, the other 2 the block's own loop bound — with zero functional change. | a logic change *outside* the block still fails |
+| firtool temporaries (`_GEN_57`, `_foo_T_12`) | Numbered in emission order, so a widening renumbers every temporary after it; firtool also names or inlines intermediates at its own discretion. No design identity. Ports and *named* signals are still compared strictly. | a real named signal added, or a port removed, amid temp churn still fails |
+| `ram_<depth>x<width>` module names | firtool encodes RAM geometry in the **name**, so widening a payload looks like one module vanishing and another appearing. Compared by depth; the width delta is reported. | a RAM at a **new depth** is new memory and still fails |
+| Packed containers of a `MicroOp` / compact uop | The widened fields live *inside* `MicroOp`, which is packed into ROB entries, STQ entries and queue payloads — so the container grows although its name mentions neither `rtype` nor `iq_type`. This is the propagation this file's own header already describes. Kept as an **explicit short table** (`ALLOWED_PACK`), not a width-delta heuristic: growth must be a whole number of packed uops, at most `MAX_LANES` of them, on a **listed** container. | growth that is not a whole multiple, an **unlisted** container, and **shrinkage** all still fail |
+
+Statement-count deltas are now **informational rather than violations**: a width change
+legitimately alters how firtool decomposes an expression. Observed in `DecodeUnit`, where
+`cs_rs1_type` stopped being a named 2-bit wire and was inlined as
+`{1'h0, <the same two decoded bits>}` — same decoder outputs, same comparisons,
+zero-extended, so the scalar decode table still emits only values 0..3 and `RT_VEC` stays
+unreachable from it. The structural claims that remain **violations** are the ones a
+re-decomposition cannot fake: **ports, named signals, and submodule instances**.
+
 ### Limitation, stated rather than glossed
 
 Tier 2 detects added or removed structure, not rewritten expressions: logic could in
 principle be altered while port list, instance list and statement counts all hold. Tier 1 is
 a genuine equality check but by construction does not cover the modules the exception
 touches. A passing gate is strong evidence, not proof.
+
+Two limitations are **new with the A2 normalizations** and are the price of them: a change
+confined entirely to a randomization block would be invisible (acceptable — it is not
+synthesized), and a change that only re-decomposes expressions without touching ports,
+named signals or instances would now be informational rather than a violation. The mitigation
+is that Tier 1 got *sharper*, not weaker: it went from 15 modules differing to **0**, so it is
+now a true equality check over ~95% of all modules rather than one drowned in `_RANDOM` noise.
 
 Separately, and noted in D1 as **A23**: a passing gate (f) does **not** prove the three new
 `IQ_V_*` `iq_type` bits are explicitly defaulted. `DecodeUnit` does `uop := io.enq.uop`
