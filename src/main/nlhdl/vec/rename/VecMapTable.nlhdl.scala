@@ -116,6 +116,21 @@ from Tenstorrent Inc.
   group member COUNT as a 1..maxGroupSize value; `valid`, the lane's `is_vec` (for
   the VL instance, "produces or reads VL").
 
+  // ===> `lregSz` IS INHERITED, NOT A CONSTRUCTOR PARAMETER. `BoomBundle` mixes in
+  // `HasBoomCoreParameters`, which already declares `val lregSz`
+  // (`parameters.scala:430`), so a `class VecMapReq(val lregSz: Int, ...)` does not
+  // compile — scalac demands an `override` modifier for a concrete inherited member.
+  // Adding `override` would be worse than the error: it introduces a second source
+  // of truth for a width whose whole purpose is "match the MicroOp fields of the
+  // same names", and a caller could then pass something else. The same applies to
+  // `VecRemapReq`'s `lvd`. Take `lregSz` from the trait; parameterize only
+  // `pregSz`, `maxGroupSize` and `emulSz`, which the trait does NOT provide and
+  // which genuinely differ between the vector and VL instances.
+  //
+  // Found at Phase C's gate (a) — the first generation produced constructor
+  // parameters and every call site then passed the trait's own `lregSz` into them,
+  // which is the proof they were redundant.
+
   `map_resps` — Output(Vec(plWidth, VecMapResp)). Per lane: `pvs1`, `pvs2`, `pvs3`,
   `stale_pvdest`, each `Vec(maxGroupSize, UInt(pregSz.W))`; `pvm`, a single
   `UInt(pregSz.W)`; `v_emul`, `emulSz` wide. These land in the OP.v fields of the

@@ -186,7 +186,7 @@ names one:
 | `VecGroupCopy` | **13 requirements with no owner at all.** A `VL = 0` op still reaches issue for every non-immediate-AVL form, its `pvdest` group is already renamed, and its ROB entry cannot commit until that group is architecturally correct — but with `VL = 0` the LSU executes no element, so nothing would ever write it. `loadstore.rst` specifies a `stale_pvdest` → `pvdest` group copy on the Load Unit's ports. The previous map had nowhere to put it. |
 | `VecOrderHold` | **6 requirements with no owner.** A younger vector load overlapping an older draining vector store in a combination that does not forward (SSI/SSI, US/SSI) must *wait*, released by the store's element cursor completing. Neither a search nor a forward, so it fell between `VecCrossLsuSnoop` and the arbiter. |
 | `VecCiiIssue` | The CII host had a node per channel direction **except Issue** — 26 requirements, including the entire issue-packet contract (`cii.k*`), left inside the container next to the BlackBox binding. |
-| `VecGroupReady`, `VecStoreDgenPath` | `VecIssueSlot` was carrying **56** requirements. The corpus splits them: per-member group readiness (identical for `pvs1/2/3`/`pvm` — define once, instantiate four times) and the store-only AGEN/DGEN dual-grant path. |
+| `VecGroupReady`, `VecStoreDgenPath` | `VecIssueSlot` was carrying **56** requirements. The corpus splits them: per-member group readiness (identical for `pvs1/2/3`/`pvm` **and `stale_pvdest`** — define once, instantiate **five** times) and the store-only AGEN/DGEN dual-grant path. |
 | `VecRegFileBank` | `VecRegFile` was carrying **48**, spanning two unrelated things: *who owns which port* (a contract, canonical in `midcore.rst`) and *how the array is built*. The split also confines the VRF-area risk — flops vs latch/SRAM banking changes this node only. |
 | `VtypeTable` | `VConfigUnit` was carrying **44**. The `vtype` → `{VLMAX, EMUL, vill}` rules were restated in three places (`VConfigUnit`, `VsetDecode`, `ALUUnit`); now a `kind: package` all three bind to. Three copies of a `vill` rule is three chances to disagree. |
 | `VecStoreForward` | Split from `VecCrossLsuSnoop`, which held both directions of cross-queue ordering. One raises `order_fail`, the other returns **data**; they land in different steps (G1 vs G3). |
@@ -676,7 +676,7 @@ mis-sized PRN group. The LMUL table is constrained by `VLMAX ≥ 1`.
 |---|---|---|
 | **C2** | Chisel | Generate the rename space and its three internals (specs from **N3**). |
 | **C3** | Chisel | Generate `VecRegFile` (96 PRNs, **9R/3W**, per-byte write mask) + **`VecRegFileBank`** ×4 (VLEN/4 = 64b of flops each, own decoder per port, single-cycle read with write-forwarding) and `VlRegFile`. |
-| **C4** | Chisel | Generate `VecIssueUnit` ×3 + `VecIssueSlot` + **`VecGroupReady`** ×4 per slot + **`VecStoreDgenPath`** (store slots only). |
+| **C4** | Chisel | Generate `VecIssueUnit` ×3 + `VecIssueSlot` + **`VecGroupReady`** ×5 per slot + **`VecStoreDgenPath`** (store slots only). |
 
 **Notes.**
 `VecRenameSpace` is **one definition, two instances** — BOOM already does this for INT and FP
@@ -698,12 +698,27 @@ Deriving those from group size would silently couple two unrelated design decisi
 > ren1→ren2 pipeline. `addvector` drove it combinationally from `dec_uops`, one cycle *ahead*,
 > so at dispatch the vec fields reflected the next cycle's (bubble) uop and two ops freed PRN 0.
 > The `vec_pipeline_io` bundle names these ports `ren2_uops`/`dis_fire` precisely so that wiring
-> `dec_uops` is visibly wrong at the connection site. Also: `rob_unsafe` must be cleared for vec
-> ops, or the PNR assert at `rob.scala:438-441` trips.
+> `dec_uops` is visibly wrong at the connection site.
+>
+> Also: `rob_unsafe` must be cleared for vec ops, or the PNR assert at `rob.scala:436-442`
+> trips — but **that is NOT this step's to do, and must not be a tie-off in the rename stage.**
+> It is owned by the **`Rob` delta at D3** via `io.vec_clr_unsafe`, cleared by ONE group-safe
+> event when the last element address has been checked, never per sub-access
+> (`Rob.nlhdl.scala` part 5). `VecRenameSpace` has no port that could carry it. Ownership
+> clarified 2026-08-10 after this bullet's placement inside the rename warning caused it to be
+> briefed as a C2 obligation.
 
 > **⚠ Top timing risk.** Atomic group rename performs up to `coreWidth * 8` PRN allocations per
-> cycle. **Run a timing spike on `VecRenameSpace` before C2 merges.** If the vector side loses,
-> the whole core's rename stage pays. This is the design's largest unquantified risk.
+> cycle. If the vector side loses, the whole core's rename stage pays.
+>
+> **AMENDED 2026-08-10 (owner's decision): the timing spike is WAIVED and C2 does not gate on
+> it.** The original text required a spike on `VecRenameSpace` before C2 merged. There is no
+> synthesis or STA tool in this environment (`dc_shell`, `genus`, `yosys`, `opensta` all
+> absent), so the check was not executable as written; the owner's direction is not to worry
+> about timing. **The risk is not thereby retired — it is accepted and unmeasured**, which is
+> the honest description. Recorded here rather than dropped so that a later frequency problem
+> is traceable to a decision instead of looking like an oversight. If a synthesis flow becomes
+> available, this is the first thing to point it at.
 
 `VecMapTable` carries **no** LMUL tag table and **no** whole-group checker — atomic group rename
 makes every read whole-group by construction, so a checker can only confirm what the mapper
@@ -737,8 +752,16 @@ written.
 > truncated to `vecVLSz+1` bits, so a large AVL wrapped instead of saturating (AVL=2048 → vl=0),
 > breaking the canonical strip-mining idiom where AVL is the remaining count.
 
-`Rob` gains `vec_clr_bsy` (an `RT_VEC` load has no iresp writeback to clear `rob_bsy`) and the
-3-bit `dst_rtype`. **No per-entry group completion counter.**
+`Rob` gains `vec_clr_bsy` (an `RT_VEC` load has no iresp writeback to clear `rob_bsy`),
+**`vec_clr_unsafe`**, and the 3-bit `dst_rtype`. **No per-entry group completion counter.**
+
+`vec_clr_unsafe` was missing from this list until 2026-08-10 and is **not optional**: without
+it a vector op never clears `rob_unsafe` and the PNR assert at `rob.scala:436-442` trips.
+`Rob.nlhdl.scala` part 5 specifies it as **one group-safe event, never per sub-access** —
+`io.vec_clr_unsafe: Input(Valid(UInt(robAddrSz.W)))`, raised when the last element address has
+been checked. The `Rob` spec also declares `vec_rob_flags` and `com_vxsat`; D3 should take its
+scope from that spec's own port list rather than from this paragraph, which has now been wrong
+once.
 
 ### Phase E — The vector LSU (the performance work)
 
@@ -951,7 +974,7 @@ deleted requirement is not.
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| **Rename critical path.** `coreWidth * 8` PRN allocations/cycle; if the vector side loses, the whole core's rename pays. | **High** — the design's largest unquantified risk | Timing spike on `VecRenameSpace` **before C2 merges** (Phase C note). |
+| **Rename critical path.** `coreWidth * 8` PRN allocations/cycle; if the vector side loses, the whole core's rename pays. | **High** — and now **accepted unmeasured** | ~~Timing spike on `VecRenameSpace` before C2 merges.~~ **Spike waived 2026-08-10 by the owner; no synthesis/STA tool exists here.** See the amended Phase C note. Mitigation is now: none. |
 | **VRF area.** `96 × 256b` = 24 kbit of flops with 12 ports; port count now dominates the storage term (128→96 cut 8 kbit while ports went 11→12). | High | Area/timing estimate at C3 before committing to a flop-based file over latch/SRAM-banked. |
 | **96 PRNs may be too tight.** 8 `LMUL=8` groups in flight, 4 segmented. | Medium | Free-list stall rate is an (e2) artifact from C2 onward; the parameter is a one-line change. |
 | **`STALE_VD` needs the VPU decoder.** Cross-team, outside this plan. | Medium | Stageable — the host serves slot 6 before the VPU emits it. Raise with the VPU owner at F1. |
@@ -1204,3 +1227,147 @@ across all six B2 nodes.** Run it as part of gate (i) from Phase C on.
   `VecDecode` call rocket's `VType.fromUInt` directly for the full-`VType` path. Single-sourced
   and correct, but it means `VtypeTable.decode` is not the only vtype decode site it claims to be.
 - `VConfigUnit`'s rename/mispredict/commit trace events remain unimplemented (defect 10).
+
+---
+
+### Phase C — as built
+
+**Generation tier.** All eleven C2/C3/C4 nodes on **Sonnet**, **no escalation**. Every failure was
+a spec defect or an interface-ownership defect, not a translation error. The strong tier did the
+spec amendments, the defect adjudication and the gates — the tier policy of
+[§4.6](#46-model-tiers) holding for a second consecutive phase.
+
+**What landed** — 4,997 lines across three new package directories:
+
+| Node | Lines | Reqs | | Node | Lines | Reqs |
+|---|---|---|---|---|---|---|
+| `VecRenameSpace` | 868 | 33 | | `VecRegFile` | 403 | 38 |
+| `VecIssueSlot` | 834 | 41 | | `VlRegFile` | 385 | 15 |
+| `VecIssueUnit` | 785 | 28 | | `VecStoreDgenPath` | 373 | 16 |
+| `VecBusyTable` | 545 | 25 | | `VecRegFileBank` | 316 | 10 |
+| `VecFreeList` | 543 | 24 | | | | |
+| `VecMapTable` | 537 | 31 | | `VecGroupReady` | 414 | 17 |
+
+**Dispatch.** Three waves by dependency depth: 7 leaves in parallel → 3 containers in parallel →
+`VecIssueUnit`. Two mid-phase interface fixes forced extra serialized rounds (below). The
+Phase-A rule — never generate a node while one of its `depends_on` is being regenerated — held
+throughout and was the reason those rounds were serialized rather than overlapped.
+
+#### Gate results
+
+| Gate | Result |
+|---|---|
+| **a** `sbt boom/compile` | **PASS** (39 s, warnings only). Two real Phase C errors found and fixed first — see the gate (i) section. |
+| **f** vectors-off vs rebaseline | **PASS** — `VERIFY OK`, all three tiers exact (613 / 616 / 643). Phase C adds no module to a vectors-off build, as expected: none of it is instantiated until D2 wires `VecPipeline`. |
+| **i** RTL matches spec | **278/278 req IDs tagged**, mechanically verified with `reqcheck.py`. **Tracing is NOT yet conformant** — see the open item below. |
+| **b/c/d/e** | Unchanged from B2: (b) no new scalastyle error; (c)/(d) blocked until D2's dispatcher switch; (e) N/A until D3. |
+
+#### Three defects that would not have compiled
+
+Phase C's real yield was ownership defects at seams — the class the design-wide-first method is
+supposed to catch, and which Phase R missed three more of.
+
+| # | Defect | Resolution |
+|---|---|---|
+| 16 | **`VecMemberRdy` had no declaration site.** `VecIssueSlot`, `VecIssueUnit` and `VecPipeline` part 13 all place the single declaration in `VecBundles`; `VecRenameSpace`'s spec said "declared IN THIS FILE"; `VecBundles` declared it nowhere. Generation therefore produced two structurally identical types facing each other across one seam — `VecRenameSpace`'s `VecMemberRdy(maxGroupSize)` and `VecIssueSlot`'s local `VecIssueSlotMemberRdyShim` — and `VecIssueUnit` exists to wire `dis_member_rdy` between exactly those two. **A type error, not a subtle bug.** | `VecPipeline` part 13 had already adjudicated it ("ONE BUNDLE WITH TWO NAMES, and that is a defect, not a synonym"), so its ruling was applied rather than a new one invented: promoted to `VecBundles`, **unparameterized**, five per-member groups plus `vm_rdy`. Both generated shapes had independently converged on that exact layout, so the fix was a rename, not a redesign. `VecBundles` +47/−0; `VecRenameSpace` 893→868; `VecIssueSlot` 871→834. |
+| 17 | **`VecMapReq`/`VecRemapReq` took an `lregSz` constructor parameter**, which does not compile: `BoomBundle` mixes in `HasBoomCoreParameters`, which already declares `val lregSz` (`parameters.scala:430`), and scalac demands an `override`. | Parameter **dropped**, value taken from the trait. The proof it was redundant: every call site was passing the trait's own `lregSz` into it. `override` was rejected as worse than the error — it creates a second source of truth for a width whose stated purpose is "match the `MicroOp` fields of the same names". Fixed in the spec **and** the RTL so a regeneration reproduces it. Only `pregSz`/`maxGroupSize`/`emulSz` stay parameterized; those the trait does not provide and they genuinely differ between the two instances. |
+| 18 | `VecMapTable`'s spec says `VecMapReq`/`VecMapResp`/`VecRemapReq` are declared in `VecBundles`. They are not, and `VecPipeline` part 13 independently says they **stay local to their producers**, mirroring baseline BOOM. | Declared locally in `VecMapTable.scala`, following the corroborated position over the node's own spec. **Note for D3:** the `Rob` delta will need `boom.v4.vec.generated.rename`, not `boom.v4.vec.rename`. |
+
+#### Other spec defects found
+
+- **`VecTrace`'s API cannot serve most of this module set.** Every helper except `traceDecode`
+  requires a `MicroOp`, and **six of wave 1's seven nodes deliberately exclude `MicroOp` from
+  `depends_on`** — they are lookup and storage structures whose events are about a resource, not
+  an instruction. Ground rule 11 requires *every* vec module to trace, so it was unsatisfiable.
+  Five nodes hit it and **two incompatible workarounds appeared** (`VConfigUnit`, `VlRegFile`,
+  `VecFreeList`, `VecBusyTable` omitted lines — `VecFreeList` could tag zero of three; while
+  `VecRegFileBank` hand-rolled a `printf` behind the public `traceEnabled`). Spec amended with a
+  **three-step ladder**: `trace*` with a uOP → **`traceId`** with a bare `rob_idx` →
+  **`traceStruct`** with neither (`rob=?`), plus an explicit rule that `rob=?` is acceptable only
+  when no honest answer exists, and that hand-rolled `printf`s are not the escape hatch.
+  `VecBusyTable` diagnosed this itself and asked for precisely `traceId`.
+- `VecFreeList` had to omit two mandated assertions needing ports only its parent has. **Both
+  adopted by `VecRenameSpace`** — and it correctly refused to substitute `alloc_fire(w)` for
+  `dis_fire(w)`, since the former also requires `reqs(w)` and would falsely trip on a non-vector
+  dispatching lane.
+- `VecGroupReady`: the spec's pseudocode names the group-done member vector `prns`; the real
+  `VecGroupDone` names it `pvdest`. Coded against the real field.
+- `VecStoreDgenPath` / `VecIssueSlot`: the `dgen_operand_select` trace event is specified to fire
+  "on the cycle the slot is filled", but no port carries a fill pulse and edge-detection needs a
+  register the module is forbidden to declare. Omitted at both levels rather than approximated.
+- `VecIssueUnit`: `SaturatingCounterOH` "binds to `IssueUnitCollapsing`" is unactionable — the
+  helper is a private method in another class in another package. Copied per the spec's own
+  "taken verbatim" instruction.
+
+#### The M1 free-list double-free is prevented structurally
+
+`VecFreeList` gates allocation on an `alloc_fire(w)` **input** and explicitly declined to claim
+the bug was prevented, since it cannot see which stage drives that signal — correctly locating
+the obligation in its parent. `VecRenameSpace` drives it as
+`freelist.io.alloc_fire(w) := ren2_alloc_fire(w)`, with
+`ren2_alloc_fire(w) = dis_fire(w) && ren2_alloc_reqs(w)` built from the `ren2_uops`/`ren2_mask`/
+`dis_fire` input ports — **and `dec_uops`/`dec_fire` do not exist as ports on the module at all**,
+so the M1 wiring is not merely avoided, it is unavailable. The `vec_pipeline_io` naming
+([§8 Phase C](#phase-c--rename-register-files-issue)) did the job it was designed for.
+
+#### Accepted risks recorded, not silently taken
+
+- **`VecRegFile` duplicate-write-PRN → silent OR corruption.** The bank's write/forward path is a
+  mutually-exclusive OR rather than a priority mux, licensed by "two writers can never target one
+  PRN". The invariant is asserted **in `VecRegFileBank` only** (the spec says do not duplicate it),
+  and a Chisel `assert` is simulation/formal-only — so a rename bug that ever produced a duplicate
+  write PRN would corrupt data with no hardware guard. Accepted: the `vrf-ports` partition assigns
+  distinct producers structurally, and a priority mux would cost area and timing for a case that
+  cannot occur if rename is correct.
+- **The `VecRenameSpace` timing spike is waived** — see the amended
+  [§8 Phase C](#phase-c--rename-register-files-issue) note and [§10](#10-cross-cutting-risks).
+  Owner's decision, no synthesis or STA tool in this environment. The risk is **accepted and
+  unmeasured**, not retired.
+
+#### Plan corrections made during Phase C
+
+| Correction | Why it mattered |
+|---|---|
+| **`VecGroupReady` is ×5 per slot, not ×4** (§8 C4 and §4's node-split rationale). | `hierarchy.yaml` always said 5 and ground rule 14 makes the map authoritative; the prose was stale. The fifth instance is `stale_pvdest`, load-bearing because the CII reads the old destination as a source. |
+| **`rob_unsafe` ownership moved out of the C2 warning** to the `Rob` delta's `vec_clr_unsafe` at D3. | The bullet sat inside the rename double-free warning and was duly briefed as a C2 obligation. `VecRenameSpace` refused it, citing its own spec's part 9 — correctly, since no port here could carry it. |
+| **`vec_clr_unsafe` added to §8 Phase D's `Rob` scope.** | It was **missing from D3's scope list** while `Rob.nlhdl.scala` part 5 specifies it in full. D3 would have shipped `vec_clr_bsy` plus the widened `dst_rtype`, declared itself done, and the PNR assert at `rob.scala:436-442` would have fired at gate (e1) with no obvious cause. §8 Phase D now also points D3 at the `Rob` spec's own port list rather than that paragraph. |
+
+#### Process: self-reported req coverage is still not evidence
+
+`VConfigUnit`'s Phase-B miss repeated in form: agents reliably *claim* full coverage.
+`reqcheck.py` was run after every wave and is now the gate-(i) instrument. **278/278 across
+Phase C.** Keep running it; do not accept a report's word.
+
+#### Open items carried out of Phase C
+
+1. **The `VecTrace` conformance sweep has NOT run.** `VecTrace.nlhdl.scala` is amended but
+   `VecTrace.scala` is not regenerated, so `traceId`/`traceStruct` do not exist in Scala yet and
+   roughly eight nodes still carry flagged omissions (plus `VecRegFileBank`'s hand-rolled
+   `printf`, which the amendment now forbids). Ground rule 11 is therefore **not** satisfied for
+   Phase C. Deferred deliberately — traces are emit-only and move no interface, so one sweep
+   regenerates each node once. **Do this before Phase D**: with no unit tests, tracing is the
+   only debug instrument the plan provides.
+2. **`vfwcvt`/`vfncvt` EMUL (defect 14) is still unowned** — required before Phase F.
+3. **`VecRangeEntry.mask` byte-vs-element granularity** is an open Phase-A `VecBundles` defect,
+   surfaced during the `VecMemberRdy` promotion and left un-adjudicated. Matters at Phase E.
+4. `VecIssueSlot`'s `dgen_operand_busy` dependencies-section text still disagrees with
+   `VecStoreDgenPath`'s real interface.
+5. **A stale M1/M2 `CommitSignals` hunk was parked, not merged**, out of `rob.scala`: it
+   referenced `boom.v4.vec.rename.VecGroupDealloc`/`VecRemapReq` and a boom-local `VConfig`,
+   none of which exist in v2 (the vtype snapshot is rocket's `VType`). It duplicates the D3 `Rob`
+   delta. Recoverable from `git stash` (message names it) and from
+   `scratchpad/stale-rob-commitsignals-m1m2.patch`. **D3 should implement the `Rob` delta from
+   its nlhdl spec, not by un-parking that hunk.**
+
+#### Debug harness
+
+`DebugMicroOp` was ported verbatim from `Caracal/addvector` (`v4/common/micro-op.scala:30`) into
+`boom.v4.common` to complete the harness restoration, whose commit referenced it without
+declaring it. Kept a plain `Bundle` with explicit `Int` parameters, because `core.scala`
+constructs it with literal widths to match `vsrc/core_harness_wrapper_N.v` — a BlackBox, where a
+reordered or resized field is a **silent cosim mismatch, not a compile error**. addvector's
+neighbouring `VConfig` and `VsetWbResp` were deliberately **not** ported: v2 carries the vtype
+snapshot as rocket's `VType`, and the vset writeback path is the `ALUUnit`/`Rob` delta's at D3.
+This removes the [§12 Phase A](#phase-a--as-built) blocker on gate (e); `enableDebugHarness`
+defaults false and the whole harness sits under one `if (DEBUG_HARNESS)` (`core.scala:1479`),
+which is why gate (f) is unaffected.

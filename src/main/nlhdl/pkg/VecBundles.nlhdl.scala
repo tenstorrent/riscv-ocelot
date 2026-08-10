@@ -84,6 +84,39 @@ from Tenstorrent Inc.
   // bundle rather than three narrower ones — the three consumers must see the
   // same completion in the same cycle, and a split bundle would let them drift.
 
+  ---- VecMemberRdy: the per-member readiness side channel ----
+
+  `VecMemberRdy` carries per-member operand readiness alongside a uOP, from the
+  rename space to the issue queues. **FIVE per-member groups plus the mask bit:**
+  `vs1_rdy`, `vs2_rdy`, `vs3_rdy`, `vtmp_rdy` and `vold_rdy`, each
+  `Vec(maxMembers, Bool)`, plus `vm_rdy: Bool`. Take NO parameter — size the
+  groups from `maxMembers`, which this package already has in scope.
+
+  The mask stays a single `Bool` because `pvm` names ONE register, not a group,
+  so "five groups and six fields" is the same statement, not a discrepancy.
+  `vold_rdy` is `stale_pvdest`'s per-member readiness (decision D6), feeding the
+  `rdy_vold` matcher on `IQ_V_LOAD` and `IQ_V_ALU` slots — the CII reads the old
+  destination as a source, so it is a real dependency and not a duplicate of
+  `vs3_rdy`. This is the READY sense; `VecBusyTable`'s `VecMemberBusyResp` is the
+  BUSY sense and stays local to it, with `VecRenameSpace` converting between them.
+
+  // ===> IT IS DECLARED HERE, ONCE, AND EVERY OTHER SITE BINDS TO IT. This bundle
+  // is the one `VecPipeline` part 13 rules on: "`VecSlotMemberRdy` and
+  // `VecMemberRdy` ARE ONE BUNDLE WITH TWO NAMES, and that is a defect, not a
+  // synonym." Three specs (`VecIssueSlot`, `VecIssueUnit`, `VecPipeline`) already
+  // said the single declaration belongs in `VecBundles` — and this package never
+  // declared it, so the two consumers each declared their own: `VecRenameSpace`
+  // emitted `VecMemberRdy(maxGroupSize)` and `VecIssueSlot` a local
+  // `VecIssueSlotMemberRdyShim`, structurally identical types facing each other
+  // across one seam that `VecIssueUnit` must connect. It would not have compiled.
+  // Added here 2026-08-10; `VecRenameSpace`'s spec amended to bind rather than
+  // declare. Both generated shapes had already converged on the five-group layout
+  // above, so this promotion is a rename, not a redesign.
+  //
+  // It belongs here by the same test as `VecScalarOperands` and `VecRobFlags`: it
+  // crosses a boundary BOTH sides must review. A declaration inside a producer is
+  // readable from one side only.
+
   ---- VecElemAccess: the nOP.v ----
 
   `VecElemAccess` is the cracked element access — the "nOP.v" — that address

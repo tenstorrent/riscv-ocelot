@@ -179,12 +179,25 @@ from Tenstorrent Inc.
   grant encoding anywhere in this module's interface.
 
   `member_rdy` — Output(Vec(plWidth, new VecMemberRdy)), only when
-  `exportMemberRdy`. `VecMemberRdy` is declared IN THIS FILE (as VecBusyTable
-  declares `VecBusyResp`, and as baseline declares `class BusyResp` beside its
-  user) with fields `vs1_rdy`, `vs2_rdy`, `vs3_rdy`, `vtmp_rdy` and — per decision
-  D6 — `vold_rdy`, each `Vec(maxGroupSize, Bool())`, plus `vm_rdy`, a single
-  `Bool`. Sense is READY, not busy, to match VecGroupReady's `in_member_rdy` input
-  exactly.
+  `exportMemberRdy`. **`VecMemberRdy` is declared in `VecBundles`, NOT in this
+  file — bind to it and do not declare a local copy.** It has `vs1_rdy`,
+  `vs2_rdy`, `vs3_rdy`, `vtmp_rdy` and — per decision D6 — `vold_rdy`, each
+  `Vec(maxMembers, Bool())`, plus `vm_rdy`, a single `Bool`, and it takes no
+  parameter. Sense is READY, not busy, to match VecGroupReady's `in_member_rdy`
+  input exactly.
+
+  // ===> CORRECTED 2026-08-10. This paragraph used to say the bundle was declared
+  // IN THIS FILE, contradicting `VecIssueSlot`, `VecIssueUnit` and `VecPipeline`
+  // part 13, which all place the single declaration in `VecBundles` — part 13
+  // calls the two-name situation "a defect, not a synonym". Because `VecBundles`
+  // did not actually declare it, generation produced two structurally identical
+  // types facing each other across one seam (this file's `VecMemberRdy` and
+  // `VecIssueSlot`'s local shim), which `VecIssueUnit` cannot connect. The
+  // declaration now lives in `VecBundles`; the `maxGroupSize` parameter is gone
+  // because the export exists only on the vector instance, where it is `maxMembers`
+  // by definition. `VecBusyResp`/`VecMemberBusyResp` DO stay local to
+  // `VecBusyTable` — that is the busy sense, one producer and one consumer in the
+  // same subtree, and this file converts busy to ready.
 
   // `vold_rdy` is `stale_pvdest`'s per-member readiness, the FIFTH group in the
   // side channel. `IQ_V_LOAD` and `IQ_V_ALU` slots gate issue on it through a

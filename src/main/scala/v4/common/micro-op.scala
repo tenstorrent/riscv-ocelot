@@ -23,6 +23,35 @@ abstract trait HasBoomUOP extends BoomBundle
   val uop = new MicroOp()
 }
 
+/**
+ * MicroOp for the Debug Harness (whisper-cosim DPI bridge).
+ * vLen-sized fields are kept on the bundle so the harness SV interface stays stable;
+ * they're driven to zero by core.scala until v4 grows a VPU.
+ *
+ * Ported verbatim from `Caracal/addvector` (`v4/common/micro-op.scala:30`) so the
+ * field order and widths keep matching `vsrc/core_harness_wrapper_N.v`, which is a
+ * BlackBox: a reordered or resized field here is a SILENT cosim mismatch, not a
+ * compile error. Deliberately a plain `Bundle` with explicit Int parameters rather
+ * than a `BoomBundle` reading `p` -- `DebugCommitSignals` constructs it with literal
+ * widths (`new DebugCommitSignals(40, N, 64, vlen, 5, 1)` in core.scala) to match
+ * the SV side, and pulling values from `p` instead would let the two drift.
+ *
+ * NOTE: addvector also declares `VConfig` and `VsetWbResp` beside this class. Neither
+ * is ported: v2 carries the vtype snapshot as rocket's `VType` (`MicroOp.vconfig` is
+ * `Option[VType]`), and the vset writeback path is the `ALUUnit`/`Rob` delta's at D3.
+ */
+class DebugMicroOp(val coreMaxAddrBits: Int, val xLen: Int, val vLen: Int, val lregSz: Int) extends Bundle
+{
+  val ldst             = UInt(lregSz.W)
+  val dst_rtype        = UInt(3.W)
+  val debug_pc         = UInt(coreMaxAddrBits.W)
+  val debug_tag        = UInt(64.W)
+  val debug_inst       = UInt(32.W)
+  val debug_wdata      = UInt(xLen.W)
+  val debug_vec_wdata  = UInt((vLen*8).W)
+  val debug_vec_wmask  = UInt(8.W)
+}
+
 // Per-nOP.v element cursor. A vector LDQ/STQ entry carries this in addition
 // to its existing scalar fields simply by virtue of embedding a MicroOp (see
 // HasBoomUOP above) -- it is not declared separately on the queue entries.

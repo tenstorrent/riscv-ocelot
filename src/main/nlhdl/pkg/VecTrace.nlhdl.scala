@@ -110,6 +110,72 @@ from Tenstorrent Inc.
   // decode line with a later pipeline line is then a two-step join through the
   // dispatch line, which is the honest cost of the ROB entry not existing yet.
 
+  ---- The two uOP-less variants, and which to reach for ----
+
+  Some callers have no `MicroOp` at their boundary. They split into two cases and
+  get one entry point each. **Use them in this order — the first that applies:**
+
+    1. a `MicroOp` in scope           -> `trace` / `tracePrn` / `traceVl` /
+                                          `traceElem` / `traceTag`
+    2. no uOP, but a `rob_idx`        -> `traceId(module, event, rob_idx, extra)`
+    3. no instruction identity at all -> `traceStruct(module, event, extra)`
+
+  `traceId` emits a real `rob=<rob_idx>` and is therefore fully correlatable; it
+  differs from `trace` only in taking the index directly instead of extracting it
+  from a uOP. Reach for it whenever a `rob_idx` is genuinely available, because
+  the ONLY thing that makes `traceStruct`'s `rob=?` acceptable is that no honest
+  answer exists — and an unnecessary `rob=?` throws away the cross-stage and
+  Whisper correlation this package exists to provide.
+
+  // ===> A GROUP-DONE WAKEUP IS THE MOTIVATING CASE FOR `traceId`. It carries a
+  // bare `rob_idx` and a member-PRN vector, and no `MicroOp` — so `VecBusyTable`
+  // could not trace its clear event at all, while having the very identifier the
+  // line format wants. That is a missing entry point, not a caller problem.
+
+  Provide `traceStruct(module, event, extra)` for callers whose event is scoped
+  to a PHYSICAL RESOURCE rather than to an instruction. It
+  emits `rob=?` in the same position as `traceDecode`, so one grep still finds
+  every line. It takes no identifier argument of its own: the identifying key —
+  `prn`, `port`, `bank`, `entry` — is the caller's to name in `extra`, and
+  `extra` must therefore be non-empty (check it at elaboration; a structural
+  line with no key identifies nothing).
+
+  // ===> THESE EXIST BECAUSE SOME MODULES HAVE NO uOP AT THEIR BOUNDARY AT ALL,
+  // and the original text did not account for them. `trace`/`tracePrn`/
+  // `traceVl`/`traceElem`/`traceTag` all take a `MicroOp` to extract `rob_idx`;
+  // `traceDecode` covers the decode stage. But `VecMapTable`, `VecFreeList`,
+  // `VecBusyTable`, `VecRegFile`, `VecRegFileBank`, `VlRegFile` and
+  // `VecGroupReady` are LOOKUP AND STORAGE STRUCTURES, not pipeline stages:
+  // their `depends_on` deliberately excludes MicroOp, their ports carry bare
+  // addresses and data, and their events are genuinely about a resource, not an
+  // instruction — "PRN 37 freed at commit", "bank 2 forwarded a write to read
+  // port 5". There is no uOP in scope to extract a `rob_idx` from, and inventing
+  // a port to carry one would add a wire that only tracing reads, which the next
+  // section forbids.
+  //
+  // Ground rule 11 of plan v2 requires EVERY vec module to trace, so with only
+  // the two entry points above, ground rule 11 was unsatisfiable for most of the
+  // Phase C module set. Observed across Phases B and C: `VConfigUnit`,
+  // `VlRegFile`, `VecFreeList` and `VecBusyTable` omitted trace calls and
+  // reported the gap (`VecFreeList` could tag zero of its three lines), while
+  // `VecRegFileBank` hand-rolled a raw `printf` behind the public
+  // `traceEnabled`. Five nodes, two incompatible workarounds, one missing pair of
+  // entry points — which is why these are named helpers and not a convention.
+  //
+  // ===> IT DOES NOT RELAX THE rob_idx RULE FOR INSTRUCTION-SCOPED EVENTS. If a
+  // module HAS a uOP at its boundary, its instruction events MUST use `trace` or
+  // one of its wrappers; reaching for `traceStruct` to avoid threading a uop is
+  // a review failure. The test is what the event is ABOUT, not what is
+  // convenient to wire: `VecStoreDgenPath` and `VecIssueSlot` hold uOPs and owe
+  // real `rob_idx` lines, while a free-list pop owes a `prn` and could not
+  // honestly name a `rob_idx` even if one were available, because a group is
+  // allocated for one uOP and freed on behalf of another.
+  //
+  // `emitLine` STAYS PRIVATE and a caller must not hand-roll a `printf` behind
+  // `traceEnabled` — the whole point of this package is that the line format is
+  // in one place. `traceEnabled` remains public only for gating a caller's own
+  // non-emitting debug logic.
+
   ---- What it must not become ----
 
   These helpers emit only. They must declare no register, no counter and no
@@ -141,7 +207,10 @@ same machine.
 
 <|begin_dependencies|>
 MicroOp — the `trace` helper takes a `MicroOp` to extract `rob_idx` and the
-vector fields the wrappers format.
+vector fields the wrappers format. `traceDecode`, `traceId` and `traceStruct` do
+NOT, which
+is what lets a module whose `depends_on` excludes MicroOp still satisfy ground
+rule 11 without acquiring a MicroOp port purely to be traceable.
 
 Binds to `freechips.rocketchip.util.PlusArg` for the run-time gate.
 
