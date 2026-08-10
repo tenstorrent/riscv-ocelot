@@ -8,6 +8,7 @@ app can reach into the spec iframe directly:
     /                   the app
     /api/index.json     the trace index
     /api/rebuild        rebuild the index in place (returns the new stats)
+    /api/file?path=...  one tagged source file, whole, so a pane can scroll past its snippet
     /docs/<name>.html   instrumented article bodies, one per spec page
     /sphinx/...         the Sphinx build tree, for _static and _images
 
@@ -30,12 +31,12 @@ import threading
 try:
     from http.server import SimpleHTTPRequestHandler, HTTPServer
     from socketserver import ThreadingMixIn
-    from urllib.parse import urlparse, unquote
+    from urllib.parse import urlparse, unquote, parse_qs
 except ImportError:  # pragma: no cover - py2
     from SimpleHTTPServer import SimpleHTTPRequestHandler
     from BaseHTTPServer import HTTPServer
     from SocketServer import ThreadingMixIn
-    from urlparse import urlparse
+    from urlparse import urlparse, parse_qs
     from urllib import unquote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -65,11 +66,11 @@ MIME = {
 
 
 class Config(object):
-    def __init__(self, repo_root, html_dir, reqs_dir, rtl_dir, out_dir):
+    def __init__(self, repo_root, html_dir, reqs_dir, rtl_dirs, out_dir):
         self.repo_root = repo_root
         self.html_dir = html_dir
         self.reqs_dir = reqs_dir
-        self.rtl_dir = rtl_dir
+        self.rtl_dirs = rtl_dirs
         self.out_dir = out_dir
         self.sphinx_root = os.path.dirname(html_dir.rstrip(os.sep))
         self.app_dir = os.path.join(HERE, "app")
@@ -78,8 +79,13 @@ class Config(object):
     def rebuild(self, quiet=True):
         with self.lock:
             index, _ = build_index.build(self.repo_root, self.html_dir, self.reqs_dir,
-                                         self.rtl_dir, self.out_dir, quiet=quiet)
+                                         self.rtl_dirs, self.out_dir, quiet=quiet)
             return index["stats"]
+
+
+# A tagged source file is served whole so the pane can scroll past the 12-line snippet the
+# index carries. Files this big are machine-written tables nobody reads in a side pane.
+MAX_SOURCE_BYTES = 8 * 1024 * 1024
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -110,6 +116,8 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as exc:  # surfaced in the UI, not the terminal
                 return self.send_json({"error": "%s: %s" % (type(exc).__name__, exc)}, 500)
             return self.send_json({"stats": stats})
+        if path == "/api/file":
+            return self.send_source()
 
         for prefix, root in (("/app/", cfg.app_dir),
                             ("/docs/", os.path.join(cfg.out_dir, "docs")),
@@ -120,6 +128,38 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.send_error(403, "path escapes the served root")
                 return self.send_file(target)
         return self.send_error(404, "no route for %s" % path)
+
+    def send_source(self):
+        """Serve one tagged source file as text, addressed by its repo-relative path.
+
+        The allowlist is deliberately the same one the tag scan uses — a scanned root plus a
+        taggable suffix — so this route can only hand out files whose snippets the index
+        already publishes. Symlinks are resolved before the root check, so a link inside a
+        scanned tree cannot be used to read outside it.
+        """
+        cfg = self.config
+        rel = (parse_qs(urlparse(self.path).query).get("path") or [""])[0]
+        rel = unquote(rel)
+        if not rel or os.path.isabs(rel):
+            return self.send_error(400, "path must be repo-relative")
+        target = os.path.realpath(os.path.join(cfg.repo_root, rel))
+        roots = [os.path.realpath(d) for d in cfg.rtl_dirs]
+        if not any(target.startswith(r + os.sep) for r in roots):
+            return self.send_error(403, "path is outside every scanned root")
+        if not target.endswith(build_index.TAG_SUFFIXES):
+            return self.send_error(403, "not a taggable source file")
+        if not os.path.isfile(target):
+            return self.send_error(404, "not found: %s" % rel)
+        if os.path.getsize(target) > MAX_SOURCE_BYTES:
+            return self.send_error(413, "file too large to view")
+        with io.open(target, "r", encoding="utf-8", errors="replace") as fh:
+            body = fh.read().encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     # -- plumbing ------------------------------------------------------------
     @staticmethod
@@ -171,7 +211,9 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--html-dir", default=None)
     ap.add_argument("--reqs-dir", default=None)
-    ap.add_argument("--rtl-dir", default=None)
+    ap.add_argument("--rtl-dir", action="append", default=None, metavar="DIR",
+                    help="tree scanned for //@req- tags; repeatable, or comma-separated "
+                         "(default %s)" % ", ".join(build_index.DEFAULT_TAG_ROOTS))
     ap.add_argument("--out", default=None)
     ap.add_argument("--no-build", action="store_true",
                     help="serve the existing index instead of rebuilding at startup")
@@ -182,7 +224,7 @@ def main():
         root,
         args.html_dir or os.path.join(root, "docs_caracal", "_build", "html", "src"),
         args.reqs_dir or os.path.join(root, "src", "main", "nlhdl", "reqs"),
-        args.rtl_dir or os.path.join(root, "src", "main", "nlhdl"),
+        build_index.resolve_tag_roots(root, args.rtl_dir),
         args.out or os.path.join(root, "docs_caracal", "_build", "reqviewer"),
     )
 
@@ -200,7 +242,8 @@ def main():
     print("\nrequirement viewer: %s" % url)
     print("  spec  <- %s" % os.path.relpath(cfg.html_dir, root))
     print("  reqs  <- %s" % os.path.relpath(cfg.reqs_dir, root))
-    print("  rtl   <- %s (scanned for //@req- tags)" % os.path.relpath(cfg.rtl_dir, root))
+    print("  tags  <- %s (scanned for //@req-)"
+          % ", ".join(os.path.relpath(d, root) for d in cfg.rtl_dirs))
     print("\nCtrl-C to stop. After 'make html' in docs_caracal, hit Rebuild in the toolbar.")
     try:
         httpd.serve_forever()

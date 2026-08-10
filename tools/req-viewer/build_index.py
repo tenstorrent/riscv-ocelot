@@ -7,7 +7,10 @@ Three artifacts are joined here:
     docs_caracal/_build/html/src/*.html   the rendered spec  — hover targets
     src/main/nlhdl/reqs/spec-*.yaml       the requirements   — each carries a verbatim
                                                                RST quote + anchor + heading
-    src/main/nlhdl/**                     the RTL            — carries //@req-<id> tags
+    src/main/{nlhdl,scala,sv}/**          the code           — carries //@req-<id> tags;
+                                                               NL_HDL and emitted RTL live in
+                                                               separate trees, so all are
+                                                               walked (see DEFAULT_TAG_ROOTS)
 
 The hard part is the first join. A requirement quotes *reStructuredText source*
 (``|caracal|``, ``:doc:`loadstore```, ``**bold**``), and the viewer must highlight the
@@ -676,6 +679,20 @@ ID_RE = re.compile(r"^spec-(?P<family>[a-z0-9_]+)\.(?P<group>[a-z]+)(?P<num>[0-9
 TAG_RE = re.compile(r"//@req-(spec-[a-z0-9_]+\.[a-z]+[0-9]+)")
 TAG_SUFFIXES = (".sv", ".svh", ".v", ".vh", ".scala", ".nlhdl", ".md", ".yaml", ".yml")
 
+# Trees walked for //@req- tags. The NL_HDL spec of a module and the code emitted from it
+# live in different trees, so one root cannot feed both right-hand panes: src/main/nlhdl
+# supplies the NL_HDL pane, the emitted Chisel under src/main/scala (plus the hand-written
+# integration seam alongside it) and the SystemVerilog under src/main/sv supply the RTL pane.
+DEFAULT_TAG_ROOTS = (
+    os.path.join("src", "main", "nlhdl"),
+    os.path.join("src", "main", "scala"),
+    os.path.join("src", "main", "sv"),
+)
+
+# Directory names never worth walking: VCS metadata, the requirement YAMLs themselves
+# (a req citing its own id is not an implementation site), sbt/python build output.
+PRUNE_DIRS = (".git", "reqs", "__pycache__", "target", "project")
+
 
 def load_reqs(reqs_dir):
     families, reqs = {}, []
@@ -736,31 +753,51 @@ def load_reqs(reqs_dir):
     return families, reqs
 
 
-def scan_tags(root, repo_root):
-    """Find //@req-<id> tags. Returns {req_id: [{file, line, text, kind}]}."""
-    hits = {}
-    if not os.path.isdir(root):
-        return hits
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in (".git", "reqs", "__pycache__")]
-        for name in sorted(filenames):
-            if not name.endswith(TAG_SUFFIXES):
-                continue
-            path = os.path.join(dirpath, name)
-            rel = os.path.relpath(path, repo_root)
-            kind = "nlhdl" if ".nlhdl." in name or name.endswith(".nlhdl") else "rtl"
-            try:
-                with io.open(path, "r", encoding="utf-8", errors="replace") as fh:
-                    lines = fh.read().splitlines()
-            except IOError:
-                continue
-            for i, line in enumerate(lines):
-                for rid in TAG_RE.findall(line):
-                    context = lines[i:i + 12]
-                    hits.setdefault(rid, []).append({
-                        "file": rel, "line": i + 1, "kind": kind,
-                        "snippet": "\n".join(context),
-                    })
+def scan_tags(roots, repo_root):
+    """Find //@req-<id> tags under every scanned root.
+
+    Returns {req_id: [{file, line, kind, origin, snippet}]}.
+
+    `kind` picks the pane: a ``*.nlhdl.*`` file is NL_HDL source, anything else is RTL.
+    `origin` separates the two kinds of RTL site the viewer now shows side by side — code
+    emitted from an NL_HDL spec (a path with a ``generated`` component) and the hand-written
+    integration seam that wires it into BOOM. Generated sites sort first: they are the
+    module the requirement is about, the seam is where it is plugged in.
+
+    Roots may nest, so hits are deduped by (file, line, id).
+    """
+    hits, seen = {}, set()
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in PRUNE_DIRS]
+            for name in sorted(filenames):
+                if not name.endswith(TAG_SUFFIXES):
+                    continue
+                path = os.path.join(dirpath, name)
+                rel = os.path.relpath(path, repo_root)
+                kind = "nlhdl" if ".nlhdl." in name or name.endswith(".nlhdl") else "rtl"
+                origin = ("generated" if "generated" in rel.split(os.sep)
+                          else "handwritten")
+                try:
+                    with io.open(path, "r", encoding="utf-8", errors="replace") as fh:
+                        lines = fh.read().splitlines()
+                except IOError:
+                    continue
+                for i, line in enumerate(lines):
+                    for rid in TAG_RE.findall(line):
+                        key = (rel, i + 1, rid)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        context = lines[i:i + 12]
+                        hits.setdefault(rid, []).append({
+                            "file": rel, "line": i + 1, "kind": kind, "origin": origin,
+                            "snippet": "\n".join(context),
+                        })
+    for sites in hits.values():
+        sites.sort(key=lambda h: (h["origin"] != "generated", h["file"], h["line"]))
     return hits
 
 
@@ -768,7 +805,9 @@ def scan_tags(root, repo_root):
 # Build
 # ---------------------------------------------------------------------------
 
-def build(repo_root, html_dir, reqs_dir, rtl_dir, out_dir, quiet=False):
+def build(repo_root, html_dir, reqs_dir, rtl_dirs, out_dir, quiet=False):
+    if isinstance(rtl_dirs, str):
+        rtl_dirs = [rtl_dirs]
     if not os.path.isdir(html_dir):
         sys.stderr.write(
             "error: rendered docs not found: %s\n"
@@ -787,7 +826,7 @@ def build(repo_root, html_dir, reqs_dir, rtl_dir, out_dir, quiet=False):
         pages[name] = page
 
     families, reqs = load_reqs(reqs_dir)
-    tags = scan_tags(rtl_dir, repo_root)
+    tags = scan_tags(rtl_dirs, repo_root)
 
     blocks_by_id = {}
     for page in pages.values():
@@ -903,6 +942,8 @@ def build(repo_root, html_dir, reqs_dir, rtl_dir, out_dir, quiet=False):
             "approx": report["approx"], "section_only": report["section"],
             "unmatched": report["none"], "drifted": len(report["drifted"]),
             "tagged": sum(1 for r in reqs if r["impl"]["nlhdl"] or r["impl"]["rtl"]),
+            "tagged_nlhdl": sum(1 for r in reqs if r["impl"]["nlhdl"]),
+            "tagged_rtl": sum(1 for r in reqs if r["impl"]["rtl"]),
         },
     }
     with io.open(os.path.join(out_dir, "index.json"), "w", encoding="utf-8") as fh:
@@ -919,8 +960,30 @@ def build(repo_root, html_dir, reqs_dir, rtl_dir, out_dir, quiet=False):
         if s["drifted"]:
             print("  %d quote(s) no longer occur in the .rst source (drift)"
                   % s["drifted"])
-        print("  rtl tags: %d reqs implemented" % s["tagged"])
+        print("  tags: %d reqs implemented (%d nlhdl, %d rtl) across %d root(s)"
+              % (s["tagged"], s["tagged_nlhdl"], s["tagged_rtl"], len(rtl_dirs)))
     return index, report
+
+
+def resolve_tag_roots(repo_root, given):
+    """Absolute tag-scan roots from --rtl-dir values, or the defaults when none were given.
+
+    A value may itself be comma-separated, so `--rtl-dir a,b` and `--rtl-dir a --rtl-dir b`
+    mean the same thing. Order is preserved and duplicates dropped, because it decides the
+    walk order behind the deduping in scan_tags.
+    """
+    parts = []
+    for value in (given or []):
+        parts.extend(p.strip() for p in value.split(",") if p.strip())
+    if not parts:
+        parts = list(DEFAULT_TAG_ROOTS)
+    out = []
+    for part in parts:
+        path = part if os.path.isabs(part) else os.path.join(repo_root, part)
+        path = os.path.abspath(path)
+        if path not in out:
+            out.append(path)
+    return out
 
 
 def main():
@@ -933,8 +996,9 @@ def main():
                     help="rendered Sphinx pages (default docs_caracal/_build/html/src)")
     ap.add_argument("--reqs-dir", default=None,
                     help="requirement YAMLs (default src/main/nlhdl/reqs)")
-    ap.add_argument("--rtl-dir", default=None,
-                    help="tree scanned for //@req- tags (default src/main/nlhdl)")
+    ap.add_argument("--rtl-dir", action="append", default=None, metavar="DIR",
+                    help="tree scanned for //@req- tags; repeatable, or comma-separated "
+                         "(default %s)" % ", ".join(DEFAULT_TAG_ROOTS))
     ap.add_argument("--out", default=None,
                     help="output directory (default docs_caracal/_build/reqviewer)")
     ap.add_argument("--report", action="store_true",
@@ -945,10 +1009,10 @@ def main():
     root = os.path.abspath(args.repo_root)
     html_dir = args.html_dir or os.path.join(root, "docs_caracal", "_build", "html", "src")
     reqs_dir = args.reqs_dir or os.path.join(root, "src", "main", "nlhdl", "reqs")
-    rtl_dir = args.rtl_dir or os.path.join(root, "src", "main", "nlhdl")
+    rtl_dirs = resolve_tag_roots(root, args.rtl_dir)
     out_dir = args.out or os.path.join(root, "docs_caracal", "_build", "reqviewer")
 
-    _, report = build(root, html_dir, reqs_dir, rtl_dir, out_dir, quiet=args.quiet)
+    _, report = build(root, html_dir, reqs_dir, rtl_dirs, out_dir, quiet=args.quiet)
 
     if args.report:
         if report["no_page"]:

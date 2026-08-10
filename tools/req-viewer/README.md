@@ -37,8 +37,10 @@ pkill -f 'req-viewer/serve.py --port 8765'
 ```
 
 Flags: `--port`, `--host`, `--no-build` (serve the existing index), and `--html-dir` /
-`--reqs-dir` / `--rtl-dir` / `--out` to point at non-default trees. Working over SSH, forward
-the port: `ssh -L 8765:localhost:8765 <host>`.
+`--reqs-dir` / `--rtl-dir` / `--out` to point at non-default trees. `--rtl-dir` is repeatable
+(and accepts a comma-separated list) because the tags live in more than one tree; passing it
+replaces the default set rather than adding to it. Working over SSH, forward the port:
+`ssh -L 8765:localhost:8765 <host>`.
 
 The index is rebuilt at startup and by the **Rebuild** button, so a `make html` plus Rebuild
 is enough to pick up spec edits, new requirements or freshly tagged RTL — no restart.
@@ -56,6 +58,8 @@ is enough to pick up spec edits, new requirements or freshly tagged RTL — no r
 | `/` | focus **Find** — searches ids, statements, quotes and headings across all families |
 | **only cited prose** | fades every block no requirement cites (a coverage read) |
 | a cross-reference inside the spec | loads that page in the pane instead of navigating away |
+| **whole file** on an implementation card | swaps the snippet for the entire file, scrolled to the tag |
+| `:<line>` on an implementation card | opens the file and scrolls to that tag |
 
 Selecting a requirement from another spec page switches the page automatically.
 
@@ -70,7 +74,8 @@ Three artifacts are joined, all read-only:
 |---|---|
 | `docs_caracal/_build/html/src/*.html` | the rendered spec — supplies the hover targets |
 | `src/main/nlhdl/reqs/spec-*.yaml` | requirements, each with `source.{file,anchor,heading,quote}` |
-| `src/main/nlhdl/**` | scanned for `//@req-<id>` tags, which fill the right-hand panes |
+| `src/main/nlhdl/**` | scanned for `//@req-<id>` tags — fills the NL_HDL pane |
+| `src/main/scala/**`, `src/main/sv/**` | scanned for the same tags — fills the RTL pane |
 
 `build_index.py` does the work:
 
@@ -103,18 +108,43 @@ whole block stays highlighted.
 
 ## The right-hand panes
 
-They are driven by `//@req-<id>` tags: files matching `*.nlhdl.*` feed the NL_HDL pane,
-other HDL sources feed the RTL pane, each showing `file:line` and the tagged lines. Nothing
-under `src/main/nlhdl/` carries tags yet, so both panes currently render a placeholder that
-names the tag to add and where it is expected — they light up on their own once
-`/nlhdl gen-nlhdl` and `/nlhdl gen-rtl` write tagged code, with no change here.
+They are driven by `//@req-<id>` tags: files matching `*.nlhdl.*` feed the NL_HDL pane, other
+HDL sources feed the RTL pane. A requirement with no tag of that kind gets a placeholder
+naming the tag to add and where it is expected.
+
+One card per **file**, not per tag — a requirement is usually tagged at several points in the
+same module, and repeated 12-line snippets hide that they are one file. The header carries the
+path, the origin, and a `:<line>` button per tag. A card opens at the **whole file**, scrolled
+to the first tag; **snippet** collapses it to the tagged lines plus context. Either view is
+scrollable, numbered with real file line numbers, and marks the tagged lines — amber for this
+requirement, grey for a line tagged for a *different* one, which is how you see a signal
+answering to more than one line of the spec. The choice sticks (`localStorage`, `rv.implFull`),
+since it is a reading habit rather than a per-file decision.
+
+Full files come from `/api/file?path=<repo-relative>`, whose allowlist is exactly the tag
+scan's: a path under a scanned root (symlinks resolved first) with a taggable suffix, under
+8 MB. So the route can only serve files whose snippets the index already publishes.
+
+The two panes read from **different trees**, which is why the scan takes a list of roots
+(`DEFAULT_TAG_ROOTS` in `build_index.py`):
+
+| Tree | Pane | What it is |
+|---|---|---|
+| `src/main/nlhdl/**/*.nlhdl.scala` | NL_HDL | the module spec, written by `/nlhdl gen-nlhdl` |
+| `src/main/scala/v4/vec/generated/**` | RTL | the Chisel emitted from it by `/nlhdl gen-rtl` |
+| `src/main/scala/v4/{common,exu}/**`, `src/main/sv/**` | RTL | the hand-written seam wiring it into BOOM |
+
+Scanning only `src/main/nlhdl` — the original default — left the RTL pane permanently empty,
+since generated Chisel is written outside that tree. RTL sites are therefore labelled
+`generated` or `hand-written`, generated first: the emitted module is what the requirement is
+about, the seam is where it gets plugged in.
 
 ## Files
 
 ```
 tools/req-viewer/
   build_index.py     block extraction, quote matching, tag scan, index.json emitter
-  serve.py           localhost server: app, index, instrumented pages, Sphinx assets
+  serve.py           localhost server: app, index, tagged sources, instrumented pages, assets
   app/index.html     the four-pane shell
   app/app.css        shell styling
   app/app.js         hover/pin/select wiring, quote marking, splitters, search
@@ -127,8 +157,9 @@ not be placed, and `--out DIR` writes the index elsewhere. Requires only PyYAML.
 ## Smoke test
 
 `app/_probe.html` drives the real UI in a headless browser — hover, pin, hover-while-pinned,
-card selection, quote marking across every requirement on the page, family chips, search,
-cross-page selection, clear, and a splitter drag:
+card selection, quote marking across every requirement on the page, both implementation panes
+on a requirement tagged in both trees, whole-file expansion and its `/api/file` guard, family
+chips, search, cross-page selection, clear, and a splitter drag:
 
 ```sh
 python3 tools/req-viewer/serve.py --port 8803 &
@@ -137,4 +168,4 @@ google-chrome --headless=new --disable-gpu --no-sandbox --window-size=1500,1000 
   | grep -oE '(PASS|FAIL)  [^<]*'
 ```
 
-Last run: 26 passed, 0 failed.
+Last run: 39 passed, 0 failed.

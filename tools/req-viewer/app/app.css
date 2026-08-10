@@ -158,6 +158,8 @@ select:focus, input:focus { outline: 2px solid var(--accent-soft); border-color:
 .badge-drift { background: #fef2f2; color: var(--bad); }
 .badge-impl-yes { background: #ecfdf5; color: var(--ok); }
 .badge-impl-no { background: #f4f5f7; color: var(--ink-faint); }
+.badge-origin-generated { background: #eef2ff; color: #3730a3; }
+.badge-origin-handwritten { background: #f4f5f7; color: var(--ink-soft); }
 
 .empty { color: var(--ink-faint); padding: 6px 2px; font-style: italic; }
 .reqs-list.reqs-idle { grid-template-columns: 1fr; }
@@ -192,9 +194,45 @@ select:focus, input:focus { outline: 2px solid var(--accent-soft); border-color:
 .impl-file {
   margin: 0 0 8px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
 }
-.impl-file > div { padding: 4px 8px; background: #f8f9fb; border-bottom: 1px solid var(--line-soft); }
+.impl-file-head {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  padding: 4px 8px; background: #f8f9fb; border-bottom: 1px solid var(--line-soft);
+}
 .impl-file .path { font-family: var(--mono); font-size: 12px; color: var(--accent); }
-.impl-file pre { margin: 0; padding: 8px; overflow: auto; font-family: var(--mono); font-size: 12px; }
+.impl-jumps { display: flex; gap: 4px; flex-wrap: wrap; }
+.impl-jump, .impl-toggle {
+  font: 600 10px/1.6 var(--mono); text-transform: uppercase; letter-spacing: .04em;
+  padding: 0 5px; border: 1px solid var(--line); border-radius: 3px;
+  background: #fff; color: var(--ink-soft); cursor: pointer;
+}
+.impl-toggle { margin-left: auto; }
+.impl-jump:hover, .impl-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.impl-error { padding: 8px; font-family: var(--mono); font-size: 12px; color: var(--bad); }
+
+/* Code lines are never wrapped, so every view scrolls sideways. A snippet sits at its natural
+   height; a whole file is capped, or one card would push every other site out of the pane. */
+.impl-view { overflow: auto; }
+/* Fallback only — fitView() replaces this with the pane's real available height. */
+.impl-view-full { max-height: 55vh; }
+.impl-snippet + .impl-snippet { border-top: 1px dashed var(--line); }
+
+pre.code-lines { margin: 0; padding: 6px 0; font-family: var(--mono); font-size: 12px; }
+.code-line {
+  display: block; padding: 0 8px 0 0; white-space: pre; scroll-margin: 40px;
+}
+.code-line::before {
+  content: attr(data-line);
+  display: inline-block; width: 4.5ch; margin-right: 8px; padding-right: 5px;
+  text-align: right; color: var(--ink-faint); background: #f8f9fb;
+  border-right: 1px solid var(--line-soft); user-select: none;
+}
+.code-hit { background: var(--quote); }
+.code-hit::before { color: var(--ink-soft); background: #f7edc8; font-weight: 700; }
+.code-tag-other { background: #f6f7fb; }
+.code-flash { animation: code-flash 900ms ease-out; }
+@keyframes code-flash {
+  from { background: var(--pin-soft); } to { background: var(--quote); }
+}
 .statement-quote {
   margin: 0 0 8px; padding: 7px 9px; border-radius: 6px;
   background: #fbfcfd; border: 1px solid var(--line-soft);

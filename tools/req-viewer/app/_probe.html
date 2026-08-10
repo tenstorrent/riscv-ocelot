@@ -110,6 +110,80 @@ async function run() {
   check('table-row quotes markable', rowTried === 0 || rowMarked === rowTried,
         `${rowMarked}/${rowTried} row quotes marked`);
 
+  // --- both implementation panes, on a requirement that is tagged in both ---
+  // The two panes are fed from different trees (src/main/nlhdl vs the emitted Chisel under
+  // src/main/scala), so a req carrying both kinds of tag is what proves both are scanned —
+  // the placeholder text also mentions the tag, and would satisfy a looser check.
+  const impl = win.RV.index.reqs.find(r => r.impl.nlhdl.length &&
+                                           r.impl.rtl.some(h => h.origin === 'generated'));
+  if (impl) {
+    // Cards seed their open/collapsed state from this pref, so pin it: without that the
+    // expansion check below would compare a full file against a full file on a second run.
+    win.localStorage.setItem('rv.implFull', '0');
+    await win.selectReq(impl.id, true);
+    await sleep(700);
+    // One card per file, one jump button per tagged line.
+    const sites = (sel) => Array.from(doc.querySelectorAll(sel + ' .impl-file .path'))
+        .map(n => n.textContent);
+    const distinct = (list) => new Set(list.map(h => h.file)).size;
+    check('rtl pane lists the emitted files',
+          sites('#rtl-body').length === distinct(impl.impl.rtl),
+          `${impl.id}: ${sites('#rtl-body').slice(0, 2).join('  ')}`);
+    check('every tagged rtl line is reachable',
+          doc.querySelectorAll('#rtl-body .impl-jump').length === impl.impl.rtl.length,
+          `${impl.impl.rtl.length} tags in ${distinct(impl.impl.rtl)} file(s)`);
+    check('rtl files label their origin',
+          doc.querySelectorAll('#rtl-body .impl-file .badge-origin-generated').length > 0 &&
+          doc.querySelectorAll('#rtl-body .impl-file [class*="badge-origin-"]').length ===
+              distinct(impl.impl.rtl));
+    check('nlhdl pane lists its own files',
+          sites('#nlhdl-body').length === distinct(impl.impl.nlhdl),
+          sites('#nlhdl-body').slice(0, 1).join(''));
+
+    // --- expand a site to the whole file ------------------------------------
+    const card = doc.querySelector('#rtl-body .impl-file');
+    const snippetLines = card.querySelectorAll('.code-line').length;
+    check('snippet is numbered from the real file line',
+          card.querySelector('.code-line').dataset.line ===
+              String(impl.impl.rtl[0].line), card.querySelector('.code-line').dataset.line);
+    card.querySelector('.impl-toggle').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await sleep(1200);
+    const fullLines = card.querySelectorAll('.code-line').length;
+    check('whole file expands past the snippet', fullLines > snippetLines,
+          `${snippetLines} -> ${fullLines} lines`);
+    const hitRow = card.querySelector('.code-line.code-hit');
+    check('tagged line highlighted in the file', !!hitRow, hitRow && hitRow.dataset.line);
+    const view = card.querySelector('.impl-view-full');
+    check('expanded view is its own scroller',
+          !!view && view.scrollHeight > view.clientHeight + 20,
+          view ? `${view.clientHeight} of ${view.scrollHeight}px` : 'no scroller');
+    // Compare rendered rectangles, not offsetTop: offsetTop shares a baseline with scrollTop
+    // only by accident, so an offsetTop-based check passes on a view scrolled to the wrong
+    // place. What matters is that the row is inside the view *and* inside the pane.
+    const rowIn = (box) => {
+      const rr = hitRow.getBoundingClientRect(), br = box.getBoundingClientRect();
+      return rr.top >= br.top - 2 && rr.bottom <= br.bottom + 2;
+    };
+    check('expanded view lands on the tagged line', !!view && !!hitRow && rowIn(view),
+          hitRow && `line ${hitRow.dataset.line} at y=${Math.round(hitRow.getBoundingClientRect().top)}`);
+    check('the tagged line is inside the visible pane',
+          !!hitRow && rowIn(doc.querySelector('#rtl-pane .pane-body')));
+    card.querySelector('.impl-toggle').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await sleep(300);
+    check('collapsing returns to the snippet',
+          card.querySelectorAll('.code-line').length === snippetLines);
+    win.localStorage.removeItem('rv.implFull');
+
+    // --- the file endpoint only serves what the tag scan could have read ----
+    const ok = await fetch('/api/file?path=' + encodeURIComponent(impl.impl.rtl[0].file));
+    check('file endpoint serves a scanned source', ok.ok, 'HTTP ' + ok.status);
+    const bad = await fetch('/api/file?path=' + encodeURIComponent('../../etc/passwd'));
+    check('file endpoint refuses a path outside the scanned roots',
+          bad.status === 403 || bad.status === 400, 'HTTP ' + bad.status);
+  } else {
+    check('rtl pane lists the emitted files', false, 'no requirement carries an rtl tag');
+  }
+
   // --- idle state ----------------------------------------------------------
   doc.querySelector('#clear').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
   await sleep(200);
