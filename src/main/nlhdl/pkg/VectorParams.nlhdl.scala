@@ -195,6 +195,40 @@ from Tenstorrent Inc.
   This section declares derived values and elaboration-time checks. There is no
   hardware and no state.
 
+  ===> EVERY DERIVED VALUE IN `HasVectorParams` MUST BE A `lazy val`, NOT A `val`.
+       The trait declares `vectorParams` ABSTRACT and its consumers supply it —
+       `HasBoomCoreParameters` does so with an anonymous instance,
+       `new HasVectorParams { val vectorParams = vp }` (`parameters.scala:346`).
+       Scala runs a trait's own initializers BEFORE a subclass assigns its `val`s,
+       so an eager `val vecPregSz = log2Ceil(numVecPhysRegisters)` dereferences
+       `vectorParams` while it is still `null` and elaboration dies with:
+
+         java.lang.NullPointerException: Cannot invoke
+           "VectorParams.numVecPhysRegisters()" because the return value of
+           "HasVectorParams.vectorParams()" is null
+
+       `lazy val` defers each computation to first access, which is after the
+       subclass is constructed. `def` would work too but recomputes; these feed
+       hardware widths and are read many times.
+
+       // ===> NEITHER GATE (a) NOR GATE (f) CAN CATCH THIS, WHICH IS WHY IT SAT
+       // UNDETECTED FROM PHASE A THROUGH PHASE C. It is not a compile error —
+       // the types are fine — and a `usingRVV = false` build never constructs
+       // `HasVectorParams` at all, so the vectors-off gate cannot reach it
+       // either. It surfaced only when a VECTOR config was first elaborated
+       // end-to-end (the `MegaBoomV4VectorConfig` cosim pipeclean, 2026-08-10),
+       // and it fired BEFORE the known D2 dispatcher `require`, masking it.
+       // The abstract `val vectorParams: VectorParams` itself stays a plain
+       // `val` — it is the thing being supplied, not a derived value.
+
+  ===> AND NO ELABORATION CHECK MAY SIT AS A BARE STATEMENT IN THE TRAIT BODY,
+       for the same reason: a bare `require(...)` executes during trait
+       initialization and hits the same null. Fold each check INTO the `lazy val`
+       whose invariant it guards, as a block that computes the value, requires on
+       it, then yields it. The check still runs — on first access of that value —
+       and it runs after construction. A check hoisted out of the value it
+       protects looks tidier and does not work.
+
   ---- Derived widths ----
 
   `vecPregSz` is `log2Ceil(numVecPhysRegisters)`, 7 bits at the default 96.

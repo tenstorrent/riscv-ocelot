@@ -23,6 +23,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 
 import boom.v4.common.{BoomBundle, BoomModule}
+import boom.v4.vec.generated.VecTrace
 
 // GENERATED from src/main/nlhdl/vec/regfile/VlRegFile.nlhdl.scala. Do not
 // hand-edit; regenerate via the nlhdl gen-rtl flow instead.
@@ -52,24 +53,23 @@ import boom.v4.common.{BoomBundle, BoomModule}
 // `vl_rename` instance. This module exports no `busy` and no `ready` of any
 // kind.
 //
-// SPEC DEFECT (reported, not resolved) -- NONE OF THE FOUR MANDATED
-// VecTrace LINES CAN BE EMITTED. The nlhdl logic section's "Tracing" part
-// asks for one guarded `VecTrace.traceVl` line per event (`wr_ren`, `wr_alu`,
-// `wr_lsu`, `rd_commit`). Every public VecTrace helper except `traceDecode`
-// -- `trace`, `tracePrn`, `traceVl`, `traceElem`, `traceTag` -- requires a
-// full `uop: MicroOp` (VecTrace.scala's `trace` reads `uop.rob_idx`;
-// `traceVl` additionally reads `uop.pvl.get`). This module's ports, per the
-// nlhdl ports section, are bare `Valid` bundles of `addr`/`data` -- no
-// MicroOp, no rob_idx, on any write or read port -- and this module's
-// `depends_on` (VectorParams, VecTrace) deliberately does not include
-// MicroOp. There is therefore no value anywhere on this module's boundary
-// that could supply `traceVl`'s required `uop` argument, and inventing one
-// (a fabricated MicroOp, or reusing `addr`/`data` as stand-ins for
-// `rob_idx`) is exactly the kind of invented field this flow's ground rules
-// forbid. All four calls are OMITTED below, each with an inline flag at its
-// event site; VConfigUnit hit the same shape of defect (there via
-// decode/rename/commit-stage identifier mismatches) and the same resolution
-// -- omit and report -- is used there.
+// TRACING -- the three mandated WRITE lines are emitted via VecTrace's
+// three-step ladder (`trace*` -> `traceId` -> `traceStruct`; VecTrace.scala's
+// "two uOP-less variants" note). This module's ports, per the nlhdl ports
+// section, are bare `Valid` bundles of `addr`/`data` -- no MicroOp anywhere
+// on any write or read port, and this module's `depends_on` (VectorParams,
+// VecTrace) deliberately does not include MicroOp -- so the first rung
+// (`trace`/`traceVl`/...) is unreachable without inventing a MicroOp, which
+// this flow's ground rules forbid. There is also no `rob_idx` on any port,
+// so the second rung (`traceId`) is unreachable too, for the same reason
+// `VecRegFileBank` (a sibling storage/lookup structure with the same
+// uOP-less, rob_idx-less boundary) uses the third rung. Every one of the
+// three write events -- `wr_ren`, `wr_alu`, `wr_lsu` -- is therefore
+// emitted with `VecTrace.traceStruct`, keyed on `prn` (the write/read
+// `addr`, i.e. the `pvl` the event concerns) and `vl` (the `data`
+// written/read). No port was added to reach a higher rung -- see the ports
+// section's binding note and the nlhdl's own admonition against acquiring a
+// port purely to be traceable.
 //
 // Governing spec anchors: frontend.rst `vector-rvv-decode` ("VSET Special
 // Handling") and `vl-delivery`, midcore.rst `vl-vtype-rename` and
@@ -247,9 +247,10 @@ class VlRegFile(implicit p: Parameters) extends BoomModule
   for (w <- 0 until coreWidth) {
     when (io.w_ren(w).valid) {
       vl_rf(io.w_ren(w).bits.addr) := io.w_ren(w).bits.data
-      // (trace, wr_ren) SPEC DEFECT -- omitted. See file header TRACING
-      // note: VecTrace.traceVl needs a MicroOp for rob_idx/pvl, and this
-      // port carries neither.
+      // Tracing (see file header): no MicroOp/rob_idx on this port ->
+      // traceStruct, keyed on the written `pvl` (`prn`) and its new value.
+      VecTrace.traceStruct("VlRegFile", "wr_ren",
+        Seq(("prn", io.w_ren(w).bits.addr), ("vl", io.w_ren(w).bits.data)))
     }
   }
 
@@ -275,8 +276,12 @@ class VlRegFile(implicit p: Parameters) extends BoomModule
   for (w <- 0 until numAluWritePorts) {
     when (io.w_alu(w).valid) {
       vl_rf(io.w_alu(w).bits.addr) := io.w_alu(w).bits.data
-      // (trace, wr_alu) SPEC DEFECT -- omitted. See file header TRACING
-      // note.
+      // Tracing (see file header): traceStruct, keyed on the written `pvl`
+      // (`prn`) and its new value. Both lanes may fire the same cycle (D8);
+      // each lane's call is independently guarded on its own `.valid`, so
+      // two same-cycle `vset` writebacks emit two distinct lines.
+      VecTrace.traceStruct("VlRegFile", "wr_alu",
+        Seq(("prn", io.w_alu(w).bits.addr), ("vl", io.w_alu(w).bits.data)))
     }
   }
 
@@ -301,9 +306,11 @@ class VlRegFile(implicit p: Parameters) extends BoomModule
   for (w <- 0 until numLsuWritePorts) {
     when (io.w_lsu(w).valid) {
       vl_rf(io.w_lsu(w).bits.addr) := io.w_lsu(w).bits.data
-      // (trace, wr_lsu) SPEC DEFECT -- omitted. See file header TRACING
-      // note. (Currently dead in any case: this port never fires until
-      // step G4.)
+      // Tracing (see file header): traceStruct, keyed on the written `pvl`
+      // (`prn`) and its new (trimmed) value. Currently dead in any case --
+      // this port never fires until step G4 lands.
+      VecTrace.traceStruct("VlRegFile", "wr_lsu",
+        Seq(("prn", io.w_lsu(w).bits.addr), ("vl", io.w_lsu(w).bits.data)))
     }
   }
 
@@ -380,6 +387,13 @@ class VlRegFile(implicit p: Parameters) extends BoomModule
   // selects that lane's `pvl` and drives this single address -- that select
   // is the ROB's, not this module's.
   io.r_commit.data := vl_rf(io.r_commit.addr)
-  // (trace, rd_commit) SPEC DEFECT -- omitted. See file header TRACING
-  // note.
+  // READS ARE NOT TRACED -- neither R_exe nor R_commit. Both are bare
+  // `addr`/`data` pairs with no valid or enable, so a line on either fires
+  // every cycle per port and buries the events that matter. The nlhdl used to
+  // mandate an `rd_commit` line here and generation implemented it literally,
+  // which made it fire unconditionally; gating it would need an enable added
+  // SOLELY to make a trace line emit, which the VecTrace spec forbids. The
+  // commit event is observable from the consumer side, where a real `rob_idx`
+  // exists (the ROB / VConfigUnit commit path can use `traceId`). Spec
+  // corrected 2026-08-10; see the nlhdl Tracing paragraph's `// ===>` note.
 }

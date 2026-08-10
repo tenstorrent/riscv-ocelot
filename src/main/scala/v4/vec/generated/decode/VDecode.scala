@@ -152,17 +152,21 @@ class VDecode(implicit p: Parameters) extends BoomModule
     val is_widening = funct6(5, 4) === 3.U && funct3_is_m_or_f
     // NARROWING: funct6 0x2C..0x2F under OPIVV/OPIVX/OPIVI (vnsrl/vnsra/vnclip).
     // Dest stays SEW-wide (their SOURCE is 2*SEW) -- no dest_eew adjustment.
+    //
+    // VFUNARY0 (funct6 0x12, OPFVV): vs1 is an opcode extension whose top two
+    // bits (vs1(4,3)) partition the block into vfcvt.*/.rtz (0b00, dest SEW,
+    // no adjustment), vfwcvt.* (0b01, dest 2*SEW -- pass vsew+1 exactly like
+    // the 0x30..0x3F widening families), and vfncvt.* (0b10, dest SEW, source
+    // 2*SEW -- no adjustment, same reasoning as vnsrl/vnsra/vnclip; NOT "fixed"
+    // by symmetry with vfwcvt). VXUNARY0 is the SAME funct6 0x12 but under
+    // OPMVV (vzext/vsext): its destination is SEW and the source is narrower,
+    // so it needs no adjustment either -- gate on funct3 as well as funct6 so
+    // the two families behind this one funct6 are not conflated.
+    val is_vfunary0      = funct6 === 0x12.U && funct3 === OPFVV
+    val is_vfwcvt        = is_vfunary0 && vs1f(4, 3) === "b01".U
+    val is_widening_total = is_widening || is_vfwcvt
     val sew = io.vtype_in(w).vsew
-    val dest_eew = Mux(is_widening, sew +& 1.U, sew)
-    // ASSUMPTION: the spec's own text bounds the widening test to funct6
-    // 0x30-0x3F, i.e. the true per-element widening arithmetic/.w/reduction
-    // families. It never mentions the FP convert family (VFUNARY0, funct6
-    // 0x12) in this dest_eew context, even though vfwcvt.*/vfncvt.* also
-    // change element width. Implemented exactly as literally specified
-    // (0x30-0x3F only) -- extending it to funct6 0x12 would be inventing
-    // behavior the nlhdl source never asked for. SPEC DEFECT (reported, not
-    // resolved): FP widening/narrowing converts are not classified by this
-    // module's dest_eew rule at all.
+    val dest_eew = Mux(is_widening_total, sew +& 1.U, sew)
 
     // -- EMUL from VtypeTable, the sanctioned derivation path. VtypeTable.decode
     // takes the raw UInt encoding (it calls VType.fromUInt internally), so the

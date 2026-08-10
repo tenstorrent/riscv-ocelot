@@ -25,6 +25,7 @@ import org.chipsalliance.cde.config.Parameters
 import boom.v4.common.BoomModule
 import boom.v4.exu.BrUpdateInfo
 import boom.v4.util.SelectFirstN
+import boom.v4.vec.generated.VecTrace
 
 // GENERATED from src/main/nlhdl/vec/rename/VecFreeList.nlhdl.scala. Do not
 // hand-edit; regenerate via the nlhdl gen-rtl flow instead.
@@ -56,27 +57,24 @@ import boom.v4.util.SelectFirstN
 // of its own -- same convention as the sibling generated vec modules (e.g.
 // `VConfigUnit`).
 //
-// SPEC DEFECT (reported, not resolved) -- NO IDENTIFIER-CARRYING PORT EXISTS
-// AT ALL, so NONE of the three `VecTrace` lines the logic section calls for
-// (event "stall" on `alloc_ok` low, event "alloc" per granted lane, event
-// "free" per commit-side reclaim) can be implemented. Every `VecTrace`
-// public entry point (`trace`, `tracePrn`, `traceVl`, `traceElem`,
-// `traceTag`) requires a `MicroOp` to source `rob_idx`, and `traceDecode`
-// requires an `ftq_idx`/`pc_lob` pair -- this module's ports section
-// (`reqs`/`req_members`/`req_shared`/`alloc_pvdest`/`alloc_pvtmp`/
-// `alloc_ok`/`alloc_fire`/`dealloc`/`dealloc_tmp`/`ren_br_tags`/`brupdate`/
-// `rollback`/`debug_freelist`/`stall_cnt_inc`) carries no `MicroOp`, no
-// `rob_idx` and no `ftq_idx`/`pc_lob` for any lane. Unlike `VConfigUnit`
-// (which at least has decode-lane `ftq_idx`/`pc_lob` to tag ONE of its four
-// missing lines), this module has nothing to tag any of the three with, and
-// fabricating a value (e.g. `rob_idx := 0.U`) is exactly the failure mode
-// `VecTrace.traceDecode`'s own doc comment calls "worse than a line that
-// admits it does not know" -- a wrong-instruction trace line silently aliases
-// the real event and would mislead exactly the debugging effort tracing
-// exists for. All three lines are therefore OMITTED; see the inline flags at
-// each of the three sites in the logic below. The FUNCTIONAL side of each of
-// those obligations (the stall enforcement itself, raising `stall_cnt_inc`,
-// the free-list state updates) is implemented and unaffected by this gap.
+// TRACING -- all three mandated lines (event "stall" on `alloc_ok` low,
+// event "alloc" per granted lane, event "free" per commit-side reclaim) are
+// now emitted via `VecTrace`'s three-step ladder (`trace*` -> `traceId` ->
+// `traceStruct`; see `VecTrace.scala`'s "two uOP-less variants" note). This
+// module's ports (`reqs`/`req_members`/`req_shared`/`alloc_pvdest`/
+// `alloc_pvtmp`/`alloc_ok`/`alloc_fire`/`dealloc`/`dealloc_tmp`/
+// `ren_br_tags`/`brupdate`/`rollback`/`debug_freelist`/`stall_cnt_inc`)
+// carry no `MicroOp` and no `rob_idx` for any lane -- by design, per this
+// module's own `dependencies` note that it deliberately excludes `MicroOp`
+// -- so the first two rungs are unreachable without inventing an identifier,
+// which this flow's ground rules forbid; no port was added to reach a
+// higher rung. This module's events are inherently about PRNs and
+// free-list state, not instructions -- a group is allocated for one uOP and
+// freed on behalf of another, so a `rob_idx` would often be dishonest even
+// where one happened to be available -- so all three lines use
+// `VecTrace.traceStruct`, keyed on `lane`/`pvdest`/`nmem`/`pvtmp` (alloc),
+// `lane`/`demand`/`free` (stall), and `slot`/`prn`/`tmp` (free). See each
+// call site below for the exact keys.
 //
 // Governing spec anchors: midcore.rst `free-list`, `cii-shared-mapping`,
 // `vl-vtype-rename`, `regfiles-bypass`; issue.rst `cii-shared-sched`.
@@ -269,12 +267,22 @@ class VecFreeList(
   // (every port index is `>= 0`), so `!alloc_ok` alone already implies some
   // lane requested.
   io.stall_cnt_inc := !alloc_ok
-  // SPEC DEFECT (reported, not resolved) -- the "emit one VecTrace line
-  // (event 'stall', the oldest requesting lane's rob_idx, total_demand, free
-  // count)" half of this requirement is OMITTED: no port on this module
-  // carries a rob_idx (or any uop) for any lane. See the file header's
-  // TRACING note. The functional stall enforcement and `stall_cnt_inc` above
-  // are unaffected.
+
+  // Tracing (see file header): no MicroOp/rob_idx on any lane -> traceStruct.
+  // Keyed on `lane` (the oldest REQUESTING lane -- lane 0 is oldest per the
+  // resolved `base`/window convention above, so `PriorityEncoder` over
+  // `io.reqs` names it directly), `demand` (`total_demand`) and `free` (the
+  // free-PRN count, `PopCount(free_list)`) -- the honest stand-ins for the
+  // nlhdl's "oldest requesting lane's rob_idx, total_demand, free count"
+  // now that no uOP identity is available on this boundary. Guarded on
+  // `!alloc_ok`, which -- per the comment above -- already implies some
+  // lane requested, so `PriorityEncoder(io.reqs)` names a real requester.
+  when (!alloc_ok) {
+    VecTrace.traceStruct("VecFreeList", "stall", Seq(
+      ("lane", PriorityEncoder(io.reqs)),
+      ("demand", total_demand),
+      ("free", PopCount(free_list))))
+  }
 
   // ===========================================================================
   // ---- Partial-prefix fire and per-lane consumption ----
@@ -346,6 +354,23 @@ class VecFreeList(
       // non-shared lane's window is only `members` ports wide).
       val pvtmpIdx = Mux(m.U < members, tmp_base + m.U, tmp_base)
       io.alloc_pvtmp(w)(m) := Mux(io.req_shared(w), r_sel(pvtmpIdx), 0.U)
+    }
+
+    // Tracing (see file header): no MicroOp/rob_idx on this lane ->
+    // traceStruct. One line per GRANTED lane (`io.alloc_fire(w)`, never a
+    // bundle-wide OR -- same per-lane discipline as every consumption term
+    // above). Keyed on `lane`, `pvdest` (the granted group's base PRN,
+    // member 0 -- the same "base PRN + member count" convention
+    // `VecTrace.tracePrn` uses), `nmem` (`req_members(w)`, == `v_emul`), and
+    // `pvtmp` (the granted tmp group's base PRN; already forced to 0 by the
+    // `io.alloc_pvtmp` Mux above when this lane is not `req_shared`, so the
+    // field is always present and reads honestly either way).
+    when (io.alloc_fire(w)) {
+      VecTrace.traceStruct("VecFreeList", "alloc", Seq(
+        ("lane", w.U),
+        ("pvdest", io.alloc_pvdest(w)(0)),
+        ("nmem", io.req_members(w)),
+        ("pvtmp", io.alloc_pvtmp(w)(0))))
     }
   }
 
@@ -430,7 +455,10 @@ class VecFreeList(
   // presents every member of its `stale_pvdest` group in one cycle and the
   // whole stale group is freed together. Under "committed_ptr" the same OR
   // tree serves a single valid slot per lane.
-  val com_deallocs_pvdest = RegNext(io.dealloc)
+  // Named once so the trace loop below reuses the SAME registers rather than
+  // instantiating a second `RegNext` purely for tracing.
+  val dealloc_r = RegNext(io.dealloc)
+  val com_deallocs_pvdest = dealloc_r
     .map(d => UIntToOH(d.bits)(n - 1, 0) & Fill(n, d.valid))
     .reduce(_ | _)
 
@@ -438,10 +466,34 @@ class VecFreeList(
   // `dealloc_tmp` is OR-ed into `com_deallocs` by the identical expression,
   // so a committing shared OP.v frees its `pvtmp` group in the SAME cycle as
   // its stale `pvdest` group. Present only when `maxGroupSize > 1`.
-  val com_deallocs = io.dealloc_tmp match {
-    case Some(dt) =>
-      com_deallocs_pvdest | RegNext(dt).map(d => UIntToOH(d.bits)(n - 1, 0) & Fill(n, d.valid)).reduce(_ | _)
+  val dealloc_tmp_r = io.dealloc_tmp.map(RegNext(_))
+  val com_deallocs = dealloc_tmp_r match {
+    case Some(dtr) =>
+      com_deallocs_pvdest | dtr.map(d => UIntToOH(d.bits)(n - 1, 0) & Fill(n, d.valid)).reduce(_ | _)
     case None => com_deallocs_pvdest
+  }
+
+  // Tracing (see file header): no MicroOp/rob_idx on any commit lane ->
+  // traceStruct. One line per valid commit-side reclaim SLOT (the same
+  // `deallocWidth` granularity `dealloc`/`dealloc_tmp` themselves use, since
+  // no per-lane member count exists here to regroup slots into whole groups
+  // -- see the "no per-commit-lane member count" spec-defect note below).
+  // Keyed on `slot`, `prn` (the freed PRN) and `tmp` (0 for a `dealloc`
+  // slot, 1 for a `dealloc_tmp` slot), so `event=free` greps find every
+  // commit-side reclaim at the PRN it actually frees.
+  for (i <- 0 until deallocWidth) {
+    when (dealloc_r(i).valid) {
+      VecTrace.traceStruct("VecFreeList", "free", Seq(
+        ("slot", i.U), ("prn", dealloc_r(i).bits), ("tmp", 0.U)))
+    }
+  }
+  dealloc_tmp_r.foreach { dtr =>
+    for (i <- 0 until deallocWidth) {
+      when (dtr(i).valid) {
+        VecTrace.traceStruct("VecFreeList", "free", Seq(
+          ("slot", i.U), ("prn", dtr(i).bits), ("tmp", 1.U)))
+      }
+    }
   }
 
   //@req-spec-rename.h17
@@ -533,11 +585,9 @@ class VecFreeList(
   // making a substituted assertion fire falsely. Omitted rather than
   // implemented incorrectly.
 
-  // SPEC DEFECT (reported, not resolved) -- the "emit one guarded VecTrace
-  // line per granted lane (event 'alloc') and one per commit-side free
-  // (event 'free')" tracing convention (ground rule 11; this paragraph cites
-  // no requirement ID of its own, so no requirement is left untagged by this
-  // omission) cannot be implemented anywhere in this module: see the file
-  // header's TRACING note. No `VecTrace` import or call appears in this file
-  // as a result.
+  // The "emit one guarded VecTrace line per granted lane (event 'alloc')
+  // and one per commit-side free (event 'free')" tracing convention (ground
+  // rule 11; this paragraph cites no requirement ID of its own) is now
+  // implemented -- see the file header's TRACING note and the `alloc`/
+  // `free`/`stall` call sites above.
 }

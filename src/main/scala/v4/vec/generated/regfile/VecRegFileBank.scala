@@ -292,14 +292,18 @@ class VecRegFileBank(
   // ---- Tracing ----
   //
   // Ground rule 11 (guarded printf, `vecTrace` plusarg, off by default). This
-  // bank has no MicroOp context, so it cannot use VecTrace.trace or its
-  // wrappers -- only the shared VecTrace.traceEnabled gate (per the
-  // dependencies section). Emits at most one line per cycle, for the
-  // lowest-indexed read port that forwarded this cycle, tagged with module
-  // name, bankId, read-port index and PRN. Neither `read_forwards` above nor
-  // the wires below feed any functional logic -- deleting this block (or
-  // running with the plusarg unset) leaves the design's cycle-by-cycle
-  // behavior bit-identical.
+  // bank has no MicroOp context and no rob_idx on any port, so it cannot use
+  // VecTrace.trace or its wrappers, and it must not hand-roll a printf behind
+  // the public `traceEnabled` gate either -- VecTrace.emitLine stays private
+  // precisely so the line format lives in one place. The event here is about
+  // a physical resource (a bank, a read port, a PRN), not an instruction, so
+  // VecTrace.traceStruct is the correct entry point (per the dependencies
+  // section): it emits the shared "rob=?" struct-line format and requires a
+  // non-empty `extra`, which this call satisfies with `bank`/`port`/`prn`.
+  // Emits at most one line per cycle, for the lowest-indexed read port that
+  // forwarded this cycle. Neither `read_forwards` above nor the wires below
+  // feed any functional logic -- deleting this block (or running with the
+  // plusarg unset) leaves the design's cycle-by-cycle behavior bit-identical.
   //
   // ASSUMPTION: the spec says "at most one line per cycle in which a read
   // forwards" but does not specify a selection rule when more than one read
@@ -307,10 +311,8 @@ class VecRegFileBank(
   // chosen as the most conservative deterministic rule.
   val any_forward  = read_forwards.reduce(_ || _)
   val fwd_port_idx = PriorityEncoder(read_forwards)
-  when (VecTrace.traceEnabled && !reset.asBool) {
-    when (any_forward) {
-      printf("[vec] VecRegFileBank bankId=%d read_fwd port=%d prn=%d\n",
-        bankId.U, fwd_port_idx, io.read_addr(fwd_port_idx))
-    }
+  when (any_forward) {
+    VecTrace.traceStruct("VecRegFileBank", "read_fwd",
+      Seq(("bank", bankId.U), ("port", fwd_port_idx), ("prn", io.read_addr(fwd_port_idx))))
   }
 }

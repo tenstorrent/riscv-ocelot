@@ -854,15 +854,38 @@ class VecRenameSpace(
     VecTrace.trace("VecRenameSpace", "stall", ren2_uops(stall_lane))
   }
 
-  // One per recovery event naming the arm that fired and the br_tag.
+  // One per recovery event naming the arm that fired and the br_tag. This is
+  // already the TOP rung of VecTrace's ladder: `brupdate.b2.uop` is a genuine
+  // `MicroOp` (`BrResolutionInfo extends BoomBundle with HasBoomUOP`), so
+  // `traceTag` -- which takes a real uop, not merely a bare `rob_idx` -- is
+  // the right call here, not `traceId`/`traceStruct`.
   when (brupdate.b2.mispredict) {
     VecTrace.traceTag("VecRenameSpace", "recover_mispredict", brupdate.b2.uop, brupdate.b2.uop.br_tag)
   }
-  // SPEC DEFECT (reported, not resolved) -- the rollback recovery arm has no
-  // implementable trace line: `rollback` is Input(Bool()) only, with no uop
-  // or rob_idx attached anywhere on this module's ports, so no correctly-
-  // tagged line can be built for it. Omitted rather than tagged with a
-  // fabricated identifier, per the same discipline VecMapTable's and
-  // VecFreeList's own generated files already apply to their untaggable
-  // sites.
+  // RE-CHECKED against VecTrace's new `traceId`/`traceStruct` ladder rungs --
+  // still SPEC DEFECT (reported, not resolved): the rollback recovery arm has
+  // no implementable trace line, even with the two new entry points.
+  // `rollback` is Input(Bool()) only, with no uop and no rob_idx attached
+  // anywhere on this module's ports, so `traceId` (needs a real `rob_idx`)
+  // does not apply. `traceStruct` was considered next: its `extra` must be a
+  // genuinely IDENTIFYING key, not a filler value, and nothing at this port
+  // boundary qualifies. `com_valids`/`com_uops` are visible on this module,
+  // but they are NOT the rollback event's identity: rob.scala's FSM enters
+  // `s_rollback` only on `RegNext(RegNext(exception_thrown))` (rob.scala:828),
+  // i.e. two cycles after the excepting instruction's own commit cycle, by
+  // which point `rob_head` (and therefore `com_uops`) has already advanced to
+  // whatever instruction incidentally sits there that cycle -- unrelated to
+  // the flush's cause. Tagging the line with that uop's `rob_idx` would
+  // misattribute the rollback to the wrong instruction, which is worse than
+  // `rob=?`. A literal marker (e.g. `("rollback", 1.U)`) was also considered
+  // and rejected: the event string is already "recover_rollback"-equivalent
+  // in context, so a constant field identifies nothing `traceStruct`'s own
+  // non-empty-`extra` require is trying to guarantee. Omitted rather than
+  // tagged with a fabricated identifier, per the same discipline VecMapTable's
+  // own generated file applies to this exact port and this exact event pair
+  // (VecMapTable.scala:512-517, its "recover_mispredict"/rollback arms): same
+  // bare `Input(Bool())`, same absence of an accompanying uop, same
+  // conclusion after the same check. (VecFreeList never had a recovery-event
+  // trace line to begin with -- its rollback handling is a pure state update,
+  // `rollback_deallocs` -- so there is no equivalent omission to cite there.)
 }

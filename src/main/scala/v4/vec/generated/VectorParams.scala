@@ -243,12 +243,12 @@ trait HasVectorParams
   // ---- Derived widths ----
 
   // 7 bits at the default 96.
-  val vecPregSz: Int = log2Ceil(numVecPhysRegisters)
+  lazy val vecPregSz: Int = log2Ceil(numVecPhysRegisters)
 
   // 6 bits at the default 64.
-  val vlPregSz: Int = log2Ceil(numVlPhysRegisters)
+  lazy val vlPregSz: Int = log2Ceil(numVlPhysRegisters)
 
-  val elenBytes: Int = eLen / 8
+  lazy val elenBytes: Int = eLen / 8
 
   //@req-spec-decode.a10
   // The supported SEW values are 8, 16, 32 and 64 — every power of two from 8
@@ -272,15 +272,25 @@ trait HasVectorParams
   // frontend.rst both describe the VL register file as "64 entries of ~9 bits".
   // Require `vecVLSz >= log2Ceil(vLen * maxMembers / 8 + 1)` so a future edit
   // that narrows it fails the build rather than truncating at run time.
-  val maxVecVL: Int = vLen * maxMembers / 8
+  lazy val maxVecVL: Int = vLen * maxMembers / 8
 
   // vecVLSz is the width needed to hold a VL value: log2Ceil(maxVecVL) + 1 = 9
   // bits at the defaults.
-  val vecVLSz: Int = log2Ceil(maxVecVL) + 1
-  require(vecVLSz >= log2Ceil(vLen * maxMembers / 8 + 1),
-    s"vecVLSz ($vecVLSz) is narrower than the architectural VL width " +
-    s"(log2Ceil(vLen * maxMembers / 8 + 1) = ${log2Ceil(vLen * maxMembers / 8 + 1)}); " +
-    "check the maxVecVL derivation for a truncation bug")
+  // The truncation check lives INSIDE the lazy val rather than as a bare
+  // `require` in the trait body: a statement in the body executes during trait
+  // initialization, before a subclass assigns the abstract `vectorParams`, so it
+  // dereferenced `vLen` on a null and elaboration died with an NPE. Folding it
+  // into the value it guards keeps the check (first access of `vecVLSz` runs it)
+  // and defers it past construction. See the nlhdl logic section's `// ===>`
+  // note on why every member here is lazy.
+  lazy val vecVLSz: Int = {
+    val w = log2Ceil(maxVecVL) + 1
+    require(w >= log2Ceil(vLen * maxMembers / 8 + 1),
+      s"vecVLSz ($w) is narrower than the architectural VL width " +
+      s"(log2Ceil(vLen * maxMembers / 8 + 1) = ${log2Ceil(vLen * maxMembers / 8 + 1)}); " +
+      "check the maxVecVL derivation for a truncation bug")
+    w
+  }
 
   //@req-spec-cii.a16
   // The CII operand and result buses are vLen bits wide — 256 by default —
@@ -288,8 +298,8 @@ trait HasVectorParams
   // than hard-coded: the frozen SV package parameterizes its payloads on VLEN
   // too, and a hard-coded 256 on the Chisel side would silently disagree the
   // moment either changes.
-  val ciiSrcDataBits: Int = vLen
-  val ciiWritebackBits: Int = vLen
+  lazy val ciiSrcDataBits: Int = vLen
+  lazy val ciiWritebackBits: Int = vLen
 
   // ---- Vector PRN capacity: what numVecPhysRegisters actually buys ----
 
@@ -313,8 +323,8 @@ trait HasVectorParams
   // At 128 PRNs these were 12 and 6. The 96-PRN choice trades in-flight groups
   // for area (the port count already dominates the storage term), so the
   // free-list stall rate is the number to watch in the LS regression.
-  val maxRenamableGroups: Int = (numVecPhysRegisters - 32) / maxMembers
-  val maxRenamableSegGroups: Int = maxRenamableGroups / 2
+  lazy val maxRenamableGroups: Int = (numVecPhysRegisters - 32) / maxMembers
+  lazy val maxRenamableSegGroups: Int = maxRenamableGroups / 2
 
   // ---- Element-queue depth is an architectural limit ----
 
@@ -322,5 +332,5 @@ trait HasVectorParams
   // memory-level parallelism, because capacity is reserved at dispatch against
   // the worst-case active element count: 2 at the defaults (512 / 256).
   // Typical VL reserves far less and gets correspondingly more overlap.
-  val maxInflightWorstCaseStores: Int = ssiQueueEntries / vLen
+  lazy val maxInflightWorstCaseStores: Int = ssiQueueEntries / vLen
 }

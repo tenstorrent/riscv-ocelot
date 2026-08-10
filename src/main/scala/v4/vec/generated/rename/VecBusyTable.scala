@@ -501,21 +501,35 @@ class VecBusyTable(
     }
   }
 
-  // SPEC DEFECT (reported, not resolved) -- the part-9 "clr" trace line
-  // ("'clr' with the completing port's member list", carrying rob_idx) has
-  // no implementable call site against VecTrace's REAL, published API.
-  // Every public entry point that emits a line (`trace`, `tracePrn`,
-  // `traceVl`, `traceElem`, `traceTag`) requires a full `MicroOp` to pull
-  // `rob_idx` from; the lowest-level primitive that accepts a bare `rob_idx`
-  // (`emitLine`) is `private` to the VecTrace object and not callable here.
-  // A group-done wakeup carries a bare `rob_idx` UInt (VecGroupDone.rob_idx)
-  // but no MicroOp -- and on the VL instance's "ready_bit" port the payload
-  // is a bare PRN UInt with no rob_idx at all, so no correctly-tagged "clr"
-  // line could exist there even if a bare-rob_idx primitive were public.
-  // Omitted rather than tagged with an invented or wrong identifier -- the
-  // same discipline VConfigUnit's generated RTL already applies to its own
-  // untaggable trace sites. Fix belongs in VecTrace.nlhdl.scala (a public
-  // rob_idx-only emit primitive), not as a local workaround here.
+  // (part 9) guarded trace: "clr" with the completing port's member list.
+  // VecTrace gained the entry points this needed (VecTrace.nlhdl.scala's
+  // `traceId`/`traceStruct` -- see that file's header, which names THIS
+  // module's group-done wakeup as the motivating case for `traceId`):
+  //
+  //   - vector instance ("group_done"): the wakeup's payload IS a
+  //     VecGroupDone, which carries a real `rob_idx` alongside the
+  //     member-PRN vector -- so this rung is `traceId`, not `traceStruct`.
+  //     Reporting `rob=?` here would discard exactly the cross-stage/Whisper
+  //     correlation the line exists for. Extra fields name the base member
+  //     and count the same way the "set" line above does (`pvdest`/`nmem`),
+  //     so the two lines join by field name.
+  //   - VL instance ("ready_bit"): the wakeup's payload is a BARE PRN
+  //     `UInt` with no rob_idx anywhere in it -- there genuinely is no
+  //     honest rob_idx to report, so this rung is `traceStruct` with a
+  //     `prn` key (matching VecRegFileBank's `traceStruct` convention for a
+  //     resource-scoped, not instruction-scoped, event).
+  for (w <- 0 until numWbPorts) {
+    when (io.wakeups(w).valid) {
+      if (vectorInstance) {
+        val gd = io.wakeups(w).bits.asInstanceOf[VecGroupDone]
+        VecTrace.traceId("VecBusyTable", "clr", gd.rob_idx,
+          Seq(("pvdest", gd.pvdest.head), ("nmem", gd.members)))
+      } else {
+        VecTrace.traceStruct("VecBusyTable", "clr",
+          Seq(("prn", io.wakeups(w).bits.asInstanceOf[UInt])))
+      }
+    }
+  }
 
   // =========================================================================
   // ---- 9. Assertions ----

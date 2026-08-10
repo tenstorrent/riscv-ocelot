@@ -1371,3 +1371,139 @@ snapshot as rocket's `VType`, and the vset writeback path is the `ALUUnit`/`Rob`
 This removes the [§12 Phase A](#phase-a--as-built) blocker on gate (e); `enableDebugHarness`
 defaults false and the whole harness sits under one `if (DEBUG_HARNESS)` (`core.scala:1479`),
 which is why gate (f) is unaffected.
+
+---
+
+### Phase C addendum — the trace sweep, the cosim pipeclean, and a Phase-A latent bug
+
+Three follow-ups closed the same day, after the Phase C commit.
+
+#### 1. The `VecTrace` sweep — ground rule 11 now satisfied
+
+`VecTrace` regenerated with the three-step ladder (`traceId`, `traceStruct`), then nine nodes
+regenerated to use it. **`VecTrace` is no longer the constraint on ground rule 11.**
+
+| Node | Lines | Rungs used |
+|---|---|---|
+| `VecRenameSpace` | 868 → 891 | 4 calls, all rung 1 (`tracePrn`/`trace`/`traceTag`) |
+| `VConfigUnit` | 605 → 669 | `traceDecode`, `traceTag`, `traceStruct` ×2 |
+| `VecMapTable` | 537 → 600 | `traceTag`, `traceStruct` ×2 |
+| `VecFreeList` | 543 → 593 | `traceStruct` ×3 |
+| `VecBusyTable` | 545 → 559 | `traceId` (vector) + `traceStruct` (VL) |
+| `VecRegFile` | 403 → 452 | `traceId` / `traceStruct` per port validity |
+| `VlRegFile` | 385 → 408 | `traceStruct` ×3 (writes only) |
+| `VecRegFileBank` | 316 → 318 | `traceStruct`; the hand-rolled `printf` removed |
+
+The ladder held in **both** directions, which is the evidence that it is a real discrimination and
+not a licence for `rob=?`: `VecBusyTable` split its two instances (`traceId` where the wakeup
+carries a `rob_idx`, `traceStruct` where the payload is a bare PRN), and **three nodes
+independently moved UP a rung** on discovering that `io.brupdate.b2.uop` is a genuine `MicroOp`
+(`BrResolutionInfo extends BoomBundle with HasBoomUOP`), so `recover_mispredict` uses `traceTag`
+with a real `rob_idx`. No node took `rob=?` where an honest identifier existed.
+
+Two spec corrections fell out of the sweep:
+
+- **`VecRegFileBank`'s own nlhdl still specified the hand-rolled `printf`** ("guarded printf …
+  gated on `VecTrace.traceEnabled && !reset`"), so a regeneration would have reintroduced it.
+  Amended to mandate `traceStruct` and to record why hand-rolled emission is now forbidden.
+- **`VlRegFile`'s `rd_commit` line is removed from the mandated set.** `R_commit` is a bare
+  `addr`/`data` pair with no valid, so the line fired **every cycle** — precisely the "would emit
+  every cycle" argument the same paragraph already used to exclude `R_exe`. Gating it would need an
+  enable added *solely* to make a trace line emit, which the `VecTrace` spec forbids. The commit
+  event stays observable from the consumer side, where a real `rob_idx` exists.
+
+> **Rollback recovery is untraceable BY CONSTRUCTION, across the whole vector subsystem.** Four
+> nodes (`VecMapTable`, `VecFreeList`, `VecRenameSpace`, `VConfigUnit`) independently omitted it,
+> and the sharpest reason is not "no identifier" but **misattribution**: `rob.scala:828` enters
+> `s_rollback` on `RegNext(RegNext(exception_thrown))`, two cycles after the excepting instruction
+> commits, so `rob_head`/`com_uops` on the rollback cycle name whatever instruction incidentally
+> sits there. Tagging the event with them would be *wrong*, not merely imprecise. Making rollback
+> traceable is a **design change** — giving `rollback` an identifier at D2/D3 — not something any
+> of these nodes can fix. Four agents reaching the same conclusion is a design property, not four
+> shortfalls.
+
+**Deviation worth naming:** `VecRegFile` is the one place tracing costs state — two trace-only
+shadow registers (`read_req_valid_r`, `read_rob_r`, ~72 flops over 9 read ports) so the
+response-cycle line can carry the request cycle's `rob_idx`. Necessary (a response is a cycle
+later than its request) and it feeds no functional logic, but the `VecTrace` spec constrains only
+the *helpers* and is silent on a **caller** adding state, and these flops exist even with the
+plusarg off since `printf` is not dead-code-eliminated. Recorded so the precedent is deliberate.
+
+#### 2. Defect 14 closed — `vfwcvt` EMUL
+
+The `dest_eew` widening rule was bounded to funct6 `0x30`..`0x3F`, missing `VFUNARY0`
+(funct6 `0x12`, OPFVV). Amended and regenerated:
+
+```scala
+val is_vfunary0       = funct6 === 0x12.U && funct3 === OPFVV
+val is_vfwcvt         = is_vfunary0 && vs1f(4, 3) === "b01".U
+val is_widening_total = is_widening || is_vfwcvt
+val dest_eew          = Mux(is_widening_total, sew +& 1.U, sew)
+```
+
+**The original framing of this defect was wrong on half of it.** `vfncvt` needs **no** adjustment:
+all eight forms have a SEW destination with a 2*SEW *source*, structurally identical to
+`vnsrl`/`vnsra`/`vnclip`, which the spec already exempts. Only `vfwcvt` (`vs1(4,3) === 0b01`)
+writes 2*SEW. The spec now lists all three `vs1(4,3)` cases explicitly so nobody "fixes" `vfncvt`
+by symmetry, and notes that `VXUNARY0` shares funct6 `0x12` under **OPMVV** (`vzext`/`vsext`,
+destination SEW) — two families behind one funct6, so the test must gate on funct3 too.
+
+Why it mattered: a `vfwcvt` took LMUL instead of 2*LMUL, so the mapper allocated **half** the
+destination group; under atomic group rename the upper members were never allocated, and the
+coprocessor's writeback would land on PRNs owned by another architectural vreg — silent
+corruption, no assertion, no trap.
+
+#### 3. A latent Phase-A bug that NO existing gate could catch
+
+The cosim pipeclean (`MegaBoomV4VectorConfig`, `run-binary-debug-hex`) was expected to fail at
+D2's dispatcher `require(false)`. It failed **earlier**, twice, on the same latent defect:
+
+```
+java.lang.NullPointerException: Cannot invoke "VectorParams.numVecPhysRegisters()"
+  because the return value of "HasVectorParams.vectorParams()" is null
+```
+
+`HasVectorParams` declares `vectorParams` **abstract**, then dereferences it in **10 eager `val`s
+and one bare `require`** in the trait body. Scala runs a trait's initializers before a subclass
+assigns its `val`s, and `HasBoomCoreParameters` supplies it as
+`new HasVectorParams { val vectorParams = vp }` (`parameters.scala:346`) — so every one hit `null`.
+
+> **This is the important part: neither gate (a) nor gate (f) can detect it, by construction.** It
+> is not a compile error — the types are correct — and a `usingRVV = false` build never constructs
+> `HasVectorParams`, so the vectors-off gate cannot reach it. It survived **Phases A, B and C**
+> and would have greeted whoever started D2, *masking* the dispatcher failure behind an NPE. The
+> only thing that found it was elaborating a vector config end-to-end. **Gate (c) is not merely
+> "blocked until D2" — its absence is load-bearing, and this phase gate set has a real hole in it
+> until D2 lands.** Consider an interim check that elaborates a vector config far enough to
+> construct `BoomCoreParams`, independent of the dispatcher.
+
+Fixed in spec and RTL: all 10 derived values are `lazy val`; the truncation check is folded inside
+the `lazy val vecVLSz` it guards, because a bare `require` in the body has the identical problem —
+a check hoisted out of the value it protects looks tidier and does not work. The abstract
+`val vectorParams` stays a plain `val`.
+
+#### 4. Cosim pipeclean — everything up to elaboration verified
+
+`USE_IMAGE_WHISPER=1 make CONFIG=MegaBoomV4VectorConfig run-binary-debug-hex BINARY=…/vset_test.elf`
+now reaches, and stops at, exactly the expected blocker:
+
+```
+requirement failed
+  at boom.v4.exu.BoomCore.$anonfun$new$260(core.scala:848)   <- require(false)
+  at boom.v4.exu.BoomCore.<init>(core.scala:838)             <- the issueParams loop
+```
+
+Verified working up to that point: the `run-binary-debug-hex` target (`common.mk:491`),
+`USE_IMAGE_WHISPER=1` resolving `whisperdir` to `/chipyard/sims/whisper` (binary at
+`build-Linux/whisper`), the ELF, config resolution, `sbt` compile, and Scala elaboration entered
+properly. **`core.scala:132` still reads `Module(new BasicDispatcher)`** — that one line, plus the
+three missing `IQ_V_*` arms in the `core.scala:838` loop, is all that stands between here and a
+running cosim.
+
+**Chipyard side:** `WithBoomDebugHarness` is now mixed into all six V4 configs
+(Small/Medium/Large/Mega + both Vector). It had been *absent from every config* since A2, so the
+harness existed in boom but no config could use it — the cosim command could not have worked for
+that reason alone, independent of D2. The fragment self-gates (`enableDebugHarness = isVcs`,
+sniffing `SIMULATOR`/`SIM_NAME`/cwd), so Verilator builds elaborate without it rather than
+failing, and gate (f) is unaffected because `regen.sh` strips the mixin before building its
+reference trees.

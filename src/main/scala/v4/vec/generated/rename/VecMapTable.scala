@@ -24,6 +24,7 @@ import org.chipsalliance.cde.config.Parameters
 
 import boom.v4.common.{BoomBundle, BoomModule}
 import boom.v4.exu.BrUpdateInfo
+import boom.v4.vec.generated.VecTrace
 
 // GENERATED from src/main/nlhdl/vec/rename/VecMapTable.nlhdl.scala. Do not
 // hand-edit; regenerate via the nlhdl gen-rtl flow instead.
@@ -83,20 +84,41 @@ import boom.v4.exu.BrUpdateInfo
 // spec content (the field lists are given), only choosing the file that was
 // actually settled as their home.
 //
-// SPEC DEFECT (reported, not resolved) -- NO GUARDED VecTrace CALLS ARE
-// EMITTED. The logic section calls for three: one per remap (`tracePrn` with
-// `rob_idx`, `lvd`, `emul`, installed members), one per stale-group capture,
-// one per recovery event (arm + `br_tag`). `VecTrace.tracePrn`/`trace` both
-// require a `MicroOp` (to read `rob_idx` off), and `VecTrace.traceDecode`
-// requires `ftq_idx`/`pc_lob`. This module's ports section (as written) has
-// none of the three: no `MicroOp`, no `rob_idx`, no `ftq_idx`/`pc_lob`
-// anywhere on `map_reqs`/`map_resps`/`remap_reqs`/`com_remap_reqs`/
-// `ren_br_tags`/`brupdate`/`rollback`. Inventing a fabricated rob_idx (e.g.
-// tagging with `0.U`) would silently alias with a real ROB entry 0 in every
-// grep -- exactly the failure mode `VConfigUnit`'s own SPEC DEFECT note (and
-// `VecTrace.traceDecode`'s doc comment) already flags as worse than omitting
-// the line. All three trace call sites are therefore omitted, flagged inline
-// below. Ground rule 11 is otherwise honored: the assertions this section
+// TRACE, per VecTrace's three-step ladder (trace/tracePrn/traceVl/traceElem/
+// traceTag -> traceId -> traceStruct; use the first that applies). No
+// MicroOp, bare rob_idx, or ftq_idx/pc_lob reaches `map_reqs`/`map_resps`/
+// `remap_reqs`/`com_remap_reqs`/`rollback`, so the two events scoped to those
+// ports use the bottom rung, `traceStruct`, keyed on the lane and the
+// architectural specifier (`lvd`) naming the row/group the event is about --
+// a lookup-and-storage structure's honest identifier, per traceStruct's own
+// doc comment:
+//   - one per remap ("remap"): lane, lvd, pvdest (base PRN, member 0), nmem
+//     (== emul) -- reports the installed group as base+count, the same
+//     convention `tracePrn` itself uses instead of printing every member.
+//   - one per stale-group capture ("stale_capture"): lane, lvd, stale_pvdest
+//     (base PRN, member 0), nmem.
+//
+// The recovery event is NOT uniformly bottom-rung. `io.brupdate` is
+// `Input(new BrUpdateInfo)`, and `BrUpdateInfo.b2` is a `BrResolutionInfo`,
+// which mixes in `HasBoomUOP` (`val uop = new MicroOp()`,
+// v4/common/micro-op.scala:23) -- so `io.brupdate.b2.uop` IS a real MicroOp
+// in scope at this module's boundary. Per the ladder's own ordering ("the
+// FIRST that applies"), the mispredict arm therefore uses `traceTag` with
+// that uop and its `br_tag`, not `traceStruct` -- exactly the call
+// VecRenameSpace already makes for the identical event
+// (rename/VecRenameSpace.scala's "recover_mispredict"). AN EARLIER VERSION OF
+// THIS NOTE (superseded here) wrongly claimed brupdate carries no MicroOp
+// anywhere on this module's ports; it does, via `b2.uop`, and this
+// generation corrects that.
+//
+// The rollback arm has no equivalent. `rollback` is a bare `Input(Bool())`
+// with no br_tag, no MicroOp, no rob_idx anywhere upstream of it, and the
+// event it drives (`map_table := com_map_table`) is a single whole-table
+// copy, not a per-row or per-branch one -- there is no honest key to hand
+// `traceStruct`, and fabricating one (e.g. a constant marker) is exactly what
+// `traceStruct`'s non-empty-`extra` require exists to keep out. That trace
+// line is therefore OMITTED, flagged inline at the `.elsewhen` arm below.
+// Ground rule 11 is otherwise honored in full: the assertions this section
 // also calls for (duplicate-mapping, `emul` range, group-overflow) ARE
 // implemented, since they need no identifier to be correct.
 //
@@ -362,6 +384,19 @@ class VecMapTable(
     // the response (and from there into the OP.v's `v_emul` field) so
     // exactly one structure is the authority on member count.
     io.map_resps(i).v_emul := io.map_reqs(i).emul
+
+    // TRACE -- one per stale-group capture (traceStruct rung; see file
+    // header). No MicroOp/rob_idx reaches this port, so the honest
+    // identifier is the lane plus the architectural specifier (`lvd`) whose
+    // old group this capture is reading; reported as base PRN (member 0) +
+    // count, per `tracePrn`'s own convention.
+    when (io.map_reqs(i).valid) {
+      VecTrace.traceStruct("VecMapTable", "stale_capture", Seq(
+        ("lane",         i.U),
+        ("lvd",          io.map_reqs(i).lvd),
+        ("stale_pvdest", io.map_resps(i).stale_pvdest(0)),
+        ("nmem",         io.map_reqs(i).emul)))
+    }
   }
 
   // =========================================================================
@@ -464,8 +499,22 @@ class VecMapTable(
   // instruction. For the VL instance these are the same two arms, one entry
   // wide.
   when (io.brupdate.b2.mispredict) {
+    // TRACE -- one per recovery event, mispredict arm. Rung 1 of the ladder
+    // applies here despite this module otherwise having no MicroOp on its
+    // boundary: `io.brupdate.b2` is a `BrResolutionInfo`, which mixes in
+    // `HasBoomUOP` (`val uop = new MicroOp()`), so `io.brupdate.b2.uop` is a
+    // real MicroOp in scope. `traceTag` with that uop's own `br_tag` is
+    // exactly the call VecRenameSpace makes for the identical event -- see
+    // the file header's note correcting the prior generation's claim that
+    // brupdate carries no MicroOp.
+    VecTrace.traceTag("VecMapTable", "recover_mispredict", io.brupdate.b2.uop, io.brupdate.b2.uop.br_tag)
     map_table := br_snapshots(io.brupdate.b2.uop.br_tag)
   } .elsewhen (io.rollback) {
+    // TRACE -- one per recovery event, rollback arm: OMITTED (see file
+    // header). `rollback` is a bare Bool with no br_tag, no MicroOp, no
+    // rob_idx anywhere upstream of it, and the event is a single whole-table
+    // copy, not a per-row or per-branch one, so there is no honest key for
+    // `traceStruct` and none is fabricated here.
     map_table := com_map_table
   } .otherwise {
     map_table := remap_table(plWidth)
@@ -517,6 +566,19 @@ class VecMapTable(
   // identity mapping and the free list does not reissue those low PRNs, so
   // there is no reset-adjacent false positive to special-case.
   for (k <- 0 until plWidth) {
+    // TRACE -- one per remap (traceStruct rung; see file header). No
+    // MicroOp/rob_idx reaches this port, so the honest identifier is the
+    // lane plus the architectural specifier (`lvd`) naming the group being
+    // installed; reported as base PRN (member 0) + count, per `tracePrn`'s
+    // own convention for summarizing a group without printing every member.
+    when (io.remap_reqs(k).valid) {
+      VecTrace.traceStruct("VecMapTable", "remap", Seq(
+        ("lane",   k.U),
+        ("lvd",    io.remap_reqs(k).lvd),
+        ("pvdest", io.remap_reqs(k).pvdest(0)),
+        ("nmem",   io.remap_reqs(k).emul)))
+    }
+
     for (m <- 0 until maxGroupSize) {
       val memberValid = io.remap_reqs(k).valid && m.U < io.remap_reqs(k).emul
       assert(!memberValid || !map_table.contains(io.remap_reqs(k).pvdest(m)),
@@ -529,9 +591,10 @@ class VecMapTable(
       "VecMapTable: remap request's destination group overflows numArchRegs.")
   }
 
-  // (trace, SPEC DEFECT -- see file header) A per-remap `tracePrn` line, a
-  // per-stale-group-capture line, and a per-recovery-event line all belong
-  // here, but no port on this module carries a rob_idx, MicroOp, or
-  // ftq_idx/pc_lob to correctly tag any of the three with. All three are
-  // omitted rather than tagged with a fabricated identifier.
+  // TRACE -- see the file header for the full rationale. Implemented: the
+  // per-remap line and the per-stale-group-capture line above (both
+  // `traceStruct`, keyed on lane + lvd), and the recover_mispredict line
+  // above (`traceTag`, using the MicroOp that reaches this module via
+  // `io.brupdate.b2.uop`). Still omitted: the rollback arm's recovery line,
+  // which has no honest identifying key on this module's boundary.
 }

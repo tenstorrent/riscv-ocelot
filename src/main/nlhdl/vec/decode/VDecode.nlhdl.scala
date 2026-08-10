@@ -327,6 +327,34 @@ from Tenstorrent Inc.
   - The NARROWING families (funct6 `0x2C`..`0x2F` under OPIVV/OPIVX/OPIVI —
     vnsrl/vnsra/vnclip) keep a SEW-wide destination; it is their SOURCE that is
     2*SEW. They need no adjustment here.
+  - The WIDENING FP CONVERTS in `VFUNARY0` (funct6 `0x12` under OPFVV) also
+    produce a 2*SEW destination and are NOT in the `0x30`..`0x3F` range above.
+    `VFUNARY0` uses `vs1` as an opcode extension, and its top two bits partition
+    the block, so the test is `vs1(4,3)`:
+      `0b00` — plain `vfcvt.{xu,x}.f.v` / `vfcvt.f.{xu,x}.v` (+ `.rtz` forms):
+               destination is SEW. No adjustment.
+      `0b01` — the `vfwcvt.*` family (`vfwcvt.f.f.v`, `vfwcvt.{xu,x}.f.v`,
+               `vfwcvt.f.{xu,x}.v`, and the two `.rtz` forms): destination is
+               2*SEW. **Pass `vsew + 1`, exactly as for the `0x30`..`0x3F`
+               widening families.**
+      `0b10` — the `vfncvt.*` family: destination is SEW and the SOURCE is
+               2*SEW, so it needs NO adjustment for the same reason
+               vnsrl/vnsra/vnclip do not. Listed here only so a reader does not
+               "fix" it by symmetry with `vfwcvt`.
+
+  // ===> THIS WAS A REAL GAP, AND IT WAS SILENT. Bounding the widening test to
+  // funct6 0x30..0x3F leaves every `vfwcvt` taking the vtype-derived EMUL — that
+  // is, LMUL rather than 2*LMUL — so the mapper allocates HALF the destination
+  // group the instruction writes. Atomic group rename means the upper members are
+  // never allocated at all, so the coprocessor's writeback lands on PRNs owned by
+  // some other architectural register: silent corruption of an unrelated vreg,
+  // with no assertion and no trap anywhere on the path. Found at Phase B and left
+  // implemented-as-literally-specified rather than guessed; amended 2026-08-10.
+  //
+  // Note `VXUNARY0` is the SAME funct6 (0x12) under OPMVV, not OPFVV, and holds
+  // `vzext`/`vsext`. Those need no adjustment either: their destination is SEW and
+  // it is the source that is narrower. Two different families behind one funct6 —
+  // gate on funct3 as well, not on funct6 alone.
 
   A source-side group size is deliberately NOT carried, and no second field is
   added for one. The only host consumers of a group size are the mapper's atomic

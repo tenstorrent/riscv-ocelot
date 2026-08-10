@@ -277,17 +277,31 @@ from Tenstorrent Inc.
 
   ---- Tracing ----
 
-  Tracing follows the shared VecTrace convention (guarded printf, `vecTrace`
-  plusarg, off by default) but this bank cannot use the `VecTrace.trace` helper:
-  that helper requires a `MicroOp` so every line carries `rob_idx`, and a
-  storage bank has no uop context and must not be given one. Per-access VRF
-  trace lines are therefore VecRegFile's, which does have the uop. This module
-  emits only the write-collision assertion above plus, at most, one line per
-  cycle in which a read forwards — gated on `VecTrace.traceEnabled && !reset`,
-  tagged with module name, `bankId`, read-port index and PRN, because a
-  forwarding bug is otherwise indistinguishable from a stale-operand bug several
-  stages downstream. Neither may introduce a register or a wire that functional
-  logic reads.
+  Tracing follows the shared VecTrace convention (`vecTrace` plusarg, off by
+  default). This bank cannot use `VecTrace.trace`: that helper requires a
+  `MicroOp` so every line carries `rob_idx`, and a storage bank has no uop
+  context and **must not be given one** just to be traceable. Per-access VRF
+  trace lines that need instruction identity are therefore VecRegFile's, which
+  has the `rob_idx`.
+
+  Use **`VecTrace.traceStruct("VecRegFileBank", "read_fwd", ...)`** — the
+  structure-scoped rung of VecTrace's three-step ladder — with `bank`, `port`
+  and `prn` as the `extra` keys. This module emits only the write-collision
+  assertion above plus, at most, one line per cycle in which a read forwards,
+  because a forwarding bug is otherwise indistinguishable from a stale-operand
+  bug several stages downstream. Neither may introduce a register or a wire that
+  functional logic reads.
+
+  // ===> DO NOT HAND-ROLL A `printf` BEHIND `VecTrace.traceEnabled`. An earlier
+  // version of THIS paragraph said "guarded printf ... gated on
+  // `VecTrace.traceEnabled && !reset`", and the first generation duly emitted a
+  // raw `printf` with its own format string — the only node in the design to do
+  // so, which is exactly the divergence the shared package exists to prevent.
+  // `traceStruct` did not exist at the time; it does now, it applies the
+  // `traceEnabled && !reset` gate itself inside the private `emitLine`, and the
+  // VecTrace spec now forbids hand-rolled emission outright. `traceEnabled`
+  // remains public only for gating a caller's own NON-emitting debug logic.
+  // Corrected 2026-08-10; the generated RTL was fixed in the same pass.
   <|end_logic|>
 
 <|end_module|>

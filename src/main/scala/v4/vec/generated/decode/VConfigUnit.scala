@@ -61,29 +61,54 @@ import boom.v4.vec.generated.{VtypeTable, VecTrace}
 // modules' own convention (see `VLSDecode`): this module performs no
 // internal `usingRVV` gating of its own.
 //
-// SPEC DEFECT (reported, not resolved) -- TRACING IS ONLY PARTIALLY
-// POSSIBLE, EVEN NOW. This module's ports now carry `dec_ftq_idx`/
-// `dec_pc_lob` (per decode lane), which is enough to fix the ONE event of
-// logic section 7's four that is itself decode-lane-synchronous: "a mirror
-// update at decode" fires in the same cycle, for the same bundle, as the
-// `dec_ftq_idx(w)`/`dec_pc_lob(w)` that describe it, so that call is
-// implemented below (part 4). The other three events -- a rename-stage
-// snapshot write, a mispredict/rollback restore, and a commit-stage shadow
-// update -- are NOT decode-lane events: they fire for whatever instruction
-// is at rename/execute-resolution/commit THIS cycle, which is a different
-// instruction (and a different cycle) than whatever is in the CURRENT
-// decode bundle that `dec_ftq_idx`/`dec_pc_lob` describe. Using them to tag
-// those three lines would not admit an unknown identifier, it would assert
-// a WRONG one -- exactly the failure mode `VecTrace.traceDecode`'s own doc
-// comment warns is worse than a line that admits it does not know. No port
-// on this module carries a rename-, mispredict-, or commit-stage identifier
-// (a `MicroOp`, `rob_idx`, or that stage's own `ftq_idx`/`pc_lob`), so those
-// three calls remain OMITTED; see the inline flags at each of those three
-// event sites in the logic below. Section 7 carries no `//@req-` tags of
-// its own, so no requirement is left untagged by this narrower omission.
-// The quiescent-state assertion (also section 7) is implemented below: it
-// needs only `csr_vtype`/`rob_empty`, both of which are real ports, and is
-// untouched by the tracing gap.
+// TRACING. `VecTrace` now offers the full three-step ladder (`trace*` ->
+// `traceId` -> `traceStruct`; see `VecTrace.scala`'s "two uOP-less variants"
+// note), which closes all but one of the four gaps a prior generation of
+// this file reported. Per event, first rung that applies:
+//   - "mirror update at decode" (part 6's `.otherwise` arm) is decode-lane-
+//     synchronous, so `dec_ftq_idx`/`dec_pc_lob` correctly identify it via
+//     `traceDecode`, unchanged from before.
+//   - "snapshot write" (part 6, on `ren_br_tags` allocation) has no MicroOp
+//     or rob_idx on this module's rename-stage boundary (`ren_br_tags`/
+//     `ren_br_vconfig` carry a bare tag and a bare `VType`, nothing else),
+//     so this is bottom-rung `traceStruct`, keyed on `br_tag` -- the honest
+//     identifier of which branch's snapshot slot was written -- plus the
+//     `vtype` value written, the same key+payload shape `VecMapTable`'s own
+//     `traceStruct("remap", ...)` uses.
+//   - "restore, mispredict arm" (part 6, `io.brupdate.b2.mispredict`) is NOT
+//     bottom-rung, and AN EARLIER VERSION OF THIS FILE WRONGLY CLAIMED
+//     OTHERWISE. `io.brupdate.b2` is a `BrResolutionInfo`, which mixes in
+//     `HasBoomUOP` (`val uop = new MicroOp()`, v4/common/micro-op.scala:23),
+//     so `io.brupdate.b2.uop` IS a real MicroOp -- with a real `rob_idx` --
+//     already in scope via the existing `brupdate` port. Per the ladder's
+//     own ordering ("the FIRST that applies"), rung 1 applies: `traceTag`
+//     with that uop and its `br_tag`, exactly the call `VecMapTable`'s and
+//     `VecRenameSpace`'s own `recover_mispredict` events already make for
+//     the identical shape of event (see those files' headers, which
+//     document correcting this same wrong claim). No new port was added to
+//     get this identifier -- `brupdate` was already here.
+//   - "restore, rollback arm" (part 6, `io.rollback`) has NO equivalent.
+//     `rollback` is a bare `Input(Bool())` with no br_tag, no MicroOp, no
+//     rob_idx anywhere upstream of it, and the event (`vcfg_mirror :=
+//     shadow_next`) is a single whole-mirror overwrite, not a per-branch or
+//     per-lane one -- there is no honest identifying key to hand
+//     `traceStruct`, and fabricating one (e.g. a constant marker) is exactly
+//     what `traceStruct`'s non-empty-`extra` require exists to keep out.
+//     SPEC DEFECT (reported, not resolved): this one line remains OMITTED,
+//     flagged inline at the `.elsewhen (io.rollback)` arm below, under the
+//     same discipline `VecMapTable`'s, `VecFreeList`'s and
+//     `VecRenameSpace`'s own generated files already apply to their
+//     identical bare-`rollback` sites.
+//   - "shadow update at commit" (part 6, on a committing `vset*`) has no
+//     MicroOp or rob_idx on this module's commit-stage boundary either
+//     (`com_valids`/`com_is_vset`/`com_vtype` carry no `MicroOp`, no
+//     `rob_idx`) -- bottom-rung `traceStruct`, keyed on `lane` (the
+//     committing slot, highest index wins per program order) and `vtype`
+//     (the value installed).
+// Section 7 carries no `//@req-` tags of its own, so no requirement is left
+// untagged by the one remaining omission. The quiescent-state assertion
+// (also section 7) needs only `csr_vtype`/`rob_empty`, both real ports, and
+// is untouched by any of this.
 //
 // SPEC DEFECT (reported, not resolved) -- VtypeTable.decode's return type.
 // `VtypeTable.decode(bits): VtypeInfo` reduces a decoded `vtype` to
@@ -486,14 +511,17 @@ class VConfigUnit(implicit p: Parameters) extends BoomModule
   when (do_br_snapshot) {
     vcfg_snapshots(br_snapshot_tag) := br_snapshot_val
   }
-  // (trace, part 7 -- SPEC DEFECT, reported not resolved) A snapshot-write
-  // trace line belongs here, tagged with `br_snapshot_tag`, but this event
-  // is RENAME-stage: the instruction allocating `br_tag` this cycle is not
-  // the instruction described by THIS cycle's `dec_ftq_idx`/`dec_pc_lob`
-  // (those are decode-lane, one stage earlier). No port on this module
-  // carries a rename-stage identifier, so this line is omitted rather than
-  // tagged with the wrong instruction's ftq_idx/pc_lob. See the file
-  // header's TRACING note.
+  // (trace, part 7) Snapshot write. No MicroOp/rob_idx reaches this
+  // module's rename-stage boundary (`ren_br_tags`/`ren_br_vconfig` carry a
+  // bare tag and a bare `VType`), so bottom-rung `traceStruct`, keyed on
+  // `br_tag` -- the honest identifier of which branch's snapshot slot this
+  // write targets -- plus the `vtype` value written. See the file header's
+  // TRACING note.
+  when (do_br_snapshot) {
+    VecTrace.traceStruct("VConfigUnit", "snapshot_write", Seq(
+      ("br_tag", br_snapshot_tag),
+      ("vtype",  br_snapshot_val.asUInt)))
+  }
   //
   // A snapshot write and a mispredict restore never collide for the same
   // tag: a branch cannot resolve in the cycle it renames (`b2` is at least
@@ -517,19 +545,31 @@ class VConfigUnit(implicit p: Parameters) extends BoomModule
   // in program order -- later `when`s in this loop win by Chisel's
   // last-connect semantics, so the highest satisfying `w` dominates.
   // Rollback does not write the shadow: rollback retires nothing.
+  //
+  // (trace, part 7) Track the winning lane the same way, by last-connect
+  // over the same loop, so the trace call below reports exactly the lane
+  // that dominates `shadow_next` -- TRACE-ONLY: nothing functional reads
+  // `shadow_update_lane`.
+  val shadow_update_fires = (0 until coreWidth).map(w => io.com_valids(w) && io.com_is_vset(w)).reduce(_ || _)
+  val shadow_update_lane  = WireInit(0.U(log2Ceil(coreWidth).W))
   for (w <- 0 until coreWidth) {
     when (io.com_valids(w) && io.com_is_vset(w)) {
       shadow_next := compress(io.com_vtype(w))
+      shadow_update_lane := w.U
     }
   }
   vcfg_shadow := shadow_next
-  // (trace, part 7 -- SPEC DEFECT, reported not resolved) A shadow-update
-  // trace line belongs here, but this event is COMMIT-stage: the commit
-  // inputs (`com_valids`/`com_is_vset`/`com_vtype`) carry no `MicroOp`,
-  // `rob_idx`, `ftq_idx` or `pc_lob` for the committing lane, and this
-  // cycle's `dec_ftq_idx`/`dec_pc_lob` describe a different (decode-stage)
-  // instruction entirely. No port on this module carries a commit-stage
-  // identifier, so this line is omitted. See the file header's TRACING note.
+  // (trace, part 7) Shadow update at commit. No MicroOp/rob_idx reaches
+  // this module's commit-stage boundary (`com_valids`/`com_is_vset`/
+  // `com_vtype` carry no `MicroOp`, no `rob_idx`), so bottom-rung
+  // `traceStruct`, keyed on `lane` (the committing slot that won the
+  // last-connect above) and `vtype` (the value installed). See the file
+  // header's TRACING note.
+  when (shadow_update_fires) {
+    VecTrace.traceStruct("VConfigUnit", "shadow_update", Seq(
+      ("lane",  shadow_update_lane),
+      ("vtype", shadow_next.asUInt)))
+  }
 
   //@req-spec-decode.h2
   //@req-spec-core.d2
@@ -548,21 +588,34 @@ class VConfigUnit(implicit p: Parameters) extends BoomModule
     // Restore the mirror to a branch snapshot, in ONE CYCLE, in lockstep
     // with the RMT restore -- same trigger signal, same cycle.
     vcfg_mirror := vcfg_snapshots(io.brupdate.b2.uop.br_tag)
-    // (trace, part 7 -- SPEC DEFECT, reported not resolved) A restore trace
-    // line (source = snapshot) belongs here, tagged with `br_tag`, but the
-    // resolving branch is not a decode-lane event and no port carries an
-    // identifier for it. Omitted; see the file header's TRACING note.
+    // (trace, part 7) Restore, mispredict arm (source = snapshot). Rung 1
+    // of the ladder applies despite this module otherwise having no MicroOp
+    // on its boundary: `io.brupdate.b2` mixes in `HasBoomUOP`, so
+    // `io.brupdate.b2.uop` is a real MicroOp already in scope via the
+    // existing `brupdate` port -- no port was added to get this identifier.
+    // `traceTag` with that uop and its own `br_tag` is exactly the call
+    // `VecMapTable`'s and `VecRenameSpace`'s `recover_mispredict` events
+    // already make for the identical event shape. See the file header's
+    // TRACING note (which also corrects an earlier version of this file
+    // that wrongly claimed no port here carries an identifier).
+    VecTrace.traceTag("VConfigUnit", "recover_mispredict",
+      io.brupdate.b2.uop, io.brupdate.b2.uop.br_tag)
   //@req-spec-decode.h10
   //@req-spec-decode.h11
   } .elsewhen (io.rollback) {
     // Restore the mirror from the committed shadow's NEXT value, in ONE
     // CYCLE, in parallel with `map_table := com_map_table`.
     vcfg_mirror := shadow_next
-    // (trace, part 7 -- SPEC DEFECT, reported not resolved) A restore trace
-    // line (source = shadow) belongs here. `rollback` is a whole-pipeline
-    // flush condition, not tied to any one decode lane's `ftq_idx`/
-    // `pc_lob`, and no port carries a commit-/flush-stage identifier.
-    // Omitted; see the file header's TRACING note.
+    // (trace, part 7 -- SPEC DEFECT, reported not resolved) Restore,
+    // rollback arm (source = shadow): OMITTED. `rollback` is a bare
+    // `Input(Bool())` with no br_tag, no MicroOp, no rob_idx anywhere
+    // upstream of it, and the event is a single whole-mirror overwrite, not
+    // a per-branch or per-lane one -- there is no honest identifying key to
+    // hand `traceStruct`, and fabricating one is exactly what its
+    // non-empty-`extra` require exists to keep out. Same discipline
+    // `VecMapTable`'s, `VecFreeList`'s and `VecRenameSpace`'s own generated
+    // files already apply to their identical bare-`rollback` sites. See the
+    // file header's TRACING note.
   } .otherwise {
     // Ordinary decode update (part 4).
     vcfg_mirror := vcfg_mirror_decode_update
@@ -584,16 +637,27 @@ class VConfigUnit(implicit p: Parameters) extends BoomModule
   // ---- 7. Trace and checks ----
   // =========================================================================
   //
-  // SPEC DEFECT (reported, not resolved) -- NARROWED, NOT CLOSED. Section 7
-  // calls for four guarded `VecTrace` lines. The new `dec_ftq_idx`/
-  // `dec_pc_lob` ports fix exactly ONE of them -- the decode-lane-
-  // synchronous "mirror update at decode", implemented above in part 6's
-  // `.otherwise` arm. The other three (a rename-stage snapshot write, a
-  // mispredict/rollback restore, a commit-stage shadow update) are each
-  // still missing a correctly-timed identifier -- see the inline notes at
-  // each of those three sites (part 6) and the file header's TRACING note.
-  // Section 7 carries no `//@req-` tags, so no requirement is left
-  // untagged by this narrower omission.
+  // TRACING SUMMARY. Section 7 calls for four events, and now three of the
+  // four decode/rename/mispredict/commit lines fire: "mirror update at
+  // decode" (`traceDecode`, part 6's `.otherwise` arm), "snapshot write"
+  // (`traceStruct`, keyed on `br_tag`+`vtype`, part 6), and "shadow update
+  // at commit" (`traceStruct`, keyed on `lane`+`vtype`, part 6). The
+  // mispredict arm of the fourth event ("restore") also now fires
+  // (`traceTag`, using the real MicroOp at `io.brupdate.b2.uop`, part 6) --
+  // an earlier version of this file wrongly reported no port here carried
+  // an identifier for it; `brupdate` already did.
+  //
+  // SPEC DEFECT (reported, not resolved) -- NARROWED, NOT CLOSED. Only the
+  // rollback arm of "restore" (source = shadow) remains omitted: `rollback`
+  // is a bare `Input(Bool())` with no br_tag, no MicroOp, no rob_idx
+  // anywhere upstream of it, and the event is a single whole-mirror
+  // overwrite with no honest identifying key to hand `traceStruct` -- see
+  // the inline note at the `.elsewhen (io.rollback)` arm (part 6) and the
+  // file header's TRACING note, which also documents the identical,
+  // pre-existing omission in `VecMapTable`'s, `VecFreeList`'s and
+  // `VecRenameSpace`'s own generated files. Section 7 carries no `//@req-`
+  // tags, so no requirement is left untagged by this one remaining
+  // omission.
   //
   // Quiescent-state assertion: with nothing speculative in flight
   // (`rob_empty`), the shadow and the architectural CSR -- written from the

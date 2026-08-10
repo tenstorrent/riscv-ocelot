@@ -366,16 +366,34 @@ from Tenstorrent Inc.
 
   ---- Tracing ----
 
-  Emit one guarded VecTrace line per event through `traceVl`, which formats
-  `pvl` and `vl` alongside the mandatory `rob_idx`: module `VlRegFile`, events
-  `wr_ren`, `wr_alu`, `wr_lsu` and `rd_commit`. Gated on VecTrace's `vecTrace`
-  plusarg and `!reset`, off by default, and adding no state — with the plusarg
-  absent the emitted RTL is identical to the same design with the calls
-  deleted. Execute-stage reads are NOT traced: they are unconditional and would
-  emit every cycle per port, burying the events that matter. These four lines
-  are the whole debug surface for VL — the project has no unit tests, validation
-  is end-to-end VCS plus Whisper cosim only, and a wrong VL is otherwise
-  indistinguishable at the cosim boundary from an AGEN element-count bug.
+  Emit one guarded VecTrace line per WRITE event through `traceStruct` — this
+  module has neither a `MicroOp` nor a `rob_idx` on its boundary, so the
+  structure-scoped rung is the honest one; key each line on `prn` and `vl`.
+  Module `VlRegFile`, events `wr_ren`, `wr_alu` and `wr_lsu`, each gated on its
+  port's own `valid`. Gated additionally on VecTrace's `vecTrace` plusarg and
+  `!reset`, off by default, and adding no state — with the plusarg absent the
+  emitted RTL is identical to the same design with the calls deleted.
+
+  **READS ARE NOT TRACED — neither `R_exe` NOR `R_commit`.** Both are bare
+  `addr`/`data` pairs with no valid or enable, so a line on either fires every
+  cycle per port and buries the events that matter.
+
+  // ===> `rd_commit` WAS MANDATED HERE AND IS NOW REMOVED, because the reason
+  // this paragraph already gives for excluding `R_exe` applies verbatim to
+  // `R_commit`: it has no valid bit, so the module cannot distinguish a genuine
+  // VL-producer commit from any other cycle. Generation implemented it literally
+  // and reported the tension — the line fired unconditionally. Gating it would
+  // need an enable input added SOLELY to make a trace line emit, which the
+  // VecTrace spec explicitly forbids ("a module should not acquire a port purely
+  // to be traceable"), and the commit event is already observable from the
+  // consumer side, where a `rob_idx` genuinely exists: the ROB / VConfigUnit
+  // commit path can trace it with `traceId`. An every-cycle line in the only
+  // debug instrument the plan has is worse than no line. Corrected 2026-08-10.
+
+  These three write lines are the whole debug surface for VL from this side — the
+  project has no unit tests, validation is end-to-end VCS plus Whisper cosim
+  only, and a wrong VL is otherwise indistinguishable at the cosim boundary from
+  an AGEN element-count bug.
 
   ---- Capacity check on the entry width ----
 

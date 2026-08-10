@@ -23,6 +23,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 
 import boom.v4.common.{BoomBundle, BoomModule}
+import boom.v4.vec.generated.VecTrace
 
 // GENERATED from src/main/nlhdl/vec/regfile/VecRegFile.nlhdl.scala. Do not
 // hand-edit; regenerate via the nlhdl gen-rtl flow instead.
@@ -54,22 +55,21 @@ import boom.v4.common.{BoomBundle, BoomModule}
 // and `cii-writeback` (R5-R8 / W2, never-stall), case_study.rst
 // `case-vl-zero` (the group copy borrowing R2/W0).
 //
-// TRACING (spec amendment note, reported not resolved): VecTrace's nlhdl
-// spec now describes a three-step ladder -- trace(uop, ...) -> traceId
-// (bare rob_idx) -> traceStruct (neither) -- but VecTrace.scala has NOT been
-// regenerated yet, so only the old API exists: every helper but
-// `traceDecode` requires a MicroOp, and `traceDecode` requires
-// `ftq_idx`/`pc_lob`. This module has neither: its only instruction context
-// is the trace-only `rob_idx: Valid(UInt)` field on each port request/write,
-// which fits the not-yet-generated `traceId` step and no existing one. Per
-// instruction, this module does NOT hand-roll a guarded printf to route
-// around that gap (the amendment explicitly forbids it). Every per-access
-// VRF trace line (request-cycle read, response-cycle read, write) described
-// in the nlhdl `logic` section paragraph 7 is therefore OMITTED here,
-// flagged at each omission site below, pending a VecTrace regeneration that
-// adds the bare-rob_idx entry point. `io.trace_en` is still declared (the
-// spec requires it as an interface member) but currently drives nothing
-// inside this module.
+// TRACING: VecTrace's three-step ladder -- trace(uop, ...) -> traceId (bare
+// rob_idx) -> traceStruct (neither) -- is now fully generated, which
+// unblocks every per-access VRF trace line (request-cycle read,
+// response-cycle read, write) described in the nlhdl `logic` section
+// paragraph 7 that a prior generation of this module had to omit. This
+// module still has no MicroOp (rung 1 never applies here), so every line
+// below reaches for rung 2 or 3: each port's trace-only `rob_idx:
+// Valid(UInt)` (see VecVrfReadReq/VecVrfWrite) is the genuine identifier
+// when valid -- `traceId`, a real `rob=<idx>` -- and there is no honest
+// identifier when it is not -- `traceStruct`, `rob=?`, keyed on `port`/
+// `prn` (matching VecRegFileBank's own `traceStruct` convention for a
+// port/PRN-scoped event rather than an instruction-scoped one). No printf is
+// hand-rolled anywhere here; every line goes through VecTrace's public
+// entry points. `io.trace_en` is ANDed into the gate at every call site
+// below, as the ports section requires.
 
 /**
  * VrfPort -- named, 0-based constants for every read/write port index, so a
@@ -204,11 +204,8 @@ class VecRegFileIO(numReadPorts: Int, numWritePorts: Int)(implicit p: Parameters
   // canonical table forbids.
   val debug_vrf_read = Vec(coreWidth, Output(UInt(vecVLen.W)))
 
-  // ANDed by the caller into VecTrace's trace gate -- see the file-header
-  // TRACING note: currently unused inside this module, since no trace call
-  // site in paragraph 7 of the nlhdl logic section can be expressed against
-  // the current VecTrace API. Kept because the interface contract requires
-  // it and a future VecTrace regeneration will use it.
+  // ANDed into VecTrace's gate at every per-access trace call site below
+  // (read_req, read_rsp, write) -- see the file-header TRACING note.
   val trace_en       = Input(Bool())
 }
 
@@ -354,14 +351,50 @@ class VecRegFile(implicit p: Parameters) extends BoomModule
       bank(1).io.read_data(p), bank(0).io.read_data(p)))
   }
 
-  // TRACING (omitted, see file header): the request-cycle read trace line
-  // ("[vec] VecRegFile read_req port=.. prn=.. rob=..") and the
-  // response-cycle read trace line ("[vec] VecRegFile read_rsp port=..
-  // data=.. rob=..") described in the nlhdl logic section paragraph 7 both
-  // need this module's own module/event/rob_idx context, which the current
-  // VecTrace API cannot accept without a MicroOp. OMITTED here rather than
-  // hand-rolled as a bare printf; a VecTrace regeneration adding the
-  // bare-rob_idx (`traceId`) entry point should pick this back up.
+  // ---- Tracing: per-access read trace lines (logic §7) ----
+  //
+  // Request-cycle line: one per valid read port, in its REQUEST cycle
+  // ("[vec] VecRegFile read_req port=.. prn=.. rob=.."). Rung 2 (`traceId`)
+  // when the port's trace-only `rob_idx` is valid, else rung 3
+  // (`traceStruct`, `rob=?`) -- see file header.
+  for (p <- 0 until numReadPorts) {
+    when (io.trace_en && io.read(p).valid) {
+      when (io.read(p).bits.rob_idx.valid) {
+        VecTrace.traceId("VecRegFile", "read_req", io.read(p).bits.rob_idx.bits,
+          Seq(("port", p.U), ("prn", io.read(p).bits.addr)))
+      } .otherwise {
+        VecTrace.traceStruct("VecRegFile", "read_req",
+          Seq(("port", p.U), ("prn", io.read(p).bits.addr)))
+      }
+    }
+  }
+
+  // Response-cycle line: one per valid read port, in its RESPONSE cycle,
+  // with the low bits of the returned data, correlated by port number
+  // ("[vec] VecRegFile read_rsp port=.. data=.. rob=.."). `read_req_valid_r`
+  // and `read_rob_r` carry the request-cycle fields one cycle forward so
+  // this line can be tagged to the same request -- TRACE-ONLY registers per
+  // the nlhdl logic section ("any register carrying the request fields into
+  // the response cycle is trace-only"): they feed no functional logic, so
+  // deleting this tracing block (or running with the plusarg unset) leaves
+  // the design's cycle-by-cycle behavior bit-identical.
+  //
+  // ASSUMPTION: the spec asks for "the low bits of the returned data" but
+  // does not size them; 32 bits is chosen as enough to distinguish values in
+  // a debug trace without printing a full vLen=256-bit decimal every line.
+  val read_req_valid_r = RegNext(VecInit(io.read.map(_.valid)))
+  val read_rob_r        = RegNext(VecInit(io.read.map(_.bits.rob_idx)))
+  for (p <- 0 until numReadPorts) {
+    when (io.trace_en && read_req_valid_r(p)) {
+      when (read_rob_r(p).valid) {
+        VecTrace.traceId("VecRegFile", "read_rsp", read_rob_r(p).bits,
+          Seq(("port", p.U), ("data", io.read_data(p)(31, 0))))
+      } .otherwise {
+        VecTrace.traceStruct("VecRegFile", "read_rsp",
+          Seq(("port", p.U), ("data", io.read_data(p)(31, 0))))
+      }
+    }
+  }
 
   // For write port w: `valid` and `bits.addr` are broadcast unchanged to all
   // four banks, while `bits.data` and `bits.mask` are SLICED per bank. A
@@ -382,11 +415,27 @@ class VecRegFile(implicit p: Parameters) extends BoomModule
     bank(b).io.write_ports(w).bits.mask  := io.write(w).bits.mask(bankBytes * (b + 1) - 1, bankBytes * b)
   }
 
-  // TRACING (omitted, see file header): the per-valid-write-port trace line
-  // ("[vec] VecRegFile write port=.. prn=.. mask=.. data=.. rob=..")
-  // described in the nlhdl logic section paragraph 7 needs the same
-  // rob_idx-only context the read trace lines do, and is OMITTED for the
-  // same reason -- not hand-rolled as a bare printf.
+  // ---- Tracing: per-access write trace line (logic §7) ----
+  //
+  // One line per valid write port ("[vec] VecRegFile write port=.. prn=..
+  // mask=.. data=.. rob=.."). A write has no response and needs no second
+  // line; `mask` is included because it is what distinguishes a sub-lane
+  // `vlm.v`-style write from a corrupted full-width one. Same rung rule as
+  // the read lines: `traceId` when the port's trace-only `rob_idx` is
+  // valid, else `traceStruct` (`rob=?`).
+  for (w <- 0 until numWritePorts) {
+    when (io.trace_en && io.write(w).valid) {
+      when (io.write(w).bits.rob_idx.valid) {
+        VecTrace.traceId("VecRegFile", "write", io.write(w).bits.rob_idx.bits,
+          Seq(("port", w.U), ("prn", io.write(w).bits.addr),
+              ("mask", io.write(w).bits.mask), ("data", io.write(w).bits.data(31, 0))))
+      } .otherwise {
+        VecTrace.traceStruct("VecRegFile", "write",
+          Seq(("port", w.U), ("prn", io.write(w).bits.addr),
+              ("mask", io.write(w).bits.mask), ("data", io.write(w).bits.data(31, 0))))
+      }
+    }
+  }
 
   // ---- Debug ----
   //
