@@ -7,6 +7,13 @@
 #
 #   ./regen.sh prebaseline     # boom WITHOUT the D1 encoding widening
 #   ./regen.sh rebaseline      # boom WITH the D1 encoding widening, still no vector logic
+#   ./regen.sh check           # a FRESH vectors-off build, verified against
+#                              # manifest/rebaseline.json. This is the mode every
+#                              # phase gate after A2 runs. It writes NO manifest --
+#                              # re-running `rebaseline` to get a fresh tree would
+#                              # overwrite the very reference the gate judges
+#                              # against, turning a failure into a silent
+#                              # re-baselining. Non-destructive by construction.
 #
 # The two artifacts must be generated with the SAME chipyard-side config content,
 # or the diff between them mixes the encoding delta with a config delta and gate
@@ -20,8 +27,8 @@ set -euo pipefail
 
 WHICH="${1:-}"
 case "$WHICH" in
-  prebaseline|rebaseline) ;;
-  *) echo "usage: $0 {prebaseline|rebaseline}" >&2; exit 2 ;;
+  prebaseline|rebaseline|check) ;;
+  *) echo "usage: $0 {prebaseline|rebaseline|check}" >&2; exit 2 ;;
 esac
 
 CONTAINER="${CONTAINER:-reverent_turing}"
@@ -150,8 +157,15 @@ done
 #    (620+ files x 3 configs). gate-f-check.py compares two trees directly when
 #    both are present, and falls back to the manifest when only one is.
 # ---------------------------------------------------------------------------
-python3 "$HERE/gate-f-check.py" --manifest "$OUTDIR" \
-        --label "$WHICH" --repo-sha "$REPO_SHA" --boom-sha "$BOOM_SHA" \
-        --out "$HERE/manifest/$WHICH.json"
-
-echo "== done: $HERE/manifest/$WHICH.json"
+if [ "$WHICH" = check ]; then
+  # Judge the fresh tree against the checked-in reference. Deliberately writes no
+  # manifest: the reference is an input here, never an output.
+  python3 "$HERE/gate-f-check.py" --verify "$OUTDIR" \
+          --against "$HERE/manifest/rebaseline.json"
+  echo "== done: gate (f) check against manifest/rebaseline.json"
+else
+  python3 "$HERE/gate-f-check.py" --manifest "$OUTDIR" \
+          --label "$WHICH" --repo-sha "$REPO_SHA" --boom-sha "$BOOM_SHA" \
+          --out "$HERE/manifest/$WHICH.json"
+  echo "== done: $HERE/manifest/$WHICH.json"
+fi

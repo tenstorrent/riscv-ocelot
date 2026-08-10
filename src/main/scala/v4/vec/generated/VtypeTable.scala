@@ -138,16 +138,46 @@ object VtypeTable {
     val vLenShift = log2Ceil(vLen) - 3 // log2(vLen/8); vLen is a multiple of 8
     val raw = (vlmax << eew) >> vLenShift
     // Clamp the LOWER bound only: a fractional EMUL still occupies one whole
-    // register. The upper bound is an invariant, not a clamp — a legal vtype
-    // cannot produce a group wider than `maxMembers`, and silently truncating
-    // a too-wide result would corrupt the rename allocation instead of
-    // surfacing the bug, so an over-`maxMembers` result is an assertion
-    // failure rather than a saturated value.
+    // register.
     val clamped = Mux(raw === 0.U, 1.U, raw)
-    assert(clamped <= maxMembers.U,
-      "VtypeTable.emul: computed EMUL exceeds maxMembers -- an illegal " +
-      "vtype/eew combination reached this function uncaught")
-    clamped(emulWidth - 1, 0)
+
+    // ===> AN EMUL ABOVE `maxMembers` IS AN ILLEGAL INSTRUCTION, NOT AN
+    // IMPOSSIBLE STATE, AND THIS FUNCTION MUST NOT ASSERT ON IT. A legal
+    // `vtype` ALONE cannot produce a group wider than `maxMembers`, but
+    // `vtype` PLUS an EEW that differs from SEW can, and routinely does: a
+    // widening op (EEW = 2*SEW) at LMUL=8 gives EMUL=16, and an indexed
+    // access with EEW=64 against SEW=8 gives EMUL = 8*LMUL. RVV 1.0 reserves
+    // exactly those encodings, and Caracal traps them at DECODE — VDecode's
+    // EMUL-bound term is the architectural check, and it can only be reached
+    // because this function RETURNS the out-of-range case instead of dying
+    // on it. An assertion on the untruncated value fires on a machine that
+    // is behaving correctly: every vwadd/vwmul at LMUL=8 would abort a cosim
+    // run while the DUT was, correctly, raising an illegal-instruction trap.
+    //
+    // ===> THE OUT-OF-RANGE INDICATION IS THE RETURN VALUE 0, AND THAT IS A
+    // CONTRACT, NOT AN ACCIDENT OF TRUNCATION. `raw` is always a power of
+    // two — it is `vlmax` shifted up by the EEW code and down by a
+    // compile-time constant — so every out-of-range EMUL (16, 32, 64 or 128)
+    // is congruent to 0 modulo 2^emulWidth, and truncating to `emulWidth`
+    // bits below maps every one of them onto 0. Zero is otherwise
+    // unreachable, because the fractional case above is clamped UP to 1.
+    // Callers therefore test `emul === 0` for "group too wide", and NO
+    // caller may treat 0 as a group size. `decode()` above independently
+    // drives `emul` to 0 when `vill` is set, which is the same contract
+    // from the other direction.
+    //
+    // The assertion below is the one that is actually invariant, and it is
+    // what makes the 0-contract sound rather than decorative: the returned
+    // value is either 0 or in 1..`maxMembers`. It fires precisely when `raw`
+    // was not a power of two — i.e. when the shift-only derivation above was
+    // broken — which is the bug that would let a genuine group size alias
+    // onto the reserved 0 encoding.
+    val result = clamped(emulWidth - 1, 0)
+    assert(result === 0.U || result <= maxMembers.U,
+      "VtypeTable.emul: computed EMUL is neither 0 nor within 1..maxMembers " +
+      "-- raw was not a power of two, which is a derivation bug (an illegal " +
+      "vtype/eew combination legally returns 0, not an assertion failure)")
+    result
   }
 
   //@req-spec-decode.a11
@@ -186,11 +216,13 @@ object VtypeTable {
   // ---- EMUL: the group size a rename must allocate ----
   //
   // `emul(info, eew)` returns the number of registers in a group whose
-  // elements are `eew` bits wide, as a 1..`maxMembers` count. For an
-  // arithmetic op the element width is SEW and EMUL is LMUL — exactly what
-  // `decode()` already bundles as `info.emul` above, by calling this same
-  // core with `eew = vtype.vsew`. For a load or store the element width is
-  // the instruction's own EEW, and a caller passes that instead.
+  // elements are `eew` bits wide, as a 1..`maxMembers` count when the
+  // combination is legal, and 0 when it is not — see the out-of-range
+  // contract documented in `emulFromVLMax` above. For an arithmetic op the
+  // element width is SEW and EMUL is LMUL — exactly what `decode()` already
+  // bundles as `info.emul` above, by calling this same core with
+  // `eew = vtype.vsew`. For a load or store the element width is the
+  // instruction's own EEW, and a caller passes that instead.
   //
   // This is the value that reaches the vector mapper as v_emul and decides
   // how many PRNs an OP.v allocates atomically. An EMUL that disagreed with

@@ -151,6 +151,8 @@ object DecodeTables
     BLTU               -> List(Y, N, fc2oh(FC_ALU) , RT_X  , RT_FIX, RT_FIX, N, IS_B, N, N, N, M_X     , N, N, CSR.N, DW_XPR, FN_SLTU, X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X),
 
     // I-type, the immedia2 holds the CSR regi ster.
+    //@req-spec-decode.f1
+    //@req-spec-decode.f2
     CSRRW              -> List(Y, N, fc2oh(FC_CSR) , RT_FIX, RT_FIX, RT_X  , N, IS_I, N, N, N, M_X     , Y, Y, CSR.W, DW_XPR, FN_ADD , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X),
     CSRRS              -> List(Y, N, fc2oh(FC_CSR) , RT_FIX, RT_FIX, RT_X  , N, IS_I, N, N, N, M_X     , Y, Y, CSR.S, DW_XPR, FN_ADD , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X),
     CSRRC              -> List(Y, N, fc2oh(FC_CSR) , RT_FIX, RT_FIX, RT_X  , N, IS_I, N, N, N, M_X     , Y, Y, CSR.C, DW_XPR, FN_ADD , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X),
@@ -159,6 +161,8 @@ object DecodeTables
     CSRRSI             -> List(Y, N, fc2oh(FC_CSR) , RT_FIX, RT_X  , RT_X  , N, IS_I, N, N, N, M_X     , Y, Y, CSR.S, DW_XPR, FN_ADD , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X),
     CSRRCI             -> List(Y, N, fc2oh(FC_CSR) , RT_FIX, RT_X  , RT_X  , N, IS_I, N, N, N, M_X     , Y, Y, CSR.C, DW_XPR, FN_ADD , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X),
 
+    //@req-spec-memord.f6
+    //@req-spec-memord.f7
     SFENCE_VMA          ->List(Y, N, fc2oh(FC_CSR) , RT_X  , RT_FIX, RT_FIX, N, IS_N, N, N, N,M_SFENCE , Y, Y, CSR.R, DW_XPR, FN_ADD , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X),
     ECALL              -> List(Y, N, fc2oh(FC_CSR) , RT_X  , RT_X  , RT_X  , N, IS_I, N, N, N, M_X     , Y, Y, CSR.I, DW_XPR, FN_ADD , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X),
     EBREAK             -> List(Y, N, fc2oh(FC_CSR) , RT_X  , RT_X  , RT_X  , N, IS_I, N, N, N, M_X     , Y, Y, CSR.I, DW_XPR, FN_ADD , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X),
@@ -168,6 +172,8 @@ object DecodeTables
 
     WFI                -> List(Y, N, fc2oh(FC_CSR) , RT_X  , RT_X  , RT_X  , N, IS_I, N, N, N, M_X     , Y, Y, CSR.I, DW_XPR, FN_ADD , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X),
 
+    //@req-spec-memord.f6
+    //@req-spec-memord.f7
     FENCE_I            -> List(Y, N, 0.U(FC_SZ.W)  , RT_X  , RT_X  , RT_X  , N, IS_N, N, N, N, M_X     , Y, Y, CSR.N, DW_XPR, FN_ADD , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X),
     FENCE              -> List(Y, N, 0.U(FC_SZ.W)  , RT_X  , RT_X  , RT_X  , N, IS_N, N, Y, N, M_X     , Y, Y, CSR.N, DW_XPR, FN_ADD , X,X,X,X,X, X,X,X,X,X,X,X, X,X,X,X), // TODO PERF make fence higher performance
                                                                                                                              // currently serializes pipeline
@@ -419,6 +425,14 @@ class DecodeUnitIo(implicit p: Parameters) extends BoomBundle
   val fcsr_rm = Input(UInt(FPConstants.RM_SZ.W))
   val interrupt = Input(Bool())
   val interrupt_cause = Input(UInt(xLen.W))
+
+  //@req-spec-decode.a5
+  // Vector decode merge, per-lane, present iff usingRVV.
+  val vec = if (usingRVV) Some(new Bundle {
+    val uop_to_vdec   = Output(new MicroOp())
+    val uop_from_vdec = Input(new MicroOp())
+    val illegal       = Input(Bool())
+  }) else None
 }
 
 /**
@@ -461,14 +475,36 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
   val cs_legal = cs.legal
 //   dontTouch(cs_legal)
 
+  //@req-spec-decode.a1
+  //@req-spec-core.c1
+  //@req-spec-core.c2
+  // v_opcode: is this encoding in the RVV opcode space at all (OP-V / vector
+  // LOAD-FP / STORE-FP)? A fixed property of `inst`, independent of CSR state.
+  // Widths matched POSITIVELY as RVV's four EEW codes 8/16/32/64; the negative
+  // form ("not FLW's 010 or FLD's 011") would admit FLH (001) and FLQ (100),
+  // neither of which is in F_table, and stop them trapping.
+  val v_opcode = if (usingRVV) {
+    val vw = inst(14,12).isOneOf(0.U, 5.U, 6.U, 7.U)
+    inst(6,0) === "b1010111".U || (inst(6,0) === "b0000111".U && vw) || (inst(6,0) === "b0100111".U && vw)
+  } else false.B
+  // v_legal additionally requires vector state to be enabled. Kept SEPARATE from
+  // v_opcode: the vector decoders recognize an instruction from `inst` alone and
+  // cannot see `vector_illegal`, so an RVV encoding executed with mstatus.VS=Off
+  // has v_legal false while they still legitimately write its fields. Guarding
+  // the pass-through assertion below on v_legal would fire it on a machine
+  // trapping VS=Off correctly.
+  val v_legal = if (usingRVV) v_opcode && !io.csr_decode.vector_illegal else false.B
+  val is_vsetvl = if (usingRVV) inst === VSETVL else false.B
+
   require (fLen >= 64)
   val illegal_rm = inst(14,12).isOneOf(5.U,6.U) || (inst(14,12) === 7.U && io.fcsr_rm >= 5.U)
-  val id_illegal_insn = (!cs_legal ||
+  val id_illegal_insn = ((!cs_legal && !v_legal) ||
     (cs.fp_val && (io.csr_decode.fp_illegal || illegal_rm)) ||
     (uop.is_rocc && io.csr_decode.rocc_illegal) ||
     (cs.is_amo && !io.status.isa('a'-'a'))  ||
     (csr_en && (io.csr_decode.read_illegal || !csr_ren && io.csr_decode.write_illegal)) ||
-    ((sfence || system_insn) && io.csr_decode.system_illegal))
+    ((sfence || system_insn) && io.csr_decode.system_illegal) ||
+    (if (usingRVV) io.vec.get.illegal else false.B))
 //     cs.div && !csr.io.status.isa('m'-'a') || TODO check for illegal div instructions
 
   def checkExceptions(x: Seq[(Bool, UInt)]) =
@@ -493,6 +529,17 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
   uop.iq_type(IQ_ALU) := Seq(FC_ALU                         ).map { c => cs.fu_code(c) }.reduce(_||_)
   uop.iq_type(IQ_MEM) := Seq(FC_AGEN, FC_DGEN               ).map { c => cs.fu_code(c) }.reduce(_||_)
   uop.iq_type(IQ_FP ) := Seq(FC_FPU , FC_FDV, FC_F2I        ).map { c => cs.fu_code(c) }.reduce(_||_)
+  //@req-spec-core.e6
+  // Default the IQ_SZ=7 vector routing bits + vector-uop markers; VecDecode
+  // overrides them through the merge for a recognized RVV lane.
+  if (usingRVV) {
+    uop.iq_type(IQ_V_LOAD)  := false.B
+    uop.iq_type(IQ_V_STORE) := false.B
+    uop.iq_type(IQ_V_ALU)   := false.B
+    uop.is_vec.get          := false.B
+    uop.is_shared.get       := false.B
+    uop.is_vl_producer.get  := false.B
+  }
 
   uop.fu_code    := cs.fu_code.asBools
 
@@ -533,9 +580,15 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
   uop.is_sfence  := inst === SFENCE_VMA
   uop.is_sys_pc2epc := inst === EBREAK || inst === ECALL
   uop.is_eret    := inst === ECALL || inst === EBREAK || inst === SRET || inst === MRET || inst === DRET
-  uop.is_unique  := cs.inst_unique
+  //@req-spec-decode.e3
+  //@req-spec-decode.e4
+  //@req-spec-memord.f17
+  //@req-spec-memord.f18
+  uop.is_unique  := cs.inst_unique || is_vsetvl
   uop.is_rocc    := inst(6,0).isOneOf("b0001011".U, "b0101011".U, "b1111011".U) && inst(14,12).isOneOf(0.U, 2.U, 3.U, 4.U, 6.U, 7.U)
-  uop.flush_on_commit := cs.flush_on_commit || (csr_en && !csr_ren && io.csr_decode.write_flush)
+  //@req-spec-decode.e3
+  //@req-spec-decode.e4
+  uop.flush_on_commit := cs.flush_on_commit || (csr_en && !csr_ren && io.csr_decode.write_flush) || is_vsetvl
 
 
   //-------------------------------------------------------------
@@ -597,6 +650,7 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
     uop.op2_sel := OP2_IMM
   }
 
+  //@req-spec-core.f8
   uop.br_type := Seq(
     (BEQ  , B_EQ ),
     (BNE  , B_NE ),
@@ -608,7 +662,22 @@ class DecodeUnit(implicit p: Parameters) extends BoomModule
     (JALR , B_JR )
   ) .map { case (c, b) => Mux(inst === c, b, 0.U) } .reduce(_|_)
 
-  io.deq.uop := uop
+  //@req-spec-core.e5
+  // Merge is unconditional over lanes (not Mux(v_legal, ...)): VConfigUnit
+  // drives `vconfig` on every lane, including scalar branches that allocate
+  // a br_tag, so gating on v_legal would corrupt the VCFG snapshot mirror.
+  if (usingRVV) {
+    val vdec_ck = WireInit(io.vec.get.uop_from_vdec)
+    vdec_ck.vconfig.get := uop.vconfig.get
+    // Guarded on v_opcode, NOT v_legal: the spec's condition is "a lane where the
+    // local RVV opcode predicate is false". An RVV encoding with mstatus.VS=Off
+    // is still an RVV encoding the vector decoders write fields for.
+    assert(v_opcode || vdec_ck.asUInt === uop.asUInt, "VecDecode wrote a non-vconfig field on a scalar decode lane")
+    io.vec.get.uop_to_vdec := uop
+    io.deq.uop             := io.vec.get.uop_from_vdec
+  } else {
+    io.deq.uop := uop
+  }
 }
 
 /**

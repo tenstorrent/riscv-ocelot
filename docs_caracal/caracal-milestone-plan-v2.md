@@ -1109,3 +1109,98 @@ and the two new limitations this buys are in `docs_caracal/v2-rebaseline/README.
   Verified by running scalastyle in a throwaway `HEAD` worktree and diffing the error sets
   offset-normalized: **identical**. A2 adds zero new errors. The gate as written is
   unachievable on this tree; the falsifiable form is "no new error", which holds.
+
+---
+
+### Phase B — as built
+
+**Generation tier.** All six B2 nodes were generated on **Sonnet**, per
+[§4.6](#46-model-tiers). **No phase escalation was needed.** Every failure below was a spec
+defect, not a translation error — with one exception (the `v_legal`/`v_opcode` conflation,
+gate (i) below), which was a generation defect whose root cause was an ambiguous spec
+sentence and which was fixed in both places. The stronger tier was used only for amending
+nlhdl specs, adjudicating defects, and the gate runs.
+
+**What landed.** `VecDecode` (588), `VDecode` (412), `VLSDecode` (371), `VsetDecode` (374),
+`VConfigUnit` (605) under `src/main/scala/v4/vec/generated/decode/`, plus the `DecodeUnit`
+delta in `src/main/scala/v4/exu/decode.scala` (+56 lines vs a ~40 budget; the overage is 19
+mandatory `//@req-` tag lines).
+
+**Dispatch order.** Five nodes ran in parallel (the four leaf decoders + `DecodeUnit`, which
+depends only on settled Phase-A packages and touches a disjoint file), then `VecDecode`
+alone against its four children's *real* generated interfaces. Every later regeneration ran
+strictly serially, per Phase A's process rule.
+
+#### Gate results
+
+| Gate | Result |
+|---|---|
+| **a** `sbt boom/compile` | **PASS** — 7 sources, warnings only |
+| **b** `make checkstyle` | **No new error.** 31 errors, none naming a B2 file except `decode.scala`'s **pre-existing parser failure**. See the caveat below — this gate is *blind* on `decode.scala`, not clean. |
+| **c** Chipyard vector build | **Blocked until D2**, as Phase A predicted — `core.scala:131` still hardcodes `BasicDispatcher`. Not a B2 defect. |
+| **d** scalar perf w/ vector enabled | **Blocked by (c)** — needs a vector config to elaborate. |
+| **e** vector regression | **N/A at B2** ((e1) starts at D3), and still blocked by the missing `WithBoomDebugHarness`. |
+| **f** `usingRVV=false` vs rebaseline | **PASS** — `VERIFY OK`, all three tiers match exactly (Small 613 / Medium 616 / Mega 643 modules). The whole decode delta is invisible with vectors off. |
+| **i** RTL matches spec | **PASS** after the fixes below. 97/97 req IDs tagged, mechanically verified. |
+| **j** no hand edits to generated output | **One hand edit**, to `decode.scala` (an `edit_existing` target, not a generated `output:`); the spec was amended so a regeneration reproduces it. |
+
+> **Gate (b) is blind, not clean, on this phase's largest edit.** scalastyle cannot *parse*
+> `decode.scala` — that is one of the four pre-existing parser failures A2 recorded — so it
+> reports no style findings for the file's contents at all. The `DecodeUnit` delta therefore
+> received zero style checking. Worth fixing before a phase edits it again.
+
+#### Gate (f) tooling defect — the gate could not have failed
+
+`regen.sh` accepted only `prebaseline|rebaseline`, but the README specifies that every phase
+after A2 re-runs the check with `--post` pointing at a **fresh** vectors-off build. The only
+way to produce one was `./regen.sh rebaseline` — which **overwrites `manifest/rebaseline.json`,
+the very reference the gate is judged against.** Running the gate would have silently
+re-baselined it instead of failing. Added a non-destructive **`check`** mode: elaborates into
+`generated-src-gatef-check` and runs `--verify … --against manifest/rebaseline.json`, treating
+the reference strictly as an input and writing no manifest. *A gate that cannot fail is not a
+gate — this is the same lesson as A1's 88%-false-positive checker, in the opposite direction.*
+
+#### Spec defects found during Stage 3 — six more review escapes, plus one from Phase A
+
+| # | Node | Defect | Resolution |
+|---|---|---|---|
+| 9 | **`VtypeTable`** (Phase A) | `emul()` asserted `EMUL <= maxMembers` "since a legal `vtype` cannot produce a group wider than 8". **False**: a legal `vtype` at LMUL=8 *plus* a widening op (EEW=2×SEW) gives EMUL=16, and an indexed access with EEW=64 against SEW=8 gives EMUL=8×LMUL. RVV 1.0 reserves those and Caracal traps them at decode — so the assertion fires on a machine behaving *correctly*, aborting a cosim run on every `vwadd` at LMUL=8. With no unit tests (rule 11) that abort is all an engineer would see. | Spec amended. `emul` now returns **0 for out-of-range**, a documented contract (sound because `raw` is always a power of two, so every overflow is ≡0 mod 2^`emulWidth`, and 0 is otherwise unreachable since the fractional case clamps *up* to 1). The assertion was **replaced, not deleted**, with the invariant that makes the contract sound: `result === 0 \|\| result <= maxMembers`, which fires exactly when `raw` stops being a power of two. `VDecode` already assumed this contract; `VecDecode`'s `memEmulIllegal` was extended to test it. |
+| 10 | `VConfigUnit` | Section 7 mandates `VecTrace` lines but the ports section declares no `rob_idx`/`ftq_idx`/`pc_lob` — while `VecTrace`'s own doc comment names `VConfigUnit` as a caller needing exactly those. Tracing was unimplementable, contradicting ground rule 11. | Spec amended: added trace-only `dec_ftq_idx`/`dec_pc_lob` inputs. **Narrowed, not closed** — the decode-lane event now traces; the rename/mispredict/commit events still have no stage-appropriate identifier and remain omitted with inline flags. |
+| 11 | `VConfigUnit` / `VsetDecode` / `VecDecode` | `VsetDecode` takes a `prev_vtype` input "from VConfigUnit"; `VConfigUnit` exported no such port. `VecDecode` reconstructed it as `dec_vconfig(w-1)` — an identity that genuinely holds for `w>=1` but **has no `w=0` case**, forcing `prev_vtype(0) := DontCare` straight into a legality comparison. | Spec amended: added `dec_prev_vconfig`, the strictly-exclusive prefix — the `scanLeft`'s value *entering* lane `w`, seeded by `vcfg_mirror` at `w=0`. Both outputs are taps of the one existing prefix network, so it costs no logic. The shifted reconstruction is now explicitly forbidden. |
+| 12 | `VConfigUnit` | Should a reserved keep-VL `vsetvli` poison the mirror? `VecDecode` could not route `keep_vl_illegal` there. | **Resolved as "no port", with reasoning recorded in the spec.** The vtype such a `vsetvli` carries is itself legal (`vill` clear), so the mirror absorbs a *valid* configuration; the trap's commit-time flush restores from the committed shadow — the argument part 4 already relies on for `vsetvl`. The illegality still reaches the uOP via `dec_vec_illegal`. |
+| 13 | `VDecode` | `v_uses_vs1`'s funct5 exclusion is given **twice and inconsistently**: an algebraic test (`funct6(5,2) === 0b0100` → {0x10,0x11,0x12,0x13}) and a named enumeration ({0x10,0x12,0x13,0x14}), disagreeing at both ends. | Enumeration implemented (matches the real RVV table); formula unused. **Spec still needs the contradiction removed.** |
+| 14 | `VDecode` | FP widening/narrowing converts (VFUNARY0, funct6 `0x12`) fall outside the dest-EEW rule, which is bounded to funct6 0x30–0x3F. `vfwcvt.*`/`vfncvt.*` genuinely change element width, so they take a vtype-derived EMUL instead of a doubled one. | Implemented literally; **not invented**. This is a real design hole, not a wording slip: a mis-sized EMUL is a mis-sized PRN group. **Owner: unassigned — must be resolved before Phase F.** |
+| 15 | `VsetDecode` | Req c9's text clears `lrs3_rtype`; **`MicroOp` has no such field** (only `frs3_en`, `micro-op.scala:154`). Separately, c9 groups `vsetivli` with `rd != x0` under "`lrs1 = rs1`, `lrs1_rtype = RT_FIX`", contradicting part 2, which says its AVL is an immediate and no register is read. | `frs3_en` cleared, `lrs3_rtype` omitted with an inline flag. The c9/part-2 contradiction resolved in favour of part 2 (`RT_X`) — taking c9 literally would make rename wait on a PRN for a bit-position that is an immediate. |
+
+#### Gate (i) failure — one generation defect, and what it teaches
+
+`DecodeUnit`'s scalar-lane pass-through assertion was guarded on `v_legal`, but the spec says
+to guard it on *"the local RVV **opcode** predicate"*. `v_legal` is that predicate **AND**
+`!io.csr_decode.vector_illegal`, so an RVV encoding executed with `mstatus.VS=Off` has
+`v_legal` false while the vector decoders — which recognize from `inst` alone and cannot see
+`vector_illegal` — still legitimately write its fields. The assertion would fire on a machine
+trapping VS=Off *correctly*.
+
+Root cause was the spec naming only **one** predicate while referring to **two** concepts.
+Fixed in both: `decode.scala` now defines `v_opcode` and `v_legal` separately and guards the
+assertion on `v_opcode`; the nlhdl now mandates two named predicates and explains which
+belongs where. Per [§4.5](#45-stage-3--phased-rtl-generation-gated-per-phase) this is the
+"spec defect → fix the spec" branch, so the tier was **not** escalated.
+
+#### Process note: self-reported req coverage is not evidence
+
+`VConfigUnit`'s first generation reported all 39 req IDs tagged. **Four were missing**
+(`spec-decode.d4/.d5/.d13`, `spec-vrf.c6`) — two spec paragraphs had been silently merged,
+taking their tags with them — and this surfaced only because the regeneration re-derived the
+list. Coverage is now checked **mechanically** (`reqcheck.py`: read each node's `reqs:` from
+`hierarchy.yaml`, grep the node's actual `output:`/`target:` file). Current state: **97/97
+across all six B2 nodes.** Run it as part of gate (i) from Phase C on.
+
+#### Known gaps carried out of Phase B
+
+- **Defect 14 (`vfwcvt`/`vfncvt` EMUL) is unowned** and must be resolved before Phase F.
+- **Defect 13's spec contradiction** is worked around in RTL but not yet removed from the spec.
+- `VtypeTable.VtypeInfo` still drops `vsew`/`vlmul_sign`/`vlmul_mag`, so `VConfigUnit` and
+  `VecDecode` call rocket's `VType.fromUInt` directly for the full-`VType` path. Single-sourced
+  and correct, but it means `VtypeTable.decode` is not the only vtype decode site it claims to be.
+- `VConfigUnit`'s rename/mispredict/commit trace events remain unimplemented (defect 10).

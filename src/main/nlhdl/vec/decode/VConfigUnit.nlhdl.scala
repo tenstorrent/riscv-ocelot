@@ -114,13 +114,69 @@ from Tenstorrent Inc.
                       from the mirrored vtype. False for a non-vector uOP and,
                       critically, false for a whole-register move/load/store,
                       which takes EMUL from the `NREG` field of its own encoding.
+  `dec_ftq_idx`     — this lane's `MicroOp.ftq_idx`.
+  `dec_pc_lob`      — this lane's `MicroOp.pc_lob`.
+                      // These two exist ONLY to tag the trace lines of part 7,
+                      // and no logic may read them. They are here because
+                      // `VecTrace.traceDecode(module, event, ftq_idx, pc_lob,
+                      // extra)` requires them and this unit had no port
+                      // carrying either, which made part 7 unimplementable as
+                      // written — a decode-stage unit has no `rob_idx`,
+                      // because the ROB entry does not exist until dispatch,
+                      // and VecTrace's own comment says a line claiming
+                      // `rob=0` is worse than one admitting it does not know.
+                      // Wired by VecDecode from `dec_uops_in(w)`.
   All but `dec_fire` come from the sibling decoders (VsetDecode for the `vset`
-  shapes, VDecode/VLSDecode for `dec_uses_vtype`), wired by VecDecode.
+  shapes, VDecode/VLSDecode for `dec_uses_vtype`) or from the incoming uOP
+  (`dec_ftq_idx`, `dec_pc_lob`), wired by VecDecode.
+
+  // ===> `keep_vl_illegal` IS DELIBERATELY NOT AN INPUT HERE; REJECT IT IF IT
+  // APPEARS. VsetDecode detects the reserved keep-VL case (`vsetvli rd=x0,
+  // rs1=x0` where the new VLMAX differs from the current VL) and it is a real
+  // illegal instruction, but it must NOT poison the mirror. The vtype such a
+  // `vsetvli` carries is itself perfectly legal — `vill` is clear and
+  // `VtypeTable.decode` accepts it — so the mirror absorbing it through the
+  // ordinary path of part 4 leaves the mirror holding a VALID configuration,
+  // not a corrupt one. The instruction traps, and the trap's commit-time
+  // flush restores the mirror from the committed shadow by part 6, squashing
+  // every younger uOP that decoded against it. That is precisely the argument
+  // part 4 already relies on for `vsetvl`, whose vtype is likewise not
+  // knowable at decode. Adding the port would make VConfigUnit's poison state
+  // depend on a legality rule computed in a sibling, for a case the existing
+  // recovery path already covers.
+  //
+  // The keep-VL illegality still reaches the OUTGOING uOP: VecDecode ORs
+  // `keep_vl_illegal` into that lane's `dec_vec_illegal`, which is where an
+  // illegal-instruction decision belongs. Mirror state and trap reporting are
+  // different obligations and only the second one is VsetDecode's to trigger.
 
   ---- Decode-stage outputs, one entry per lane ----
 
   `dec_vconfig`     — the selected `vtype` for this lane, as rocket's `VType`;
                       the value VecDecode writes into `MicroOp.vconfig`.
+  `dec_prev_vconfig`— the `vtype` in effect IMMEDIATELY BEFORE this lane, i.e.
+                      the strictly-EXCLUSIVE prefix: the `scanLeft`'s running
+                      value ENTERING lane `w`, which for lane 0 is `vcfg_mirror`
+                      itself. Consumed by VsetDecode's `prev_vtype`, whose
+                      reserved keep-VL check compares the NEW vtype's VLMAX
+                      against the VL that the PREVIOUS vtype was established
+                      with.
+                      // ===> THIS IS NOT `dec_vconfig` SHIFTED BY ONE LANE, AND
+                      // A CONSUMER MUST NOT RECONSTRUCT IT THAT WAY. The
+                      // identity `dec_prev_vconfig(w) == dec_vconfig(w-1)` does
+                      // hold for `w >= 1` — a `vset` at `w-1` publishes its new
+                      // vtype, a non-`vset` publishes the prefix before itself,
+                      // and both are the value in effect at `w` — but it is an
+                      // identity a reader has to re-derive, and it has NO
+                      // w = 0 case at all: the pre-bundle mirror value is not
+                      // otherwise observable outside this unit. VecDecode was
+                      // generated against the shifted form and had to leave
+                      // `prev_vtype(0)` tied to `DontCare`, feeding an undriven
+                      // value straight into a legality comparison. Exporting
+                      // the exclusive prefix directly costs no logic — the
+                      // `scanLeft` of part 3 already computes exactly these
+                      // `coreWidth` values — and removes both the DontCare and
+                      // the proof obligation.
   `dec_vl_imm`      — width `vecVLSz`; the decode-computed VL of a `vsetivli`,
                       with `dec_vl_imm_valid` qualifying it. Output only: it
                       leaves for the rename-cycle VL-RF write and never
@@ -283,6 +339,13 @@ from Tenstorrent Inc.
   vtype, the first `vadd` gets the `vsetvli` value and the second gets the
   `vsetivli` value — not the bundle's newest value in both `vadd` cases, which is
   the mistake this prefix exists to prevent.
+
+  Both outputs fall out of the one `scanLeft` and neither adds a mux stage:
+  `dec_prev_vconfig(w)` is the running value ENTERING lane `w` (the `scanLeft`'s
+  seed, `vcfg_mirror`, at `w = 0`), and `dec_vconfig(w)` is that same value with
+  lane `w`'s own update applied when lane `w` is a `vset` — which is exactly the
+  self-inclusive/self-exclusive rule above, restated as the two taps of a single
+  prefix network. Export both; do not compute the exclusive one twice.
 
   LEGALITY IS NOT DECIDED HERE. Every raw `dec_vtype_imm` passes through
   `VtypeTable.decode` (which delegates to rocket's `VType.fromUInt`) before it

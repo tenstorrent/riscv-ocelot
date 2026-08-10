@@ -152,14 +152,28 @@ from Tenstorrent Inc.
 
   ---- 1. `v_legal`: recognizing the vector opcode space ----
 
-  Add one local predicate, computed from `inst` alone, as three positive matches:
+  Add TWO named local predicates. `v_opcode` is computed from `inst` alone, as
+  three positive matches:
 
     OP-V            `inst(6,0) === "b1010111".U`
     vector LOAD-FP  `inst(6,0) === "b0000111".U` and
                     `inst(14,12).isOneOf(0.U, 5.U, 6.U, 7.U)`
     vector STORE-FP `inst(6,0) === "b0100111".U` and the same width set
 
-  `v_legal` is that predicate ANDed with `!io.csr_decode.vector_illegal`.
+  `v_legal` is `v_opcode` ANDed with `!io.csr_decode.vector_illegal`.
+
+  // ===> THEY MUST BE TWO NAMED PREDICATES, NOT ONE. `v_opcode` answers "is
+  // this encoding in the RVV opcode space", a fixed property of `inst`;
+  // `v_legal` additionally answers "is vector state enabled", which depends on
+  // a CSR. Only `v_legal` may qualify `id_illegal_insn` — that is the whole
+  // point of the `vector_illegal` term. But the pass-through assertion in part
+  // 4 must be guarded on `v_opcode`, because the vector decoders recognize an
+  // instruction from `inst` alone and cannot see `vector_illegal`: an RVV
+  // encoding executed with `mstatus.VS = Off` has `v_legal` false while they
+  // still legitimately write its fields, so guarding that assertion on
+  // `v_legal` fires it on a machine that is trapping VS=Off CORRECTLY. An
+  // earlier draft of this file named only `v_legal` and referred to "the local
+  // RVV opcode predicate" in part 4, and the two were duly conflated.
 
   // ===> MATCH THE LOAD/STORE WIDTHS POSITIVELY. The tempting form is "LOAD-FP
   // with a width other than FLW's 010 or FLD's 011", and it is wrong: width 001
@@ -254,8 +268,9 @@ from Tenstorrent Inc.
        silent corruption on a path with no vector instruction near the failure.
        Settled here in favour of the unconditional merge.
 
-  Assert that, on a lane where the local RVV opcode predicate is false,
-  `uop_from_vdec` equals `uop` in every field EXCEPT `vconfig`. This project has no
+  Assert that, on a lane where `v_opcode` is false — NOT `v_legal`; see the
+  callout in part 1 — `uop_from_vdec` equals `uop` in every field EXCEPT
+  `vconfig`. This project has no
   unit tests — validation is end-to-end VCS plus Whisper cosim — so this assertion
   is what turns "a vector decoder wrote a field on a lane it does not own" from a
   scalar miscompare hundreds of cycles downstream into a named failure in the cycle
@@ -444,8 +459,8 @@ Instantiates nothing, today or after the delta.
     - `class DecodeUnitIo`: ONE `Option`-wrapped `vec` sub-bundle, conditional on
       `usingRVV`, with members `uop_to_vdec` (Output MicroOp), `uop_from_vdec`
       (Input MicroOp), `illegal` (Input Bool).
-    - `class DecodeUnit`: the local RVV opcode-space predicate, `v_legal`, and the
-      `vsetvl` predicate.
+    - `class DecodeUnit`: the local RVV opcode-space predicate `v_opcode`, the
+      vector-state-qualified `v_legal`, and the `vsetvl` predicate.
     - `id_illegal_insn`: qualifying its FIRST term with `&& !v_legal` and
       appending `|| io.vec.get.illegal`. No other term of it, and no row of the
       `checkExceptions` list, may change.

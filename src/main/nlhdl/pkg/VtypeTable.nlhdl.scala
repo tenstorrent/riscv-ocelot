@@ -120,12 +120,43 @@ from Tenstorrent Inc.
   ---- EMUL: the group size a rename must allocate ----
 
   `emul(info, eew)` returns the number of registers in a group whose elements
-  are `eew` bits wide, as a 1..`maxMembers` count. For an arithmetic op the
-  element width is SEW and EMUL is LMUL; for a load or store the element width
-  is the instruction's EEW and EMUL is `LMUL * EEW / SEW`. Clamp the result to
-  at least 1 — a fractional EMUL still occupies one whole register — and assert
-  it never exceeds `maxMembers`, since a legal `vtype` cannot produce a group
-  wider than 8 and a wider one would silently truncate the rename allocation.
+  are `eew` bits wide, as a 1..`maxMembers` count when the combination is
+  legal, and 0 when it is not. For an arithmetic op the element width is SEW
+  and EMUL is LMUL; for a load or store the element width is the instruction's
+  EEW and EMUL is `LMUL * EEW / SEW`. Clamp the result to at least 1 — a
+  fractional EMUL still occupies one whole register.
+
+  // ===> AN EMUL ABOVE `maxMembers` IS AN ILLEGAL INSTRUCTION, NOT AN
+  // IMPOSSIBLE STATE, AND THIS FUNCTION MUST NOT ASSERT ON IT. A legal `vtype`
+  // ALONE cannot produce a group wider than `maxMembers`, but `vtype` PLUS an
+  // EEW that differs from SEW can, and routinely does: a widening op
+  // (EEW = 2*SEW) at LMUL=8 gives EMUL=16, and an indexed access with EEW=64
+  // against SEW=8 gives EMUL = 8*LMUL. RVV 1.0 reserves exactly those
+  // encodings, and Caracal traps them at DECODE — VDecode's EMUL-bound term is
+  // the architectural check, and it can only be reached because this function
+  // RETURNS the out-of-range case instead of dying on it. An assertion here
+  // fires on a machine that is behaving correctly: every `vwadd`/`vwmul` at
+  // LMUL=8 would abort a cosim run while the DUT was, correctly, raising an
+  // illegal-instruction trap. This project has no unit tests (plan v2 ground
+  // rule 11), so that abort is the ONLY thing the engineer would see.
+  //
+  // ===> THE OUT-OF-RANGE INDICATION IS THE RETURN VALUE 0, AND THAT IS A
+  // CONTRACT, NOT AN ACCIDENT OF TRUNCATION. `raw` is always a power of two —
+  // it is `vlmax` shifted up by the EEW code and down by a compile-time
+  // constant — so every out-of-range EMUL is 16, 32, 64 or 128, each of which
+  // is congruent to 0 modulo 2^`emulWidth`. Zero is otherwise unreachable,
+  // because the fractional case is clamped UP to 1. Callers therefore test
+  // `emul === 0` for "group too wide", and NO caller may treat 0 as a group
+  // size. `decode()` above independently drives `emul` to 0 when `vill` is
+  // set, which is the same contract from the other direction: 0 always means
+  // "this is not a usable group size", never "a group of no registers".
+  //
+  // The assertion that remains is the one that is actually invariant, and it
+  // is what makes the 0-contract sound rather than decorative: the returned
+  // value is either 0 or in 1..`maxMembers`. It fires precisely when `raw`
+  // was not a power of two — i.e. when someone has broken the shift-only
+  // derivation below — which is the bug that would let a genuine group size
+  // alias onto the reserved 0 encoding.
 
   // This is the value that reaches the vector mapper as v_emul and decides how
   // many PRNs an OP.v allocates atomically. An EMUL that disagrees with the
