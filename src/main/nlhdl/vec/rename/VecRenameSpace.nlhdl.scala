@@ -343,8 +343,40 @@ from Tenstorrent Inc.
 
   `freelist.io.initial_allocation := Cat(~0.U((numPhysRegs-numArchRegs).W),
   0.U(numArchRegs.W))` — the low `numArchRegs` PRNs are the identity mapping the
-  committed table holds permanently and are never free. `req_members(w) :=
-  ren2_uops(w).v_emul` (always 1 in the VL space). `ren_br_tags`, `brupdate` and
+  committed table holds permanently and are never free.
+
+  ===> `req_members(w) := v_emul` FOR `vec_rename` AND THE CONSTANT `1` FOR
+       `vl_rename` — NOT `v_emul` IN BOTH. An earlier revision of this sentence
+       read "`req_members(w) := ren2_uops(w).v_emul` (always 1 in the VL space)".
+       The parenthetical states the right fact and draws the wrong conclusion:
+       **because** a `vset` carries no EMUL group, `v_emul` there is **0**, not 1.
+       A vset is modelled as a scalar uop, so nothing ever sets its `v_emul`.
+
+       Reading `v_emul` in the VL space therefore requests a ZERO-member
+       allocation, and `VecFreeList` grants nothing for `pvl`. Its in-range
+       assertion caught it at 3035 ns of the gate-(e1) cosim ("req_members out of
+       [1, maxGroupSize] range while reqs is asserted"). The SAME false premise
+       produced the same bug in the busy-table shim of part 5 — where the
+       consequence is worse, because an empty set mask is a silent stale-VL read
+       rather than an assertion. Note `map_reqs(w).emul` already used `1.U` for
+       this space, so the two sites disagreed with each other.
+
+       THE MODULE THEREFORE DECLARES TWO NAMED HELPERS — `renMembers(w)` and
+       `comMembers(w)` — each `v_emul` in the vector instance and the constant `1`
+       in the VL one. Use them in ANY code that elaborates in both instances;
+       read `v_emul` directly only inside an `if (vectorInstance)` arm.
+
+       // ===> AND CHECK REACHABILITY FROM THE BLOCK STRUCTURE, NOT FROM NEARBY
+       // CONTEXT. A third instance of this same bug (the dealloc-range
+       // ASSERTIONS, at 3049 ns) survived an audit that concluded "all other
+       // reads are gated", because those assertions sit a few lines from the
+       // `stale_group` dealloc LOGIC and read the same expression under a
+       // DIFFERENT condition — the logic is vec-only, the assertions elaborate in
+       // both. Grepping a window around a read is not sufficient evidence about
+       // which space it belongs to; the helpers exist so the question does not
+       // have to be re-answered.
+
+  `ren_br_tags`, `brupdate` and
   `rollback` are forwarded. `alloc_fire(w) := ren2_alloc_fire(w)`, i.e. the
   PER-LANE `dis_fire(w) && ren2_alloc_reqs(w)`.
 
@@ -414,6 +446,31 @@ from Tenstorrent Inc.
   `ren2_uops_out`: it is the output uop with THIS SPACE'S destination group placed
   in `pvdest`, which for `vl_rename` means `bt_uops(w).pvdest(0) := uop.pvl`
   narrowed to `pregSz`, because the busy table's set path reads `pvdest`.
+
+  ===> AND `vl_rename`'s SHIM MUST ALSO FORCE `bt_uops(w).v_emul := 1`. THE VL
+       "GROUP" IS ONE REGISTER, AND WITHOUT THIS `pvl` IS NEVER MARKED BUSY.
+
+       `VecBusyTable`'s set path is generic across both instances and qualifies
+       each member with `j < uop.v_emul` (its part 6). The uop renamed in this
+       space is a `vset`, which is modelled as a SCALAR uop — `is_vec` clear,
+       `v_emul` **0**, because a vset has no vector destination group. So
+       `j < 0` is false for every j, the set mask is EMPTY, and the VL busy bit
+       is silently never set.
+
+       That is a CORRECTNESS bug and not merely an assertion failure: a
+       register-sourced `vsetvli`/`vsetvl` writes `pvl` at ALU writeback, so a
+       younger vtype-dependent OP.v must wait on that busy bit. With the bit
+       never set the dependent is ready immediately and reads a STALE VL out of
+       the VL RF. Found by `VecBusyTable`'s own "rebusy_reqs asserted with
+       v_emul == 0" assertion at 3035 ns of the gate-(e1) cosim.
+
+       Force it in the shim that already exists to adapt this space's uop to the
+       generic table. Do **not** relax that assertion (it hides the empty set
+       mask) and do **not** special-case `maxGroupSize == 1` inside
+       `VecBusyTable` (that puts VL knowledge into a module whose whole point is
+       having none). Drive `is_shared := false` in the same place, which
+       `VecBusyTable`'s part 6 already asks of this file — a vset never sets it
+       today, so that one is defensive rather than a fix.
 
   // ===> `vl_rename` MUST NOT WRITE `pvdest` ON ITS OUTPUT PATH. `pvdest` there
   // belongs to the vector space and holds a real 7-bit vector group; a 6-bit VL

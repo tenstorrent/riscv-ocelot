@@ -317,6 +317,29 @@ from Tenstorrent Inc.
 
   ---- 4. Which operands participate: `used`, driven per queue ----
 
+  ===> EVERY `used` BELOW IS ADDITIONALLY QUALIFIED BY SLOT LIVENESS —
+       `active_valid = in_uop.valid || slot_valid` — AND THE TABLE THAT FOLLOWS
+       OMITS THAT TERM ONLY FOR READABILITY. It is not optional.
+
+       `slot_uop` is a plain `Reg` with no reset value, so in an EMPTY slot every
+       field the table reads is garbage: X at time 0, and the previous occupant's
+       stale fields afterwards. Unqualified, an idle slot presents e.g.
+       `v_uses_vs2 = 1` with `v_emul = 0`, and `VecGroupReady`'s in-range
+       assertion on `members` fires on a slot holding nothing.
+
+       This is not hypothetical — it is what stopped the FIRST cosim run of gate
+       (e1): `iq_v_load.slots_3.rdy_vs2` tripped "members out of range
+       1..maxVecMembers while the operand is used" at 785 ns while running
+       `vset_test.elf`, a test containing **no vector loads at all**, so that slot
+       had been empty for the whole run.
+
+       Qualify `used`; do NOT weaken `VecGroupReady`'s assertion, which is right
+       about the invariant. The qualification is functionally free: `used` feeds
+       only `ready := !used || group_all_rdy` and that assertion, and `ready` is
+       consumed only while the slot is valid — so an idle slot reports ready,
+       which is what it already effectively did. Weakening the assertion instead
+       would keep a live slot's out-of-range `members` from ever being caught.
+
   //@req-spec-issue.g29
   //@req-spec-issue.g30
   //@req-spec-issue.g31

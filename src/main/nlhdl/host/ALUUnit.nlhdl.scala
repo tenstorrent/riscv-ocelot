@@ -133,6 +133,32 @@ from Tenstorrent Inc.
   front-end only and never gets an issue slot or an EU, and `vleff` — the third
   VL producer class — is an LSU uOP that never sets `fu_code(FC_ALU)`.
 
+  ===> CORRECTED — THE SENTENCE ABOVE IS WRONG ABOUT `vsetivli`, AND THE ERROR
+       PRODUCED A WRONG ARCHITECTURAL RESULT. **`vsetivli` with `rd != x0` DOES
+       reach this unit.** `VsetDecode` routes it to `IQ_ALU`/`FC_ALU`, and
+       `VecDecode` gives the reason in its own file: "rd needs an integer-RF write
+       the front end has no port for". Only an execution unit has that port, so
+       "front-end only" can be true of the VL-RF write and of `vsetivli`'s *vtype*
+       — never of its `rd`.
+
+       The consequence of believing it: this unit read AVL from
+       `io.req.bits.rs1_data`, but `vsetivli`'s AVL is the immediate
+       `inst(19,15)`, so `VsetDecode` sets `lrs1_rtype := RT_X` and `imm_sel :=
+       IS_N` — `rs1_data` is a register that was never renamed or read. The stale
+       value was `>= maxVLMax`, saturating to VLMAX, so
+       `vsetivli x11, 1, e16, m2` wrote **32** where `min(1, 32) = 1`. Found as a
+       cosim Register Mismatch against Whisper at gate (e1), on the first vector
+       instruction the test executes.
+
+       Resolution: `MicroOp` gains `v_vl_imm`, the VL **VConfigUnit already
+       computed at decode**, and this unit selects it for a `vsetivli`
+       (`lrs1_rtype === RT_X`, exact because the other two shapes are `RT_FIX` or
+       the `RT_ZERO` VLMAX request) instead of recomputing. Carrying the RESULT
+       and not the AVL is deliberate: `vsetivli` has two destinations that must
+       receive the same value — `rd` here and `pvl` in the VL RF at rename — and
+       a second `min(AVL, VLMAX)` evaluation in this unit could only create a way
+       for them to disagree. `vleff` remains genuinely absent from this unit.
+
   Which of the two forms it is comes from `uop.lrs2_rtype === RT_FIX`: only
   `vsetvl` encodes a second integer source, so the decoder renames `rs2` for
   `vsetvl` and leaves `lrs2_rtype` non-`RT_FIX` for `vsetvli`. Call that

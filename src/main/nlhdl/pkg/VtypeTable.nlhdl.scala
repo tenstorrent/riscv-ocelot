@@ -117,6 +117,78 @@ from Tenstorrent Inc.
   a consumer that ignores `vill` gets an obviously-wrong answer rather than a
   plausible one.
 
+  ===> AND `computeVL` MUST PAD BOTH `avl` AND `currentVL` UP TO
+       `maxVLMax.log2` BITS BEFORE DELEGATING. rocket's `VType.vl` does
+       `Mux(useCurrentVL, currentVL, avl)(maxVLMax.log2 - 1, 0)` — an
+       unconditional 8-bit slice at VLEN=256 — so it REQUIRES both operands to be
+       at least that wide, and two callers are narrower: `VConfigUnit` passes
+       `vsetivli`'s AVL, a 5-bit `uimm[4:0]`, and every caller passes
+       `currentVL = 0.U` on the paths that do not use it, where a `0.U` literal is
+       ONE bit. A Mux takes the max of its operand widths, so both cases slice
+       bits 7:0 out of a 5-bit or 1-bit value: `High index 7 is out of range
+       [0, 4]`, a hard elaboration error.
+
+       Pad in `computeVL`, once, not at each call site — otherwise the next
+       caller rediscovers it. Take the width from `p(TileKey).core.vLen`, which
+       IS rocket's `maxVLMax` (`tile/Core.scala`: `def maxVLMax = vLen`) as BOOM
+       supplies it, so the pad follows the same number rocket's slice uses.
+
+       // This does NOT reintroduce the addvector wrap-instead-of-saturate bug
+       // above: `.pad` only ever WIDENS. That bug came from NARROWING a wide AVL
+       // to `vecVLSz+1` bits; this widens a narrow one, and a 64-bit
+       // `rs1_data` AVL passes through untouched.
+       //
+       // ===> AND NOTE WHERE THIS WAS FOUND, because it is the clearest evidence
+       // for the gate hole recorded in the plan's Phase C addendum. This defect
+       // was introduced in PHASE B (VConfigUnit's `vsetivli` call) and survived
+       // Phases B and C untouched, because gate (a) cannot see it (it is an
+       // elaboration-time width error, not a type error) and gate (f) cannot
+       // reach it (a `usingRVV=false` build never constructs any of this). It
+       // surfaced the first time ANY gate elaborated a vector config, which was
+       // gate (c) at D2. Anything reachable only under `usingRVV=true` was
+       // unverified by every automated gate until that point.
+
+  ---- `resolve`: the FULL `VType`, for the consumers that need the bundle ----
+
+  `resolve(bits: UInt): freechips.rocketchip.rocket.VType` returns rocket's
+  complete `VType` for a raw `vtype` word: `VType.fromUInt(bits)`, delegated
+  whole and adding nothing.
+
+  ===> THIS EXISTS BECAUSE `decode` RETURNS A DIGEST, AND THREE NODES HAVE NOW
+       PAID FOR THAT. `VtypeInfo` is `{vlmax, emul, vill, vta, vma}` — it drops
+       `vsew`, `vlmul_sign` and `vlmul_mag`, so it CANNOT reconstruct a `VType`.
+       But several consumers need the whole bundle, because that is the type
+       rocket's `CSRFile` holds architectural `vtype` in and therefore the type
+       `MicroOp.vconfig` and `rob_vconfig` carry:
+         - `VConfigUnit` (the vtype mirror, the committed shadow, the per-`br_tag`
+           snapshot array and `dec_vconfig`) — reported this as a spec defect in
+           Phase B and resolved it by calling `VType.fromUInt` directly.
+         - `ALUUnit` (the resolved `vtype` a register-sourced `vsetvl` writes onto
+           `io.resp.bits.uop.vconfig`, which `Rob` latches into `rob_vconfig`) —
+           hit the same wall at D3, and its edit scope sanctions importing
+           `VtypeTable` and nothing else.
+       With no `VtypeTable` entry point for it, each consumer invents its own, and
+       the second one got it WRONG in a way no width check could catch: it
+       reinterpreted the raw bits with `.asTypeOf` and overrode only
+       `vill`/`reserved`, leaving `vsew`/`vlmul_*`/`vta`/`vma` as whatever `rs2`
+       happened to hold. **RVV 1.0 requires that when `vill` is set, every other
+       `vtype` field reads as zero**, and `VType.fromUInt` implements exactly that
+       (its `res` starts from `WireInit(0.U.asTypeOf(...))` and is assigned only
+       on the `!vill` path). A `csrr vtype` after an illegal `vset` would
+       therefore return garbage in the DUT and zero in the Whisper reference — a
+       cosim mismatch with no elaboration error anywhere.
+
+  So the rule is: **a consumer needing a full `VType` calls `resolve`; a consumer
+  needing legality plus VLMAX/EMUL calls `decode`; nobody hand-builds a `VType`
+  from raw bits.** Both go through `VType.fromUInt`, so they cannot disagree.
+  `resolve` is a pure delegation and deliberately has no logic of its own — its
+  entire value is being the one name consumers can reach.
+
+  // VConfigUnit's existing direct `VType.fromUInt` call is BEHAVIOURALLY
+  // IDENTICAL to `resolve` (that is all `resolve` is), so it is not a
+  // divergence and does not need an urgent regeneration — normalize it to
+  // `resolve` the next time that file is regenerated, so there is one name.
+
   ---- EMUL: the group size a rename must allocate ----
 
   `emul(info, eew)` returns the number of registers in a group whose elements

@@ -279,6 +279,30 @@ from Tenstorrent Inc.
   element index — a faulting vector op traps with `vstart = 0` and restarts
   whole, so an element index reaching the ROB could only be misused.
 
+  // ===> REPORTED, NOT RESOLVED — THIS BUNDLE CANNOT DRIVE `rob.io.lxcpt` AS
+  // DECLARED, and it is INERT ONLY BECAUSE OF D2 STAGING. Found by the BoomCore
+  // delta at D2, which has to merge this with `io.lsu.lxcpt` by age into
+  // `rob.io.lxcpt`. That port is `Valid(new Exception)` and the ROB's latch does
+  // `next_xcpt_uop := new_xcpt.uop` and then reads `uop.br_mask` for
+  // `GetNewBrMask` (`rob.scala`) — i.e. the ROB needs a MicroOp, and this bundle
+  // has none. BoomCore therefore populates `.rob_idx` and leaves the rest
+  // `DontCare`. That is safe TODAY only because `VecPipeline`'s D2 staging ties
+  // `vec_xcpt.valid` false while `vlsu` is absent, so the `DontCare` is never
+  // sampled.
+  //
+  // IT MUST BE FIXED BEFORE `VecLsu` LANDS AT E7, and the failure mode if it is
+  // not is specific and nasty: an unpopulated `br_mask` on a latched exception
+  // makes `GetNewBrMask` compute against garbage, so a vector fault taken while
+  // a branch is in flight is either dropped or attributed to the wrong
+  // instruction — a precise-exception bug that no width check or assertion
+  // catches. Give this bundle a real `uop: MicroOp` (the faulting OP.v's, which
+  // the LSU has in hand); do NOT try to reconstruct one in BoomCore from
+  // `rob_idx`, which cannot recover `br_mask`.
+  //
+  // Also vestigial and worth deleting in the same edit: this bundle's own
+  // `valid` field is redundant — every site nests it inside a `Valid(...)`
+  // wrapper, and nothing reads the inner bit.
+
   ---- The four CII channel payloads ----
 
   These four bundles are the Chisel view of the frozen SV contract in
@@ -354,11 +378,190 @@ from Tenstorrent Inc.
   // and narrowing ops emit a member count that differs from the source EMUL, so
   // a count derived on the host would be wrong for exactly those cases.
 
+  ---- The host-seam declarations A2 deferred to D2 ----
+
+  Five members of `vec_pipeline_io` were OMITTED at A2 rather than declared wrong,
+  each with a note in the generated file naming step D2 as its owner. This section
+  settles all five. It is where `VecPipeline`'s amendment 1 ("STILL REQUIRED:
+  declare `IntWakeupBus`, `FpWakeupBus`, `IntWbSnoop` and `VecRobFlags` in
+  `VecBundles`") is discharged, and the A34 assignment with it.
+
+  ===> THREE OF THE FIVE NAMES IN hierarchy.yaml ARE DESCRIPTIONS OF A SHAPE, NOT
+       REQUESTS FOR A NEW TYPE, and generating a class for them would be the WORSE
+       outcome. `IntWakeupBus`, `FpWakeupBus` and `DecoupledReadReq` each describe
+       something BOOM already declares:
+         - a wakeup bus is `Vec(n, Valid(new Wakeup))`, and `Wakeup`
+           (`execution-unit.scala`) carries `uop`, `bypassable`,
+           `speculative_mask` and `rebusy`. A structurally-equal Caracal copy
+           would FORK that bundle: a field added to BOOM's `Wakeup` would reach
+           the scalar issue units and not the vector ones, with no width error.
+           // ===> BUT THE BUS IS MORE THAN THE `Vec`, AND THE FIRST VERSION OF
+           // THIS PARAGRAPH GOT THAT WRONG. `IntWakeupBus` in `VecPipeline`'s
+           // ports section is an AGGREGATE of three things: the wakeup `Vec`,
+           // `child_rebusys: UInt(aluWidth.W)` and `squash_grant: Bool`. This
+           // section originally declared only the `Vec`, on the reasoning above
+           // — which is right about the `Vec` and silently dropped the other
+           // two. `VecPipeline` then found that every `VecIssueUnit` instance
+           // declares both as unconditional inputs, could not compute either
+           // (both are BoomCore-internal:
+           // `alu_exe_units.map(_.io_squash_iss).reduce(_||_)`), and tied them
+           // to `0.U`/`false.B` as "safe, no-effect defaults".
+           //
+           // THEY ARE NOT NO-EFFECT, AND THE TIE-OFF IS A SILENT-CORRUPTION
+           // BUG. `VecIssueUnit` uses `child_rebusys` to RE-MARK A SLOT BUSY
+           // when a speculatively-woken scalar `.vx`/`.vf` feeder's parent load
+           // misses — it is the retraction half of BOOM's speculative wakeup.
+           // Held at zero, the retraction never arrives and the vector op
+           // issues against a stale GPR, with no assertion anywhere.
+           // `squash_grant` is the same shape of mechanism one stage later.
+           //
+           // So declare BOTH as their own seam members, driven by BoomCore:
+           //   val int_child_rebusys = Input(UInt(aluWidth.W))
+           //   val int_squash_grant  = Input(Bool())
+           // separate members rather than a wrapper bundle, for the same reason
+           // the `Vec` is bare: they are BOOM's own terms, and a Caracal
+           // aggregate around them would be a second place to keep in step.
+           // There is deliberately no FP counterpart — BOOM has no FP analogue
+           // of either term.
+         - `DecoupledReadReq` is `Decoupled(UInt(addrWidth.W))` — the exact type of
+           `RegisterFile.io.arb_read_reqs`, which is `Flipped(Decoupled(UInt(
+           log2Ceil(numRegisters).W)))`. Its whole purpose is to be assignable to
+           that port with `<>`; a bespoke bundle could not be.
+       So these three are declared AS THE SEAM MEMBERS THEMSELVES, in
+       `VecPipelineIO`, in terms of BOOM's own types. The two that DO carry new
+       structure — `VecRobFlags` and `IntWbSnoop` — become real classes here.
+       This is the resolution, not a deferral: the requirement was that the shapes
+       be declared in this file, and they are.
+
+  ---- VecRobFlags (this is A34) ----
+
+  `VecRobFlags` is the CSR side effect of a vector instruction on its way to
+  COMMIT: `{rob_idx: robAddrSz, fflags: FPConstants.FLAGS_SZ, vxsat: Bool}`. It
+  crosses as `Vec(numVecClrPorts, Valid(new VecRobFlags))`, one lane per completion
+  producer, matching `vec_clr_bsy` lane for lane — lane 0 the LCB group-done, lane 1
+  `VecCiiComplete`, lane 2 `VecGroupCopy`.
+
+  It lives here, not inside its producer, by part 13's test: `VecPipeline` emits it
+  and `Rob` consumes it, so both sides must review the declaration, and `VecBundles`
+  already declares `VecGroupDone`, the bundle it travels beside.
+
+  ===> IT IS APPLIED AT COMMIT AND NEVER AT WRITEBACK, and the ROB has an assertion
+       that will catch a generator which forgets: `rob.scala:405` asserts
+       `!rob_fflags(row_idx).valid` on a write, so a vector op must write the
+       per-entry fflags slot AT MOST ONCE. That is also why a CII scalar-dest
+       writeback must leave `ExeUnitResp.fflags` invalid and route its flags
+       through this bundle instead — two paths into one slot fires the assert.
+       Pulsing `csr.io.vector.set_vxsat` at writeback is separately wrong: a
+       past-PNR CII op can still be squashed by a ROB-head flush, so a writeback
+       pulse dirties architectural state for an instruction that never retires.
+
+  ---- IntWbSnoop ----
+
+  `IntWbSnoop` is the INT-writeback tap: `{addr, data}`, crossing as
+  `Vec(numIrfWritePorts, Valid(new IntWbSnoop))`. It is NOT `int_wakeups` — a
+  wakeup carries readiness without a value, and this carries the value.
+
+  ===> `addr` IS `maxPregSz` WIDE, NOT `ipregSz`, because this bundle exists to be
+       compared against `RegisterFile.io.write_ports(i).bits.addr`, which
+       `regfile.scala:35` declares as `UInt(maxPregSz.W)`. Taking the narrower
+       INT-specific width would be arithmetically sufficient on every config and
+       still wrong: the comparison would then be between two different widths and
+       Chisel would zero-extend one side silently. Match the port being snooped.
+
+  Without this tap the M1 stale-scalar-base bug has no fix. A vector load/store is
+  woken speculatively, so `VecScalarOperandRead`'s INT-RF read can fire in the same
+  cycle the base GPR's writeback commits — and the INT RF is a registered `Mem`
+  read with no read-during-write bypass, so the read returns the OLD base. The
+  forward therefore needs the DATA, and the port count must include the
+  scalar-dest write port, or a base produced by `vmv.x.s` is missed.
+
+  ---- The CSR seam: there is no `CSRVectorIO` ----
+
+  hierarchy.yaml types `csr_vector` as `CSRVectorIO`. NO SUCH CLASS EXISTS. Rocket
+  declares the port anonymously —
+  `val vector = usingVector.option(new Bundle { ... })` at
+  `rocket-chip/src/main/scala/rocket/CSR.scala:310` — so there is no name to
+  reference. Two ways out were weighed and both rejected: restating rocket's bundle
+  field-for-field here would drift from it silently, and inventing a Chisel type in
+  rocket's name would claim ownership of state ground rule 9 says is rocket's.
+
+  Declare instead `VecCsrRead`, Caracal's own READ-DIRECTION VIEW of that port:
+  `{vconfig: freechips.rocketchip.rocket.VConfig, vstart: UInt(maxVLMax.log2.W),
+  vxrm: UInt(2.W)}`. Three properties make this the right shape:
+
+    - It uses rocket's `VConfig` for the field that has a name, so `vtype`/`vl`
+      cannot drift. Only the two bare-`UInt` fields are restated, and each restates
+      rocket's own EXPRESSION (`maxVLMax.log2`, `2`) rather than a literal.
+      // `.log2` is rocket's `IntToAugmentedInt.log2` (`util/package.scala:236`) —
+      // `log2Ceil` plus `require(isPow2)` — and it is NOT in scope in this package
+      // by default. IMPORT IT BY NAME (`freechips.rocketchip.util.
+      // IntToAugmentedInt`); do not switch the field to `log2Ceil(maxVLMax)` and do
+      // not wildcard-import rocket's `util`. Gate (a) caught the missing import as
+      // `value log2 is not a member of Int`, and rewriting it to `log2Ceil` was the
+      // wrong fix: the point of this field is that it is the same expression rocket
+      // writes at `CSR.scala:312`, and the `isPow2` require rides along with it.
+    - It carries ONLY the output-direction fields, which is exactly what part 8 of
+      `VecPipeline` says the container consumes: `vconfig`, `vstart`, `vxrm`. The
+      input-direction fields of rocket's bundle — `set_vconfig`, `set_vstart`,
+      `set_vxsat`, `set_vs_dirty` — are driven by BoomCore and the `Rob` delta and
+      must NOT appear here. That is why `csr_vs_dirty` is a separate backward bit
+      on this seam rather than a member of this bundle.
+    - Because it holds no write path, it CANNOT be used to write architectural
+      vector CSR state, which is the property ground rule 9 actually wants. A
+      faithful copy of rocket's bundle would have handed the container one.
+
+  The seam member keeps its name and direction: `csr_vector`, forward,
+  `Input(new VecCsrRead)`. BoomCore wires its three fields from
+  `csr.io.vector.get`, field by field, at the one site where that port is in scope.
+
   ---- VecPipelineIO ----
 
   `VecPipelineIO` realizes the `vec_pipeline_io` interface declared in
   hierarchy.yaml — the single bundle across which BoomCore and VecPipeline
   communicate. Declare it here, field for field, matching that interface entry.
+  The five members A2 omitted are now part of that field-for-field obligation:
+
+    val vec_rob_flags   = Output(Vec(numVecClrPorts, Valid(new VecRobFlags)))
+    val int_rf_read_req = Vec(5, Decoupled(UInt(ipregSz.W)))
+    val int_wakeups       = Input(Vec(numIntWakeupPorts, Valid(new Wakeup)))
+    val int_child_rebusys = Input(UInt(aluWidth.W))
+    val int_squash_grant  = Input(Bool())
+    val fp_wakeups        = Input(Vec(numFpWakeupPorts,  Valid(new Wakeup)))
+    val int_wb_snoop    = Input(Vec(numIrfWritePorts,  Valid(new IntWbSnoop)))
+    val csr_vector      = Input(new VecCsrRead)
+
+  ===> THE THREE PORT COUNTS ARE CONSTRUCTOR PARAMETERS OF THIS BUNDLE, SUPPLIED BY
+       BoomCore FROM THE LENGTH OF THE ACTUAL BUS. `VecPipelineIO` takes
+       `numIntWakeupPorts`, `numFpWakeupPorts` and `numIrfWritePorts`, and
+       `VecPipeline` takes the same three and passes them through. BoomCore
+       constructs it as `new VecPipelineIO(int_wakeups.length,
+       fp_pipeline.io.wakeups.length, numIrfWritePorts)`.
+
+       Do NOT re-derive the formulas. `core.scala:113,116` compute
+       `numIrfWritePorts = aluWidth + lsuWidth + 1` and
+       `numIntWakeups = coreWidth + lsuWidth + 1` INSIDE the `BoomCore` class body,
+       so they are not core parameters and this file cannot read them. Copying the
+       arithmetic would put a second copy of a scalar-side decision in the vector
+       package, where a change to BOOM's writeback set would leave it silently
+       stale and mis-size a snoop `Vec` — a truncation with no error. Taking
+       `.length` off the bus itself is the only form that cannot drift, and it is
+       why these are parameters rather than derived `val`s.
+       `numFpWakeupPorts` is `fp_pipeline.io.wakeups.length` for the same reason
+       (`core.scala:117` computes it that way already).
+
+  // `int_rf_read_req` is declared WITHOUT an explicit direction wrapper: the
+  // members of `Decoupled` already carry their own directions, and it is connected
+  // to `iregfile.io.arb_read_reqs` with `<>`. Wrapping it in `Output(...)` would
+  // flip `ready` the wrong way.
+
+  ===> AND IT MUST BE `Decoupled`, NOT A BARE ADDRESS. `PartiallyPortedRF` DENIES a
+       read by index priority, and the INT RF is deliberately partially ported
+       (`numIrfReadPorts = 3` on Medium against ~10 logical readers), so denial is
+       ROUTINE. Five vector readers against three ports cannot be fixed by any
+       affordable port count. Every scalar EU already holds its address until fire;
+       these must too, with the response registered at t+1 off the GRANTED address.
+       A bare address here would silently read whatever the arbiter granted instead
+       — the same class of bug as the stale base above, and just as quiet.
 
   // ===> THE RENAME INPUTS ARE NAMED ren2_uops AND dis_fire, NOT dec_uops, and
   // the name is load-bearing rather than cosmetic. Vector rename must allocate
@@ -398,6 +601,18 @@ and its deprecated `vlmul` accessor returns only `vlmul_mag`, so building the 8-
 `{vsew, vlmul, vta, vma}` field through that accessor silently drops the
 fractional-LMUL sign and turns every mf2/mf4/mf8 op into m1/m2/m4 with no width
 error.
+
+Binds to `boom.v4.exu.Wakeup` (the two wakeup-bus seam members are taps of the
+EXISTING scalar buses, not new types — see the host-seam section) and to
+`freechips.rocketchip.tile.FPConstants.FLAGS_SZ` for `VecRobFlags.fflags`, the
+same expression `rob.scala:369` uses for the slot those flags land in.
+
+// ===> RESOLVED 2026-08-10 (step D2) — the five A2-deferred host-seam members.
+// `vec_rob_flags` (A34), `int_rf_read_req`, `int_wakeups`, `fp_wakeups`,
+// `int_wb_snoop` and the `csr_vector` type are all settled in the host-seam
+// section of the logic block above. Three of the six needed no new type; two
+// became classes (`VecRobFlags`, `IntWbSnoop`); the sixth replaced a reference to
+// a nonexistent `rocket.CSRVectorIO` with `VecCsrRead`, a read-direction view.
 
 // ===> REPORTED, NOT RESOLVED — `VecCiiTagEntry` HAS NO DECLARATION SITE.
 // hierarchy.yaml's entry for this node lists `VecCiiTagEntry` among this package's

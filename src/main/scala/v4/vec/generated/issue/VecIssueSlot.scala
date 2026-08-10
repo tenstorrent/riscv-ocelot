@@ -238,6 +238,28 @@ class VecIssueSlot(
   // wire rather than repeating the Mux five times.
   val active_uop: MicroOp = Mux(io.in_uop.valid, io.in_uop.bits, slot_uop)
 
+  // Whether `active_uop` actually HOLDS a uop. `slot_uop` is a plain Reg with no
+  // reset value, so in an EMPTY slot every field of `active_uop` is garbage --
+  // at time 0 it is X, and after an occupant leaves it is that occupant's stale
+  // fields.
+  //
+  // ===> EVERY `VecGroupReady.io.used` MUST BE QUALIFIED BY THIS. Not doing so
+  //      cost the first cosim run of gate (e1): `iq_v_load.slots_3.rdy_vs2`
+  //      tripped "members out of range 1..maxVecMembers while the operand is
+  //      used" at 785 ns, running vset_test.elf -- a test with NO VECTOR LOADS,
+  //      so slot 3 of the load queue was empty the whole time. The garbage
+  //      `slot_uop` presented `v_uses_vs2 = 1` with `v_emul = 0`, and the
+  //      assertion in `VecGroupReady` (which is right to check the invariant)
+  //      had no way to know the slot was idle.
+  //
+  //      Qualifying `used` rather than weakening the assertion is the correct
+  //      direction, and it is FUNCTIONALLY FREE: `io.used` feeds only
+  //      `io.ready := !io.used || group_all_rdy` and that assertion, and
+  //      `ready` is consumed only while the slot is valid (VecGroupReady's own
+  //      reset comment says so). An idle slot therefore reports ready, which is
+  //      what it already effectively did.
+  val active_valid: Bool = io.in_uop.valid || slot_valid
+
   // =========================================================================
   // ---- 2. Scalar feeders: baseline comparators, verbatim per network ----
   // =========================================================================
@@ -420,7 +442,7 @@ class VecIssueSlot(
   // names whatever physical register V0 was last mapped to, and the mapper
   // renames lvm only for a masked op, so waiting on it would wait forever on
   // a STALE mask PRN no producer will ever complete.
-  rdy_vm.io.used := active_uop.v_is_masked.get
+  rdy_vm.io.used := active_valid && active_uop.v_is_masked.get
 
   rdy_vs1.io.in_member_rdy := io.in_member_rdy.vs1_rdy
   rdy_vs2.io.in_member_rdy := io.in_member_rdy.vs2_rdy
@@ -444,8 +466,8 @@ class VecIssueSlot(
   // fired). ALL QUEUES additionally gate rdy_vs1/rdy_vs2 on v_uses_vs1/
   // v_uses_vs2 -- an unencoded source is neither renamed nor waited on, one
   // mechanism read from two sides of the rename/issue seam.
-  rdy_vs1.io.used := active_uop.v_uses_vs1.get
-  rdy_vs2.io.used := active_uop.v_uses_vs2.get
+  rdy_vs1.io.used := active_valid && active_uop.v_uses_vs1.get
+  rdy_vs2.io.used := active_valid && active_uop.v_uses_vs2.get
 
   //@req-spec-issue.c11
   //@req-spec-rob.d12
@@ -482,7 +504,7 @@ class VecIssueSlot(
     // select above has re-pointed this instance at pvtmp, which the
     // coprocessor half genuinely must wait on. Dropping the OR term silently
     // deletes the coprocessor half's only rendezvous with the LSU half.
-    rdy_vs3.io.used := vs3_selects_tmp || active_uop.v_uses_vs3.get
+    rdy_vs3.io.used := active_valid && (vs3_selects_tmp || active_uop.v_uses_vs3.get)
 
     // The per-member side channel follows the SAME select: each matcher
     // writes its next state into the FIELD IT SELECTED (vtmp_rdy when the
@@ -506,7 +528,7 @@ class VecIssueSlot(
     // load's uses_vs3 is already false per VLSDecode) and KEPT ANYWAY, so a
     // future change to what decode puts in uses_vs3 cannot silently re-admit
     // pvs3 into this cone.
-    rdy_vs3.io.used := active_uop.v_uses_vs3.get && !active_uop.is_shared.get
+    rdy_vs3.io.used := active_valid && active_uop.v_uses_vs3.get && !active_uop.is_shared.get
     rdy_vs3.io.in_member_rdy := io.in_member_rdy.vs3_rdy
     io.out_member_rdy.vs3_rdy  := rdy_vs3.io.out_member_rdy
     // vtmp_rdy is untouched by a load slot; pass it through unchanged, same
@@ -569,7 +591,7 @@ class VecIssueSlot(
     // from the VL RF at execute), so the VL=0 group-copy reader cannot be
     // narrowed either. A segmented STORE's coprocessor half is excluded for
     // free: it writes pvtmp and its dst_rtype is not RT_VEC.
-    m.io.used := active_uop.dst_rtype === RT_VEC
+    m.io.used := active_valid && active_uop.dst_rtype === RT_VEC
     m.io.in_member_rdy := io.in_member_rdy.vold_rdy
     io.out_member_rdy.vold_rdy := m.io.out_member_rdy
   }
@@ -653,7 +675,7 @@ class VecIssueSlot(
     rdy_vs3.io.members.get := dgen_path.io.dgen_operand_members
     // IQ_V_STORE rdy_vs3.used := true: it tracks the SELECTED DGEN group,
     // always in play for a store.
-    rdy_vs3.io.used := true.B
+    rdy_vs3.io.used := active_valid
     rdy_vs3.io.in_member_rdy := Mux(dgen_path.io.dgen_operand_is_pvtmp,
       io.in_member_rdy.vtmp_rdy, io.in_member_rdy.vs3_rdy)
     io.out_member_rdy.vs3_rdy  := Mux(dgen_path.io.dgen_operand_is_pvtmp,

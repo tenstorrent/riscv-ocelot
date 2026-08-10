@@ -251,6 +251,27 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val v_emul               = if (usingRVV) Some(UInt((log2Ceil(maxVecMembers) + 1).W)) else None // group member count, 1..8
   val v_seg_nf             = if (usingRVV) Some(UInt(3.W)) else None // segment field count, segmented access
 
+  // The VL a `vsetivli` configures, COMPUTED ONCE AT DECODE by VConfigUnit and
+  // carried from there to whoever needs it. Meaningful only on a `vsetivli`
+  // lane (`is_vl_producer` with `lrs1_rtype === RT_X`); don't-care elsewhere.
+  //
+  // ===> WHY THE COMPUTED VL AND NOT THE 5-BIT AVL IMMEDIATE. `vsetivli` has TWO
+  //      destinations that must receive the SAME value -- `rd` in the integer RF
+  //      and `pvl` in the VL RF -- and both `min(AVL, VLMAX)` evaluations would
+  //      otherwise be done independently, in VConfigUnit for the VL RF and in
+  //      ALUUnit for `rd`. Carrying the RESULT makes them provably equal instead
+  //      of merely intended to be.
+  //
+  //      This field exists because `vsetivli`-with-`rd` DOES reach an execution
+  //      unit, contrary to what ALUUnit's spec asserted: only an EU has an
+  //      integer writeback port, so `rd` cannot be written from the front end.
+  //      Its AVL is an immediate (`inst(19,15)`), so `lrs1_rtype` is `RT_X` and
+  //      `rs1_data` is a register that was never renamed or read. Reading it
+  //      anyway produced a stale value >= maxVLMax, which saturated to VLMAX --
+  //      `vsetivli x11, 1, e16, m2` wrote 32 instead of 1, caught as a cosim
+  //      Register Mismatch against Whisper at gate (e1).
+  val v_vl_imm             = if (usingRVV) Some(UInt(vecVLSz.W)) else None
+
   // Decoded sense of the instruction's vm bit. Must be a field, not
   // re-derived from inst(25): the issue slot, VecMaskStream and VecElemAgen
   // each need it and none of them re-decodes the instruction word.

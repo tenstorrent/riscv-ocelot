@@ -91,7 +91,37 @@ fi
 
 BACKUP="$(mktemp "${TMPDIR:-/tmp}/BoomConfigs.scala.orig.XXXXXX")"
 cp -p "$BOOMCFG" "$BACKUP"
-restore() { cp -p "$BACKUP" "$BOOMCFG"; rm -f "$BACKUP"; echo "   (BoomConfigs.scala restored)"; }
+
+# ---------------------------------------------------------------------------
+# RESTORING THE FILE IS NOT ENOUGH -- THE CLASSPATH CACHE MUST BE INVALIDATED TOO.
+#
+# chipyard elaborates from a cached assembly jar ($base_dir/.classpath_cache/
+# chipyard.jar, variables.mk:189-191) whose make rule depends on
+# CHIPYARD_SCALA_SOURCES (common.mk:136). While this script has BoomConfigs.scala
+# neutralized, any elaboration it triggers REASSEMBLES that jar WITHOUT the vector
+# configs -- and `cp -p` then restores the source with its ORIGINAL mtime, which is
+# OLDER than the poisoned jar. make therefore sees the cache as up to date, and the
+# next vector build dies with:
+#     java.lang.ClassNotFoundException: chipyard.MegaBoomV4VectorConfig
+# hours later, with nothing in the working tree to explain it (`git status` is
+# clean, and the file plainly contains the class).
+#
+# `cp -p` is deliberate -- a fresh mtime would force a full rebuild of everything
+# downstream on every gate-(f) run -- so the fix is to delete the one artifact this
+# script actually invalidated rather than to touch the source. Removing the jar is
+# also the honest statement: it was assembled from a mutated source and is not
+# trustworthy, whatever its timestamp says.
+CPCACHE_JAR="$REPO/.classpath_cache/chipyard.jar"
+restore() {
+  cp -p "$BACKUP" "$BOOMCFG"
+  rm -f "$BACKUP"
+  echo "   (BoomConfigs.scala restored)"
+  if [ -f "$CPCACHE_JAR" ]; then
+    rm -f "$CPCACHE_JAR"
+    echo "   (dropped .classpath_cache/chipyard.jar -- it was assembled with the"
+    echo "    vector configs neutralized; cp -p restore leaves make unable to see that)"
+  fi
+}
 trap restore EXIT
 
 python3 - "$BOOMCFG" <<'PY'

@@ -22,9 +22,11 @@ import chisel3.util._
 
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.tile.FPConstants
+import freechips.rocketchip.rocket.VConfig
+import freechips.rocketchip.util.IntToAugmentedInt
 
 import boom.v4.common.{BoomBundle, HasBoomUOP, MicroOp}
-import boom.v4.exu.{BrUpdateInfo, ExeUnitResp}
+import boom.v4.exu.{BrUpdateInfo, ExeUnitResp, Wakeup}
 
 // GENERATED from src/main/nlhdl/pkg/VecBundles.nlhdl.scala. Do not hand-edit;
 // regenerate via the nlhdl gen-rtl flow instead.
@@ -409,6 +411,116 @@ class CiiWriteback(implicit p: Parameters) extends BoomBundle
 }
 
 // =============================================================================
+// ---- The host-seam declarations A2 deferred to D2 ----
+// =============================================================================
+//
+// Five members of `vec_pipeline_io` were OMITTED at A2 rather than declared
+// wrong, each with a note in this file naming step D2 as its owner. This
+// section settles all five, discharging VecPipeline's amendment 1 ("STILL
+// REQUIRED: declare IntWakeupBus, FpWakeupBus, IntWbSnoop and VecRobFlags in
+// VecBundles") and the A34 assignment with it.
+//
+// THREE OF THE FIVE NAMES IN hierarchy.yaml ARE DESCRIPTIONS OF A SHAPE, NOT
+// REQUESTS FOR A NEW TYPE, and generating a class for them would be the WORSE
+// outcome. `IntWakeupBus`, `FpWakeupBus` and `DecoupledReadReq` each describe
+// something BOOM already declares: a wakeup bus is `Vec(n, Valid(new
+// Wakeup))` (`Wakeup` from execution-unit.scala carries uop/bypassable/
+// speculative_mask/rebusy — a structurally-equal Caracal copy would FORK that
+// bundle), and `DecoupledReadReq` is exactly `RegisterFile.io.arb_read_reqs`'s
+// type, `Flipped(Decoupled(UInt(log2Ceil(numRegisters).W)))` — its whole
+// purpose is to be assignable to that port with `<>`, which a bespoke bundle
+// could not be. So these three are declared AS THE SEAM MEMBERS THEMSELVES,
+// below in `VecPipelineIO`, in terms of BOOM's own types. The two that DO
+// carry new structure — `VecRobFlags` and `IntWbSnoop` — become real classes
+// here.
+
+// ---- VecRobFlags (this is A34) ----
+//
+// The CSR side effect of a vector instruction on its way to COMMIT. Crosses
+// as `Vec(numVecClrPorts, Valid(new VecRobFlags))`, one lane per completion
+// producer, matching `vec_clr_bsy` lane for lane — lane 0 the LCB group-done,
+// lane 1 VecCiiComplete, lane 2 VecGroupCopy.
+//
+// It lives here, not inside its producer, by part 13's test: VecPipeline
+// emits it and Rob consumes it, so both sides must review the declaration,
+// and VecBundles already declares VecGroupDone, the bundle it travels beside.
+//
+// APPLIED AT COMMIT AND NEVER AT WRITEBACK: rob.scala:405 asserts
+// `!rob_fflags(row_idx).valid` on a write, so a vector op must write the
+// per-entry fflags slot AT MOST ONCE — a CII scalar-dest writeback must leave
+// ExeUnitResp.fflags invalid and route its flags through this bundle instead.
+// Pulsing csr.io.vector.set_vxsat at writeback is separately wrong: a
+// past-PNR CII op can still be squashed by a ROB-head flush, so a writeback
+// pulse would dirty architectural state for an instruction that never
+// retires.
+class VecRobFlags(implicit p: Parameters) extends BoomBundle
+{
+  val rob_idx = UInt(robAddrSz.W)
+  val fflags  = UInt(FPConstants.FLAGS_SZ.W)
+  val vxsat   = Bool()
+}
+
+// ---- IntWbSnoop ----
+//
+// The INT-writeback tap, crossing as `Vec(numIrfWritePorts, Valid(new
+// IntWbSnoop))`. NOT the same thing as `int_wakeups` — a wakeup carries
+// readiness without a value, and this carries the value.
+//
+// `addr` IS `maxPregSz` WIDE, NOT `ipregSz`, because this bundle exists to be
+// compared against `RegisterFile.io.write_ports(i).bits.addr`, which
+// regfile.scala:35 declares as `UInt(maxPregSz.W)`. Taking the narrower
+// INT-specific width would be arithmetically sufficient on every config and
+// still wrong: the comparison would then be between two different widths and
+// Chisel would zero-extend one side silently. Match the port being snooped.
+//
+// Without this tap the M1 stale-scalar-base bug has no fix: a vector
+// load/store is woken speculatively, so VecScalarOperandRead's INT-RF read
+// can fire in the same cycle the base GPR's writeback commits, and the INT RF
+// is a registered Mem read with no read-during-write bypass — so the read
+// returns the OLD base. The forward needs the DATA, and the port count must
+// include the scalar-dest write port, or a base produced by vmv.x.s is
+// missed.
+class IntWbSnoop(implicit p: Parameters) extends BoomBundle
+{
+  val addr = UInt(maxPregSz.W)
+  val data = UInt(xLen.W)
+}
+
+// ---- The CSR seam: there is no CSRVectorIO ----
+//
+// hierarchy.yaml types `csr_vector` as `CSRVectorIO`. NO SUCH CLASS EXISTS.
+// Rocket declares the port anonymously —
+// `val vector = usingVector.option(new Bundle { ... })` at
+// rocket-chip/src/main/scala/rocket/CSR.scala:310 — so there is no name to
+// reference. Restating rocket's bundle field-for-field here would drift from
+// it silently, and inventing a Chisel type in rocket's name would claim
+// ownership of state ground rule 9 says is rocket's.
+//
+// `VecCsrRead` is Caracal's own READ-DIRECTION VIEW of that port. It uses
+// rocket's `VConfig` for the field that has a name, so vtype/vl cannot drift;
+// the two bare-UInt fields restate rocket's own EXPRESSIONS (maxVLMax.log2,
+// 2), never a literal. It carries ONLY the output-direction fields — exactly
+// what part 8 of VecPipeline says the container consumes. Rocket's
+// input-direction fields (set_vconfig, set_vstart, set_vxsat, set_vs_dirty)
+// are driven by BoomCore and the Rob delta and deliberately do NOT appear
+// here — that is why csr_vs_dirty is a separate backward bit on the
+// vec_pipeline_io seam rather than a member of this bundle. Because it holds
+// no write path, it CANNOT be used to write architectural vector CSR state,
+// which is the property ground rule 9 actually wants; a faithful copy of
+// rocket's bundle would have handed the container one.
+// `.log2` is rocket's own `IntToAugmentedInt.log2` (util/package.scala:236) --
+// `log2Ceil` plus a `require(isPow2)`. It is imported by NAME above rather than
+// via a wildcard, and NOT rewritten as `log2Ceil(maxVLMax)`, so this stays the
+// same expression rocket writes at CSR.scala:312 for the field it mirrors. The
+// isPow2 check comes with it and is worth keeping.
+class VecCsrRead(implicit p: Parameters) extends BoomBundle
+{
+  val vconfig = new VConfig
+  val vstart  = UInt(maxVLMax.log2.W)
+  val vxrm    = UInt(2.W)
+}
+
+// =============================================================================
 // ---- VecPipelineIO ----
 // =============================================================================
 //
@@ -433,49 +545,39 @@ class CiiWriteback(implicit p: Parameters) extends BoomBundle
 // ops free the same PRN. With these port names, connecting dec_uops here is
 // visibly wrong at the connection site.
 //
-// ===> SPEC DEFECT (reported, not resolved) — FIVE FIELDS OMITTED. Five
-// signals named by hierarchy.yaml's vec_pipeline_io interface are typed
-// against bundles that have NO field-level definition anywhere: not in this
-// file's own logic section, and not declared by any other generated source
-// in the repo as of this writing. Declaring them here with an invented field
-// list would be fabricating spec content this file was never given — the
-// same category of problem the nlhdl source itself already flags for
-// VecCiiTagEntry ("recorded... so the discrepancy cannot be closed by each
-// side assuming the other did it"), and the same discipline is applied here:
-// report, do not invent.
-//   - vec_rob_flags : Vec(numVecClrPorts, Valid(VecRobFlags))  [bwd]
-//   - int_rf_read_req : Vec(5, DecoupledReadReq)               [bwd]
-//   - int_wakeups : IntWakeupBus                                [fwd]
-//   - fp_wakeups : FpWakeupBus                                  [fwd]
-//   - int_wb_snoop : Vec(numIrfWritePorts, IntWbSnoop)          [fwd]
-// `src/main/nlhdl/vec/VecPipeline.nlhdl.scala` (a sibling node, not this
-// one's spec) explicitly asserts that IntWakeupBus, FpWakeupBus, IntWbSnoop
-// and VecRobFlags "still" need to be declared in VecBundles — i.e. it
-// documents the very node this file implements as owing a declaration this
-// file's own nlhdl source never wrote. `src/main/nlhdl/host/Rob.nlhdl.scala`
-// makes the identical claim about VecRobFlags independently. Until
-// VecBundles.nlhdl.scala is amended with these five bundles' field lists (an
-// architect/gen-nlhdl action, not a gen-rtl one), int_rf_read_req's
-// correlated response half (int_rf_read_rsp, a plain UInt) is declared below
-// on its own — the two were never a single indivisible type.
+// ===> RESOLVED (step D2) — THE FIVE FIELDS A2 OMITTED ARE NOW DECLARED, in
+// the host-seam section above and below. `vec_rob_flags`, `int_wakeups`,
+// `fp_wakeups` and `int_wb_snoop` are `Vec(..., Valid(...))` taps typed
+// against `VecRobFlags`/`Wakeup`/`IntWbSnoop`; `int_rf_read_req` is a bare
+// `Vec(5, Decoupled(UInt(ipregSz.W)))`, the exact type of
+// `RegisterFile.io.arb_read_reqs` (flipped there), connected with `<>` and
+// carrying no separate direction wrapper of its own. `int_rf_read_req`'s
+// correlated response half, `int_rf_read_rsp`, stays a plain UInt Vec: the
+// two were never a single indivisible type.
 //
-// csr_vector's type, `freechips.rocketchip.rocket.CSRVectorIO`, is kept
-// (unlike the five above) because the nlhdl source's own dependency section
-// and VecPipeline.nlhdl.scala both name an intended home for it (rocket-chip,
-// not this package) — but a repo-wide search at generation time found no
-// such class anywhere under generators/rocket-chip. This is flagged
-// separately from the five omissions above: it is not a missing declaration
-// site, it is a dependency on a rocket-chip class that does not yet exist in
-// this checkout. The reference is kept (as a forward declaration) rather
-// than omitted, since — unlike the five above — omitting it would contradict
-// an otherwise-unambiguous intended home.
+// `csr_vector`'s type is `VecCsrRead` (declared above), Caracal's own
+// read-direction view of rocket's anonymous `csr.io.vector` bundle — there is
+// no `CSRVectorIO` class in rocket-chip to reference, and restating rocket's
+// bundle field-for-field would drift from it silently.
+//
+// The three port counts — `numIntWakeupPorts`, `numFpWakeupPorts`,
+// `numIrfWritePorts` — are now CONSTRUCTOR PARAMETERS of this bundle, taken
+// from the length of the actual bus rather than re-derived: `core.scala:113,
+// 116` compute `numIrfWritePorts`/`numIntWakeups` INSIDE the BoomCore class
+// body, so they are not core parameters this file can read, and copying the
+// arithmetic would put a second copy of a scalar-side decision in the vector
+// package that a change to BOOM's writeback set would leave silently stale.
+// `VecPipeline` takes the same three and passes them through; BoomCore
+// constructs this bundle as `new VecPipelineIO(int_wakeups.length,
+// fp_pipeline.io.wakeups.length, numIrfWritePorts)`.
 //
 // lsu_vec's type, `boom.v4.lsu.VecLsuCoreIO`, is a genuine forward reference
 // too, but a RESOLVED one: `src/main/nlhdl/host/LSU.nlhdl.scala` states
 // unambiguously "VecLsuCoreIO is declared HERE, beside LSUCoreIO, NOT [in
 // VecBundles]" — so its absence from this file is the documented design, not
-// a gap.
-class VecPipelineIO(implicit p: Parameters) extends BoomBundle
+// a gap. That omission is owned by step E7, not D2, and is left untouched.
+class VecPipelineIO(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int, val numIrfWritePorts: Int)
+  (implicit p: Parameters) extends BoomBundle
 {
   // ---- decode feed (vector decode lives inside VecPipeline) ------------
   val dec_insns       = Input(Vec(coreWidth, UInt(32.W)))
@@ -525,18 +627,47 @@ class VecPipelineIO(implicit p: Parameters) extends BoomBundle
   val vec_clr_bsy      = Output(Vec(vectorParams.numVecClrPorts, Valid(UInt(robAddrSz.W))))
   val vec_clr_unsafe   = Output(Valid(UInt(robAddrSz.W)))
   val vec_xcpt         = Output(Valid(new VecException))
-  // vec_rob_flags (VecRobFlags * numVecClrPorts, bwd) OMITTED — see the
-  // SPEC DEFECT note above the class.
+  // The commit-time CSR side effect (fflags/vxsat), one lane per completion
+  // producer, lane-for-lane with vec_clr_bsy above (D2 / A34).
+  val vec_rob_flags    = Output(Vec(vectorParams.numVecClrPorts, Valid(new VecRobFlags)))
 
   // ---- scalar feeders: vector ops read INT/FP for base/stride/.vx/.vf ---
-  // int_rf_read_req (DecoupledReadReq * 5, bwd) OMITTED — see the SPEC DEFECT
-  // note above the class. Its correlated response half is declared below on
-  // its own, since the two were never a single indivisible type.
+  // Five vector readers against a partially-ported INT RF (numIrfReadPorts <
+  // 5) means denial is routine, not exceptional — so this is Decoupled, held
+  // until fire, and NOT a bare address (D2). No direction wrapper: Decoupled's
+  // members already carry their own directions, and it is connected to
+  // iregfile.io.arb_read_reqs with `<>`; an Output(...) wrapper would flip
+  // `ready` the wrong way.
+  val int_rf_read_req  = Vec(5, Decoupled(UInt(ipregSz.W)))
   val int_rf_read_rsp  = Input(Vec(5, UInt(xLen.W)))
-  // int_wakeups (IntWakeupBus, fwd) OMITTED — see the SPEC DEFECT note above.
-  // fp_wakeups (FpWakeupBus, fwd) OMITTED — see the SPEC DEFECT note above.
-  // int_wb_snoop (IntWbSnoop * numIrfWritePorts, fwd) OMITTED — see the SPEC
-  // DEFECT note above.
+  // Taps of the EXISTING scalar INT/FP wakeup buses (D2) — readiness without
+  // a value. `Wakeup` is boom.v4.exu's own type; declaring a Caracal copy
+  // would fork it from the scalar issue units' view.
+  val int_wakeups      = Input(Vec(numIntWakeupPorts, Valid(new Wakeup)))
+  // The RETRACTION half of BOOM's speculative wakeup, and the grant squash.
+  //
+  // `IntWakeupBus` in VecPipeline's ports section is an AGGREGATE of three
+  // things -- the wakeup Vec plus these two -- and D2's first pass declared
+  // only the Vec, on the reasoning that a Caracal copy of `Wakeup` would fork
+  // it. That reasoning is right about the Vec and silently dropped these two.
+  //
+  // They are NOT optional and NOT no-effect. VecIssueUnit declares both as
+  // unconditional inputs and uses `child_rebusys` to RE-MARK A SLOT BUSY when
+  // a speculatively-woken scalar .vx/.vf feeder's parent load misses. Held at
+  // zero, the retraction never arrives and the vector op issues against a
+  // stale GPR -- with no width error and no assertion anywhere.
+  //
+  // Declared as separate members rather than wrapped in a Caracal bundle, for
+  // the same reason the Vec is bare: they are BOOM's own terms
+  // (`alu_exe_units.map(_.io_squash_iss).reduce(_||_)`), and an aggregate
+  // around them would be a second place to keep in step. There is no FP
+  // counterpart -- BOOM has no FP analogue of either term.
+  val int_child_rebusys = Input(UInt(aluWidth.W))
+  val int_squash_grant  = Input(Bool())
+  val fp_wakeups       = Input(Vec(numFpWakeupPorts,  Valid(new Wakeup)))
+  // The INT-writeback tap (D2): carries the VALUE, unlike int_wakeups above.
+  // Needed for the M1 stale-scalar-base fix — see IntWbSnoop's own note.
+  val int_wb_snoop     = Input(Vec(numIrfWritePorts,  Valid(new IntWbSnoop)))
   // Naming assumption: the nlhdl source names this field's width bare
   // `pregSz`, a name with no declaration anywhere in HasBoomCoreParameters.
   // Read as `fpregSz` (the FP physical-register address width) since the
@@ -549,20 +680,15 @@ class VecPipelineIO(implicit p: Parameters) extends BoomBundle
   val fp_wb            = Output(Valid(new ExeUnitResp(xLen)))
 
   // ---- vector CSR state (OWNED by rocket CSRFile, see frontend.rst) -----
-  // ===> SPEC DEFECT, DEFERRED TO D2 (not papered over). The spec names a
-  // `CSRVectorIO` in rocket-chip as this field's type. NO SUCH CLASS EXISTS:
-  // rocket declares the port anonymously as
-  //   val vector = usingVector.option(new Bundle { ... })
-  // at rocket-chip/src/main/scala/rocket/CSR.scala:310, so there is no name to
-  // reference and no way to declare this field without either inventing a
-  // Chisel type or restating rocket's anonymous bundle field-for-field (which
-  // would then silently drift from it). Both are worse than leaving it out.
-  // The field is therefore OMITTED here rather than declared wrong. Ground
-  // rule 9 is unaffected — the CSR state is still rocket's; only the Chisel
-  // handle for it is unresolved. Owner: step D2's BoomCore delta, which is
-  // where `csr.io.vector` is actually in scope and where the seam is wired.
-  // Fix in the spec first (frontend.rst `vector-csr-ownership` + VecBundles),
-  // then regenerate; do not hand-patch this file.
+  // ===> RESOLVED (D2). The spec named a `CSRVectorIO` in rocket-chip as this
+  // field's type; NO SUCH CLASS EXISTS — rocket declares the port
+  // anonymously as `val vector = usingVector.option(new Bundle { ... })` at
+  // rocket-chip/src/main/scala/rocket/CSR.scala:310. `VecCsrRead` (declared
+  // above) is Caracal's own read-direction view of that port: BoomCore wires
+  // its three fields from csr.io.vector.get, field by field, at the one site
+  // where that port is in scope. Ground rule 9 is unaffected — the CSR state
+  // is still rocket's; this bundle holds no write path.
+  val csr_vector       = Input(new VecCsrRead)
   val csr_frm          = Input(UInt(3.W))
   val csr_vs_dirty     = Output(Bool())
 

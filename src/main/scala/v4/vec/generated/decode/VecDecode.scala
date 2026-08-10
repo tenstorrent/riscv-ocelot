@@ -166,6 +166,11 @@ class VecDecode(implicit p: Parameters) extends BoomModule
   vcfg.io.com_vtype      := io.com_vtype
   vcfg.io.csr_vtype      := io.csr_vtype
   vcfg.io.rob_empty      := io.rob_empty
+  // BOTH: `dec_valids` gates VConfigUnit's OUTPUT prefix scan, `dec_fire` gates
+  // the one that advances the mirror register. See the "TWO PREFIX SCANS" note
+  // in VConfigUnit part 3 -- driving the outputs from `dec_fire` closes a
+  // combinational loop through BoomCore's decode-stall logic.
+  vcfg.io.dec_valids     := io.dec_valids
   vcfg.io.dec_fire       := io.dec_fire
 
   for (w <- 0 until coreWidth) {
@@ -416,6 +421,19 @@ class VecDecode(implicit p: Parameters) extends BoomModule
         uopOut.frs3_en            := vset.io.uop_out(w).frs3_en
         uopOut.uses_ldq           := vset.io.uop_out(w).uses_ldq
         uopOut.uses_stq           := vset.io.uop_out(w).uses_stq
+
+        // The decode-computed VL, carried to the ALU so that a `vsetivli` whose
+        // `rd != x0` writes the SAME value into `rd` that the VL RF receives.
+        // Sourced from VConfigUnit's single computation (`vcfg.io.dec_vl_imm`),
+        // NOT recomputed, which is the whole point of the MicroOp field -- see
+        // the field's own note in micro-op.scala.
+        //
+        // Taken UNCONDITIONALLY on a vset lane rather than qualified by
+        // `dec_vl_imm.valid`: `valid` means "this lane is a vsetivli", which is
+        // exactly the condition under which ALUUnit reads the field, and
+        // ALUUnit's own discriminator (`lrs1_rtype === RT_X`) is derived from the
+        // same decode. A second qualifier here could only disagree with it.
+        uopOut.v_vl_imm.get       := vcfg.io.dec_vl_imm(w).bits
       }
 
       // ========================================================================

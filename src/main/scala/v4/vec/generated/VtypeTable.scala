@@ -213,6 +213,33 @@ object VtypeTable {
     info
   }
 
+  // ---- `resolve`: the FULL VType, for the consumers that need the bundle ----
+  //
+  // `decode` returns a DIGEST (`{vlmax, emul, vill, vta, vma}`) which drops
+  // `vsew`, `vlmul_sign` and `vlmul_mag` and therefore cannot reconstruct a
+  // `VType`. But `MicroOp.vconfig`, `rob_vconfig`, the VCFG mirror, its
+  // committed shadow and the per-br_tag snapshot array all carry the WHOLE
+  // bundle -- it is the type rocket's CSRFile holds architectural vtype in.
+  // Without an entry point here, each such consumer invents its own, and the
+  // second one to do so got it wrong in a way no width check could catch:
+  // it reinterpreted the raw bits with `.asTypeOf` and overrode only
+  // `vill`/`reserved`, leaving `vsew`/`vlmul_*`/`vta`/`vma` holding whatever
+  // `rs2` happened to contain.
+  //
+  // RVV 1.0 requires that WHEN `vill` IS SET, EVERY OTHER `vtype` FIELD READS
+  // AS ZERO. `VType.fromUInt` implements exactly that -- its result starts as
+  // `WireInit(0.U.asTypeOf(new VType))` and is assigned only on the `!vill`
+  // path -- so a `csrr vtype` after an illegal `vset` returns zero. A
+  // hand-built version returns garbage instead, which is a cosim mismatch
+  // against the Whisper reference with no elaboration error anywhere.
+  //
+  // The rule: a consumer needing a full `VType` calls `resolve`; a consumer
+  // needing legality plus VLMAX/EMUL calls `decode`; nobody hand-builds a
+  // `VType` from raw bits. Both go through `VType.fromUInt`, so they cannot
+  // disagree. This is a pure delegation and has no logic of its own on
+  // purpose -- its entire value is being the one name consumers can reach.
+  def resolve(bits: UInt)(implicit p: Parameters): VType = VType.fromUInt(bits)
+
   // ---- EMUL: the group size a rename must allocate ----
   //
   // `emul(info, eew)` returns the number of registers in a group whose
@@ -251,12 +278,38 @@ object VtypeTable {
   // A VL of zero is a legal, reachable result and not an error: consumers
   // handle it (see VecGroupCopy for the destination-group consequence). This
   // function does not special-case it.
+  // ===> BOTH `avl` AND `currentVL` ARE PADDED UP TO `maxVLMax.log2` BITS, AND
+  //      THIS IS LOAD-BEARING, NOT TIDINESS. rocket's `VType.vl` does
+  //      `Mux(useCurrentVL, currentVL, avl)(maxVLMax.log2 - 1, 0)` -- an
+  //      unconditional 8-bit slice at VLEN=256 -- so it REQUIRES both operands
+  //      to be at least that wide. Two callers are narrower:
+  //        - VConfigUnit passes `vsetivli`'s AVL, a 5-bit `uimm[4:0]`;
+  //        - every caller passes `currentVL = 0.U` on the paths that do not use
+  //          it, and a `0.U` literal is ONE bit.
+  //      The Mux takes the max of its operand widths, so both cases produce a
+  //      slice of bits 7:0 out of a 5-bit (or 1-bit) value, which is a hard
+  //      Chisel elaboration error: "High index 7 is out of range [0, 4]".
+  //      Padding here fixes it once for every caller instead of at each call
+  //      site, where the next caller would have to rediscover it.
+  //
+  //      `.pad` ONLY WIDENS -- it can never truncate -- so this cannot
+  //      reintroduce the addvector wrap-instead-of-saturate bug described
+  //      above. That bug came from NARROWING a wide AVL; this widens a narrow
+  //      one. A 64-bit `rs1_data` AVL passes through untouched.
+  //
+  //      The width is taken from `p(TileKey).core.vLen`, which IS rocket's
+  //      `maxVLMax` (`tile/Core.scala`: `def maxVLMax = vLen`) as BOOM
+  //      supplies it, rather than from `vectorParams.vLen` -- so if the two
+  //      ever diverge this pad follows the one rocket's slice actually uses.
   def computeVL(
     avl: UInt,
     bits: UInt,
     currentVL: UInt,
     useCurrentVL: Bool,
     useMax: Bool,
-    useZero: Bool)(implicit p: Parameters): UInt =
-    VType.computeVL(avl, bits, currentVL, useCurrentVL, useMax, useZero)
+    useZero: Bool)(implicit p: Parameters): UInt = {
+    val maxVLMaxSz = log2Ceil(p(TileKey).core.vLen)
+    VType.computeVL(avl.pad(maxVLMaxSz), bits, currentVL.pad(maxVLMaxSz),
+                    useCurrentVL, useMax, useZero)
+  }
 }

@@ -307,6 +307,25 @@ class VecRenameSpace(
     if (vectorInstance) (needs_pvdest zip needs_pvtmp).map { case (d, t) => d || t }
     else vl_producer
 
+  // ===> THE MEMBER COUNT OF A GROUP IN *THIS* SPACE. Use these two helpers
+  //      anywhere a member count is needed in code that elaborates in BOTH
+  //      instances; read `v_emul` directly ONLY inside an `if (vectorInstance)`
+  //      arm.
+  //
+  //      `v_emul` is the VECTOR destination group's size and is meaningful only
+  //      in `vec_rename`. In `vl_rename` the renamed uop is a `vset`, which this
+  //      design models as a SCALAR uop -- so `v_emul` is **0** there, not 1, and
+  //      the VL "group" is one register by construction. Three separate bugs in
+  //      one bring-up came from reading `v_emul` in space-generic code (the free
+  //      list's `req_members`, the busy table's set mask, and the dealloc-range
+  //      assertions); all three presented as either a zero-member request or an
+  //      empty mask, and the busy-table one would have been a SILENT stale-VL
+  //      read had its sibling assertion not fired first.
+  private def renMembers(w: Int): UInt =
+    if (vectorInstance) ren2_uops(w).v_emul.get else 1.U
+  private def comMembers(w: Int): UInt =
+    if (vectorInstance) io.com_uops(w).v_emul.get else 1.U
+
   val ren2_alloc_reqs: Seq[Bool] = (0 until plWidth).map(w => ren2_mask(w) && dest_pred(w))
   //@req-spec-rename.h5 (repeated -- the two disciplines share this one event)
   val ren2_alloc_fire: Seq[Bool] = (0 until plWidth).map(w => dis_fire(w) && ren2_alloc_reqs(w))
@@ -371,9 +390,23 @@ class VecRenameSpace(
 
   for (w <- 0 until plWidth) {
     freelist.io.reqs(w)        := ren2_alloc_reqs(w)
-    // req_members(w) := v_emul, always 1 in the VL space (is_vl_producer
-    // instructions never carry a real EMUL group).
-    freelist.io.req_members(w) := ren2_uops(w).v_emul.get
+    // ===> THE MEMBER COUNT IS `v_emul` IN THE VECTOR SPACE AND A CONSTANT 1 IN
+    //      THE VL SPACE. An earlier version of this line read `v_emul`
+    //      unconditionally, with the comment "always 1 in the VL space
+    //      (is_vl_producer instructions never carry a real EMUL group)". The
+    //      parenthetical is right and the conclusion drawn from it is BACKWARDS:
+    //      because a vset carries no EMUL group, `v_emul` there is **0**, not 1.
+    //
+    //      With 0, `VecFreeList` allocates a zero-member group -- it granted
+    //      nothing for `pvl` -- and its own in-range assertion caught it at
+    //      3035 ns of the gate-(e1) cosim ("req_members out of [1, maxGroupSize]
+    //      range while reqs is asserted"). The identical mistake, from the
+    //      identical false premise, was in the busy table's shim below; see the
+    //      long note there for why an empty set mask is a silent stale-VL read.
+    //
+    //      `map_reqs(w).emul` above already gets this right (`1.U` in the else
+    //      arm), which is what makes the two disagree.
+    freelist.io.req_members(w) := renMembers(w)
     //@req-spec-rename.e1
     //@req-spec-rename.e3
     //@req-spec-rename.e5
@@ -482,6 +515,40 @@ class VecRenameSpace(
     // came from.
     for (w <- 0 until plWidth) {
       bt_uops(w).pvdest.get(0) := uops_renamed(w).pvl.get
+
+      // ===> AND v_emul MUST BE FORCED TO 1 HERE. THE VL "GROUP" IS ONE
+      //      REGISTER, AND WITHOUT THIS `pvl` IS NEVER MARKED BUSY AT ALL.
+      //
+      //      VecBusyTable's set path is generic across both instances and
+      //      qualifies each member with `j.U < uop.v_emul` (its part 6). But the
+      //      uop renamed in THIS space is a `vset`, which is modelled as a SCALAR
+      //      uop -- `is_vec` is clear and `v_emul` is 0, because a vset has no
+      //      vector destination group. So `j.U < 0` is false for every j, the set
+      //      mask is empty, and the VL busy bit is silently never set.
+      //
+      //      That is a CORRECTNESS bug, not just an assertion failure: a
+      //      register-sourced `vsetvli`/`vsetvl` writes `pvl` at ALU writeback,
+      //      so a younger vtype-dependent OP.v must wait on that busy bit. With
+      //      the bit never set the dependent is ready immediately and reads a
+      //      STALE VL from the VL RF. `VecBusyTable`'s
+      //      "rebusy_reqs asserted with v_emul == 0" assertion is what caught it,
+      //      at 3035 ns of the gate-(e1) cosim on `csrrs x0, mstatus, x5`.
+      //
+      //      Forcing it here -- in the shim that already exists to adapt this
+      //      space's uop to the generic table -- keeps VecBusyTable generic,
+      //      which is its stated design. Do NOT instead relax the assertion or
+      //      special-case `maxGroupSize == 1` inside VecBusyTable: the former
+      //      hides the empty set mask, and the latter puts VL knowledge into a
+      //      module whose whole point is not having any.
+      bt_uops(w).v_emul.get := 1.U
+
+      // Belt and braces, and required by VecBusyTable's part 6 note ("on the VL
+      // instance, VecRenameSpace's private uop must drive is_shared false"): the
+      // generic set path also builds a pvtmp mask qualified by `is_shared`, and
+      // there is no pvtmp in this space. A vset never sets is_shared today, so
+      // this is defensive rather than a fix -- stated so it stays true if decode
+      // ever changes.
+      bt_uops(w).is_shared.get := false.B
     }
   }
   busytable.io.ren_uops := bt_uops
@@ -778,19 +845,35 @@ class VecRenameSpace(
     "VecRenameSpace: leaking physical registers")
 
   // ADOPTED (VecFreeList could not implement this -- it has no per-commit-
-  // lane member count port; this module does, via io.com_uops(w).v_emul).
+  // lane member count port; this module does).
   // No dealloc/dealloc_tmp slot beyond a committing group's member count may
   // be valid.
+  //
+  // ===> THIS BLOCK IS UNGATED, SO IT MUST USE `comMembers`, NOT `v_emul`.
+  //      Unlike the dealloc LOGIC above (inside `freeDiscipline ==
+  //      "stale_group"`, i.e. vec-only), these assertions elaborate in BOTH
+  //      instances. Reading `io.com_uops(w).v_emul` directly made them fire on
+  //      the VL instance for the third time in the same bring-up, at 3049 ns of
+  //      the gate-(e1) cosim: a committing `vset` is a SCALAR uop, so its
+  //      `v_emul` is 0, and `j < 0` is false for j = 0 while the
+  //      committed-pointer dealloc slot is legitimately valid.
+  //
+  //      This one was missed by an audit that inferred gating from the
+  //      surrounding grep context rather than the block structure -- the
+  //      `stale_group` dealloc logic and these assertions read the same
+  //      expression a few lines apart under DIFFERENT conditions. Hence the
+  //      named helper: it makes the space's own member count the thing that is
+  //      written, so a future reader does not have to re-derive reachability.
   for (w <- 0 until retireWidth) {
     for (j <- 0 until maxGroupSize) {
       val idx = w * maxGroupSize + j
-      assert(!freelist.io.dealloc(idx).valid || j.U < io.com_uops(w).v_emul.get,
+      assert(!freelist.io.dealloc(idx).valid || j.U < comMembers(w),
         "VecRenameSpace: dealloc slot beyond committing group's member count is valid")
     }
     freelist.io.dealloc_tmp.foreach { dt =>
       for (j <- 0 until maxGroupSize) {
         val idx = w * maxGroupSize + j
-        assert(!dt(idx).valid || j.U < io.com_uops(w).v_emul.get,
+        assert(!dt(idx).valid || j.U < comMembers(w),
           "VecRenameSpace: dealloc_tmp slot beyond committing group's member count is valid")
       }
     }

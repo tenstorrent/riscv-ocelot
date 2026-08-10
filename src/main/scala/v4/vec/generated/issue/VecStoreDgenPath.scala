@@ -97,8 +97,17 @@ class VecStoreDgenPathIO(implicit p: Parameters) extends BoomBundle
   val agen_rebusied        = Input(Bool())
 
   // ---- Outputs to the slot: the operand mux ----
-  val dgen_operand          = Output(chiselTypeOf(uopT.pvs3.get))
-  val dgen_operand_members  = Output(chiselTypeOf(uopT.v_emul.get))
+  // `.cloneType`, NOT `chiselTypeOf`. Both express "the same type as MicroOp's
+  // field", which is the point of `uopT` above -- but `chiselTypeOf` requires
+  // its argument to be HARDWARE, and `uopT` is deliberately a bare Chisel type
+  // (`new MicroOp`, wrapped in no Wire/IO), so it throws
+  // `ExpectedHardwareException: 'UInt<7>[8]' must be hardware` at elaboration.
+  // `.cloneType` is the bare-type form and keeps MicroOp as the single source
+  // of the group sizing. Do NOT "fix" this by restating
+  // `Vec(maxVecMembers, UInt(vecPregSz.W))` here -- that reintroduces exactly
+  // the desynchronisation the comment above exists to prevent.
+  val dgen_operand          = Output(uopT.pvs3.get.cloneType)
+  val dgen_operand_members  = Output(uopT.v_emul.get.cloneType)
   val dgen_operand_busy     = Output(Bool())
   val dgen_operand_is_pvtmp = Output(Bool())
 

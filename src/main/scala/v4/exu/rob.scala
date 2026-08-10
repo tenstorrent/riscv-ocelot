@@ -30,9 +30,11 @@ import chisel3.util._
 
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.util._
+import freechips.rocketchip.rocket.VType
 
 import boom.v4.common._
 import boom.v4.util._
+import boom.v4.vec.generated.{VecRobFlags, VecTrace}
 
 /**
  * IO bundle to interact with the ROB
@@ -71,6 +73,27 @@ class RobIo(
 
   // Port for unmarking loads/stores as speculation hazards..
   val lsu_clr_unsafe   = Input(Vec(lsuWidth, Valid(UInt(robAddrSz.W))))
+
+  // Vector completion: single-shot busy-clear, one lane per producer (LCB
+  // group-done, VecCiiComplete, VecGroupCopy). usingRVV-gated: with vectors
+  // disabled RT_VEC entries do not exist, so this port is ABSENT, not tied
+  // off, and the elaborated ROB reverts to the pre-Caracal one.
+  val vec_clr_bsy      = if (usingRVV) Some(Input(Vec(vectorParams.numVecClrPorts, Valid(UInt(robAddrSz.W))))) else None
+
+  // Group-safe: all of this instruction's element addresses have been
+  // LCAM-checked. Shaped like lsu_clr_unsafe above, but a single port --
+  // group-safe is per instruction, not per D$ lane, and the LSU is its
+  // only producer.
+  val vec_clr_unsafe   = if (usingRVV) Some(Input(Valid(UInt(robAddrSz.W)))) else None
+
+  // CSR side effects of vector arithmetic (fflags/vxsat), applied at
+  // commit, lane-for-lane with vec_clr_bsy above.
+  val vec_rob_flags    = if (usingRVV) Some(Input(Vec(vectorParams.numVecClrPorts, Valid(new VecRobFlags)))) else None
+
+  // Asserted for one cycle when a committing entry had vxsat set; wired to
+  // csr.io.vector.set_vxsat in core.scala, exactly as io.commit.fflags is
+  // wired to csr.io.fcsr_flags.
+  val com_vxsat        = if (usingRVV) Some(Output(Bool())) else None
 
   val lxcpt = Flipped(new ValidIO(new Exception())) // LSU
   val csr_replay = Input(Valid(new Exception()))
@@ -250,6 +273,10 @@ class Rob(
   val rob_head_uses_stq   = Wire(Vec(coreWidth, Bool()))
   val rob_head_uses_ldq   = Wire(Vec(coreWidth, Bool()))
   val rob_head_fflags     = Wire(Vec(coreWidth, Valid(UInt(freechips.rocketchip.tile.FPConstants.FLAGS_SZ.W))))
+  // The head-indexed vxsat read, mirroring rob_head_fflags above. Declared
+  // outside the per-bank loop (like rob_head_fflags) because rob_vxsat
+  // itself is bank-local; usingRVV-gated because io.com_vxsat is.
+  val rob_head_vxsat      = if (usingRVV) Some(Wire(Vec(coreWidth, Bool()))) else None
 
   val exception_thrown = Wire(Bool())
 
@@ -317,6 +344,10 @@ class Rob(
     val ftq_idx = UInt(log2Ceil(ftqSz).W)
     val uses_ldq = Bool()
     val uses_stq = Bool()
+    //@req-spec-core.e23
+    //@req-spec-rob.a2
+    //@req-spec-rob.a3
+    //@req-spec-rob.a4
     // Tracks MicroOp.dst_rtype, widened 2b -> 3b by the RT_VEC encoding in
     // ScalarOpConstants. Must stay in step with it: a 2b field here would
     // truncate RT_VEC (4) to RT_FIX (0) on the way through the ROB.
@@ -325,6 +356,8 @@ class Rob(
     val pdst = UInt(maxPregSz.W)
     val stale_pdst = UInt(maxPregSz.W)
   }
+  //@req-spec-rob.a1
+  //@req-spec-core.e22
   val compactUopWidth = 1 + log2Ceil(ftqSz) + 1 + 1 + 3 + lregSz + maxPregSz + maxPregSz
   def compact_to_uop(compact: RobCompactUop, uop: MicroOp): MicroOp = {
     val out = WireInit(uop)
@@ -380,6 +413,21 @@ class Rob(
     val rob_predicated = Reg(Vec(numRobRows, Bool())) // Was this instruction predicated out?
     val rob_fflags    = Reg(Vec(numRobRows, Valid(Bits(freechips.rocketchip.tile.FPConstants.FLAGS_SZ.W))))
 
+    // usingRVV-gated per-bank vector state (Caracal D3 delta):
+    //   rob_other_half -- 1-bit "other half pending" flag for a shared
+    //     (segmented load/store) instruction; NOT a counter, see part 4.
+    //   rob_vxsat      -- sticky fixed-point saturation bit, accrued from
+    //     io.vec_rob_flags and applied at commit onto io.com_vxsat.
+    //   rob_vconfig    -- the executed-VType latch for vset*, since a
+    //     register-sourced vsetvl's vtype is not known until execute.
+    //@req-spec-rob.d3
+    //@req-spec-rob.d4
+    //@req-spec-rob.d5
+    //@req-spec-issue.c8
+    val rob_other_half = if (usingRVV) Some(Reg(Vec(numRobRows, Bool()))) else None
+    val rob_vxsat       = if (usingRVV) Some(Reg(Vec(numRobRows, Bool()))) else None
+    val rob_vconfig     = if (usingRVV) Some(Reg(Vec(numRobRows, new VType))) else None
+
     val rob_debug_wdata = Mem(numRobRows, UInt(xLen.W))
 
     //-----------------------------------------------
@@ -397,6 +445,14 @@ class Rob(
       rob_predicated(rob_tail)   := false.B
       rob_fflags(rob_tail).valid := false.B
       rob_fflags(rob_tail).bits  := 0.U
+
+      if (usingRVV) {
+        //@req-spec-rob.d19
+        //@req-spec-rob.d20
+        rob_other_half.get(rob_tail) := io.enq_uops(w).is_shared.get
+        rob_vxsat.get(rob_tail)      := false.B
+        rob_vconfig.get(rob_tail)    := io.enq_uops(w).vconfig.get
+      }
 
       assert (rob_val(rob_tail) === false.B, "[rob] overwriting a valid entry.")
       assert ((io.enq_uops(w).rob_idx >> log2Ceil(coreWidth)) === rob_tail)
@@ -422,6 +478,14 @@ class Rob(
           rob_fflags(row_idx).bits  := wb_resp.bits.fflags.bits
 
         }
+        // The one new state item part 9 needs: a register-sourced vsetvl's
+        // vtype is not known at dispatch, so ALUUnit overwrites it on the
+        // vset* writeback and the ROB must latch it here for commit.
+        if (usingRVV) {
+          when (wb_uop.is_vl_producer.get) {
+            rob_vconfig.get(row_idx) := wb_resp.bits.uop.vconfig.get
+          }
+        }
       }
     }
 
@@ -429,7 +493,23 @@ class Rob(
     for (clr_rob_idx <- io.lsu_clr_bsy) {
       when (clr_rob_idx.valid && MatchBank(GetBankIdx(clr_rob_idx.bits))) {
         val cidx = GetRowIdx(clr_rob_idx.bits)
-        rob_bsy(cidx)    := false.B
+        //@req-spec-rob.d15
+        //@req-spec-issue.c7
+        //@req-spec-cii.i2
+        if (usingRVV) {
+          // A shared (segmented store) instruction's LSU half is only the
+          // FIRST of its two completions: clear the "other half pending"
+          // flag instead of rob_bsy, and let the second (coprocessor) half
+          // clear rob_bsy. Reverts to the unconditional clear below when
+          // usingRVV is false.
+          when (!rob_other_half.get(cidx)) {
+            rob_bsy(cidx) := false.B
+          } .otherwise {
+            rob_other_half.get(cidx) := false.B
+          }
+        } else {
+          rob_bsy(cidx) := false.B
+        }
         rob_unsafe(cidx) := false.B
         assert (rob_val(cidx) === true.B, "[rob] store writing back to invalid entry.")
         assert (rob_bsy(cidx) === true.B, "[rob] store writing back to a not-busy entry.")
@@ -439,6 +519,92 @@ class Rob(
       when (clr.valid && MatchBank(GetBankIdx(clr.bits))) {
         val cidx = GetRowIdx(clr.bits)
         rob_unsafe(cidx) := false.B
+      }
+    }
+
+    // Vector completion: single-shot busy-clear, one lane per producer
+    // (LCB group-done, VecCiiComplete, VecGroupCopy). Shaped exactly like
+    // the io.lsu_clr_bsy block above, iterated over the vector completion
+    // lanes instead of coreWidth. An RT_VEC entry has no iresp writeback,
+    // so this port is the ONLY thing that can clear its rob_bsy.
+    if (usingRVV) {
+      //@req-spec-rob.b1
+      //@req-spec-rob.b2
+      //@req-spec-rob.b3
+      //@req-spec-rob.b4
+      //@req-spec-rob.b5
+      //@req-spec-rob.b6
+      //@req-spec-rob.b7
+      //@req-spec-rob.c2
+      //@req-spec-rob.c3
+      //@req-spec-rob.c4
+      //@req-spec-rob.c8
+      for (clr <- io.vec_clr_bsy.get) {
+        when (clr.valid && MatchBank(GetBankIdx(clr.bits))) {
+          val cidx = GetRowIdx(clr.bits)
+          val cleared_bsy = !rob_other_half.get(cidx)
+          when (cleared_bsy) {
+            rob_bsy(cidx) := false.B
+          } .otherwise {
+            rob_other_half.get(cidx) := false.B
+          }
+          rob_unsafe(cidx) := false.B
+          assert (rob_val(cidx) === true.B, "[rob] vec_clr_bsy naming an invalid entry.")
+          assert (rob_bsy(cidx) === true.B, "[rob] vec_clr_bsy naming a not-busy entry.")
+          VecTrace.trace("Rob", "vec_clr_bsy", rob_uop(cidx), Seq(("cleared_bsy", cleared_bsy)))
+        }
+      }
+
+      // At most one completion event -- across all vec_clr_bsy lanes and
+      // io.lsu_clr_bsy together -- may name a given entry in this bank in a
+      // cycle. Two arrivals in the same cycle would both read the OLD
+      // rob_other_half value and both take the flag-clear branch, so
+      // rob_bsy would never clear and the entry would hang at the ROB head.
+      //@req-spec-core.h7
+      //@req-spec-rob.d7
+      //@req-spec-rob.d8
+      //@req-spec-rob.d14
+      //@req-spec-rob.d21
+      val vec_completion_valid = io.vec_clr_bsy.get.map(c => c.valid && MatchBank(GetBankIdx(c.bits))) ++
+                                  io.lsu_clr_bsy.map(c => c.valid && MatchBank(GetBankIdx(c.bits)))
+      val vec_completion_cidx  = io.vec_clr_bsy.get.map(c => GetRowIdx(c.bits)) ++
+                                  io.lsu_clr_bsy.map(c => GetRowIdx(c.bits))
+      for (i <- vec_completion_valid.indices; j <- (i + 1) until vec_completion_valid.length) {
+        assert(!(vec_completion_valid(i) && vec_completion_valid(j) && vec_completion_cidx(i) === vec_completion_cidx(j)),
+          "[rob] two completion events named the same entry in the same cycle.")
+      }
+
+      // Group-safe: all of this instruction's element addresses have been
+      // LCAM-checked. Shaped like the io.lsu_clr_unsafe block above, but a
+      // single port -- group-safe is per instruction, not per D$ lane, and
+      // the LSU is its only producer. A shared entry's single rob_unsafe
+      // bit needs only this (its LSU half); the coprocessor half performs
+      // no memory access and carries no speculation hazard.
+      //@req-spec-rob.e4
+      //@req-spec-rob.e6
+      //@req-spec-issue.d16
+      //@req-spec-issue.d17
+      //@req-spec-issue.d5
+      when (io.vec_clr_unsafe.get.valid && MatchBank(GetBankIdx(io.vec_clr_unsafe.get.bits))) {
+        val cidx = GetRowIdx(io.vec_clr_unsafe.get.bits)
+        rob_unsafe(cidx) := false.B
+        VecTrace.trace("Rob", "vec_clr_unsafe", rob_uop(cidx))
+      }
+
+      // CSR side effects of vector arithmetic (fflags/vxsat), accrued per
+      // entry and applied at COMMIT, never at writeback -- a past-PNR CII
+      // op can still be squashed by a ROB-head flush, and a sticky CSR bit
+      // set by a squashed instruction could never be un-set.
+      for (flags <- io.vec_rob_flags.get) {
+        when (flags.valid && MatchBank(GetBankIdx(flags.bits.rob_idx))) {
+          val row = GetRowIdx(flags.bits.rob_idx)
+          // Mirrors the rob.scala fflags-writeback assert: a per-entry
+          // fflags slot may be written at most once.
+          assert(!rob_fflags(row).valid, "[rob] vec_rob_flags writing an already-valid fflags slot.")
+          rob_fflags(row).valid := true.B
+          rob_fflags(row).bits  := flags.bits.fflags
+          rob_vxsat.get(row)    := flags.bits.vxsat
+        }
       }
     }
 
@@ -474,6 +640,15 @@ class Rob(
     io.commit.arch_valids(w) := will_commit(w) && !rob_predicated(rob_head)
     io.commit.uops(w)        := compact_to_uop(rob_compact_uop_bypassed(w), rob_uop(rob_head))
     io.commit.debug_insts(w) := rob_debug_inst_rdata(w)
+
+    // A register-sourced vsetvl's vtype is not known until execute, so the
+    // decode-time uop.vconfig snapshot in rob_uop cannot hold it; override
+    // with the latch ALUUnit wrote on the vset* writeback (part 9). Same
+    // override pattern the debug_fsrc/taken mispredict fix-up below uses.
+    if (usingRVV) {
+      //@req-spec-decode.h5
+      io.commit.uops(w).vconfig.get := rob_vconfig.get(rob_head)
+    }
 
     // We unbusy branches in b1, but its easier to mark the taken/provider src in b2,
     // when the branch might be committing
@@ -535,6 +710,9 @@ class Rob(
     rob_head_fflags(w)   := rob_fflags(rob_head)
     rob_head_uses_stq(w) := io.commit.uops(w).uses_stq
     rob_head_uses_ldq(w) := io.commit.uops(w).uses_ldq
+    if (usingRVV) {
+      rob_head_vxsat.get(w) := rob_vxsat.get(rob_head)
+    }
 
     //------------------------------------------------
     // Invalid entries are safe; thrown exceptions are unsafe.
@@ -566,6 +744,19 @@ class Rob(
                "[rob] writeback (" + i + ") occurred to the wrong pdst.")
     }
     io.commit.debug_wdata(w) := rob_debug_wdata(rob_head)
+
+    // Trace: distinguishes "the group never completed" / "one half never
+    // reported" / "the entry never reached the head" -- the three ways
+    // this delta can hang the machine. Emit-only; deleting this call site
+    // leaves the design bit-identical.
+    if (usingRVV) {
+      when (io.commit.valids(w) && io.commit.uops(w).dst_rtype === RT_VEC) {
+        VecTrace.trace("Rob", "commit_vec", io.commit.uops(w), Seq(
+          ("v_emul",  io.commit.uops(w).v_emul.get),
+          ("vconfig", rob_vconfig.get(rob_head).asUInt),
+          ("vxsat",   rob_vxsat.get(rob_head))))
+      }
+    }
 
   } //for (w <- 0 until coreWidth)
 
@@ -654,8 +845,15 @@ class Rob(
              !rob_head_fflags(w).valid),
              "Committed FP instruction did not set fflag bits")
 
+    // Vector arithmetic accrues fflags without fp_val (fp_val would route
+    // it into FP writeback accounting it does not use), so exempt a
+    // committing vector uop from this otherwise-non-FP-instruction check.
+    // Scala-level false.B when usingRVV is false, so the assert reverts to
+    // exactly its baseline form.
+    val committing_is_vec = if (usingRVV) io.commit.uops(w).is_vec.get else false.B
     assert (!(io.commit.valids(w) &&
              !io.commit.uops(w).fp_val &&
+             !committing_is_vec &&
              rob_head_fflags(w).valid),
              "Committed non-FP instruction has non-zero fflag bits.")
     assert (!(io.commit.valids(w) &&
@@ -666,6 +864,14 @@ class Rob(
   }
   io.commit.fflags.valid := fflags_val.reduce(_|_)
   io.commit.fflags.bits  := fflags.reduce(_|_)
+
+  // vxsat: the same commit-time accrual discipline as fflags above, applied
+  // to the fixed-point saturation flag instead of the FP flags -- see the
+  // vec_rob_flags block for why this cannot be set at writeback.
+  if (usingRVV) {
+    val vxsat_val = (0 until coreWidth).map(w => rob_head_vxsat.get(w) && io.commit.valids(w))
+    io.com_vxsat.get := vxsat_val.reduce(_ || _)
+  }
 
   // -----------------------------------------------
   // Exception Tracking Logic

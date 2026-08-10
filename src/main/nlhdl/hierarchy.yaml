@@ -252,6 +252,21 @@ interfaces:
       - { name: int_rf_read_req,    dir: bwd, width: "DecoupledReadReq * 5" }
       - { name: int_rf_read_rsp,    dir: fwd, width: "xLen * 5" }
       - { name: int_wakeups,        dir: fwd, width: IntWakeupBus }
+      # ===> SPLIT OUT (D2). `IntWakeupBus` was an AGGREGATE of three things --
+      #      the wakeup Vec, `child_rebusys` and `squash_grant` -- and D2's first
+      #      pass declared only the Vec, dropping the other two. VecPipeline then
+      #      found every VecIssueUnit instance declares both as unconditional
+      #      inputs, could not compute either (both are BoomCore-internal:
+      #      `alu_exe_units.map(_.io_squash_iss).reduce(_||_)`), and tied them to
+      #      0/false as "safe defaults". THEY ARE NOT SAFE: `child_rebusys` is
+      #      the RETRACTION half of BOOM's speculative wakeup -- VecIssueUnit
+      #      uses it to re-mark a slot busy when a speculatively-woken scalar
+      #      .vx/.vf feeder's parent load misses. Held at zero the retraction
+      #      never arrives and the vector op issues against a stale GPR, with no
+      #      assertion anywhere. Both are now their own members, driven by
+      #      BoomCore. No FP counterpart exists -- BOOM has no FP analogue.
+      - { name: int_child_rebusys,  dir: fwd, width: aluWidth }
+      - { name: int_squash_grant,   dir: fwd, width: 1 }
       # ===> ADDED (amendment). `spec-vrf.e4` requires the `.vf` scalar feeder of a
       #      vector slot to be woken on the FP wakeup network, and VecIssueSlot
       #      keeps FP `.vf` comparators — but only `int_wakeups` was declared, so
@@ -285,7 +300,20 @@ interfaces:
       - { name: int_wb,             dir: bwd, width: ExeUnitResp }
       - { name: fp_wb,              dir: bwd, width: ExeUnitResp }
       # ---- vector CSR state (OWNED by rocket CSRFile, see frontend.rst) -----
-      - { name: csr_vector,         dir: fwd, width: CSRVectorIO }
+      # ===> CORRECTED (D2). This said `CSRVectorIO`. NO SUCH CLASS EXISTS —
+      #      rocket declares the port anonymously as
+      #      `val vector = usingVector.option(new Bundle { ... })`
+      #      (rocket-chip CSR.scala:310), so there was no name to reference and A2
+      #      left the member out rather than declare it wrong. The type is now
+      #      `VecCsrRead`, declared in VecBundles: Caracal's READ-DIRECTION view,
+      #      carrying only `{vconfig, vstart, vxrm}` — the three output-direction
+      #      fields part 8 of VecPipeline says the container consumes. Rocket's
+      #      input-direction fields (`set_vconfig`, `set_vstart`, `set_vxsat`,
+      #      `set_vs_dirty`) are deliberately ABSENT: they are driven by BoomCore
+      #      and the Rob delta, and a bundle with no write path cannot be used to
+      #      write architectural vector CSR state, which is what ground rule 9
+      #      wants. It uses rocket's own `VConfig` for the field that has a name.
+      - { name: csr_vector,         dir: fwd, width: VecCsrRead }
       - { name: csr_frm,            dir: fwd, width: 3 }
       - { name: csr_vs_dirty,       dir: bwd, width: 1 }
       # ---- vset: the dual-destination rule (is_vl_producer) ----------------
@@ -817,6 +845,23 @@ modules:
     # DELTA: an FP RF read port + wakeup tap so `.vf` scalar feeders reach the
     # vector pipeline. Vector ops ride the EXISTING FP wakeup network; no new
     # network is added for `.vf`.
+    # ===> CORRECTED (D3). This comment described only HALF the delta and was
+    #      stale against its own `source:` file, which self-consciously widens
+    #      scope for decision D7 ("The flag was raised (A31), it was decided
+    #      (D7), and the port IS NOW IN SCOPE") and carries a dedicated
+    #      "ADDED BY D7" block in its `<|begin_edit_scope|>` In-scope list.
+    #      D7 also adds an FP RF WRITE port and one more PRODUCER SLOT on
+    #      `fp_wakeups`/`io.wb`, for the CII scalar-FP writeback (`vfmv.f.s`).
+    #      Both are appended LAST so no existing port index moves. Still true:
+    #      no new wakeup NETWORK -- `io.wakeups := fp_wakeups` is untouched.
+    # ===> OPEN TRACEABILITY GAP, recorded rather than papered over: NO
+    #      requirement in this node's `reqs:` covers the D7 write port or the
+    #      wakeup slot, and the `.nlhdl` source says so itself. The RTL is real
+    #      and spec-authorized but untagged, so gate (i) sees new hardware
+    #      implementing nothing. Fixing it means ALLOCATING an ID (a
+    #      `/spec-to-reqs` job over the CII scalar-destination writeback text in
+    #      `midcore.rst`/`cii.rst`), not inventing a tag here. Do not close it by
+    #      re-pointing an unrelated existing ID at this code.
 
   # ===========================================================================
   # VecPipeline — the container. One instantiation in core.scala; everything

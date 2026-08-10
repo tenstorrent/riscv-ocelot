@@ -1507,3 +1507,272 @@ that reason alone, independent of D2. The fragment self-gates (`enableDebugHarne
 sniffing `SIMULATOR`/`SIM_NAME`/cwd), so Verilator builds elaborate without it rather than
 failing, and gate (f) is unaffected because `regen.sh` strips the mixin before building its
 reference trees.
+
+### Phase D — as built
+
+**Generation tier.** All six D2/D3 nodes on **Sonnet**, **no escalation** — the tier policy of
+[§4.6](#46-model-tiers) holding for a third consecutive phase. Every generation failure was a
+spec defect, an interface-ownership defect or a Chisel-idiom slip, never a misread of the design.
+The strong tier did the spec amendments, the defect adjudication, the gates, and the four gate-(c)
+fixes below.
+
+**What landed.**
+
+| Node | Mode | Diff | Reqs (rtl / baseline) |
+|---|---|---|---|
+| `VecPipeline` | new | 741 lines | 49 / 0 |
+| `BoomCore` | edit_existing | +225 / −8 | 16 / 3 |
+| `Rob` | edit_existing | +207 / −1 | 37 / 48 |
+| `FpPipeline` | edit_existing | +100 / −6 | 2 / 0 |
+| `ALUUnit` | edit_existing | +91 / −1 | 14 / 0 |
+| `ALUExeUnit` | edit_existing | +12 / −1 | 1 / 0 |
+
+Gate (a) PASS. Gate (i) **119 tagged in RTL, 51 discharged by untouched baseline, 0 absent**.
+Gate (c) PASS after four fixes. Gate (f) and gate (e1) — see below.
+
+#### Gate (i) had to change, because the skill and `hierarchy.yaml` disagree
+
+`Rob` tagged 37 of its 85 allocated requirements and left 48 untagged. That is **correct**, and the
+flat "is it tagged in the target file" check this project had been using was wrong for
+`edit_existing` nodes. `nlhdl/references/gen-rtl.md:93` forbids the alternative outright:
+
+> Pre-existing code the edit did not touch gets no tags: this module's `reqs:` covers its delta,
+> not the behavior that was already there.
+
+`hierarchy.yaml` allocates requirements to a **node**, and for a baseline delta some of those are
+discharged by BOOM behaviour the delta deliberately leaves alone — the spec says so in as many
+words ("NO ROB LOGIC IS ADDED FOR VECTOR EXCEPTIONS AT ALL", "The ROB is not `pvtmp`-aware
+anywhere — it carries the field on the uop and does nothing with it").
+
+So gate (i) now classifies each allocated ID three ways — `rtl` (the delta implements it),
+`spec-only` (discharged by untouched baseline, and the spec paragraph carrying the tag must say
+so), `absent` (a real gap, FAIL) — with `spec-only` disallowed on a `new` node, which has no
+baseline to inherit from. Instrument: `scratchpad/reqcheck2.py`. **Do not "fix" a spec-only count
+by tagging baseline lines**; that is the thing the skill forbids.
+
+#### Gate (c) is the gate that mattered, and it closed the hole the Phase C addendum named
+
+The Phase C addendum warned that **no automated gate had ever exercised `usingRVV=true`**. Gate (c)
+at D2 is the first one that does, and it immediately found four defects — **two of them introduced
+in earlier phases that had passed all their gates**:
+
+| Defect | Introduced | Why (a) and (f) both missed it |
+|---|---|---|
+| `VType.vl` slices bits 7:0 of `vsetivli`'s **5-bit** AVL (`High index 7 is out of range [0, 4]`) | **Phase B** (`VConfigUnit`) | not a type error → invisible to (a); never built under `usingRVV=false` → unreachable by (f) |
+| `vecIssueGrantWidth = 2` vs a `require(== 1)` binding all three queues | **Phase C** + Phase A configs | same |
+| `chiselTypeOf` applied to a bare `new MicroOp` | **Phase C** (`VecStoreDgenPath`) | same — it typechecks and fails at elaboration |
+| Combinational loop `dec_fire → dec_vec_illegal → … → dec_fire` | **Phase D** (D2 seam) | **Chisel does not check for combinational loops** — this passed elaboration and failed in firtool's `CheckCombLoops` |
+
+Notes on the fixes, since three of them had a wrong-looking easy option:
+
+1. **AVL padding.** Fixed inside `VtypeTable.computeVL`, not at the call sites, so the next caller
+   does not rediscover it. Width taken from `p(TileKey).core.vLen`, which **is** rocket's
+   `maxVLMax` (`tile/Core.scala`: `def maxVLMax = vLen`), so the pad tracks the number rocket's
+   slice actually uses. `.pad` only widens, so this cannot reintroduce the `addvector`
+   wrap-instead-of-saturate bug — that one came from *narrowing* a wide AVL.
+2. **`vecIssueGrantWidth`.** `iq_v_alu` is now issueWidth **1 by construction**; load/store take
+   the parameter. `VecIssueUnit.nlhdl.scala:93` states the rule the generation missed ("if a config
+   raises `vecIssueGrantWidth` it must raise it for the load/store queues only"), and the reason is
+   the frozen SV contract, not tuning: `tt_cii_interface.sv` gives the issue channel one valid per
+   beat, so a second CII grant has nowhere to go. **As generated, both wide tiers were
+   un-elaboratable.**
+3. **`chiselTypeOf` → `.cloneType`.** The generation's *intent* was right and documented — derive
+   the port type from `MicroOp` so the operand mux cannot desynchronise from its group sizing. Only
+   the mechanism was wrong (`chiselTypeOf` requires hardware; `uopT` is deliberately a bare type).
+   Restating `Vec(maxVecMembers, UInt(vecPregSz.W))` locally would have "fixed" it by
+   reintroducing exactly the drift the code was guarding against.
+4. **The combinational loop.** `VConfigUnit` now runs **two prefix scans with different
+   qualifiers**: `laneUpdates` (valid-gated) drives everything that leaves the module
+   combinationally, `laneUpdatesFire` (fire-gated) drives the mirror register and its trace only.
+   The `dec_fire` qualifier could not simply be swapped — `hierarchy.yaml` added it precisely
+   because "on a partially-firing bundle, updating on `dec_valids` makes the mirror DOUBLE-ABSORB a
+   vset when the bundle re-presents". The split is behaviourally free for a reason that belongs to
+   BOOM's decode stage rather than to this module: `core.scala:659` builds `dec_stalls` as a
+   cumulative `scanLeft` OR, so `dec_fire(w)` implies every older lane fires. A bundle whose older
+   vset does not fire has no younger lane that fires, so **the two scans can only disagree on lanes
+   whose outputs nobody consumes.** `VConfigUnit` gains a `dec_valids` input for this.
+
+#### The five A2-deferred host-seam declarations, settled
+
+`VecPipelineIO` had six members omitted at A2 with `// SPEC DEFECT, DEFERRED TO D2` notes. All are
+now declared. Three of the names in `hierarchy.yaml` turned out to be **descriptions of a shape,
+not requests for a new type** — `IntWakeupBus`, `FpWakeupBus` and `DecoupledReadReq` each describe
+something BOOM already declares, and generating a Caracal class for them would fork `Wakeup` or
+make the read request un-`<>`-able against `arb_read_reqs`. Two carry real new structure and became
+classes (`VecRobFlags` — this is A34; `IntWbSnoop`, whose `addr` is `maxPregSz` to match the write
+port it snoops rather than the narrower `ipregSz`).
+
+The sixth was not a defect in the spec's *intent* but in its *reference*: `csr_vector`'s declared
+type `CSRVectorIO` **does not exist** — rocket declares that port anonymously
+(`val vector = usingVector.option(new Bundle {…})`, `CSR.scala:310`). Restating rocket's bundle
+field-for-field would drift from it; inventing a type in rocket's name would claim ownership of
+state ground rule 9 says is rocket's. Resolved as `VecCsrRead`, a **read-direction view**
+(`{vconfig, vstart, vxrm}`) using rocket's own `VConfig` for the field that has a name. Because it
+holds no write path it **cannot** be used to write architectural vector CSR state — which is the
+property ground rule 9 actually wants, and one a faithful copy of rocket's bundle would have
+handed away.
+
+`VecPipelineIO` now takes `numIntWakeupPorts`/`numFpWakeupPorts`/`numIrfWritePorts` as constructor
+parameters, supplied by `BoomCore` from `.length` of the real buses. Do **not** re-derive them:
+`core.scala:113,116` compute those formulas inside the `BoomCore` class body, so they are not core
+parameters, and a copy in the vector package would silently mis-size a snoop `Vec` the next time
+BOOM's writeback set changes.
+
+##### A tie-off that was not conservative
+
+`VecPipeline`'s first generation found that `child_rebusys`/`squash_grant` had no seam member —
+because the D2 amendment above declared only the wakeup `Vec` and dropped the two companion terms
+that `IntWakeupBus` was an aggregate of — and tied them to `0.U`/`false.B` as "safe, no-effect
+defaults". **They are not no-effect.** `child_rebusys` is the RETRACTION half of BOOM's speculative
+wakeup: `VecIssueUnit` uses it to re-mark a slot busy when a speculatively-woken scalar `.vx`/`.vf`
+feeder's parent load misses. Held at zero the retraction never arrives and the OP.v issues against
+a **stale GPR**, with no width error and no assertion anywhere. Both are now real seam members
+driven by `BoomCore`, with **the same two expressions `alu_iss_unit` gets** — a vector queue's
+scalar operands are woken by the same ALU column wakeups and the same LSU rebusy, so a different
+expression would be a divergence to maintain, not a specialization.
+
+General lesson, worth applying to the remaining phases: *a tie-off is not conservative when the
+signal's whole job is to say "take that wakeup back".*
+
+#### The `VtypeTable.decode` digest defect, closed after three nodes paid for it
+
+`decode` returns `{vlmax, emul, vill, vta, vma}` and therefore **cannot reconstruct a `VType`** —
+but `MicroOp.vconfig`, `rob_vconfig`, the VCFG mirror, its shadow and the snapshot array all carry
+the whole bundle. `VConfigUnit` reported this in Phase B and worked around it locally; `ALUUnit`
+hit it again at D3 and worked around it *differently*, building a `VType` by reinterpreting the raw
+bits with `.asTypeOf` and overriding only `vill`/`reserved`.
+
+That second workaround was a **conformance bug**: RVV 1.0 requires every other `vtype` field to
+read as zero when `vill` is set, and `VType.fromUInt` implements exactly that (its result starts
+from a zeroed wire and is assigned only on the `!vill` path). The hand-built version left
+`vsew`/`vlmul_*`/`vta`/`vma` holding whatever `rs2` contained, so a `csrr vtype` after an illegal
+`vset` would return garbage in the DUT and zero in the Whisper reference — a cosim mismatch with no
+elaboration error. `VtypeTable` now exposes `resolve(bits): VType`, a pure delegation to
+`VType.fromUInt`. **Rule: a consumer needing a full `VType` calls `resolve`; a consumer needing
+legality plus VLMAX/EMUL calls `decode`; nobody hand-builds a `VType` from raw bits.**
+
+#### Deferred out of D2, with the failure mode written down
+
+- **`VecException` cannot drive `rob.io.lxcpt` as declared.** The ROB latches
+  `next_xcpt_uop := new_xcpt.uop` and reads `uop.br_mask` for `GetNewBrMask`; `VecException` has no
+  `uop`, so `BoomCore` populates `rob_idx` and leaves the rest `DontCare`. Safe **only** because
+  D2's staging ties `vec_xcpt.valid` false while `vlsu` is absent. **Fix before E7**: an
+  unpopulated `br_mask` makes `GetNewBrMask` compute against garbage, so a vector fault taken with
+  a branch in flight is dropped or attributed to the wrong instruction. Give the bundle a real
+  `uop` (the LSU has the faulting OP.v in hand); do not reconstruct one from `rob_idx`, which
+  cannot recover `br_mask`. Its inner `valid` field is also vestigial — every site nests it in a
+  `Valid(...)`.
+- **`io.lsu.lsu_vec` / `vec_lsu_empty` do not exist yet**, so part 11 of the `BoomCore` spec is
+  unwired and `spec-memord.f8`/`f9` are untagged. Owned by the `LSU` node at E7.
+- **`FpPipeline`'s D7 write port and wakeup slot have no requirement allocated** — the `.nlhdl`
+  source says so itself. `hierarchy.yaml`'s `DELTA:` comment was also stale (it described only the
+  read port and tap); corrected. Closing this means **allocating** an ID via `/spec-to-reqs`, not
+  re-pointing an unrelated one.
+- **`[W004]` too-wide dynamic indices** in `VecFreeList`/`VecMapTable`/`VecRenameSpace`. W004 is
+  endemic here (149 in the vectors-off Mega build, all from baseline `rob.scala`'s `GetRowIdx`,
+  whose dynamic `>>` does not narrow), so these are not automatically bugs: the `VecMapTable` ones
+  are `Mux(inGroup, …)`-guarded so an out-of-range index's value is discarded. But
+  `VecFreeList`'s `tmp_base + m.U` could in principle reach 32 on a shared lane, which would
+  truncate to index 0 and grant the **wrong PRN** silently. Confirm the window arithmetic bounds
+  it, or add an assert.
+
+#### Gate (e1) PASSES — and it found five design defects gates (a)/(c)/(f) could not
+
+```
+*** PASSED *** Completed after 5566 simulation cycles
+```
+
+`USE_IMAGE_WHISPER=1 make CONFIG=MegaBoomV4VectorConfig run-binary-debug-hex
+BINARY=tests/rvv/vset_test/vset_test.elf` — **367 retired instructions, every one
+verified against Whisper in lock-step, zero mismatch lines**, clean `$finish` from
+`TestDriver.v`. All 16 vset configurations: four SEW, LMUL m1/m2/m8 and fractional
+mf2/mf4/mf8, the tu/mu policy bits, AVL at {0, mid, VLMAX−1, VLMAX, ≫VLMAX}, and a
+back-to-back reconfigure, each reading `vtype`/`vl` back through the architectural CSRs.
+
+**This is the first end-to-end vector behaviour in the project, and the first time
+anything executed a vector instruction.** Five defects surfaced, in the order the
+simulation reached them. Note what kind they are: the first four are `usingRVV=true`
+*runtime* behaviour, invisible to a compile or an elaboration; the fifth is a wrong
+architectural result that only a reference comparison could catch.
+
+| # | Where | Defect |
+|---|---|---|
+| 1 | `VecIssueSlot` | all seven `VecGroupReady.io.used` drivers unqualified by slot liveness |
+| 2 | `VecRenameSpace` | VL busy bit **never set** — busy-table set mask empty |
+| 3 | `VecRenameSpace` | VL free list requested a **zero-member** allocation |
+| 4 | `VecRenameSpace` | dealloc-range assertions read `v_emul` in ungated code |
+| 5 | `ALUUnit` / `VecDecode` / `MicroOp` | `vsetivli` wrote **VLMAX instead of `min(AVL, VLMAX)`** |
+
+**#1 — idle slots hold garbage.** `slot_uop` is a plain `Reg` with no reset value, so an
+empty slot's `active_uop` is X at time 0 and the previous occupant's stale fields after.
+`iq_v_load.slots_3.rdy_vs2` presented `v_uses_vs2 = 1` with `v_emul = 0` and tripped
+`VecGroupReady`'s in-range assertion at 785 ns — while running a test with **no vector
+loads**, so that slot was empty for the entire run. Fixed by qualifying `used` with a
+shared `active_valid = in_uop.valid || slot_valid`, **not** by weakening the assertion:
+that assertion is right about the invariant, and weakening it would stop a genuinely
+out-of-range `members` on a *live* slot from ever being caught. Functionally free —
+`used` feeds only `ready := !used || group_all_rdy` and the assertion, and `ready` is
+consumed only while the slot is valid.
+
+**#2–#4 — one false premise, three consumers.** All three came from a single sentence:
+"`req_members(w) := ren2_uops(w).v_emul` (always 1 in the VL space — `is_vl_producer`
+instructions never carry a real EMUL group)". The parenthetical is correct and the
+conclusion is **backwards**: *because* a vset carries no EMUL group, `v_emul` there is
+**0**, not 1. A vset is modelled as a scalar uop, so nothing ever sets it.
+
+> **#2 is the one that mattered most, and it was nearly silent.** `VecBusyTable`'s set
+> path qualifies each member with `j < v_emul`, so with 0 the set mask was **empty and
+> `pvl` was never marked busy at all**. A register-sourced `vsetvli`/`vsetvl` writes
+> `pvl` at ALU writeback, so a younger vtype-dependent OP.v must wait on that bit;
+> without it the dependent is ready immediately and reads a **stale VL** from the VL RF.
+> Its sibling assertion firing is the only reason this surfaced as a stop rather than as
+> wrong results much later.
+
+`VecRenameSpace` now declares `renMembers(w)`/`comMembers(w)` — `v_emul` in the vector
+instance, constant `1` in the VL one — and space-generic code uses them.
+
+> **⚠ Methodology, worth more than the fix.** #4 survived an audit that concluded "all
+> other `v_emul` reads are gated", because that audit **inferred gating from a grep
+> window**. The `stale_group` dealloc *logic* (vec-only) and the dealloc-range
+> *assertions* (both instances) read the identical expression a few lines apart under
+> different conditions. Re-running with real brace tracking found it at once. Grepping a
+> window around a read is not evidence about which space it belongs to.
+
+**#5 — a spec contradiction that produced a wrong architectural result.**
+`vsetivli x11, 1, e16, m2` wrote **32** where `min(1, 32) = 1`. Two authored specs
+disagreed:
+
+- `ALUUnit.nlhdl.scala`: "`vsetivli` is front-end only and never gets an issue slot or an EU"
+- `VsetDecode`/`VecDecode`: routes `vsetivli` with `rd != x0` to `IQ_ALU`, because
+  "rd needs an integer-RF write the front end has no port for"
+
+`VecDecode` is right — only an EU has an integer writeback port, so "front-end only" can
+be true of the VL-RF write and of the *vtype*, never of `rd`. Believing the other half,
+`ALUUnit` read AVL from `rs1_data`; but `vsetivli`'s AVL is the immediate `inst(19,15)`,
+so `VsetDecode` deliberately sets `lrs1_rtype := RT_X` and `imm_sel := IS_N` and that
+register is never renamed or read. The stale value was `≥ maxVLMax`, saturating to VLMAX.
+
+Resolved (owner's decision) by carrying the **computed VL** rather than the AVL:
+`MicroOp.v_vl_imm` holds the VL `VConfigUnit` already computed at decode, `VecDecode`
+writes it, and `ALUUnit` selects it for a `vsetivli` (`lrs1_rtype === RT_X` — exact,
+since the other two shapes are `RT_FIX` or the `RT_ZERO` VLMAX request). `vsetivli` has
+**two destinations that must receive the same value** — `rd` and `pvl` — so carrying the
+result makes them provably equal instead of independently computed. The stale sentence in
+`ALUUnit.nlhdl.scala` is corrected, or a regeneration would faithfully restore the bug.
+
+*Follow-up (not done, deliberately):* `VecPipeline`'s `dec_vl_imm → ren2_vl_imm` shadow
+register now duplicates a value the uop carries through the scalar rename registers
+anyway. Collapsing it removes the last way `rd` and `pvl` could diverge, but it touches
+the working VL-RF write path and belongs in its own step.
+
+#### One tooling trap fixed at source
+
+`regen.sh` restores `BoomConfigs.scala` with `cp -p`, preserving the original mtime — but
+any elaboration it triggers while the vector configs are neutralized **reassembles
+`.classpath_cache/chipyard.jar` without them**, and the restored source is then *older*
+than the poisoned jar, so make sees the cache as up to date. The next vector build dies
+with `ClassNotFoundException: chipyard.MegaBoomV4VectorConfig`, potentially hours later,
+with a clean `git status` and the class plainly present in the file. `regen.sh` now drops
+that jar on exit. `cp -p` is deliberate (a fresh mtime would force a full downstream
+rebuild every gate-(f) run), so deleting the one artifact it actually invalidated is the
+right lever — and it is the honest statement: the cache was built from a mutated source.

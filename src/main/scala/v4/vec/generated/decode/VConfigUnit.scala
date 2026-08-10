@@ -161,6 +161,12 @@ class VcfgBits(implicit p: Parameters) extends BoomBundle
 class VConfigUnitIO(implicit p: Parameters) extends BoomBundle
 {
   // ---- Decode-stage inputs, one entry per lane ----
+  // BOTH validity and fire are needed, and they gate DIFFERENT things. See the
+  // "TWO PREFIX SCANS" note in part 3: `dec_valids` gates the combinational
+  // prefix whose result LEAVES this module, `dec_fire` gates the one that
+  // updates the mirror REGISTER. Using `dec_fire` for the outputs closes a
+  // combinational loop through BoomCore's decode-stall logic.
+  val dec_valids        = Input(Vec(coreWidth, Bool()))
   val dec_fire          = Input(Vec(coreWidth, Bool()))
   val dec_is_vset        = Input(Vec(coreWidth, Bool()))
   // Raw, not-yet-legality-checked encoded vtype bits for an immediate-form
@@ -355,10 +361,44 @@ class VConfigUnit(implicit p: Parameters) extends BoomModule
     compress(VType.fromUInt(io.dec_vtype_imm(w)))
   }
 
-  // A lane UPDATES the running value iff it both fires and is an
-  // immediate-vtype vset (`vsetvli`/`vsetivli`); `vsetvl` never appears
-  // here because its `dec_vtype_is_imm` is false (part 4).
+  // A lane UPDATES the running value iff it is an immediate-vtype vset
+  // (`vsetvli`/`vsetivli`); `vsetvl` never appears here because its
+  // `dec_vtype_is_imm` is false (part 4).
+  //
+  // ===> THERE ARE TWO PREFIX SCANS, AND THE QUALIFIER DIFFERS BETWEEN THEM.
+  //      THIS IS NOT REDUNDANCY -- ONE SCAN CLOSES A COMBINATIONAL LOOP.
+  //
+  //      `laneUpdatesFire` (fire-gated) drives the MIRROR REGISTER, and it must
+  //      stay fire-gated for the reason hierarchy.yaml gives when it added
+  //      `dec_fire` to the seam: "the vtype mirror must advance only on a lane
+  //      that actually leaves decode. On a partially-firing bundle, updating on
+  //      `dec_valids` makes the mirror DOUBLE-ABSORB a vset when the bundle
+  //      re-presents."
+  //
+  //      `laneUpdates` (valid-gated) drives everything that LEAVES this module
+  //      combinationally -- `dec_vconfig`, `dec_prev_vconfig`,
+  //      `dec_vtype_illegal`. Those must NOT depend on `dec_fire`, because
+  //      BoomCore computes `dec_fire` FROM them: `dec_vtype_illegal` reaches
+  //      `dec_vec_illegal` -> the uop's `exception` -> `dec_xcpts` ->
+  //      `dec_hazards` -> `dec_stalls` -> `dec_fire`. firtool's CheckCombLoops
+  //      caught exactly that cycle on MegaBoomV4VectorConfig at gate (c):
+  //        dec_fire_1 -> vec.io_dec_vec_illegal_1 -> decode_1.io_vec_illegal
+  //          -> ... -> dec_hazards_1 -> dec_stalls_1 -> dec_fire_1
+  //      Note Chisel elaboration does NOT check for combinational loops, so this
+  //      passed elaboration and failed in firtool.
+  //
+  //      SWAPPING THE OUTPUT SCAN TO `dec_valids` IS BEHAVIOURALLY FREE, and the
+  //      reason is a property of BOOM's decode stage rather than of this module:
+  //      `core.scala:659` builds `dec_stalls` as a CUMULATIVE `scanLeft` OR, so
+  //      `dec_fire(w)` implies every older lane also fires. Therefore a bundle in
+  //      which an older vset does not fire has no younger lane that fires, and
+  //      every younger lane's outputs are discarded and re-presented next cycle
+  //      -- by which time the mirror register holds exactly the fired prefix.
+  //      The two scans can only disagree on lanes whose outputs nobody consumes.
   val laneUpdates: Seq[Bool] = (0 until coreWidth).map { w =>
+    io.dec_valids(w) && io.dec_is_vset(w) && io.dec_vtype_is_imm(w)
+  }
+  val laneUpdatesFire: Seq[Bool] = (0 until coreWidth).map { w =>
     io.dec_fire(w) && io.dec_is_vset(w) && io.dec_vtype_is_imm(w)
   }
 
@@ -371,8 +411,16 @@ class VConfigUnit(implicit p: Parameters) extends BoomModule
   // starting from `vcfg_mirror`, one mux stage per lane -- the same shape as
   // the scalar MapTable's `remap_table` `scanLeft`
   // (`v4/exu/rename/rename-maptable.scala`).
+  // The OUTPUT scan (valid-gated) -- read by dec_vconfig/dec_prev_vconfig/
+  // dec_vtype_illegal, none of which may depend on dec_fire.
   val running: Seq[VcfgBits] =
     (laneUpdates zip decodedImm).scanLeft(vcfg_mirror) { case (prev, (doUpdate, newVal)) =>
+      Mux(doUpdate, newVal, prev)
+    }
+  // The REGISTER scan (fire-gated) -- read ONLY by vcfg_mirror_decode_update
+  // (part 4) and the mirror-update trace. Never exported.
+  val runningFire: Seq[VcfgBits] =
+    (laneUpdatesFire zip decodedImm).scanLeft(vcfg_mirror) { case (prev, (doUpdate, newVal)) =>
       Mux(doUpdate, newVal, prev)
     }
   // running.length == coreWidth + 1; running(0) == vcfg_mirror (pre-bundle),
@@ -414,7 +462,7 @@ class VConfigUnit(implicit p: Parameters) extends BoomModule
   // the running value unchanged at that lane -- it cannot update the mirror
   // at decode, since its vtype is a register value unknown until execute;
   // it is safe only because of part 6's `flush_on_commit` recovery.
-  val vcfg_mirror_decode_update: VcfgBits = running(coreWidth)
+  val vcfg_mirror_decode_update: VcfgBits = runningFire(coreWidth)
 
   // (trace, part 7) The decode lane RESPONSIBLE for
   // `vcfg_mirror_decode_update` -- the highest-index lane with `laneUpdates`
@@ -422,11 +470,14 @@ class VConfigUnit(implicit p: Parameters) extends BoomModule
   // actually keep. TRACE-ONLY: `dec_ftq_idx`/`dec_pc_lob` are read only to
   // build these two wires, and these two wires feed nothing but the
   // `VecTrace.traceDecode` call in part 6's `.otherwise` arm below.
-  val mirror_update_fires: Bool = laneUpdates.reduce(_ || _)
+  val mirror_update_fires: Bool = laneUpdatesFire.reduce(_ || _)
   val mirror_update_ftq = WireInit(io.dec_ftq_idx(0))
   val mirror_update_pc  = WireInit(io.dec_pc_lob(0))
   for (w <- 0 until coreWidth) {
-    when (laneUpdates(w)) {
+    // `laneUpdatesFire`, matching `mirror_update_fires` above: this tags the
+    // trace line for the MIRROR REGISTER update, so it must name the lane that
+    // actually advanced it, not a valid-but-stalled one.
+    when (laneUpdatesFire(w)) {
       mirror_update_ftq := io.dec_ftq_idx(w)
       mirror_update_pc  := io.dec_pc_lob(w)
     }
