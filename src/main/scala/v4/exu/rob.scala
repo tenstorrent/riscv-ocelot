@@ -124,6 +124,17 @@ class CommitSignals(implicit p: Parameters) extends BoomBundle
 }
 
 /**
+ * Commit signals for the whisper-cosim Debug Harness.
+ * Mirrors the SV interface in `vsrc/core_harness_wrapper_N.v`. Vector fields exist on
+ * DebugMicroOp so the SV bit widths stay stable; core.scala ties them to zero until v4 has a VPU.
+ */
+class DebugCommitSignals(val coreMaxAddrBits: Int, val retireWidth: Int, val xLen: Int, val vLen: Int, val lregSz: Int, val memWidth: Int) extends Bundle
+{
+  val arch_valids = Vec(retireWidth, Bool())
+  val uops        = Vec(retireWidth, new boom.v4.common.DebugMicroOp(coreMaxAddrBits, xLen, vLen, lregSz))
+}
+
+/**
  * Bundle to communicate exceptions to CSRFile
  *
  * TODO combine FlushSignals and ExceptionSignals (currently timed to different cycles).
