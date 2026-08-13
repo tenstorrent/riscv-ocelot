@@ -15,8 +15,7 @@ is strictly forbidden unless prior written permission is obtained
 from Tenstorrent Inc.
 */
 
-/*
-  VecBundles — every bundle that crosses a boundary between two vector nodes.
+/* VecBundles — every bundle that crosses a boundary between two vector nodes. */
 
   hierarchy.yaml: kind: package, mode: new,
   output src/main/scala/v4/vec/generated/VecBundles.scala,
@@ -38,7 +37,6 @@ from Tenstorrent Inc.
   loadstore.rst `ssi-queues` and `elem-progress` (the element access and the
   queue set), cii.rst `cii-interface` (the four channel payloads),
   issue.rst `vec-queue-reservation`.
-*/
 
 <|begin_module|>
 
@@ -79,10 +77,28 @@ from Tenstorrent Inc.
   group that was actually allocated. A consumer matches each of its source
   group's members against this vector.
 
-  // ONE event, THREE consumers: the ROB's single-shot rob_bsy clear, the vector
-  // Busy-Table clear, and the vector wakeup network. That is why it is one
-  // bundle rather than three narrower ones — the three consumers must see the
-  // same completion in the same cycle, and a split bundle would let them drift.
+  ===> `VecGroupDone` IS `rob_idx`-KEYED, AND THAT IS CORRECT — BUT IT IS NOT SUFFICIENT
+  ON ITS OWN. Found at E7. A completing vector load has TWO consumers that key on
+  DIFFERENT identifiers: the ROB clears busy by `rob_idx`, and `lsu.scala` marks the load
+  executed by `ldq_idx` (`GetRealLSQIdx(...)` indexes `ldq_executed`/`ldq_will_succeed`
+  directly). Neither identifier is derivable from the other without a shadow table, which
+  ground rule 6 forbids.
+  Do NOT add `ldq_idx` to this bundle: it is the ROB-facing completion event and a
+  memory-subsystem index has no meaning to the other producers that drive it (the CII
+  writeback has no LDQ entry at all). The LOAD-SIDE producer publishes the LDQ-keyed
+  completion SEPARATELY — `VecLoadCoalescingBuffer.group_done_ldq`, asserted in the same
+  cycle from the same winner — and `VecLsu` routes that to the host seam.
+  This mattered: with only the rob_idx form available, the container tied the host's
+  `ld_group_done` off rather than wire it wrong. That is the right call and it is also a
+  MACHINE THAT NEVER RETIRES A VECTOR LOAD — the LDQ entry is never marked executed, so
+  the first vector load hangs at the ROB head. A completion path that is correct for one
+  of its two consumers and absent for the other looks like a wiring gap and behaves like
+  a deadlock.
+
+  ONE event, THREE consumers: the ROB's single-shot rob_bsy clear, the vector
+  Busy-Table clear, and the vector wakeup network. That is why it is one
+  bundle rather than three narrower ones — the three consumers must see the
+  same completion in the same cycle, and a split bundle would let them drift.
 
   ---- VecMemberRdy: the per-member readiness side channel ----
 
@@ -100,22 +116,22 @@ from Tenstorrent Inc.
   `vs3_rdy`. This is the READY sense; `VecBusyTable`'s `VecMemberBusyResp` is the
   BUSY sense and stays local to it, with `VecRenameSpace` converting between them.
 
-  // ===> IT IS DECLARED HERE, ONCE, AND EVERY OTHER SITE BINDS TO IT. This bundle
-  // is the one `VecPipeline` part 13 rules on: "`VecSlotMemberRdy` and
-  // `VecMemberRdy` ARE ONE BUNDLE WITH TWO NAMES, and that is a defect, not a
-  // synonym." Three specs (`VecIssueSlot`, `VecIssueUnit`, `VecPipeline`) already
-  // said the single declaration belongs in `VecBundles` — and this package never
-  // declared it, so the two consumers each declared their own: `VecRenameSpace`
-  // emitted `VecMemberRdy(maxGroupSize)` and `VecIssueSlot` a local
-  // `VecIssueSlotMemberRdyShim`, structurally identical types facing each other
-  // across one seam that `VecIssueUnit` must connect. It would not have compiled.
-  // Added here 2026-08-10; `VecRenameSpace`'s spec amended to bind rather than
-  // declare. Both generated shapes had already converged on the five-group layout
-  // above, so this promotion is a rename, not a redesign.
-  //
-  // It belongs here by the same test as `VecScalarOperands` and `VecRobFlags`: it
-  // crosses a boundary BOTH sides must review. A declaration inside a producer is
-  // readable from one side only.
+  ===> IT IS DECLARED HERE, ONCE, AND EVERY OTHER SITE BINDS TO IT. This bundle
+  is the one `VecPipeline` part 13 rules on: "`VecSlotMemberRdy` and
+  `VecMemberRdy` ARE ONE BUNDLE WITH TWO NAMES, and that is a defect, not a
+  synonym." Three specs (`VecIssueSlot`, `VecIssueUnit`, `VecPipeline`) already
+  said the single declaration belongs in `VecBundles` — and this package never
+  declared it, so the two consumers each declared their own: `VecRenameSpace`
+  emitted `VecMemberRdy(maxGroupSize)` and `VecIssueSlot` a local
+  `VecIssueSlotMemberRdyShim`, structurally identical types facing each other
+  across one seam that `VecIssueUnit` must connect. It would not have compiled.
+  Added here 2026-08-10; `VecRenameSpace`'s spec amended to bind rather than
+  declare. Both generated shapes had already converged on the five-group layout
+  above, so this promotion is a rename, not a redesign.
+
+  It belongs here by the same test as `VecScalarOperands` and `VecRobFlags`: it
+  crosses a boundary BOTH sides must review. A declaration inside a producer is
+  readable from one side only.
 
   ---- VecElemAccess: the nOP.v ----
 
@@ -143,10 +159,10 @@ from Tenstorrent Inc.
   convention: `ld_SSI_ADDR_Q`, `st_SSI_ADDR_Q`, `st_SSI_DATA_Q`,
   `ld_US_ADDR_Q`, `st_US_ADDR_Q` and `st_US_DATA_Q`.
 
-  // There is deliberately no ld_*_DATA_Q in either class: a load's returning
-  // data goes to the LCB for assembly, not into a queue. The asymmetry is real
-  // and the enumeration should make it obvious rather than leave a reader
-  // wondering which two entries are missing.
+  There is deliberately no ld_*_DATA_Q in either class: a load's returning
+  data goes to the LCB for assembly, not into a queue. The asymmetry is real
+  and the enumeration should make it obvious rather than leave a reader
+  wondering which two entries are missing.
 
   Address generation delivers its nOP.v bundles into these dedicated queues and
   nowhere else — never into an LDQ or STQ slot, which hold one placeholder
@@ -157,15 +173,15 @@ from Tenstorrent Inc.
   otherwise be up to `vLen` element accesses.
 
   ===> THE FIELD LIST BELOW IS THE COMPLETE AUTHORITATIVE ENUMERATION, AND IT IS
-       STATED IN FULL FOR A REASON. The original list here was written from the
-       PRODUCER's point of view — what `VecRangeAgen` needs to emit — and FOUR
-       separate consumers then each discovered, independently, a field the drain
-       side cannot do without. That pattern is the warning: the entry is the ONLY
-       thing that remembers a unit-stride instruction (which is precisely how
-       `VecRangeAgen` stays free of per-instruction state), so anything the drain
-       side, the LCB, the forwarder or the squash unit needs about that instruction
-       must be ON THE ENTRY. A generator must emit exactly this list; a consumer
-       needing a fifth thing amends this list rather than deriving it locally.
+  STATED IN FULL FOR A REASON. The original list here was written from the
+  PRODUCER's point of view — what `VecRangeAgen` needs to emit — and FOUR
+  separate consumers then each discovered, independently, a field the drain
+  side cannot do without. That pattern is the warning: the entry is the ONLY
+  thing that remembers a unit-stride instruction (which is precisely how
+  `VecRangeAgen` stays free of per-instruction state), so anything the drain
+  side, the LCB, the forwarder or the squash unit needs about that instruction
+  must be ON THE ENTRY. A generator must emit exactly this list; a consumer
+  needing a fifth thing amends this list rather than deriving it locally.
 
     `base`            — the effective base virtual address of the range.
     `len`             — TOTAL ACTIVE BYTE LENGTH. Sized for a whole LMUL=8 group of
@@ -203,9 +219,27 @@ from Tenstorrent Inc.
                         without the field.
     `mask`            — the access's ACTIVE MASK (see the note below on its
                         granularity, which is an open cross-file disagreement).
-    `pvdest_base`,
-    `members`         — the destination group's base PRN and member count, from
-                        `pvdest`/`v_emul`.
+    `pvdest`,
+    `members`         — the destination group's FULL PER-MEMBER PRN VECTOR
+                        (`Vec(maxVecMembers, UInt(vecPregSz.W))`) and member count,
+                        copied verbatim from `MicroOp.pvdest` / `v_emul`.
+
+  ===> THIS FIELD WAS `pvdest_base`, A SINGLE BASE PRN, AND THAT WAS THE MOST SERIOUS
+  DEFECT FOUND IN PHASE E. Corrected at E6. **A RENAMED GROUP'S MEMBER PRNs ARE NOT
+  CONTIGUOUS.** `VecFreeList` says so explicitly in its own prose — it hands each lane a
+  contiguous window of SELECTOR PORTS, and "the window is contiguous in PORT INDEX only —
+  the PRNs those ports hold are not" — which is exactly why `MicroOp.pvdest` is a `Vec`
+  and why `VecGroupDone` carries a full member vector rather than base+count.
+  With a single base, `VecBeatExpander` computed `pvdest_base + memberIdx` and
+  `VecRangeAgen` computed `srcGroupBase + (membersUsed - 1)`. For member 0 both are right;
+  for every member above it they name AN UNRELATED PHYSICAL REGISTER belonging to some
+  other in-flight instruction. So every LMUL>1 unit-stride load wrote its upper members
+  into someone else's registers, and every multi-member unit-stride store read its data
+  from them — with no assertion, no width error, and a passing LMUL=1 test suite.
+  ALWAYS INDEX THE GROUP VECTOR. Never base plus offset, anywhere in this design, for any
+  of `pvdest`/`pvs3`/`pvtmp`/`stale_pvdest`. If a bundle needs a group, it carries the
+  vector; the width cost is `maxVecMembers * vecPregSz` bits and it buys the only
+  representation that is correct.
     `us_data_base`    — for a STORE, the absolute base INDEX of this access's region
                         in `st_US_DATA_Q`, filled from reservation slot 1.
     `rob_idx`,
@@ -236,33 +270,33 @@ from Tenstorrent Inc.
        and `VecStoreForward` qualifies a forward with it. Note that ORDERING is
        deliberately mask-oblivious and must not consult it.
 
-  // ===> REPORTED, NOT RESOLVED — THE MASK'S GRANULARITY AND WIDTH ARE CONTESTED
-  // ACROSS FOUR FILES, and a generator must not pick a side silently. This file
-  // says BYTE mask, `vLen/8` = 32 bits (the paragraph above). Three consumers read
-  // it as ELEMENT-granular and wider: `VecRangeAgen` states "the mask is
-  // ELEMENT-granular, so the drain side needs `eew` to scale a mask bit into a byte
-  // enable"; `VecBeatExpander`'s constraint 5 measures "the run of consecutive
-  // ACTIVE mask bits starting at `elem_next`, converted to bytes by `<< eew`";
-  // `VecMaskStream` sizes its carriage as "up to VLMAX mask bits on one bundle per
-  // OP.v", i.e. 256. The two readings are not interchangeable — a byte mask needs no
-  // `eew` to become a byte enable, which is the very reason this list carries `eew`
-  // — and `vLen/8` cannot cover a range that spans up to `maxMembers * vLen / 8`
-  // bytes at LMUL=8. One granularity and one width must be chosen for all four
-  // files in one edit, with the affected `spec-agen.e13`/`spec-agen.e12` text
-  // checked against it. Recorded here because this is the declaration site, and a
-  // field silently declared at 32 bits that three consumers index past is a
-  // truncation with no error anywhere.
+  ===> REPORTED, NOT RESOLVED — THE MASK'S GRANULARITY AND WIDTH ARE CONTESTED
+  ACROSS FOUR FILES, and a generator must not pick a side silently. This file
+  says BYTE mask, `vLen/8` = 32 bits (the paragraph above). Three consumers read
+  it as ELEMENT-granular and wider: `VecRangeAgen` states "the mask is
+  ELEMENT-granular, so the drain side needs `eew` to scale a mask bit into a byte
+  enable"; `VecBeatExpander`'s constraint 5 measures "the run of consecutive
+  ACTIVE mask bits starting at `elem_next`, converted to bytes by `<< eew`";
+  `VecMaskStream` sizes its carriage as "up to VLMAX mask bits on one bundle per
+  OP.v", i.e. 256. The two readings are not interchangeable — a byte mask needs no
+  `eew` to become a byte enable, which is the very reason this list carries `eew`
+  — and `vLen/8` cannot cover a range that spans up to `maxMembers * vLen / 8`
+  bytes at LMUL=8. One granularity and one width must be chosen for all four
+  files in one edit, with the affected `spec-agen.e13`/`spec-agen.e12` text
+  checked against it. Recorded here because this is the declaration site, and a
+  field silently declared at 32 bits that three consumers index past is a
+  truncation with no error anywhere.
 
-  // ===> CONSIDERED AND NOT ADDED: the two RETAINED PPNs `VecBeatExpander` asked
-  // for, to spare its post-commit write pass a re-translation of an address its
-  // pre-commit translate pass already resolved. Not added because it makes the
-  // entry hold POST-TRANSLATION state, which changes what a squash and the
-  // `is_write_pass` cursor reset must invalidate, and because the bound "two" rests
-  // on a range of at most `maxMembers * vLen / 8` = 256 bytes crossing at most one
-  // page boundary — an argument that must be written down and checked against the
-  // page size, not assumed. Two lookups per beat-pass remains the specified
-  // behaviour until that review happens; this note exists so the next reader knows
-  // it was weighed rather than missed.
+  ===> CONSIDERED AND NOT ADDED: the two RETAINED PPNs `VecBeatExpander` asked
+  for, to spare its post-commit write pass a re-translation of an address its
+  pre-commit translate pass already resolved. Not added because it makes the
+  entry hold POST-TRANSLATION state, which changes what a squash and the
+  `is_write_pass` cursor reset must invalidate, and because the bound "two" rests
+  on a range of at most `maxMembers * vLen / 8` = 256 bytes crossing at most one
+  page boundary — an argument that must be written down and checked against the
+  page size, not assumed. Two lookups per beat-pass remains the specified
+  behaviour until that review happens; this note exists so the next reader knows
+  it was weighed rather than missed.
 
   ---- VecReservation ----
 
@@ -275,33 +309,38 @@ from Tenstorrent Inc.
   ---- VecException ----
 
   `VecException` reports a vector memory fault to the ROB as a plain precise
-  exception: `valid`, `rob_idx`, `cause`, `badvaddr`. It deliberately carries NO
-  element index — a faulting vector op traps with `vstart = 0` and restarts
-  whole, so an element index reaching the ROB could only be misused.
+  exception, and it is DECLARED TO BE FIELD-FOR-FIELD THE SAME SHAPE AS
+  `rob.scala`'s `class Exception`: `uop` (a full `MicroOp`), `cause`
+  (`log2Ceil(Causes.all.max + 2)` bits — rocket's cause space, NOT `xLen`; the
+  bundle's only consumer assigns it straight onto `rob.io.lxcpt.bits.cause` and a
+  wider field there would silently truncate), and `badvaddr` (`coreMaxAddrBits`).
+  It deliberately carries NO element index — a faulting vector op traps with
+  `vstart = 0` and restarts whole, so an element index reaching the ROB could
+  only be misused.
 
-  // ===> REPORTED, NOT RESOLVED — THIS BUNDLE CANNOT DRIVE `rob.io.lxcpt` AS
-  // DECLARED, and it is INERT ONLY BECAUSE OF D2 STAGING. Found by the BoomCore
-  // delta at D2, which has to merge this with `io.lsu.lxcpt` by age into
-  // `rob.io.lxcpt`. That port is `Valid(new Exception)` and the ROB's latch does
-  // `next_xcpt_uop := new_xcpt.uop` and then reads `uop.br_mask` for
-  // `GetNewBrMask` (`rob.scala`) — i.e. the ROB needs a MicroOp, and this bundle
-  // has none. BoomCore therefore populates `.rob_idx` and leaves the rest
-  // `DontCare`. That is safe TODAY only because `VecPipeline`'s D2 staging ties
-  // `vec_xcpt.valid` false while `vlsu` is absent, so the `DontCare` is never
-  // sampled.
-  //
-  // IT MUST BE FIXED BEFORE `VecLsu` LANDS AT E7, and the failure mode if it is
-  // not is specific and nasty: an unpopulated `br_mask` on a latched exception
-  // makes `GetNewBrMask` compute against garbage, so a vector fault taken while
-  // a branch is in flight is either dropped or attributed to the wrong
-  // instruction — a precise-exception bug that no width check or assertion
-  // catches. Give this bundle a real `uop: MicroOp` (the faulting OP.v's, which
-  // the LSU has in hand); do NOT try to reconstruct one in BoomCore from
-  // `rob_idx`, which cannot recover `br_mask`.
-  //
-  // Also vestigial and worth deleting in the same edit: this bundle's own
-  // `valid` field is redundant — every site nests it inside a `Valid(...)`
-  // wrapper, and nothing reads the inner bit.
+  ===> RESOLVED AT E-PREP; THE HISTORY IS KEPT BECAUSE THE FAILURE MODE IS
+  INVISIBLE. As originally declared — `{valid, rob_idx, cause, badvaddr}` — this
+  bundle COULD NOT drive `rob.io.lxcpt`, and was inert only because of D2 staging.
+  Found by the BoomCore delta at D2, which has to merge it with `io.lsu.lxcpt` by
+  age into `rob.io.lxcpt`. That port is `Valid(new Exception)` and the ROB's latch
+  does `next_xcpt_uop := new_xcpt.uop` and then reads `uop.br_mask` for
+  `GetNewBrMask` (`rob.scala`) — i.e. the ROB needs a MicroOp, and the bundle had
+  none, so BoomCore populated `.rob_idx` and left the rest `DontCare`. Safe only
+  while `VecPipeline`'s D2 staging tied `vec_xcpt.valid` false.
+
+  WHY IT HAD TO BE FIXED BEFORE `VecLsu` LANDS AT E7, i.e. what a future edit must
+  not undo: an unpopulated `br_mask` on a latched exception makes `GetNewBrMask`
+  compute against garbage, so a vector fault taken while a branch is in flight is
+  either dropped or attributed to the wrong instruction — a precise-exception bug
+  that no width check and no assertion catches. The `uop` is the faulting `OP.v`'s,
+  which the LSU has in hand. Do NOT reconstruct one in BoomCore from `rob_idx`:
+  `rob_idx` cannot recover `br_mask`.
+
+  Two fields were DELETED in the same edit, and neither may come back. `valid` is
+  redundant: every site nests this bundle inside a `Valid(...)` wrapper and nothing
+  read the inner bit. `rob_idx` is redundant *and dangerous*: `uop.rob_idx` is the
+  same number, and two independently-driven copies of it is exactly the divergence
+  class that `MicroOp.v_vl_imm` was introduced at D3 to close.
 
   ---- The four CII channel payloads ----
 
@@ -359,9 +398,9 @@ from Tenstorrent Inc.
   `CiiSrcData` (host to coprocessor) carries `data`, `vLen` bits wide, and
   nothing else — not even the tag. The channel is ordered, so the coprocessor
   correlates a beat with its request by arrival order rather than by a field.
-  // That is exactly why a killed tag's request must still be answered: an
-  // omitted beat would desynchronise the channel for every surviving
-  // instruction. See VecCiiFlush.
+  That is exactly why a killed tag's request must still be answered: an
+  omitted beat would desynchronise the channel for every surviving
+  instruction. See VecCiiFlush.
 
   //@req-spec-cii.a12
   //@req-spec-cii.a15
@@ -373,10 +412,10 @@ from Tenstorrent Inc.
   The `last` bit is the Caracal extension to the generic writeback struct and
   marks the final beat of a tag.
 
-  // `last` is the ONLY completion signal: the channel carries no expected-count
-  // field, and the host must never infer completion by counting beats. Widening
-  // and narrowing ops emit a member count that differs from the source EMUL, so
-  // a count derived on the host would be wrong for exactly those cases.
+  `last` is the ONLY completion signal: the channel carries no expected-count
+  field, and the host must never infer completion by counting beats. Widening
+  and narrowing ops emit a member count that differs from the source EMUL, so
+  a count derived on the host would be wrong for exactly those cases.
 
   ---- The host-seam declarations A2 deferred to D2 ----
 
@@ -395,34 +434,34 @@ from Tenstorrent Inc.
            `speculative_mask` and `rebusy`. A structurally-equal Caracal copy
            would FORK that bundle: a field added to BOOM's `Wakeup` would reach
            the scalar issue units and not the vector ones, with no width error.
-           // ===> BUT THE BUS IS MORE THAN THE `Vec`, AND THE FIRST VERSION OF
-           // THIS PARAGRAPH GOT THAT WRONG. `IntWakeupBus` in `VecPipeline`'s
-           // ports section is an AGGREGATE of three things: the wakeup `Vec`,
-           // `child_rebusys: UInt(aluWidth.W)` and `squash_grant: Bool`. This
-           // section originally declared only the `Vec`, on the reasoning above
-           // — which is right about the `Vec` and silently dropped the other
-           // two. `VecPipeline` then found that every `VecIssueUnit` instance
-           // declares both as unconditional inputs, could not compute either
-           // (both are BoomCore-internal:
-           // `alu_exe_units.map(_.io_squash_iss).reduce(_||_)`), and tied them
-           // to `0.U`/`false.B` as "safe, no-effect defaults".
-           //
-           // THEY ARE NOT NO-EFFECT, AND THE TIE-OFF IS A SILENT-CORRUPTION
-           // BUG. `VecIssueUnit` uses `child_rebusys` to RE-MARK A SLOT BUSY
-           // when a speculatively-woken scalar `.vx`/`.vf` feeder's parent load
-           // misses — it is the retraction half of BOOM's speculative wakeup.
-           // Held at zero, the retraction never arrives and the vector op
-           // issues against a stale GPR, with no assertion anywhere.
-           // `squash_grant` is the same shape of mechanism one stage later.
-           //
-           // So declare BOTH as their own seam members, driven by BoomCore:
-           //   val int_child_rebusys = Input(UInt(aluWidth.W))
-           //   val int_squash_grant  = Input(Bool())
-           // separate members rather than a wrapper bundle, for the same reason
-           // the `Vec` is bare: they are BOOM's own terms, and a Caracal
-           // aggregate around them would be a second place to keep in step.
-           // There is deliberately no FP counterpart — BOOM has no FP analogue
-           // of either term.
+           ===> BUT THE BUS IS MORE THAN THE `Vec`, AND THE FIRST VERSION OF
+           THIS PARAGRAPH GOT THAT WRONG. `IntWakeupBus` in `VecPipeline`'s
+           ports section is an AGGREGATE of three things: the wakeup `Vec`,
+           `child_rebusys: UInt(aluWidth.W)` and `squash_grant: Bool`. This
+           section originally declared only the `Vec`, on the reasoning above
+           — which is right about the `Vec` and silently dropped the other
+           two. `VecPipeline` then found that every `VecIssueUnit` instance
+           declares both as unconditional inputs, could not compute either
+           (both are BoomCore-internal:
+           `alu_exe_units.map(_.io_squash_iss).reduce(_||_)`), and tied them
+           to `0.U`/`false.B` as "safe, no-effect defaults".
+
+           THEY ARE NOT NO-EFFECT, AND THE TIE-OFF IS A SILENT-CORRUPTION
+           BUG. `VecIssueUnit` uses `child_rebusys` to RE-MARK A SLOT BUSY
+           when a speculatively-woken scalar `.vx`/`.vf` feeder's parent load
+           misses — it is the retraction half of BOOM's speculative wakeup.
+           Held at zero, the retraction never arrives and the vector op
+           issues against a stale GPR, with no assertion anywhere.
+           `squash_grant` is the same shape of mechanism one stage later.
+
+           So declare BOTH as their own seam members, driven by BoomCore:
+             val int_child_rebusys = Input(UInt(aluWidth.W))
+             val int_squash_grant  = Input(Bool())
+           separate members rather than a wrapper bundle, for the same reason
+           the `Vec` is bare: they are BOOM's own terms, and a Caracal
+           aggregate around them would be a second place to keep in step.
+           There is deliberately no FP counterpart — BOOM has no FP analogue
+           of either term.
          - `DecoupledReadReq` is `Decoupled(UInt(addrWidth.W))` — the exact type of
            `RegisterFile.io.arb_read_reqs`, which is `Flipped(Decoupled(UInt(
            log2Ceil(numRegisters).W)))`. Its whole purpose is to be assignable to
@@ -492,14 +531,14 @@ from Tenstorrent Inc.
     - It uses rocket's `VConfig` for the field that has a name, so `vtype`/`vl`
       cannot drift. Only the two bare-`UInt` fields are restated, and each restates
       rocket's own EXPRESSION (`maxVLMax.log2`, `2`) rather than a literal.
-      // `.log2` is rocket's `IntToAugmentedInt.log2` (`util/package.scala:236`) —
-      // `log2Ceil` plus `require(isPow2)` — and it is NOT in scope in this package
-      // by default. IMPORT IT BY NAME (`freechips.rocketchip.util.
-      // IntToAugmentedInt`); do not switch the field to `log2Ceil(maxVLMax)` and do
-      // not wildcard-import rocket's `util`. Gate (a) caught the missing import as
-      // `value log2 is not a member of Int`, and rewriting it to `log2Ceil` was the
-      // wrong fix: the point of this field is that it is the same expression rocket
-      // writes at `CSR.scala:312`, and the `isPow2` require rides along with it.
+      `.log2` is rocket's `IntToAugmentedInt.log2` (`util/package.scala:236`) —
+      `log2Ceil` plus `require(isPow2)` — and it is NOT in scope in this package
+      by default. IMPORT IT BY NAME (`freechips.rocketchip.util.
+      IntToAugmentedInt`); do not switch the field to `log2Ceil(maxVLMax)` and do
+      not wildcard-import rocket's `util`. Gate (a) caught the missing import as
+      `value log2 is not a member of Int`, and rewriting it to `log2Ceil` was the
+      wrong fix: the point of this field is that it is the same expression rocket
+      writes at `CSR.scala:312`, and the `isPow2` require rides along with it.
     - It carries ONLY the output-direction fields, which is exactly what part 8 of
       `VecPipeline` says the container consumes: `vconfig`, `vstart`, `vxrm`. The
       input-direction fields of rocket's bundle — `set_vconfig`, `set_vstart`,
@@ -549,10 +588,10 @@ from Tenstorrent Inc.
        `numFpWakeupPorts` is `fp_pipeline.io.wakeups.length` for the same reason
        (`core.scala:117` computes it that way already).
 
-  // `int_rf_read_req` is declared WITHOUT an explicit direction wrapper: the
-  // members of `Decoupled` already carry their own directions, and it is connected
-  // to `iregfile.io.arb_read_reqs` with `<>`. Wrapping it in `Output(...)` would
-  // flip `ready` the wrong way.
+  `int_rf_read_req` is declared WITHOUT an explicit direction wrapper: the
+  members of `Decoupled` already carry their own directions, and it is connected
+  to `iregfile.io.arb_read_reqs` with `<>`. Wrapping it in `Output(...)` would
+  flip `ready` the wrong way.
 
   ===> AND IT MUST BE `Decoupled`, NOT A BARE ADDRESS. `PartiallyPortedRF` DENIES a
        read by index priority, and the INT RF is deliberately partially ported
@@ -563,13 +602,13 @@ from Tenstorrent Inc.
        A bare address here would silently read whatever the arbiter granted instead
        — the same class of bug as the stale base above, and just as quiet.
 
-  // ===> THE RENAME INPUTS ARE NAMED ren2_uops AND dis_fire, NOT dec_uops, and
-  // the name is load-bearing rather than cosmetic. Vector rename must allocate
-  // in lockstep with the scalar RenameStage's REGISTERED ren1->ren2 pipeline.
-  // Driving it combinationally from dec_uops runs it one cycle ahead, so at
-  // dispatch the vector fields describe the NEXT cycle's (bubble) uop and two
-  // ops free the same PRN. With these port names, connecting dec_uops here is
-  // visibly wrong at the connection site.
+  ===> THE RENAME INPUTS ARE NAMED ren2_uops AND dis_fire, NOT dec_uops, and
+  the name is load-bearing rather than cosmetic. Vector rename must allocate
+  in lockstep with the scalar RenameStage's REGISTERED ren1->ren2 pipeline.
+  Driving it combinationally from dec_uops runs it one cycle ahead, so at
+  dispatch the vector fields describe the NEXT cycle's (bubble) uop and two
+  ops free the same PRN. With these port names, connecting dec_uops here is
+  visibly wrong at the connection site.
   <|end_logic|>
 
 <|end_module|>
@@ -607,23 +646,23 @@ EXISTING scalar buses, not new types — see the host-seam section) and to
 `freechips.rocketchip.tile.FPConstants.FLAGS_SZ` for `VecRobFlags.fflags`, the
 same expression `rob.scala:369` uses for the slot those flags land in.
 
-// ===> RESOLVED 2026-08-10 (step D2) — the five A2-deferred host-seam members.
-// `vec_rob_flags` (A34), `int_rf_read_req`, `int_wakeups`, `fp_wakeups`,
-// `int_wb_snoop` and the `csr_vector` type are all settled in the host-seam
-// section of the logic block above. Three of the six needed no new type; two
-// became classes (`VecRobFlags`, `IntWbSnoop`); the sixth replaced a reference to
-// a nonexistent `rocket.CSRVectorIO` with `VecCsrRead`, a read-direction view.
+===> RESOLVED 2026-08-10 (step D2) — the five A2-deferred host-seam members.
+`vec_rob_flags` (A34), `int_rf_read_req`, `int_wakeups`, `fp_wakeups`,
+`int_wb_snoop` and the `csr_vector` type are all settled in the host-seam
+section of the logic block above. Three of the six needed no new type; two
+became classes (`VecRobFlags`, `IntWbSnoop`); the sixth replaced a reference to
+a nonexistent `rocket.CSRVectorIO` with `VecCsrRead`, a read-direction view.
 
-// ===> REPORTED, NOT RESOLVED — `VecCiiTagEntry` HAS NO DECLARATION SITE.
-// hierarchy.yaml's entry for this node lists `VecCiiTagEntry` among this package's
-// declarations, and VecCiiIssue, VecCiiOperandServer, VecCiiWriteback and
-// VecCiiComplete all bind it expecting to find it here — but this file does not
-// declare it, and VecCiiTagTable declares it locally instead, on the
-// `VecBusyResp`-in-`VecBusyTable` precedent, arguing that it crosses only
-// boundaries between siblings inside VecCiiHost. Both positions are defensible and
-// they cannot both be generated: one declaration, one home. Recorded from this end
-// as well as the other four so the discrepancy cannot be closed by each side
-// assuming the other did it. It is NOT resolved by declaring the type twice.
+===> REPORTED, NOT RESOLVED — `VecCiiTagEntry` HAS NO DECLARATION SITE.
+hierarchy.yaml's entry for this node lists `VecCiiTagEntry` among this package's
+declarations, and VecCiiIssue, VecCiiOperandServer, VecCiiWriteback and
+VecCiiComplete all bind it expecting to find it here — but this file does not
+declare it, and VecCiiTagTable declares it locally instead, on the
+`VecBusyResp`-in-`VecBusyTable` precedent, arguing that it crosses only
+boundaries between siblings inside VecCiiHost. Both positions are defensible and
+they cannot both be generated: one declaration, one home. Recorded from this end
+as well as the other four so the discrepancy cannot be closed by each side
+assuming the other did it. It is NOT resolved by declaring the type twice.
 
 Instantiates nothing. Its dependents are VecPipeline and effectively every
 `vec/**` module, so a field change here has the widest blast radius of any node

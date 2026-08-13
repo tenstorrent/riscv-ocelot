@@ -18,6 +18,7 @@ from Tenstorrent Inc.
 /*
   VecSquashUnit — the one module that decides what the vector LSU throws away on
   a branch mispredict or a ROB-head flush, and how.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecSquashUnit.scala,
@@ -50,7 +51,6 @@ from Tenstorrent Inc.
   cii.rst `cii-flush` (the contract this module must NOT copy);
   plan v2 sections 5.6 (the vector-LSU invariant), 5.8 (precise exceptions),
   5.10 (reuse existing machinery) and step E8.
-*/
 
 <|begin_module|>
 
@@ -186,14 +186,14 @@ from Tenstorrent Inc.
   cycle BOOM rolls the LSQ tails and in the same cycle VecQueueReservation rolls
   its table.
 
-  // CONVENTION, and it must match VecQueueReservation's reading of `rollback`:
-  // the index driven here is BOOM's EXCLUSIVE tail. A branch is not a memory
-  // op, so `uop.ldq_idx` holds the value `ldq_tail` had when the branch
-  // dispatched; entries `[head, ldq_idx)` survive and `[ldq_idx, ldq_tail)` die.
-  // The new element-queue tail is therefore `base + count` of the reservation
-  // row owned by the YOUNGEST LSQ entry strictly OLDER than the driven index, or
-  // the queue's head if that range is empty. Reading the driven index as an
-  // inclusive survivor would keep one killed instruction's entries alive.
+  CONVENTION, and it must match VecQueueReservation's reading of `rollback`:
+  the index driven here is BOOM's EXCLUSIVE tail. A branch is not a memory
+  op, so `uop.ldq_idx` holds the value `ldq_tail` had when the branch
+  dispatched; entries `[head, ldq_idx)` survive and `[ldq_idx, ldq_tail)` die.
+  The new element-queue tail is therefore `base + count` of the reservation
+  row owned by the YOUNGEST LSQ entry strictly OLDER than the driven index, or
+  the queue's head if that range is empty. Reading the driven index as an
+  inclusive survivor would keep one killed instruction's entries alive.
 
   //@req-spec-lsu.i4
   //@req-spec-lsu.i10
@@ -236,16 +236,16 @@ from Tenstorrent Inc.
       `st_US_DATA_Q`) roll back to `stq_commit_head`, NOT to the head. Drive
       `resv_rollback.stq_idx := stq_commit_head`.
 
-  // ===> THE ASYMMETRY IS LOAD-BEARING AND GETTING IT WRONG LOSES COMMITTED
-  // STORE DATA. A committed vector store has not yet written the D$: its
-  // translated element addresses live in st_*_ADDR_Q and its data in
-  // st_*_DATA_Q until the post-commit drain, which is why stores RETAIN their
-  // entries rather than streaming them. Emptying the store queues on a flush
-  // would discard the addresses and data of stores that are already
-  // architecturally committed and can no longer be re-executed. Baseline
-  // lsu.scala says the same thing in its own terms: on an exception it rolls
-  // `stq_tail := stq_commit_head` and clears only entries that are neither
-  // `stq_committed` nor `stq_succeeded`.
+  ===> THE ASYMMETRY IS LOAD-BEARING AND GETTING IT WRONG LOSES COMMITTED
+  STORE DATA. A committed vector store has not yet written the D$: its
+  translated element addresses live in st_*_ADDR_Q and its data in
+  st_*_DATA_Q until the post-commit drain, which is why stores RETAIN their
+  entries rather than streaming them. Emptying the store queues on a flush
+  would discard the addresses and data of stores that are already
+  architecturally committed and can no longer be re-executed. Baseline
+  lsu.scala says the same thing in its own terms: on an exception it rolls
+  `stq_tail := stq_commit_head` and clears only entries that are neither
+  `stq_committed` nor `stq_succeeded`.
 
   ---- 5. LCB assembly entries: invalidate by owning ldq_idx ----
 
@@ -299,11 +299,11 @@ from Tenstorrent Inc.
   because stopping a push a cycle early is free, whereas stopping it a cycle late
   is a push into a region the rollback has already released.
 
-  // Note on duplication: VecRangeAgen, VecDgen and VecScalarOperandRead take
-  // `brupdate`/`rob_flush` directly and evaluate the same `IsKilledByBranch`
-  // themselves. That is a pure function of its inputs, so the two cannot
-  // disagree — it is not a second kill mechanism. What IS forbidden is a client
-  // inventing its own kill condition, or holding killed work.
+  Note on duplication: VecRangeAgen, VecDgen and VecScalarOperandRead take
+  `brupdate`/`rob_flush` directly and evaluate the same `IsKilledByBranch`
+  themselves. That is a pure function of its inputs, so the two cannot
+  disagree — it is not a second kill mechanism. What IS forbidden is a client
+  inventing its own kill condition, or holding killed work.
 
   ---- 7. Why drain-and-discard is unavailable, and why the CII differs ----
 
@@ -336,18 +336,18 @@ from Tenstorrent Inc.
   refetch the load renames to a FRESH physical destination, executes correctly
   and writes that register instead.
 
-  // ===> BUT IT IS PRECISELY WHAT MAKES A DRAIN FATAL. A late LCB write into a
-  // stale `pvdest` would not be a harmless write to an orphaned register: by the
-  // time it lands, that PRN belongs to a live, unrelated, correctly-executing
-  // instruction, and the write is a full VLEN wide. The corruption is silent —
-  // no exception, no assertion, a wrong architectural result many instructions
-  // later. So the vector LSU must make a late write IMPOSSIBLE rather than
-  // merely ineffective, and pointer rollback plus LCB invalidation by `ldq_idx`
-  // is how: the accesses are dropped, not drained. DO NOT port VecCiiFlush's
-  // drain-and-discard pattern into any vector-LSU module, and do not "simplify"
-  // this unit into a suppression of effects at the VRF write port — the write
-  // port is downstream of the reallocation, so suppression there cannot
-  // distinguish the killed load's PRN from its new owner's.
+  ===> BUT IT IS PRECISELY WHAT MAKES A DRAIN FATAL. A late LCB write into a
+  stale `pvdest` would not be a harmless write to an orphaned register: by the
+  time it lands, that PRN belongs to a live, unrelated, correctly-executing
+  instruction, and the write is a full VLEN wide. The corruption is silent —
+  no exception, no assertion, a wrong architectural result many instructions
+  later. So the vector LSU must make a late write IMPOSSIBLE rather than
+  merely ineffective, and pointer rollback plus LCB invalidation by `ldq_idx`
+  is how: the accesses are dropped, not drained. DO NOT port VecCiiFlush's
+  drain-and-discard pattern into any vector-LSU module, and do not "simplify"
+  this unit into a suppression of effects at the VRF write port — the write
+  port is downstream of the reallocation, so suppression there cannot
+  distinguish the killed load's PRN from its new owner's.
 
   ---- 8. Ordering-violation replay: whole instructions only ----
 

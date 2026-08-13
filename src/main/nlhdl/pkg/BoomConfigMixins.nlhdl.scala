@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   BoomConfigMixins — DELTA SPEC. Describes only the config fragments Caracal
   ADDS to src/main/scala/v4/common/config-mixins.scala, which is hand-written
   baseline BOOM v4.
+*/
 
   hierarchy.yaml: kind: package, mode: edit_existing,
   target src/main/scala/v4/common/config-mixins.scala. No `output:`.
@@ -40,7 +41,6 @@ from Tenstorrent Inc.
 
   Governing spec anchors: overview.rst (Chipyard relationship), midcore.rst
   (Rename Map Table), loadstore.rst `dcache-arbiter`.
-*/
 
 <|begin_module|>
 
@@ -90,9 +90,9 @@ from Tenstorrent Inc.
   the `VectorParams` default, so `new WithVector` with no arguments is the
   documented configuration.
 
-  // The existing `require`s in HasBoomCoreParameters check exactly one
-  // IQ_MEM/IQ_UNQ/IQ_ALU/IQ_FP entry each. They count by iqType, so appending
-  // three entries with new iqTypes cannot trip them. Do not relax them.
+  The existing `require`s in HasBoomCoreParameters check exactly one
+  IQ_MEM/IQ_UNQ/IQ_ALU/IQ_FP entry each. They count by iqType, so appending
+  three entries with new iqTypes cannot trip them. Do not relax them.
 
   ---- 2. Per-tier width overrides ----
 
@@ -106,18 +106,18 @@ from Tenstorrent Inc.
   `vecIssueGrantWidth = 2`. On Medium, all three keep their defaults (1, 1 and
   "single").
 
-  // ===> DISCREPANCY WITH THE BASELINE, and it must be resolved in the vector
-  // config only. `WithNMegaBooms` already sets lsuWidth = 2, but
-  // `WithNLargeBooms` does NOT — it leaves lsuWidth at its default of 1, so the
-  // scalar Large tier today issues one memory op per cycle. loadstore.rst
-  // requires 2 for Large. The fix belongs in the VECTOR fragment, which raises
-  // lsuWidth for the Large vector config; `WithNLargeBooms` itself must not be
-  // touched, because changing it would alter scalar LargeBoomV4Config RTL and
-  // break gate (f) for a config that has nothing to do with vectors.
-  // This is legal on Large: `require(memWidth >= lsuWidth)` holds because the
-  // Large tier's IQ_MEM issueWidth is already 2. Flag it to the reviewer — if
-  // the intent was that scalar Large should also be dual-issue, that is a
-  // separate baseline change with its own gate, not part of this delta.
+  ===> DISCREPANCY WITH THE BASELINE, and it must be resolved in the vector
+  config only. `WithNMegaBooms` already sets lsuWidth = 2, but
+  `WithNLargeBooms` does NOT — it leaves lsuWidth at its default of 1, so the
+  scalar Large tier today issues one memory op per cycle. loadstore.rst
+  requires 2 for Large. The fix belongs in the VECTOR fragment, which raises
+  lsuWidth for the Large vector config; `WithNLargeBooms` itself must not be
+  touched, because changing it would alter scalar LargeBoomV4Config RTL and
+  break gate (f) for a config that has nothing to do with vectors.
+  This is legal on Large: `require(memWidth >= lsuWidth)` holds because the
+  Large tier's IQ_MEM issueWidth is already 2. Flag it to the reviewer — if
+  the intent was that scalar Large should also be dual-issue, that is a
+  separate baseline change with its own gate, not part of this delta.
 
   ---- 3. Sub-flag fragments, so tracks land independently ----
 
@@ -143,12 +143,12 @@ from Tenstorrent Inc.
   configuration that made the committed table optional would make vector flush
   recovery unimplementable, so it must remain impossible to express.
 
-  // Reviewer note: this is the thinnest requirement tag in the pkg/ set — it is
-  // a claim about the ABSENCE of a config option rather than about code. If the
-  // reviewer prefers, spec-rename.c1 is a reasonable candidate to move to the
-  // hierarchy.yaml out-of-scope ledger as "satisfied by baseline BOOM v4 having
-  // no such knob". It is tagged here rather than dropped because this file is
-  // where such a knob would be added if anyone ever added one.
+  Reviewer note: this is the thinnest requirement tag in the pkg/ set — it is
+  a claim about the ABSENCE of a config option rather than about code. If the
+  reviewer prefers, spec-rename.c1 is a reasonable candidate to move to the
+  hierarchy.yaml out-of-scope ledger as "satisfied by baseline BOOM v4 having
+  no such knob". It is tagged here rather than dropped because this file is
+  where such a knob would be added if anyone ever added one.
 
   ---- 5. What must NOT change ----
 

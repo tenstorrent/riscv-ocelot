@@ -18,6 +18,7 @@ from Tenstorrent Inc.
 /*
   VecStoreDgenPath — the vector STORE slot's second grant path: the AGEN/DGEN
   path-sequencing rule plus the `is_shared` store-data operand mux.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/issue/VecStoreDgenPath.scala,
@@ -54,7 +55,6 @@ from Tenstorrent Inc.
   issue.rst `cii-shared-sched` ("Segmented Store"), cii.rst `cii-segmented`,
   midcore.rst `midcore-segmented-store` and `vrf-ports`,
   glossary.rst `glossary-terms` ("Scheduler").
-*/
 
 <|begin_module|>
 
@@ -160,16 +160,16 @@ from Tenstorrent Inc.
   grant into the following cycle's encoding update — the same two `MicroOp`
   fields the scalar mem slot uses, reused rather than duplicated.
 
-  // ===> THE STATE MUST NOT BE A PRIVATE REGISTER IN THIS MODULE. The vector
-  // issue queues are BOOM's age-ordered COLLAPSING queues, so a uop migrates
-  // between slot instances whenever a vacancy opens below it
-  // (issue-unit-age-ordered.scala drives each slot's `in_uop` from the next
-  // slot's `out_uop`). A grant bit registered here would be left behind by that
-  // shift: the migrated store would arrive reading "neither path granted" and
-  // re-issue its AGEN, or reading "both granted" and never issue its DGEN — a
-  // duplicate element address pass, or a store that never completes. Because
-  // the bits ride the migrating `MicroOp` and this module is combinational,
-  // they follow the uop for free.
+  ===> THE STATE MUST NOT BE A PRIVATE REGISTER IN THIS MODULE. The vector
+  issue queues are BOOM's age-ordered COLLAPSING queues, so a uop migrates
+  between slot instances whenever a vacancy opens below it
+  (issue-unit-age-ordered.scala drives each slot's `in_uop` from the next
+  slot's `out_uop`). A grant bit registered here would be left behind by that
+  shift: the migrated store would arrive reading "neither path granted" and
+  re-issue its AGEN, or reading "both granted" and never issue its DGEN — a
+  duplicate element address pass, or a store that never completes. Because
+  the bits ride the migrating `MicroOp` and this module is combinational,
+  they follow the uop for free.
 
   ---- 2. Offer order: AGEN strictly before DGEN ----
 
@@ -201,9 +201,9 @@ from Tenstorrent Inc.
   canonical — this module adds no VRF port and changes only which group R3
   addresses). `prs2` plays no part here and must not appear in the expression.
 
-  // Baseline's scalar DGEN operand rewrite (`io.iss_uop.prs1 := slot_uop.prs2`)
-  // has no counterpart here and must not be re-added: vector store data is not
-  // delivered through a scalar operand slot.
+  Baseline's scalar DGEN operand rewrite (`io.iss_uop.prs1 := slot_uop.prs2`)
+  has no counterpart here and must not be re-added: vector store data is not
+  delivered through a scalar operand slot.
 
   ---- 4. The operand mux — the M1 bug ----
 
@@ -222,14 +222,14 @@ from Tenstorrent Inc.
   //@req-spec-issue.g27
   //@req-spec-issue.g28
   //@req-spec-cii.i6
-  /* WARNING — do not "simplify" this to pvs3. Gating DGEN unconditionally on
+  WARNING — do not "simplify" this to pvs3. Gating DGEN unconditionally on
      pvs3 is incorrect for a segmented store and earlier Caracal drafts did
      exactly that. For such an op pvs3 is the COPROCESSOR half's source group and
      is ready long before the transpose has run, while the LSU half's data source
      is pvtmp, written BY the coprocessor half. A DGEN woken on pvs3 reads pvtmp
      before it exists and stores garbage; and pvs3's group-done never arrives at
      this slot at all, so the chain deadlocks. Whenever is_shared is set, DGEN
-     wakes on pvtmp's group-done and on nothing else. */
+     wakes on pvtmp's group-done and on nothing else.
 
   Because the mux sits UPSTREAM of the matcher, the exclusion of the deselected
   operand is structural rather than an extra AND term someone can forget: with
@@ -240,12 +240,12 @@ from Tenstorrent Inc.
   term would happen to work today, purely because it is ready early, and would
   turn a timing accident into a correctness dependence.
 
-  // ===> `pvs3` AND `pvtmp` ARE NOT MERGED AND NOT REINTERPRETED. This module
-  // selects between two fields that both stay intact on the issued uop; it never
-  // overwrites one with the other. The downstream store-data read therefore has
-  // both, plus `is_shared`, and MUST address VRF port R3 with the same selection.
-  // Reading `uop.pvs3` unconditionally at the read site reintroduces this bug one
-  // stage later, where it looks like a VRF problem rather than an issue problem.
+  ===> `pvs3` AND `pvtmp` ARE NOT MERGED AND NOT REINTERPRETED. This module
+  selects between two fields that both stay intact on the issued uop; it never
+  overwrites one with the other. The downstream store-data read therefore has
+  both, plus `is_shared`, and MUST address VRF port R3 with the same selection.
+  Reading `uop.pvs3` unconditionally at the read site reintroduces this bug one
+  stage later, where it looks like a VRF problem rather than an issue problem.
 
   ---- 5. Which path a `pvtmp` group-done may wake ----
 

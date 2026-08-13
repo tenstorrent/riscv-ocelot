@@ -18,6 +18,7 @@ from Tenstorrent Inc.
 /*
   VecDgen — the vector store DATA generator: reads store data out of the VRF at
   EXECUTE time and writes it into the store data queues.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecDgen.scala,
@@ -46,7 +47,6 @@ from Tenstorrent Inc.
   Governing spec anchors: execution.rst `vector-dgen`, loadstore.rst
   `store-data-queue` and `vec-queue-reservation`, midcore.rst `vrf-ports`,
   issue.rst `shared-store-chain`.
-*/
 
 <|begin_module|>
 
@@ -119,7 +119,7 @@ from Tenstorrent Inc.
   //@req-spec-issue.d9
   The group DGEN reads is selected by `is_shared`:
 
-  // dgen_operand := Mux(uop.is_shared, uop.pvtmp, uop.pvs3)   // M1 BUG 2
+  dgen_operand := Mux(uop.is_shared, uop.pvtmp, uop.pvs3)   // M1 BUG 2
 
   For a SHARED (segmented) store the operand is the `pvtmp` rendezvous group,
   because the coprocessor half transposed the segment fields into `pvtmp` and step
@@ -167,25 +167,34 @@ from Tenstorrent Inc.
   ---- 4. COMPLETION BY TOTAL BYTES — the M1 corruption bug ----
 
   //@req-spec-agen.d15
+  //@req-spec-agen.b6
   The stream is complete when the BYTES PUSHED EQUAL THE TOTAL BYTES OF THE
-  ACCESS, `total_bytes = (vl * nf) << eew` — `vl << eew` non-segmented, with `nf`
-  the segment field count (1 when not segmented). Members actually touched are
+  ACCESS. That length is THE SAME THREE-WAY CHOICE VecRangeAgen makes, and the two
+  must be computed identically or the data stream and the address range describe
+  different transfers: `emul * vLenBytes` for a whole-register access, `ceil(vl/8)`
+  for a mask access, and `(vl * nf) << eew` otherwise — `vl << eew` non-segmented,
+  with `nf` the segment field count (1 when not segmented). Whole-register and mask
+  forms IGNORE vl, so using the third form for them under-counts: measured on
+  `ms11d_vl1r`, `vs1r.v` pushed 4 bytes of data against a 32-byte range and the
+  remaining 28 bytes of the destination kept their previous contents — a silent
+  data mismatch, not a hang, because nothing downstream waits on a store.
+  Members actually touched are
   `members_used = ceil(total_bytes / vLenBytes)`, and the LAST member is PARTIAL
   whenever `total_bytes` is not a multiple of `vLenBytes`: it contributes
   `total_bytes - (members_used - 1) * vLenBytes` bytes, and its enqueue carries
   that count (as the byte enable on the SSI path, as the valid-byte count on the
   unit-stride path) so the drain writes no byte the instruction did not write.
 
-  // ===> M1 BUG 1, DO NOT REINTRODUCE. num_members was hardcoded 8, so after a
-  //      1-member store DGEN kept streaming PHANTOM members: entries with no
-  //      matching address ordinal, which (a) consumed the next store's reserved
-  //      capacity and shifted every later ordinal, corrupting a back-to-back
-  //      store's data, and (b) never drained, because the address side had no
-  //      counterpart — so the store never completed and the machine stalled.
-  //      Found by accident via a scalar load-back, because Whisper does not deeply
-  //      compare vector store DATA (plan section 9). `v_emul` is ALSO wrong: it is
-  //      the EMUL-derived worst-case group size fixed at rename, while the live
-  //      data extent depends on VL, known only at execute.
+  ===> M1 BUG 1, DO NOT REINTRODUCE. num_members was hardcoded 8, so after a
+       1-member store DGEN kept streaming PHANTOM members: entries with no
+       matching address ordinal, which (a) consumed the next store's reserved
+       capacity and shifted every later ordinal, corrupting a back-to-back
+       store's data, and (b) never drained, because the address side had no
+       counterpart — so the store never completed and the machine stalled.
+       Found by accident via a scalar load-back, because Whisper does not deeply
+       compare vector store DATA (plan section 9). `v_emul` is ALSO wrong: it is
+       the EMUL-derived worst-case group size fixed at rename, while the live
+       data extent depends on VL, known only at execute.
 
   With no mask active the cursor advances CONSECUTIVELY — one bundle per
   consecutive element of the vPRN, ordinal j holding element j — so byte count and
@@ -227,15 +236,15 @@ from Tenstorrent Inc.
   arbitrarily long after the address half. Data within a vPRN is already packed,
   so there is no repacking — slice and go.
 
-  // INTERPRETATION, deliberate, and a reviewer should know it. execution.rst reads
-  // as though st_vdgen emits ONE bundle holding both the address and the 64-bit
-  // data. Taken literally that is not implementable together with issue.rst step
-  // 6: for a segmented store the address exists hundreds of cycles before the
-  // data, so a joint same-cycle push would force DGEN to buffer the whole address
-  // stream — unbounded per-instruction state, banned by the vec_lsu invariant. The
-  // pair is therefore formed POSITIONALLY: the AGEN writes the address half at
-  // ordinal j, DGEN writes the data half at ordinal j, the drain reads them as one
-  // nOP.v. DGEN never computes an address.
+  INTERPRETATION, deliberate, and a reviewer should know it. execution.rst reads
+  as though st_vdgen emits ONE bundle holding both the address and the 64-bit
+  data. Taken literally that is not implementable together with issue.rst step
+  6: for a segmented store the address exists hundreds of cycles before the
+  data, so a joint same-cycle push would force DGEN to buffer the whole address
+  stream — unbounded per-instruction state, banned by the vec_lsu invariant. The
+  pair is therefore formed POSITIONALLY: the AGEN writes the address half at
+  ordinal j, DGEN writes the data half at ordinal j, the drain reads them as one
+  nOP.v. DGEN never computes an address.
 
   //@req-spec-agen.d6
   //@req-spec-agen.d8
@@ -266,15 +275,15 @@ from Tenstorrent Inc.
 
   For an SSI element the slice is taken from the staged member by BYTE position:
 
-  // byte_pos   = (el_idx * nf + field_idx) << eew   // ELEMENTS -> BYTES
-  // member     = byte_pos >> log2(vLenBytes)
-  // off_in_mbr = byte_pos & (vLenBytes - 1)
-  // data       = staged(member)[off_in_mbr*8 +: (8 << eew)]
+  byte_pos   = (el_idx * nf + field_idx) << eew   // ELEMENTS -> BYTES
+  member     = byte_pos >> log2(vLenBytes)
+  off_in_mbr = byte_pos & (vLenBytes - 1)
+  data       = staged(member)[off_in_mbr*8 +: (8 << eew)]
 
-  // ===> THE `<< eew` IS LOAD-BEARING. An M1 bug used the cursor's element offset
-  //      directly as a byte offset (it is in ELEMENTS, not bytes), silently
-  //      corrupting element 0 of every access with a non-zero element offset.
-  //      Convert once, here, and assert `member < members_used`.
+  ===> THE `<< eew` IS LOAD-BEARING. An M1 bug used the cursor's element offset
+       directly as a byte offset (it is in ELEMENTS, not bytes), silently
+       corrupting element 0 of every access with a non-zero element offset.
+       Convert once, here, and assert `member < members_used`.
 
   The value is right-justified in the `eLen` entry with a byte enable of `1 << eew`
   bytes. Extraction is one combinational `vLen`-to-`eLen` byte-granular select off a

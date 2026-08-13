@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecGroupReady — the per-source-group readiness matcher of a vector issue slot:
   it AND-reduces one vector source operand's per-member wakeup state into the
   single group-ready bit that operand contributes to `request`.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/issue/VecGroupReady.scala,
@@ -64,7 +65,6 @@ from Tenstorrent Inc.
   Governing spec anchors: issue.rst `issue-sched-stage` ("The Vector Issue Slot"
   and "The match-port budget"), midcore.rst `group-done` ("Busy Table") and
   `spec-wakeups` ("Speculative Wakeups").
-*/
 
 <|begin_module|>
 
@@ -86,17 +86,17 @@ from Tenstorrent Inc.
   MISS a group-done, and because completion is single-shot the consumer then
   waits forever.
 
-  // ===> IT IS NO LONGER DEFAULTED HERE. `VectorParams` now DECLARES
-  // `numVecWbPorts` (3), alongside `numVecClrPorts` (3) and `numVlWakeupPorts`
-  // (`aluWidth + 1`). This parameter binds to that field and re-defaults nothing;
-  // VecIssueUnit and VecIssueSlot bind to the same field, so the three numbers
-  // that used to be three independent literal 3s are now one declaration. If they
-  // ever disagree, the matcher examines fewer ports than the network drives,
-  // misses a single-shot group-done, and the consumer hangs forever.
+  ===> IT IS NO LONGER DEFAULTED HERE. `VectorParams` now DECLARES
+  `numVecWbPorts` (3), alongside `numVecClrPorts` (3) and `numVlWakeupPorts`
+  (`aluWidth + 1`). This parameter binds to that field and re-defaults nothing;
+  VecIssueUnit and VecIssueSlot bind to the same field, so the three numbers
+  that used to be three independent literal 3s are now one declaration. If they
+  ever disagree, the matcher examines fewer ports than the network drives,
+  misses a single-shot group-done, and the consumer hangs forever.
 
-  // Do NOT confuse numVecWbPorts with the VRF's three write ports. W0/W1 both
-  // belong to the load path and the LCB aggregates them into ONE group-done, so
-  // the two counts are equal at the default by coincidence, not construction.
+  Do NOT confuse numVecWbPorts with the VRF's three write ports. W0/W1 both
+  belong to the load path and the LCB aggregates them into ONE group-done, so
+  the two counts are equal at the default by coincidence, not construction.
 
   `groupMembers` — derived, `if (isMask) 1 else maxMembers`: the member lanes
   this instance elaborates. `maxMembers` (8) and `vecPregSz` come from
@@ -135,10 +135,10 @@ from Tenstorrent Inc.
   participate in readiness this cycle; the slot owns the decision, this module
   owns the consequence (see the logic section).
 
-  // `stale_pvdest` is a GROUP, `Vec(maxMembers, UInt(vecPregSz.W))` on the uop,
-  // and it reaches `rdy_vold`'s `prns` port exactly like a source group. Its
-  // `members` is the same `v_emul`: the stale mapping covers the same arch vregs
-  // the destination does, so it has the same member count by construction.
+  `stale_pvdest` is a GROUP, `Vec(maxMembers, UInt(vecPregSz.W))` on the uop,
+  and it reaches `rdy_vold`'s `prns` port exactly like a source group. Its
+  `members` is the same `v_emul`: the stale mapping covers the same arch vregs
+  the destination does, so it has the same member count by construction.
 
   ===> `prns`, `members` and `used` must be the values of the uop RESIDENT AT THE
        END OF THIS CYCLE — the slot drives them from its `in_uop` payload while
@@ -155,10 +155,33 @@ from Tenstorrent Inc.
   Outputs — `ready`, a Bool: this operand's group-ready bit, one term of the
   slot's `vector_operands_ready`, combinational and valid in the same cycle as
   the group-done that completes the group. And `out_member_rdy`,
-  `Vec(groupMembers, Bool)`: the NEXT-STATE per-member vector, exported so a
-  collapse move carries partial readiness to the slot below. Next state and not
-  the register value on purpose — a group-done landing in the cycle of the move
-  would otherwise be lost by both slots.
+  `Vec(groupMembers, Bool)`: the per-member vector exported so a collapse move
+  carries partial readiness to the slot below.
+
+  ===> IT IS THE REGISTER OCCUPANT'S STATE, NOT THE NEXT STATE. The collapse chain
+       pairs this output with the slot's `out_uop`, and `out_uop` is derived from the
+       `slot_uop` REGISTER — the occupant that is LEAVING. `member_rdy_next` instead
+       folds in `Mux(load, in_member_rdy, ...)`, which on a shift cycle is the
+       occupant ARRIVING from the slot above. Export it and the readiness vector
+       walks down one slot per shift while the uops walk down one slot per shift
+       from one position higher: every slot receives its neighbour's uop with its
+       neighbour-but-one's readiness. Export
+       `member_rdy(i) || (member_hit(i) && !load)` instead.
+
+       A group-done landing in the cycle of the move is NOT lost by doing so, which
+       is what the earlier "next state on purpose" note feared: the RECEIVING slot
+       ORs the same-cycle `member_hit` in itself, and on its load cycle its `prns`
+       are the end-of-cycle values naming the arriving uop (the contract
+       VecIssueSlot's fill-cycle prns rule establishes), so the hit is evaluated
+       against the right group. The `|| member_hit` term here covers only the
+       non-load case, where `prns` already names the resident uop.
+
+       The skew is invisible whenever the two slots' vectors agree, so it survives
+       any test where every queued vector op has the same readiness —
+       `ms11a2_pure_vle` queues two loads whose `vold` groups are both free. It first
+       appears on `ms11a4_vle_mask`, where the third op's `stale_pvdest` is genuinely
+       busy and its 254 walks down onto the second op, which then waits forever on a
+       PRN nothing will write.
 
   ===> THERE IS NO `MicroOp` PORT, and the entry's `depends_on:` omits MicroOp to
        enforce it. A MicroOp port would be a wide bundle replicated up to five
@@ -183,14 +206,14 @@ from Tenstorrent Inc.
   each member PRN has its own readiness bit rather than the group sharing one.
   Only these `groupMembers` bits are state; the rest is combinational.
 
-  // The uop carries one AGGREGATED busy bit per operand (`pvs1_busy` and
-  // friends) and no per-member vector, by MicroOp's design. That aggregate
-  // cannot initialize these bits: a group whose members come from two producers
-  // can have members 0..2 complete while member 3 is in flight, and the
-  // aggregate then says only "not ready". Broadcasting it to all members would
-  // make this matcher wait on group-dones for 0..2 that already fired and will
-  // never fire again — a permanent hang. Hence the per-member `in_member_rdy`
-  // port, driven from the same Busy-Table read the aggregate is derived from.
+  The uop carries one AGGREGATED busy bit per operand (`pvs1_busy` and
+  friends) and no per-member vector, by MicroOp's design. That aggregate
+  cannot initialize these bits: a group whose members come from two producers
+  can have members 0..2 complete while member 3 is in flight, and the
+  aggregate then says only "not ready". Broadcasting it to all members would
+  make this matcher wait on group-dones for 0..2 that already fired and will
+  never fire again — a permanent hang. Hence the per-member `in_member_rdy`
+  port, driven from the same Busy-Table read the aggregate is derived from.
 
   ---- The per-member match ----
 
@@ -214,11 +237,11 @@ from Tenstorrent Inc.
                        (j.U < group_done(w).bits.members) &&
                        (group_done(w).bits.prns(j) === prns(i)) )
 
-  // A single base comparator — this operand's member 0 against the group-done's
-  // member 0 — cannot be substituted. An LMUL=8 write to v0..v7 followed by an
-  // LMUL=2 read at v4 sources {p4, p5}; the producer's base is p0, so base
-  // equality never fires and the consumer hangs. The per-member match is the
-  // area and timing cost of the vector slot and it is not removable.
+  A single base comparator — this operand's member 0 against the group-done's
+  member 0 — cannot be substituted. An LMUL=8 write to v0..v7 followed by an
+  LMUL=2 read at v4 sources {p4, p5}; the producer's base is p0, so base
+  equality never fires and the consumer hangs. The per-member match is the
+  area and timing cost of the vector slot and it is not removable.
 
   Comparison is on the full `vecPregSz` bits of the PRN — never against a group
   base, a member index or an architectural register number.
@@ -257,11 +280,11 @@ from Tenstorrent Inc.
                           ( member_rdy_next(i) || (i.U >= members) )
     ready              := !used || group_all_rdy
 
-  // The OR of member_hit into the LOADED value is the load-bearing part. A
-  // group-done fires exactly once, so applying the match only to the already-
-  // registered state would drop an event arriving in a dispatch or collapse-move
-  // cycle and the consumer would never issue. Hence `ready` and `out_member_rdy`
-  // come from the next state, not from the register.
+  The OR of member_hit into the LOADED value is the load-bearing part. A
+  group-done fires exactly once, so applying the match only to the already-
+  registered state would drop an event arriving in a dispatch or collapse-move
+  cycle and the consumer would never issue. Hence `ready` and `out_member_rdy`
+  come from the next state, not from the register.
 
   A member's ready bit is STICKY: once set, only a `load` overwrites it. There is
   no re-busy path.
@@ -278,18 +301,18 @@ from Tenstorrent Inc.
   may wake LATER than strictly necessary (it waits on the whole producing group,
   not only the members it reads), never earlier.
 
-  // ===> THIS IS ALSO WHY A SINGLE AGGREGATE `stale_pvdest_busy` BIT WAS REJECTED
-  // (D6) AND A FIFTH INSTANCE OF THIS MODULE ACCEPTED INSTEAD, and it is the
-  // tempting wrong answer, so the reasoning is recorded where the mechanism lives.
-  // A `stale_pvdest` group can span UP TO EIGHT PRODUCERS: an `LMUL=1` op writes
-  // `v0`, then an `LMUL=8` op renames `v0..v7`, so the younger op's stale mapping
-  // is the current mappings of eight arch vregs installed by up to eight different
-  // instructions. One bit cannot express "waiting on producer 3 of 8", and one
-  // group-done cannot clear it correctly — clearing it on the first arrival wakes
-  // the consumer EARLY (it reads a register a later producer has not written),
-  // while requiring all eight is unrepresentable in one bit. This is the same
-  // argument that forces per-member matching for `pvs*` (rename.g20) and it
-  // applies unchanged to the stale group.
+  ===> THIS IS ALSO WHY A SINGLE AGGREGATE `stale_pvdest_busy` BIT WAS REJECTED
+  (D6) AND A FIFTH INSTANCE OF THIS MODULE ACCEPTED INSTEAD, and it is the
+  tempting wrong answer, so the reasoning is recorded where the mechanism lives.
+  A `stale_pvdest` group can span UP TO EIGHT PRODUCERS: an `LMUL=1` op writes
+  `v0`, then an `LMUL=8` op renames `v0..v7`, so the younger op's stale mapping
+  is the current mappings of eight arch vregs installed by up to eight different
+  instructions. One bit cannot express "waiting on producer 3 of 8", and one
+  group-done cannot clear it correctly — clearing it on the first arrival wakes
+  the consumer EARLY (it reads a register a later producer has not written),
+  while requiring all eight is unrepresentable in one bit. This is the same
+  argument that forces per-member matching for `pvs*` (rename.g20) and it
+  applies unchanged to the stale group.
 
   ---- Conditional participation: the mask, and the deselected operand ----
 
@@ -319,12 +342,12 @@ from Tenstorrent Inc.
   speculation profitable. Waking on real writeback is also what lets this module
   own no re-busy or replay machinery at all.
 
-  // REJECT LIST for this port set: no speculative-wakeup input, no load-hit or
-  // load-miss input, no re-busy / clear-ready input, no brupdate or flush input
-  // (the slot's valid bit and the queue's compaction handle a squash, and every
-  // new occupant arrives through `load`, which overwrites all member bits), and
-  // no `busy` output of any kind — the last is the vector-LSU invariant seen
-  // from the issue side.
+  REJECT LIST for this port set: no speculative-wakeup input, no load-hit or
+  load-miss input, no re-busy / clear-ready input, no brupdate or flush input
+  (the slot's valid bit and the queue's compaction handle a squash, and every
+  new occupant arrives through `load`, which overwrites all member bits), and
+  no `busy` output of any kind — the last is the vector-LSU invariant seen
+  from the issue side.
 
   ---- The match-port budget ----
 
@@ -340,21 +363,21 @@ from Tenstorrent Inc.
   `vecIssueEntries` slots and three IQ_V_* queues, this is the dominant area term
   of the vector issue stage and it sits in the wakeup-to-grant critical path.
 
-  // The fifth instance (`rdy_vold`, D6) is +1 matcher x (16 IQ_V_LOAD + 16
-  // IQ_V_ALU) slots = 32 added instances, i.e. +6144 comparators, and it lands in
-  // the stage that is ALREADY this design's #1 timing risk. That cost was accepted
-  // deliberately against a silent-hang/silent-corruption alternative; the
-  // mitigation if the path fails is the shared one-hot decode below, which the
-  // fifth instance shares with the other four at no extra decode cost.
+  The fifth instance (`rdy_vold`, D6) is +1 matcher x (16 IQ_V_LOAD + 16
+  IQ_V_ALU) slots = 32 added instances, i.e. +6144 comparators, and it lands in
+  the stage that is ALREADY this design's #1 timing risk. That cost was accepted
+  deliberately against a silent-hang/silent-corruption alternative; the
+  mitigation if the path fails is the shared one-hot decode below, which the
+  fifth instance shares with the other four at no extra decode cost.
 
-  // PERMITTED FACTORING, semantically identical, and the escape valve if that
-  // path fails timing: OR the group-done ports' member PRNs into one
-  // numVecPhysRegisters-wide one-hot "completing this cycle" vector shared by
-  // every instance in a queue, and read member_hit(i) as an indexed lookup of it
-  // at prns(i). Same function — still per member against every port — trading
-  // the comparator array for one decode plus a wide mux per member. It must stay
-  // COMBINATIONAL within the group-done cycle; registering the shared vector adds
-  // a cycle to every dependent vector op and loses the same-cycle dispatch match.
+  PERMITTED FACTORING, semantically identical, and the escape valve if that
+  path fails timing: OR the group-done ports' member PRNs into one
+  numVecPhysRegisters-wide one-hot "completing this cycle" vector shared by
+  every instance in a queue, and read member_hit(i) as an indexed lookup of it
+  at prns(i). Same function — still per member against every port — trading
+  the comparator array for one decode plus a wide mux per member. It must stay
+  COMBINATIONAL within the group-done cycle; registering the shared vector adds
+  a cycle to every dependent vector op and loses the same-cycle dispatch match.
 
   ---- pvl is deliberately not matched here ----
 
@@ -367,13 +390,13 @@ from Tenstorrent Inc.
   one busy bit, so an instance here would spend `maxMembers * numVecWbPorts`
   comparators to model one bit, and would connect the wrong network.
 
-  // g34 is KEPT, with its reading annotated: its force is "`pvl` is not a group,
-  // so it costs a plain comparator and no matcher instance", not the literal count
-  // one. The VL network is now `VectorParams.numVlWakeupPorts` = `aluWidth + 1`
-  // lanes (decision D8 replicates the vset writeback per integer ALU rather than
-  // arbitrating it, because a single-shot VL wakeup lost to arbitration is a
-  // permanent hang), so the slot spends `numVlWakeupPorts` comparators — 3 at
-  // Medium, 5 at Mega — still one per lane and still no instance of this module.
+  g34 is KEPT, with its reading annotated: its force is "`pvl` is not a group,
+  so it costs a plain comparator and no matcher instance", not the literal count
+  one. The VL network is now `VectorParams.numVlWakeupPorts` = `aluWidth + 1`
+  lanes (decision D8 replicates the vset writeback per integer ALU rather than
+  arbitrating it, because a single-shot VL wakeup lost to arbitration is a
+  permanent hang), so the slot spends `numVlWakeupPorts` comparators — 3 at
+  Medium, 5 at Mega — still one per lane and still no instance of this module.
 
   The POLICY is nonetheless this module's and not the INT feeders': `pvl` wakes on ACTUAL
   COMPLETION on its own VL network, not on the integer network and not
@@ -429,11 +452,11 @@ over the three IQ_V_* queues — plus 33 flops of member state per load/ALU slot
 25 per store slot. Stated so that a config change multiplying them is visible at
 review rather than at synthesis.
 
-// The delta from the four-instance version is the D6 `rdy_vold` instance: +192
-// comparators and +8 flops on each of the 16 IQ_V_LOAD and 16 IQ_V_ALU slots, so
-// +6.1k comparators and +256 flops, about +21% on this stage's dominant area
-// term. It buys removal of a silent read of a BUSY stale group by the LCB's R2
-// pre-load and by the CII's STALE_VD pull.
+The delta from the four-instance version is the D6 `rdy_vold` instance: +192
+comparators and +8 flops on each of the 16 IQ_V_LOAD and 16 IQ_V_ALU slots, so
++6.1k comparators and +256 flops, about +21% on this stage's dominant area
+term. It buys removal of a silent read of a BUSY stale group by the LCB's R2
+pre-load and by the CII's STALE_VD pull.
 <|end_perf|>
 
 <|begin_dependencies|>

@@ -36,7 +36,8 @@ Follow these steps in order:
 4. **Reconcile.** Check that ports, parameters, logic, and perf are mutually
    consistent. If the spec is ambiguous or self-contradictory, prefer asking the
    user; only when that is not possible, pick the most conservative
-   interpretation and record every such assumption as a comment in the output.
+   interpretation and record every such assumption **in the nlhdl source and in
+   your report** — not as a comment in the generated RTL.
 5. **Generate** (`new` and `edit_generated`). The spec is the complete authority:
    the emitted module must implement **every** parameter, port, and behavior in
    the nlhdl file and nothing beyond it. Emit synthesizable RTL in the target HDL:
@@ -44,7 +45,13 @@ Follow these steps in order:
      of every generated file.
    - Module and port names must match the spec.
    - Preserve the source's `//` and `/* */` comments in the output, placed next
-     to the code they annotate.
+     to the code they annotate — **all of them, and only them.** The nlhdl file
+     decides what prose reaches the RTL; you do not add to it. Do not write
+     comments to label blocks, restate logic, describe behavior, cite the spec
+     section a block came from, or narrate assumptions. If the generated RTL
+     needs explaining beyond what the source's comments say, the explanation
+     belongs in the nlhdl body, not in the output. See "Comment policy" in
+     `references/format.md`.
    - **Carry every `//@req-<id>` tag into the RTL**, verbatim and one per line,
      immediately above the code implementing that requirement — not collected in
      the header. These tags are the spec → nlhdl → RTL traceability chain and
@@ -56,7 +63,6 @@ Follow these steps in order:
      for logic, no non-synthesizable system tasks).
    - Reset every stateful element. Avoid inferred latches. Drive every output on
      every path.
-   - Comment each block with the piece of the spec it implements.
 6. **Write output.** Write to the `output:` path from `hierarchy.yaml`, or if it
    is absent, the source file's sibling `generated/` directory (e.g.
    `examples/fifo/generated/sync_fifo.sv`). Do not overwrite the `.nlhdl` source.
@@ -109,14 +115,35 @@ changes nothing else."
    spec it implements, and state explicitly what you left untouched and any
    regression risk you could not rule out by inspection.
 
+## Fixing bugs in RTL
+
+This covers any later touch-up of RTL — a bug found in bring-up, a lint fix, a
+patch to a file this flow generated — as opposed to a full regeneration.
+
+- **Add no comments.** Not a note on what changed, not a rationale for the fix,
+  not a `// FIXME`/`// NOTE`, not a dated changelog line, not a restatement of
+  the bug. The fix is the diff; the explanation goes in your report to the user
+  and, where the behavior was mis-specified, back into the nlhdl source.
+- **The one exception:** a critical issue a future reader of this code would
+  otherwise re-break — a hazard, a required ordering, a workaround for silicon
+  or tool behavior that looks wrong locally. **Two lines maximum**, placed on
+  the code it concerns. If you cannot say it in two lines, it belongs in the
+  nlhdl source or a doc, not here.
+- **Do not delete or reword comments already in the file**, including
+  `//@req-<id>` tags. If a fix moves the code a tag sits above, move the tag
+  with it.
+- If the bug reveals that the nlhdl spec is wrong, fix the spec too and say so —
+  otherwise the next `gen-rtl` regenerates the bug.
+
 ## Output bar
 
 - Implements the spec and nothing more.
 - Synthesizable; no latches; every output driven on every path; every state
   element reset.
-- Assumptions documented inline where the spec was silent.
-- Traceable back to the `.nlhdl` sections and comments; every `//@req-` tag in
-  the source survives into the RTL, above the code that implements it.
+- Assumptions recorded in the nlhdl source and the report, not in RTL comments.
+- Every comment in the RTL came from the `.nlhdl` source; none was added by the
+  generator. Every `//@req-` tag in the source survives into the RTL, above the
+  code that implements it.
 - `new` / `edit_generated`: the module fully matches the spec — no spec item
   unimplemented, no behavior the spec did not ask for.
 - `edit_existing`: the diff is confined to the specified scope, existing

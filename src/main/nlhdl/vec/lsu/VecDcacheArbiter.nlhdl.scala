@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecDcacheArbiter — the priority round-robin that shares the D$ request lane(s),
   the DTLB port and the LCAM port between the scalar LSU and the two vector
   drains.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecDcacheArbiter.scala,
@@ -60,7 +61,6 @@ from Tenstorrent Inc.
   the cache; bandwidth is the scalar port's), loadstore.rst `vec-load-algo` step
   3 and `vec-store-algo` steps 2 and 4 (who the requestors are).
   Plan v2 targets P2 and P6, plan step E5.
-*/
 
 <|begin_module|>
 
@@ -82,11 +82,11 @@ from Tenstorrent Inc.
   silently picking one, because a mistyped mode that fell back to "single" would
   read as a performance bug months later.
 
-  // "dual-dynamic" means the two lanes form ONE DYNAMIC POOL, not a static
-  // scalar-lane-0 / vector-lane-1 split. A static split is the tempting
-  // simplification and it breaks work conservation in both directions: an
-  // all-scalar workload would be capped at one lane, and an all-vector workload
-  // likewise — the spec requires both to reach two.
+  "dual-dynamic" means the two lanes form ONE DYNAMIC POOL, not a static
+  scalar-lane-0 / vector-lane-1 split. A static split is the tempting
+  simplification and it breaks work conservation in both directions: an
+  all-scalar workload would be capped at one lane, and an all-vector workload
+  likewise — the spec requires both to reach two.
 
   `rrPhases: Int` — the length of the round-robin rotation. FIXED AT 4, matching
   the spec's "at least one grant every 4 cycles" verbatim. It is a named
@@ -127,13 +127,13 @@ from Tenstorrent Inc.
   `uses_dcache`, `uses_lcam`, and `lcam_range_len` for the one-shot unit-stride
   range query.
 
-  // The three use bits are DATA, not constants, and that is the whole point.
-  // A load beat asserts all three (the vector analogue of
-  // `will_fire_load_agen_exec`). A store's pre-commit translate pass asserts
-  // `uses_tlb` and `uses_lcam` but NOT `uses_dcache`; its post-commit write pass
-  // asserts `uses_dcache` only. A US entry raises `uses_lcam` on its FIRST beat
-  // only, with `lcam_range_len` — the whole contiguous range is disambiguated by
-  // one range-overlap query — while every SSI beat queries per element.
+  The three use bits are DATA, not constants, and that is the whole point.
+  A load beat asserts all three (the vector analogue of
+  `will_fire_load_agen_exec`). A store's pre-commit translate pass asserts
+  `uses_tlb` and `uses_lcam` but NOT `uses_dcache`; its post-commit write pass
+  asserts `uses_dcache` only. A US entry raises `uses_lcam` on its FIRST beat
+  only, with `lcam_range_len` — the whole contiguous range is disambiguated by
+  one range-overlap query — while every SSI beat queries per element.
 
   ---- To and from lsu.scala: the shared-resource seam (VecLsuCoreIO) ----
 
@@ -143,10 +143,10 @@ from Tenstorrent Inc.
   `lsu_sched` already threads through its chain, so the seam is expressed in the
   baseline's own terms.
 
-  // `VecLsuCoreIO` itself is declared in `lsu.scala` beside `LSUCoreIO`, NOT here
-  // and NOT in VecLsu — it exposes the host's own LDQ/STQ state, so the host owns
-  // the type. It COMPOSES `LsuResourceClaim` (this file's declaration) and never
-  // re-declares it. One declaration each way, bound by name.
+  `VecLsuCoreIO` itself is declared in `lsu.scala` beside `LSUCoreIO`, NOT here
+  and NOT in VecLsu — it exposes the host's own LDQ/STQ state, so the host owns
+  the type. It COMPOSES `LsuResourceClaim` (this file's declaration) and never
+  re-declares it. One declaration each way, bound by name.
 
   - `io.scalar_demand : Vec(lsuWidth, Input(new LsuResourceClaim))` — the raw
     scalar claim on lane `w` this cycle, i.e. the OR of the `can_fire_*` terms
@@ -205,12 +205,12 @@ from Tenstorrent Inc.
   post-commit write pass out of `stq_execute_queue` are the same requestor on
   this port, distinguished only by their `uses_*` bits.
 
-  // The two drains are SEPARATE requestors and never arbitrate against each
-  // other outside this module. `addvector`'s load-priority mux in the shared
-  // register-read stage silently dropped store grants whenever a load was
-  // granting in the same cycle, and was worked around by making the store not
-  // advertise its agen. Target P4 (a vle and a vse overlap) is a direct
-  // consequence of them being two ports here.
+  The two drains are SEPARATE requestors and never arbitrate against each
+  other outside this module. `addvector`'s load-priority mux in the shared
+  register-read stage silently dropped store grants whenever a load was
+  granting in the same cycle, and was worked around by making the store not
+  advertise its agen. Target P4 (a vle and a vse overlap) is a direct
+  consequence of them being two ports here.
 
   ---- The rotation ----
 
@@ -232,11 +232,11 @@ from Tenstorrent Inc.
   traffic. Advancing on grant instead would let a requestor that is never ready
   freeze the rotation and starve the others.
 
-  // The bound is over cycles in which the requestor CAN be granted. A phase
-  // whose owner is suppressed by `io.dmem_req_ready`, by an LCB credit or by an
-  // order hold, or whose translation misses in the DTLB, does not consume the
-  // guarantee — those are structural, not arbitration, and pretending otherwise
-  // would make the bound unfalsifiable.
+  The bound is over cycles in which the requestor CAN be granted. A phase
+  whose owner is suppressed by `io.dmem_req_ready`, by an LCB credit or by an
+  order hold, or whose translation misses in the DTLB, does not consume the
+  guarantee — those are structural, not arbitration, and pretending otherwise
+  would make the bound unfalsifiable.
 
   ---- The priority floor ----
 
@@ -321,42 +321,46 @@ from Tenstorrent Inc.
 
   ---- Suppression seam 1: the LCB credit ----
 
-  A load-drain request is suppressed — masked out of the eligible set entirely,
-  so the rotation skips it and the lane is reassigned work-conservingly — while
-  `io.lcb_free_count === 0`. At `lsuWidth = 2` the number of load-drain grants
-  in a cycle is additionally capped at `io.lcb_free_count`.
+  ===> DO NOT SUPPRESS A LOAD-DRAIN REQUEST ON `io.lcb_free_count`. An earlier
+       version of this spec required exactly that, on the reasoning that
+       "over-granting is not recoverable while under-granting only costs a cycle".
+       **The second half is false, and the first half does not apply to a beat.**
+       A beat always lands in an entry its own op allocated at LAUNCH, so it needs
+       no new credit and can never over-grant; and when `free_count` reaches 0 with
+       every outstanding beat belonging to an already-allocated entry, under-granting
+       costs FOREVER, not a cycle — nothing can fire, so nothing frees an entry.
+       This is not a rare case either: at `EMUL = lcbEntries` ONE group owns every
+       entry, so `free_count` is 0 for that op's entire lifetime. Measured on
+       `ms14_vls_e64_m8` (LMUL 8, `lcbEntries` 8): 8 entries allocated, 5 of 32
+       placements, `group_done` never fired, and the dependent store never started.
+       The binding guard is the per-PRN `lcb_alloc_rdy` test that VecBeatExpander
+       already applies to every beat; this coarse one is redundant for correctness.
 
-  // This is a SEAM OBLIGATION, and the division of labour matters.
-  // VecLoadCoalescingBuffer owns the decision (it publishes the credit and may
-  // never back-pressure a response, because a blocked response holds an MSHR
-  // against the very drain that would free the entry); this module owns the
-  // suppression. VecBeatExpander separately gates its own request on
-  // `lcb_alloc_rdy`, which is the exact per-PRN test; the credit test here is
-  // the coarse one and is deliberately conservative — a beat landing in an
-  // already-allocated entry needs no new credit, so capping at `free_count` can
-  // throttle slightly. With `lcbEntries` = 8 and four beats per PRN at the
-  // default widths that is a rare case, and over-granting is not recoverable
-  // while under-granting only costs a cycle.
+  `io.lcb_free_count` is therefore still an input (VecLoadCoalescingBuffer owns
+  publishing it, and may never back-pressure a response, because a blocked response
+  holds an MSHR against the very drain that would free the entry) but it must NOT
+  feed load-drain eligibility. A load-drain request is suppressed only by
+  `io.hold_ldq`.
 
-  // ===> AND THE LCB CREDIT IS THE ONLY THING THAT MAY THROTTLE THE LOAD DRAIN.
-  // A LOAD NOW UNDER-RESERVES ITS ELEMENT-QUEUE REGION — decision D9/D10:
-  // `min(worstCase, ldResvMembers * vLen/eew)` entries with `ldResvMembers` = 4,
-  // while stores still reserve the worst case — so for a long load THE DRAIN IS
-  // WHAT FREES THE ROOM ITS OWN FILL SIDE IS WAITING FOR. Two consequences for
-  // this module, and both are "do not add anything":
-  //   (1) Nothing here may suppress or de-prioritize a load-drain request on the
-  //       grounds that its reservation is small, nearly full, or exhausted. A
-  //       suppression term derived from region occupancy would close the loop
-  //       fill -> region-full -> drain-suppressed -> region-never-freed, which is
-  //       a DEADLOCK rather than a slowdown, and it would be invisible in the
-  //       arbiter's own trace.
-  //   (2) The anti-starvation flag matters more than it did, not less: a load
-  //       drain that goes ungranted is now blocking its own agen, not just its
-  //       own completion. `blocked_ld` already covers it — it is set by "valid
-  //       and no grant" with no notion of why — and that is exactly the property
-  //       to preserve.
-  // The arbiter needs no new port for any of this: it has no notion of a
-  // reservation and must not acquire one.
+  ===> AND THE LCB CREDIT IS THE ONLY THING THAT MAY THROTTLE THE LOAD DRAIN.
+  A LOAD NOW UNDER-RESERVES ITS ELEMENT-QUEUE REGION — decision D9/D10:
+  `min(worstCase, ldResvMembers * vLen/eew)` entries with `ldResvMembers` = 4,
+  while stores still reserve the worst case — so for a long load THE DRAIN IS
+  WHAT FREES THE ROOM ITS OWN FILL SIDE IS WAITING FOR. Two consequences for
+  this module, and both are "do not add anything":
+    (1) Nothing here may suppress or de-prioritize a load-drain request on the
+        grounds that its reservation is small, nearly full, or exhausted. A
+        suppression term derived from region occupancy would close the loop
+        fill -> region-full -> drain-suppressed -> region-never-freed, which is
+        a DEADLOCK rather than a slowdown, and it would be invisible in the
+        arbiter's own trace.
+    (2) The anti-starvation flag matters more than it did, not less: a load
+        drain that goes ungranted is now blocking its own agen, not just its
+        own completion. `blocked_ld` already covers it — it is set by "valid
+        and no grant" with no notion of why — and that is exactly the property
+        to preserve.
+  The arbiter needs no new port for any of this: it has no notion of a
+  reservation and must not acquire one.
 
   ---- Suppression seam 2: the predicted-overlap hold ----
 
@@ -372,11 +376,11 @@ from Tenstorrent Inc.
   dropping the bit; the arbiter has no notion of stores completing and must not
   acquire one.
 
-  // The hold is a PERFORMANCE mechanism, not the correctness floor — the
-  // `order_fail` replay path is. So a conservative or even a wrong bit in
-  // `io.hold_ldq` may only cost cycles here, and this module must never treat a
-  // held load as an error or drop its request. It stays pending and is granted
-  // as soon as the bit clears.
+  The hold is a PERFORMANCE mechanism, not the correctness floor — the
+  `order_fail` replay path is. So a conservative or even a wrong bit in
+  `io.hold_ldq` may only cost cycles here, and this module must never treat a
+  held load as an error or drop its request. It stays pending and is granted
+  as soon as the bit clears.
 
   ---- Assertions and trace ----
 

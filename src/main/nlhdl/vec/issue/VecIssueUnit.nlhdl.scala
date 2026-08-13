@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecIssueUnit — one vector issue queue: BOOM v4's age-ordered COLLAPSING issue
   queue and its priority-encoder select, reused unchanged, holding VecIssueSlot
   entries instead of scalar IssueSlot entries.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/issue/VecIssueUnit.scala,
@@ -69,7 +70,6 @@ from Tenstorrent Inc.
   `cii-segmented`, `cii-flush`; execution.rst `vector-execution`;
   overview.rst `caracal-pipeline`; glossary.rst `glossary-terms`;
   midcore.rst `midcore-segmented-store`.
-*/
 
 <|begin_module|>
 
@@ -87,10 +87,10 @@ from Tenstorrent Inc.
   `numEntries` — slots per queue, default `vecIssueEntries` = 16.
   `dispatchWidth` — default `coreWidth` (3). `issueWidth` — grants per cycle,
   default `vecIssueGrantWidth` = 1; the widest tier raises it to 2.
-  // `VecCiiIssue` requires the ALU queue's grant width to be exactly 1 and fails
-  // elaboration otherwise: the CII Issue channel carries one beat per cycle and
-  // has no ready line, so a second grant would be dropped, not stalled. If a tier
-  // raises vecIssueGrantWidth it must raise it for the load/store queues only.
+  `VecCiiIssue` requires the ALU queue's grant width to be exactly 1 and fails
+  elaboration otherwise: the CII Issue channel carries one beat per cycle and
+  has no ready line, so a second grant would be dropped, not stalled. If a tier
+  raises vecIssueGrantWidth it must raise it for the load/store queues only.
 
   `numSlowEntries` — bound to 0, so every slot is a fast slot and the queue
   collapses at full dispatch throughput. Slow slots are baseline's critical-path
@@ -117,19 +117,19 @@ from Tenstorrent Inc.
   the VECTOR (group-done) wakeup network: the Load Coalescing Buffer, the CII
   writeback completion, and VecGroupCopy's complete-without-execute path.
 
-  // ===> THE SINGLE BINDING SITE IS NOW `VectorParams`, WHICH DECLARES IT. This
-  // module previously claimed the binding site because the corpus named the number
-  // (issue.g33, rename.g25) and VectorParams did not declare it, leaving
-  // VecIssueSlot and VecGroupReady each defaulting it to 3 independently.
-  // VectorParams now declares `numVecWbPorts` (3), `numVecClrPorts` (3, the ROB
-  // busy-clear lane count) and `numVlWakeupPorts` (`aluWidth + 1`). BIND TO THOSE
-  // FIELDS; DO NOT RE-DEFAULT LOCALLY. VecPipeline still passes the actual producer
-  // count to this constructor and this module still forwards it verbatim to every
-  // slot, which forwards it verbatim to its VecGroupReady instances — but the
-  // literal 3 exists in exactly one file now. If the numbers ever disagree, a
-  // matcher examines fewer ports than the network drives, misses a single-shot
-  // group-done, and the consumer hangs forever. Keep
-  // `require(numVecWbPorts == io.vec_group_done.length)` as the check.
+  ===> THE SINGLE BINDING SITE IS NOW `VectorParams`, WHICH DECLARES IT. This
+  module previously claimed the binding site because the corpus named the number
+  (issue.g33, rename.g25) and VectorParams did not declare it, leaving
+  VecIssueSlot and VecGroupReady each defaulting it to 3 independently.
+  VectorParams now declares `numVecWbPorts` (3), `numVecClrPorts` (3, the ROB
+  busy-clear lane count) and `numVlWakeupPorts` (`aluWidth + 1`). BIND TO THOSE
+  FIELDS; DO NOT RE-DEFAULT LOCALLY. VecPipeline still passes the actual producer
+  count to this constructor and this module still forwards it verbatim to every
+  slot, which forwards it verbatim to its VecGroupReady instances — but the
+  literal 3 exists in exactly one file now. If the numbers ever disagree, a
+  matcher examines fewer ports than the network drives, misses a single-shot
+  group-done, and the consumer hangs forever. Keep
+  `require(numVecWbPorts == io.vec_group_done.length)` as the check.
 
   `usingRVV` is a Scala `Boolean` of `BoomCoreParams`, not a hardware `Bool`.
   All three instances exist only in a `usingRVV` build; in a vectors-off build
@@ -159,18 +159,18 @@ from Tenstorrent Inc.
   per-member vector Busy-Table read it already performs, and qualified by the same
   `dis_uops(w).valid`. It travels BESIDE the uop, never inside it.
 
-  // ===> IT IS WIDER THAN IT WAS, BY ONE GROUP (decision D6). `VecMemberRdy` now
-  // carries `vs1_rdy`, `vs2_rdy`, `vs3_rdy`, `vtmp_rdy` and `vold_rdy`, each
-  // `Vec(maxMembers, Bool)`, plus `vm_rdy: Bool`. `vold_rdy` is the `stale_pvdest`
-  // group's per-member readiness, feeding the slot's FIFTH VecGroupReady instance
-  // (`rdy_vold`) in `iq_v_load` and `iq_v_alu`. VecBusyTable is amended in parallel
-  // to export that group's per-member read; this module only routes it.
-  // `iq_v_store` receives the field and leaves it unread rather than getting a
-  // narrower bundle — one declaration, no per-queue variant, so the collapse move
-  // stays ONE mux over ONE wire (part 3).
-  // `VecSlotMemberRdy` was this bundle's second name, declared in
-  // VecIssueSlot.nlhdl.scala. It is a DEFECT, not a synonym: bind to the single
-  // `VecMemberRdy` in VecBundles and do not copy it.
+  ===> IT IS WIDER THAN IT WAS, BY ONE GROUP (decision D6). `VecMemberRdy` now
+  carries `vs1_rdy`, `vs2_rdy`, `vs3_rdy`, `vtmp_rdy` and `vold_rdy`, each
+  `Vec(maxMembers, Bool)`, plus `vm_rdy: Bool`. `vold_rdy` is the `stale_pvdest`
+  group's per-member readiness, feeding the slot's FIFTH VecGroupReady instance
+  (`rdy_vold`) in `iq_v_load` and `iq_v_alu`. VecBusyTable is amended in parallel
+  to export that group's per-member read; this module only routes it.
+  `iq_v_store` receives the field and leaves it unread rather than getting a
+  narrower bundle — one declaration, no per-queue variant, so the collapse move
+  stays ONE mux over ONE wire (part 3).
+  `VecSlotMemberRdy` was this bundle's second name, declared in
+  VecIssueSlot.nlhdl.scala. It is a DEFECT, not a synonym: bind to the single
+  `VecMemberRdy` in VecBundles and do not copy it.
 
   `iss_uops` — `Output(Vec(issueWidth, Valid(new MicroOp())))`, the grants. On
   `iq_v_alu` lane 0 is `VecCiiIssue.io.iss`, which has no `ready` and never
@@ -185,11 +185,11 @@ from Tenstorrent Inc.
   `vl_wakeup` — `Flipped(Vec(numVlWakeupPorts, Valid(UInt(vlPregSz.W))))`, the
   dedicated VL network: `VectorParams.numVlWakeupPorts` = `aluWidth + 1` lanes, each
   carrying a bare VL physical register number. All three queues connect.
-  // It was ONE lane before decision D8, which REPLICATES the vset writeback per
-  // integer ALU rather than arbitrating it (a single-shot VL wakeup lost to
-  // arbitration is a permanent hang), plus one lane for `vleff`'s trimmed VL. Both
-  // this module's dispatch pre-correction (part 2) and every slot's comparator set
-  // must scan all lanes; sizing either from a literal 1 drops a VL wakeup.
+  It was ONE lane before decision D8, which REPLICATES the vset writeback per
+  integer ALU rather than arbitrating it (a single-shot VL wakeup lost to
+  arbitration is a permanent hang), plus one lane for `vleff`'s trimmed VL. Both
+  this module's dispatch pre-correction (part 2) and every slot's comparator set
+  must scan all lanes; sizing either from a literal 1 drops a VL wakeup.
   `vec_group_done` — `Flipped(Vec(numVecWbPorts, Valid(new VecGroupDone)))` from
   VecBundles, broadcast unregistered to every slot. This module never inspects a
   group-done itself.
@@ -202,17 +202,17 @@ from Tenstorrent Inc.
   consumes it. This is the design's ONLY back-pressure into issue: `VecCiiIssue`
   drives `iq_v_alu`'s lane to zero when it has no CII Issue credit, and the
   vector LSU's units drive theirs the same way.
-  // SEAM NOTE (A51) — A TYPE MISMATCH THAT IS SETTLED, NOT OUTSTANDING. This port
-  // is baseline's `Vec(FC_SZ, Bool())`. `VecCiiIssue` spells its side as
-  // `Output(UInt(FC_SZ.W))`. Same information, different Chisel type, and BASELINE'S
-  // TYPE WINS HERE so this module's diff against `IssueUnitCollapsing` stays clean.
-  // ===> THE CONVERSION POINT IS `VecPipeline`, WHICH CONNECTS THE TWO WITH
-  // `.asBools` — one named place, recorded so nobody "fixes" it by changing either
-  // declaration. Neither side changes type; the container converts.
-  // Separately flagged by VecPipeline and NOT settled here: the sentence above
-  // claiming the vector LSU's units drive their `fu_types` lanes the same way is
-  // wrong — VecPipeline reports those two lanes are CONSTANTS. That correction
-  // belongs to whoever owns the LSU seam; it does not change this port's type.
+  SEAM NOTE (A51) — A TYPE MISMATCH THAT IS SETTLED, NOT OUTSTANDING. This port
+  is baseline's `Vec(FC_SZ, Bool())`. `VecCiiIssue` spells its side as
+  `Output(UInt(FC_SZ.W))`. Same information, different Chisel type, and BASELINE'S
+  TYPE WINS HERE so this module's diff against `IssueUnitCollapsing` stays clean.
+  ===> THE CONVERSION POINT IS `VecPipeline`, WHICH CONNECTS THE TWO WITH
+  `.asBools` — one named place, recorded so nobody "fixes" it by changing either
+  declaration. Neither side changes type; the container converts.
+  Separately flagged by VecPipeline and NOT settled here: the sentence above
+  claiming the vector LSU's units drive their `fu_types` lanes the same way is
+  wrong — VecPipeline reports those two lanes are CONSTANTS. That correction
+  belongs to whoever owns the LSU seam; it does not change this port's type.
 
   `brupdate` — `Input(new BrUpdateInfo())`. `flush_pipeline` — `Input(Bool())`,
   driven from BoomCore's `RegNext(rob.io.flush.valid)` exactly as the scalar
@@ -275,13 +275,13 @@ from Tenstorrent Inc.
   `iw_issued`, `iw_issued_partial_agen`, `iw_issued_partial_dgen` and the three
   bypass hints are cleared, as baseline clears them.
 
-  // NO VECTOR PRE-CORRECTION HAPPENS HERE, and that asymmetry is deliberate.
-  // VecGroupReady applies the group-done match to the LOADED value in the load
-  // cycle (`(load ? in_member_rdy : member_rdy) || member_hit`), so a group-done
-  // arriving in the dispatch cycle is captured at the slot's port. Correcting it
-  // here as well would put the same correction in two places — this path AND the
-  // collapse path — and completion is single-shot, so the two disagreeing by one
-  // cycle is a lost wakeup and a permanent hang.
+  NO VECTOR PRE-CORRECTION HAPPENS HERE, and that asymmetry is deliberate.
+  VecGroupReady applies the group-done match to the LOADED value in the load
+  cycle (`(load ? in_member_rdy : member_rdy) || member_hit`), so a group-done
+  arriving in the dispatch cycle is captured at the slot's port. Correcting it
+  here as well would put the same correction in two places — this path AND the
+  collapse path — and completion is single-shot, so the two disagreeing by one
+  cycle is a lost wakeup and a permanent hang.
 
   //@req-spec-cii.d1
   Vector arithmetic reaches the coprocessor only through `iq_v_alu`, and the
@@ -297,25 +297,25 @@ from Tenstorrent Inc.
        LIST IS THE POINT (A49). Each entry is a block a generator told to "reuse
        baseline's dispatch path" would copy, and each is actively wrong here:
 
-  // (a) IQ_MEM's `when (uses_stq && lrs2_rtype === RT_FLT) { lrs2_rtype := RT_X;
-  //     prs2_busy := false }` — baseline's FP-STORE fixup. ===> IN A VECTOR STORE
-  //     `prs2` CARRIES THE STRIDE. It must be waited on and delivered intact.
-  //     Copying this clears the busy bit of a live integer operand and clobbers its
-  //     rtype, turning every strided store into a wrong-address store — a silent
-  //     wrong-data bug, not a stall.
-  // (b) IQ_MEM's `dis_uops(w).prs3_busy := false` — the same class, one operand
-  //     over. Vector store data is a VRF group read on port R3, never a scalar
-  //     operand, so `prs3` has no vector meaning and force-clearing its busy bit
-  //     teaches a reader that the third operand is always ready. Likewise IQ_FP's
-  //     `prs1` rewrite.
-  // (c) IQ_UNQ's `prs2 := Cat(fp_rm, fp_typ)` and `pimm := mem_size` rewrites —
-  //     they overwrite two fields the vector AGEN reads (`prs2` is the stride again,
-  //     `pimm` is not repurposed here).
-  // What IS copied is baseline's `iqType != IQ_ALU` clause: assert
-  // `!(dis_uops(w).valid && ppred_busy)` and tie `ppred_busy := false.B`. That is
-  // how the slot's "no ppred term" claim is discharged without a port.
-  // The FOURTH member of this reject list is baseline's SNI block, which is not a
-  // dispatch fixup and is rejected in part 5 where the eligibility term lives.
+  (a) IQ_MEM's `when (uses_stq && lrs2_rtype === RT_FLT) { lrs2_rtype := RT_X;
+      prs2_busy := false }` — baseline's FP-STORE fixup. ===> IN A VECTOR STORE
+      `prs2` CARRIES THE STRIDE. It must be waited on and delivered intact.
+      Copying this clears the busy bit of a live integer operand and clobbers its
+      rtype, turning every strided store into a wrong-address store — a silent
+      wrong-data bug, not a stall.
+  (b) IQ_MEM's `dis_uops(w).prs3_busy := false` — the same class, one operand
+      over. Vector store data is a VRF group read on port R3, never a scalar
+      operand, so `prs3` has no vector meaning and force-clearing its busy bit
+      teaches a reader that the third operand is always ready. Likewise IQ_FP's
+      `prs1` rewrite.
+  (c) IQ_UNQ's `prs2 := Cat(fp_rm, fp_typ)` and `pimm := mem_size` rewrites —
+      they overwrite two fields the vector AGEN reads (`prs2` is the stride again,
+      `pimm` is not repurposed here).
+  What IS copied is baseline's `iqType != IQ_ALU` clause: assert
+  `!(dis_uops(w).valid && ppred_busy)` and tie `ppred_busy := false.B`. That is
+  how the slot's "no ppred term" claim is discharged without a port.
+  The FOURTH member of this reject list is baseline's SNI block, which is not a
+  dispatch fixup and is rejected in part 5 where the eligibility term lives.
 
   ---- 3. The collapse move, and the side channel that must ride with it ----
 
@@ -327,49 +327,49 @@ from Tenstorrent Inc.
   `member_rdys = issue_slots.map(_.out_member_rdy) ++ io.dis_member_rdy` — same
   indexing, same array length, so index `i+j` names the same entry in both.
 
-  // ===> IMPLEMENT THIS AS ONE MUX OVER ONE COMBINED WIRE, not two muxes that
-  // happen to share a condition. Declare a local wire vector of a two-field
-  // bundle {uop, member_rdy}, fill it from the two arrays, and let the collapse
-  // `when` select that bundle once — then no future edit can add a term to one
-  // path and forget the other. Desynchronised, the migrated slot reloads its
-  // matchers with the WRONG slot's partial readiness and waits on group-dones that
-  // already fired: a silent permanent hang with no assertion anywhere.
-  // Routing partial readiness through `out_uop.pvs*_busy` is the same bug with a
-  // tidier spelling — the uop carries ONE aggregate bit per operand by MicroOp's
-  // design, so members 0..2 done with member 3 in flight is indistinguishable from
-  // nothing done.
-  // The bundle gained `vold_rdy` with D6, so the combined wire is `maxMembers` bits
-  // wider — `5*maxMembers + 1` = 41 bits at the defaults, against 25 for the
-  // original four-group shape. That widening is exactly why the one-mux rule is
-  // stated as a rule: a bundle gaining a field is the moment a two-mux
-  // implementation loses one.
+  ===> IMPLEMENT THIS AS ONE MUX OVER ONE COMBINED WIRE, not two muxes that
+  happen to share a condition. Declare a local wire vector of a two-field
+  bundle {uop, member_rdy}, fill it from the two arrays, and let the collapse
+  `when` select that bundle once — then no future edit can add a term to one
+  path and forget the other. Desynchronised, the migrated slot reloads its
+  matchers with the WRONG slot's partial readiness and waits on group-dones that
+  already fired: a silent permanent hang with no assertion anywhere.
+  Routing partial readiness through `out_uop.pvs*_busy` is the same bug with a
+  tidier spelling — the uop carries ONE aggregate bit per operand by MicroOp's
+  design, so members 0..2 done with member 3 in flight is indistinguishable from
+  nothing done.
+  The bundle gained `vold_rdy` with D6, so the combined wire is `maxMembers` bits
+  wider — `5*maxMembers + 1` = 41 bits at the defaults, against 25 for the
+  original four-group shape. That widening is exactly why the one-mux rule is
+  stated as a rule: a bundle gaining a field is the moment a two-mux
+  implementation loses one.
 
   `issue_slots(i).clear := shamts_oh(i) =/= 0.U` and the `is_available` /
   `io.dis_uops(w).ready` calculation are baseline's, unchanged, including its
   `RegNext` and its `assert(!ready || (shamts_oh(w+numEntries) >> w) =/= 0.U)`.
 
-  // ===> SEAM, UPDATED BY DECISION D2: THIS QUEUE'S READINESS IS NATIVE PER LANE
-  // AND NO LONGER TRAVELS THROUGH THE SINGLE `dis_ready` BIT. Vector configs
-  // instantiate `CompactingDispatcher` (not `BasicDispatcher`), and the three vector
-  // queues are wired NATIVELY from `dispatcher.io.dis_uops(i)` — not via a
-  // `ready := true.B` hack with fullness re-routed through the seam. So this
-  // module's `io.dis_uops(w).ready` IS the back-pressure the dispatcher consumes,
-  // per lane, unchanged from baseline.
-  //
-  // WHY IT MATTERS, mechanically: `BasicDispatcher` computes
-  // `ren_readys = io.dis_uops.map(d => VecInit(d.map(_.ready)).asUInt).reduce(_&_)`
-  // — the ready is NOT masked by `iq_type`, so EVERY queue's ready ANDs into EVERY
-  // lane and a full `IQ_V_LOAD` would stall pure-scalar lanes carrying no vector uop
-  // at all. `CompactingDispatcher` already masks it:
-  // `rdy := ren zip uses_iq map { case (u,q) => u.ready || !q }` — "the queue is
-  // considered ready if the uop doesn't use it." That is why a full vector queue no
-  // longer stalls scalar dispatch.
-  //
-  // What DOES still ride the seam's single `dis_ready` bit is the WHOLE-BUNDLE
-  // allocation answer: VecFreeList's `alloc_ok` and VecQueueReservation's `dis_ok`,
-  // which are all-or-nothing by construction and must never fire a subset of lanes.
-  // Queue fullness is not one of them any more. Do not re-fold this module's
-  // per-lane ready into that bit.
+  ===> SEAM, UPDATED BY DECISION D2: THIS QUEUE'S READINESS IS NATIVE PER LANE
+  AND NO LONGER TRAVELS THROUGH THE SINGLE `dis_ready` BIT. Vector configs
+  instantiate `CompactingDispatcher` (not `BasicDispatcher`), and the three vector
+  queues are wired NATIVELY from `dispatcher.io.dis_uops(i)` — not via a
+  `ready := true.B` hack with fullness re-routed through the seam. So this
+  module's `io.dis_uops(w).ready` IS the back-pressure the dispatcher consumes,
+  per lane, unchanged from baseline.
+  
+  WHY IT MATTERS, mechanically: `BasicDispatcher` computes
+  `ren_readys = io.dis_uops.map(d => VecInit(d.map(_.ready)).asUInt).reduce(_&_)`
+  — the ready is NOT masked by `iq_type`, so EVERY queue's ready ANDs into EVERY
+  lane and a full `IQ_V_LOAD` would stall pure-scalar lanes carrying no vector uop
+  at all. `CompactingDispatcher` already masks it:
+  `rdy := ren zip uses_iq map { case (u,q) => u.ready || !q }` — "the queue is
+  considered ready if the uop doesn't use it." That is why a full vector queue no
+  longer stalls scalar dispatch.
+  
+  What DOES still ride the seam's single `dis_ready` bit is the WHOLE-BUNDLE
+  allocation answer: VecFreeList's `alloc_ok` and VecQueueReservation's `dis_ok`,
+  which are all-or-nothing by construction and must never fire a subset of lanes.
+  Queue fullness is not one of them any more. Do not re-fold this module's
+  per-lane ready into that bit.
 
   ---- 4. Select: the oldest READY entry, out of order among ready ops ----
 
@@ -407,24 +407,24 @@ from Tenstorrent Inc.
   visible is what makes "did it request but not qualify" a one-line waveform
   question instead of an inference.
 
-  // ===> DO NOT RE-ADD BASELINE'S SNI BLOCK — REJECT LIST ENTRY, SHARPENED (A49).
-  // `issue_slot_past_pnr`, `issue_past_pnr`, `can_issue_sni` and
-  // `enableConservativeSNI` are a DIFFERENT MECHANISM: speculative
-  // non-interference, off by default, per-opcode via `MuxCase`, permissive by
-  // construction. Two gates computing overlapping conditions in two places is how
-  // one of them ends up disabled by a config flag nobody connected.
-  //
-  // AND ONE OF ITS TERMS IS ACTIVELY WRONG HERE, not merely redundant.
-  // `issue_slot_past_pnr` includes `| (iss_uop.rob_idx === io.rob_pnr_idx)`, but
-  // `rob_pnr_idx` NAMES THE OLDEST **UNSAFE** ENTRY (`rob.scala:531`) — so equality
-  // ADMITS THE UNRESOLVED ENTRY. In the scalar SNI context that is intended, because
-  // that mechanism is deliberately permissive. For `IQ_V_ALU`'s past-PNR gate it
-  // would hand a STILL-SPECULATIVE op to the coprocessor, which defeats the entire
-  // reason `pnrGate` exists — and the CII has no branch-kill path to recover with,
-  // precisely because the gate was supposed to make one unnecessary.
-  // ===> THE TEST IS THE STRICT `IsOlder(rob_idx, rob_pnr_idx, rob_head_idx)` THAT
-  // THE SLOT COMPUTES, WITH NOTHING OR-ED ONTO IT. A generator that "restores the
-  // missing equality case" is reintroducing the bug.
+  ===> DO NOT RE-ADD BASELINE'S SNI BLOCK — REJECT LIST ENTRY, SHARPENED (A49).
+  `issue_slot_past_pnr`, `issue_past_pnr`, `can_issue_sni` and
+  `enableConservativeSNI` are a DIFFERENT MECHANISM: speculative
+  non-interference, off by default, per-opcode via `MuxCase`, permissive by
+  construction. Two gates computing overlapping conditions in two places is how
+  one of them ends up disabled by a config flag nobody connected.
+  
+  AND ONE OF ITS TERMS IS ACTIVELY WRONG HERE, not merely redundant.
+  `issue_slot_past_pnr` includes `| (iss_uop.rob_idx === io.rob_pnr_idx)`, but
+  `rob_pnr_idx` NAMES THE OLDEST **UNSAFE** ENTRY (`rob.scala:531`) — so equality
+  ADMITS THE UNRESOLVED ENTRY. In the scalar SNI context that is intended, because
+  that mechanism is deliberately permissive. For `IQ_V_ALU`'s past-PNR gate it
+  would hand a STILL-SPECULATIVE op to the coprocessor, which defeats the entire
+  reason `pnrGate` exists — and the CII has no branch-kill path to recover with,
+  precisely because the gate was supposed to make one unnecessary.
+  ===> THE TEST IS THE STRICT `IsOlder(rob_idx, rob_pnr_idx, rob_head_idx)` THAT
+  THE SLOT COMPUTES, WITH NOTHING OR-ED ONTO IT. A generator that "restores the
+  missing equality case" is reintroducing the bug.
 
   //@req-spec-cii.d13
   A squashed `IQ_V_ALU` entry never issues. Two mechanisms, and both are needed:
@@ -464,32 +464,32 @@ from Tenstorrent Inc.
   cycle; the grant sets `next_uop.iw_issued`, which drops `request` on the
   following cycle; and `next_valid := rebusied` then frees the entry.
 
-  // ===> `spec-core.f11` IS KEPT WITH ITS ID AND ITS READING ANNOTATED (A48 /
-  // decision D12 case 2). "Each issue slot must be granted once" is FALSE AS
-  // LITERALLY WRITTEN. The requirement is true in spirit and loosely worded, so it
-  // is annotated rather than retired — retiring a true-but-loosely-worded
-  // requirement loses coverage. `issue.rst` has been amended to match this reading.
-  //
-  // THE CORRECT READING IS "ONCE PER EXECUTION RESOURCE, NOT A LITERAL GRANT
-  // COUNT". The obligation being protected is that an OP.v is ALLOCATED and SELECTED
-  // once, with NO SECOND ISSUE STAGE — which is what `spec-core.f14` below states
-  // directly, and which this module honours exactly.
-  //
-  // /!\ WARNING TO ANY GENERATOR OR REVIEWER: A CHECK OF THE FORM
-  //     `assert(PopCount(grants for this slot over the entry's lifetime) == 1)`
-  //     WOULD BREAK EVERY VECTOR STORE. Do not emit it, in any spelling.
-  //
-  // TWO EXCEPTIONS, neither of which is a second scheduling decision:
-  // (a) `squash_grant` and BOOM's speculative load-hit RE-BUSY can retract a
-  //     grant, after which the entry re-requests and IS GRANTED AGAIN — a second
-  //     grant of the same select. Baseline machinery, reused unchanged, present only
-  //     on the SCALAR half (vector operands never wake speculatively): a replay of
-  //     one select, not a second select.
-  // (b) A vector STORE slot is granted TWICE, once for AGEN and once for DGEN
-  //     (`spec-issue.d10`): two independently grantable PATHS of one slot
-  //     (baseline's mem slot, extended by VecStoreDgenPath). Their order and the
-  //     unbounded gap between them belong to VecStoreDgenPath. This is the case the
-  //     literal reading of f11 forbids and the design requires.
+  ===> `spec-core.f11` IS KEPT WITH ITS ID AND ITS READING ANNOTATED (A48 /
+  decision D12 case 2). "Each issue slot must be granted once" is FALSE AS
+  LITERALLY WRITTEN. The requirement is true in spirit and loosely worded, so it
+  is annotated rather than retired — retiring a true-but-loosely-worded
+  requirement loses coverage. `issue.rst` has been amended to match this reading.
+  
+  THE CORRECT READING IS "ONCE PER EXECUTION RESOURCE, NOT A LITERAL GRANT
+  COUNT". The obligation being protected is that an OP.v is ALLOCATED and SELECTED
+  once, with NO SECOND ISSUE STAGE — which is what `spec-core.f14` below states
+  directly, and which this module honours exactly.
+  
+  /!\ WARNING TO ANY GENERATOR OR REVIEWER: A CHECK OF THE FORM
+      `assert(PopCount(grants for this slot over the entry's lifetime) == 1)`
+      WOULD BREAK EVERY VECTOR STORE. Do not emit it, in any spelling.
+  
+  TWO EXCEPTIONS, neither of which is a second scheduling decision:
+  (a) `squash_grant` and BOOM's speculative load-hit RE-BUSY can retract a
+      grant, after which the entry re-requests and IS GRANTED AGAIN — a second
+      grant of the same select. Baseline machinery, reused unchanged, present only
+      on the SCALAR half (vector operands never wake speculatively): a replay of
+      one select, not a second select.
+  (b) A vector STORE slot is granted TWICE, once for AGEN and once for DGEN
+      (`spec-issue.d10`): two independently grantable PATHS of one slot
+      (baseline's mem slot, extended by VecStoreDgenPath). Their order and the
+      unbounded gap between them belong to VecStoreDgenPath. This is the case the
+      literal reading of f11 forbids and the design requires.
 
   //@req-spec-core.f14
   An OP.v is ALLOCATED and SELECTED once: this unit has no second issue stage, no
@@ -497,16 +497,16 @@ from Tenstorrent Inc.
   intermediate buffer between `iss_uops` and the execution units. `iss_uops` is
   the grant, driven combinationally in the request cycle.
 
-  // ===> THE GRANT MUST BE COMBINATIONAL IN THE REQUEST CYCLE, and for the store
-  // queue that is load-bearing rather than a performance choice.
-  // VecStoreDgenPath registers NOTHING — a registered grant bit would be stranded
-  // by the collapse shift when the uop migrates to another slot instance — so the
-  // AGEN/DGEN grant state rides the migrating uop's `fu_code(FC_AGEN)` /
-  // `fu_code(FC_DGEN)` pair. Consequently the slot's `iss_fu_code_agen` /
-  // `iss_fu_code_dgen` overrides must already be visible on `iss_uop` when this
-  // unit's `fu_code_match` and the grant resolve. Inserting any register between
-  // `request` and `grant` here desynchronises the path bits from the grant and a
-  // store either replays its AGEN or never issues its DGEN.
+  ===> THE GRANT MUST BE COMBINATIONAL IN THE REQUEST CYCLE, and for the store
+  queue that is load-bearing rather than a performance choice.
+  VecStoreDgenPath registers NOTHING — a registered grant bit would be stranded
+  by the collapse shift when the uop migrates to another slot instance — so the
+  AGEN/DGEN grant state rides the migrating uop's `fu_code(FC_AGEN)` /
+  `fu_code(FC_DGEN)` pair. Consequently the slot's `iss_fu_code_agen` /
+  `iss_fu_code_dgen` overrides must already be visible on `iss_uop` when this
+  unit's `fu_code_match` and the grant resolve. Inserting any register between
+  `request` and `grant` here desynchronises the path bits from the grant and a
+  store either replays its AGEN or never issues its DGEN.
 
   ---- 8. Shared instructions: two slots, two queues, no coupling ----
 
@@ -541,15 +541,15 @@ from Tenstorrent Inc.
   `rob_idx`. It depends on that store's own address translation and on nothing the
   coprocessor half produces. The shared ROB entry carries ONE `rob_unsafe` bit and
   the LSU half clearing it is sufficient — nothing waits on the coprocessor half.
-  // Gating the PNR on BOTH halves being safe is what would close the cycle, since
-  // the coprocessor half cannot issue until the PNR passes the entry. The Rob
-  // delta owns that; this unit must never be given a signal that would let it
-  // wait on the other half.
-  // NOTE the direction qualification the SLOT applies and this unit must not
-  // undo: an ALU slot points `rdy_vs3` at `Mux(is_shared && uses_ldq, pvtmp,
-  // pvs3)`. A bare `Mux(is_shared, ...)` makes a segmented STORE's coprocessor
-  // half wait on the very group it is about to write — immediate self-deadlock,
-  // exercised only by segmented stores.
+  Gating the PNR on BOTH halves being safe is what would close the cycle, since
+  the coprocessor half cannot issue until the PNR passes the entry. The Rob
+  delta owns that; this unit must never be given a signal that would let it
+  wait on the other half.
+  NOTE the direction qualification the SLOT applies and this unit must not
+  undo: an ALU slot points `rdy_vs3` at `Mux(is_shared && uses_ldq, pvtmp,
+  pvs3)`. A bare `Mux(is_shared, ...)` makes a segmented STORE's coprocessor
+  half wait on the very group it is about to write — immediate self-deadlock,
+  exercised only by segmented stores.
 
   //@req-spec-issue.e14
   //@req-spec-cii.i7
@@ -577,12 +577,12 @@ from Tenstorrent Inc.
   stall condition that can never be false: dead logic that reads as a dependency
   and invites someone to make it a real one.
 
-  // ===> AND NOTHING HERE MAY CONSULT A `busy` FROM `VecLsu` (invariant 3). The
-  // previous attempt exported `io.busy := grp_active || (state =/= sIdle)` from a
-  // single vector-LSU FSM straight into `fu_ready`, capping vector memory
-  // concurrency at one op machine-wide. This unit has no port to the vector LSU.
-  // Its ONLY back-pressure is `fu_types`, which is credit- and capacity-metered
-  // per execution resource and is not instruction-scoped state.
+  ===> AND NOTHING HERE MAY CONSULT A `busy` FROM `VecLsu` (invariant 3). The
+  previous attempt exported `io.busy := grp_active || (state =/= sIdle)` from a
+  single vector-LSU FSM straight into `fu_ready`, capping vector memory
+  concurrency at one op machine-wide. This unit has no port to the vector LSU.
+  Its ONLY back-pressure is `fu_types`, which is credit- and capacity-metered
+  per execution resource and is not instruction-scoped state.
 
   ---- 10. Flush, and the one-cycle window this unit deliberately keeps ----
 
@@ -658,23 +658,23 @@ from Tenstorrent Inc.
   slot interface. Nothing in the select, the shamt chain or the dispatch path
   distinguishes them.
 
-  // ===> AN AGGREGATE `stale_pvdest_busy` BIT WAS REJECTED, AND IT IS THE TEMPTING
-  // WRONG ANSWER: one MicroOp bit instead of 32 added matchers. It is UNSAFE.
-  // `stale_pvdest` can span UP TO EIGHT PRODUCERS — an `LMUL=1` op writes `v0`, then
-  // an `LMUL=8` op renames `v0..v7`, so the younger op's stale mapping is the current
-  // mappings of eight arch vregs installed by up to eight different instructions. One
-  // bit cannot express "waiting on producer 3 of 8" and no single group-done can
-  // clear it correctly. Same argument that forces per-member matching for `pvs*`
-  // (rename.g20). MicroOp must not gain such a field.
-  //
-  // ACCEPTED CONSERVATISM: the host cannot know whether the VPU will actually pull
-  // `STALE_VD` — the coprocessor decides and NO VPU-SIDE SIGNAL EXISTS — so any CII
-  // op with a vector destination waits on `stale_pvdest`.
-  //
-  // COST: +1 matcher x (16 `iq_v_load` + 16 `iq_v_alu`) slots, IN THE STAGE THAT IS
-  // ALREADY THIS DESIGN'S #1 TIMING RISK. Accepted against a silent wrong-data
-  // alternative. The mitigation order in the perf section is unchanged and the fifth
-  // instance shares the shared one-hot decode with the other four.
+  ===> AN AGGREGATE `stale_pvdest_busy` BIT WAS REJECTED, AND IT IS THE TEMPTING
+  WRONG ANSWER: one MicroOp bit instead of 32 added matchers. It is UNSAFE.
+  `stale_pvdest` can span UP TO EIGHT PRODUCERS — an `LMUL=1` op writes `v0`, then
+  an `LMUL=8` op renames `v0..v7`, so the younger op's stale mapping is the current
+  mappings of eight arch vregs installed by up to eight different instructions. One
+  bit cannot express "waiting on producer 3 of 8" and no single group-done can
+  clear it correctly. Same argument that forces per-member matching for `pvs*`
+  (rename.g20). MicroOp must not gain such a field.
+  
+  ACCEPTED CONSERVATISM: the host cannot know whether the VPU will actually pull
+  `STALE_VD` — the coprocessor decides and NO VPU-SIDE SIGNAL EXISTS — so any CII
+  op with a vector destination waits on `stale_pvdest`.
+  
+  COST: +1 matcher x (16 `iq_v_load` + 16 `iq_v_alu`) slots, IN THE STAGE THAT IS
+  ALREADY THIS DESIGN'S #1 TIMING RISK. Accepted against a silent wrong-data
+  alternative. The mitigation order in the perf section is unchanged and the fifth
+  instance shares the shared one-hot decode with the other four.
   <|end_logic|>
 
 <|end_module|>

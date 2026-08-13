@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecRegFile — the vector physical register file as seen by the rest of the
   machine: 96 PRNs x `vLen` bits presented through a STATICALLY PARTITIONED
   9-read / 3-write port set, assembled from four `VecRegFileBank` width slices.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/regfile/VecRegFile.scala,
@@ -79,7 +80,6 @@ from Tenstorrent Inc.
   `cii-writeback` (R5-R8 / W2 and the never-stall obligation),
   case_study.rst `case-vl-zero` (the group copy borrowing R2/W0),
   glossary.rst `glossary-terms` (`pvtmp` is an ordinary VRF group).
-*/
 
 <|begin_module|>
 
@@ -306,10 +306,10 @@ from Tenstorrent Inc.
     `mask(bankBytes*(b+1)-1, bankBytes*b)`. A write whose mask is all zero in a
     given bank still arrives there with `valid` set; the bank enables no byte.
 
-  // ===> DO NOT reuse BOOM's scalar `BankedRF` (v4/exu/register-read/regfile.scala).
-  // It banks the register COUNT and therefore computes a bank select and shifts
-  // the address. Here every bank holds a slice of EVERY PRN. Applying the scalar
-  // pattern would quietly drop three quarters of every read.
+  ===> DO NOT reuse BOOM's scalar `BankedRF` (v4/exu/register-read/regfile.scala).
+  It banks the register COUNT and therefore computes a bank select and shifts
+  the address. Here every bank holds a slice of EVERY PRN. Applying the scalar
+  pattern would quietly drop three quarters of every read.
 
   That `RegNext` is THE read-port output flop, one per read port, and the only
   state in this module. It is what makes the PORT a registered one-cycle read while
@@ -477,17 +477,17 @@ from Tenstorrent Inc.
   is not using the port, and this module never learns that two clients existed.
   What arrives here is one address and one write, already resolved.
 
-  // ===> DO NOT RE-ADD THE MUX HERE, IN EITHER DIRECTION. Two copies of a
-  // strict-priority mux in series is not redundancy: the outer one would qualify
-  // an already-resolved request against a `valid` that the inner one has already
-  // consumed, so a granted copy could be dropped with nothing reporting it. The
-  // functional description was IDENTICAL in both files, which is exactly why
-  // exactly one may be built.
-  // Note also: the ORDINARY masked / partial-tail case is NOT the group-copy
-  // mechanism. Those inactive lanes are pre-loaded from `stale_pvdest` on R2
-  // INSIDE the LCB, overlapped with memory latency and merged into its single W0
-  // write. Routing the ordinary case through the copy resurrects the serial
-  // prologue v2 deletes.
+  ===> DO NOT RE-ADD THE MUX HERE, IN EITHER DIRECTION. Two copies of a
+  strict-priority mux in series is not redundancy: the outer one would qualify
+  an already-resolved request against a `valid` that the inner one has already
+  consumed, so a granted copy could be dropped with nothing reporting it. The
+  functional description was IDENTICAL in both files, which is exactly why
+  exactly one may be built.
+  Note also: the ORDINARY masked / partial-tail case is NOT the group-copy
+  mechanism. Those inactive lanes are pre-loaded from `stale_pvdest` on R2
+  INSIDE the LCB, overlapped with memory latency and merged into its single W0
+  write. Routing the ordinary case through the copy resurrects the serial
+  prologue v2 deletes.
 
   ---- 7. Tracing and debug ----
 

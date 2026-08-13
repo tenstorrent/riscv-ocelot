@@ -30,46 +30,8 @@ import boom.v4.exu.{BrUpdateInfo, ExeUnitResp, Wakeup}
 
 // GENERATED from src/main/nlhdl/pkg/VecBundles.nlhdl.scala. Do not hand-edit;
 // regenerate via the nlhdl gen-rtl flow instead.
-//
-// VecBundles — every bundle that crosses a boundary between two vector nodes.
-// `kind: package`: pure Bundle/enum declarations, no Module, no I/O of its
-// own, no state, never instantiated. Other modules bind to it only through
-// `depends_on:` (a compile-order edge) in hierarchy.yaml.
-//
-// PACKAGE NODE CONVENTION: the parameters a bundle needs come from
-// VectorParams (via HasVectorParams's re-exports on HasBoomCoreParameters,
-// already mixed into BoomBundle) and from HasBoomCoreParameters directly —
-// never a literal width. See the per-bundle notes below for the few places
-// this file had to depart from that rule because a named constant the spec
-// calls for does not yet exist anywhere in the generated sources; each is
-// flagged "SPEC DEFECT (reported, not resolved)" at the point it bites.
-//
-// Governing spec anchors: midcore.rst (group-done and the completion model),
-// loadstore.rst `ssi-queues` and `elem-progress` (the element access and the
-// queue set), cii.rst `cii-interface` (the four channel payloads),
-// issue.rst `vec-queue-reservation`.
 
-// =============================================================================
 // ---- VecGroupDone: the completion event ----
-// =============================================================================
-//
-// Announces that one whole destination group has completed. It carries the
-// completing group's FULL MEMBER-PRN VECTOR (not a base+count: the free list
-// allocates a group without requiring contiguous PRNs, so a consumer matches
-// each of its source group's members against this vector) together with a
-// valid-member count, the rob_idx of the owning OP.v, and an
-// is_vl_producer-style `pvl` field for the case where the producer also wrote
-// VL.
-//
-// ONE event, THREE consumers (the ROB's single-shot rob_bsy clear, the vector
-// Busy-Table clear, and the vector wakeup network) is why this is one bundle
-// rather than three narrower ones: the three consumers must see the same
-// completion in the same cycle, and a split bundle would let them drift.
-//
-// perf: this bundle is matched per member against every wakeup port in every
-// vector issue slot each cycle (width multiplied by slots x ports in the
-// issue-stage comparator budget) — kept to exactly the member PRNs, the count
-// and the ownership fields for that reason.
 //@req-spec-core.g2
 //@req-spec-issue.f6
 class VecGroupDone(implicit p: Parameters) extends BoomBundle
@@ -84,41 +46,7 @@ class VecGroupDone(implicit p: Parameters) extends BoomBundle
   val pvl     = Valid(UInt(vlPregSz.W))
 }
 
-// =============================================================================
 // ---- VecMemberRdy: the per-member readiness side channel ----
-// =============================================================================
-//
-// Carries per-member operand readiness alongside a uOP, from the rename space
-// to the issue queues. FIVE per-member groups plus the mask bit: vs1_rdy,
-// vs2_rdy, vs3_rdy, vtmp_rdy and vold_rdy, each Vec(maxVecMembers, Bool),
-// plus vm_rdy: Bool. Takes NO parameter -- sized from maxVecMembers, which
-// this package already has in scope.
-//
-// The mask stays a single Bool because pvm names ONE register, not a group,
-// so "five groups and six fields" is the same statement, not a discrepancy.
-// vold_rdy is stale_pvdest's per-member readiness (decision D6), feeding the
-// rdy_vold matcher on IQ_V_LOAD and IQ_V_ALU slots -- the CII reads the old
-// destination as a source, so it is a real dependency and not a duplicate of
-// vs3_rdy. This is the READY sense; VecBusyTable's VecMemberBusyResp is the
-// BUSY sense and stays local to it, with VecRenameSpace converting between
-// them.
-//
-// IT IS DECLARED HERE, ONCE, AND EVERY OTHER SITE BINDS TO IT. This bundle is
-// the one VecPipeline part 13 rules on: "VecSlotMemberRdy and VecMemberRdy
-// ARE ONE BUNDLE WITH TWO NAMES, and that is a defect, not a synonym." Three
-// specs (VecIssueSlot, VecIssueUnit, VecPipeline) already said the single
-// declaration belongs in VecBundles -- and this package never declared it, so
-// the two consumers each declared their own: VecRenameSpace emitted
-// VecMemberRdy(maxGroupSize) and VecIssueSlot a local
-// VecIssueSlotMemberRdyShim, structurally identical types facing each other
-// across one seam that VecIssueUnit must connect. It would not have compiled.
-// Added here 2026-08-10; VecRenameSpace's spec amended to bind rather than
-// declare. Both generated shapes had already converged on the five-group
-// layout above, so this promotion is a rename, not a redesign.
-//
-// It belongs here by the same test as VecScalarOperands and VecRobFlags: it
-// crosses a boundary BOTH sides must review. A declaration inside a producer
-// is readable from one side only.
 class VecMemberRdy(implicit p: Parameters) extends BoomBundle
 {
   val vs1_rdy  = Vec(maxVecMembers, Bool())
@@ -131,20 +59,7 @@ class VecMemberRdy(implicit p: Parameters) extends BoomBundle
   val vm_rdy   = Bool()
 }
 
-// =============================================================================
 // ---- VecElemAccess: the nOP.v ----
-// =============================================================================
-//
-// The cracked element access ("nOP.v") that address generation emits and the
-// drain side consumes. Wraps the originating OP.v's MicroOp (via HasBoomUOP,
-// the same idiom BoomDCacheReq uses) and adds the access payload only.
-//
-// The fields identifying WHICH register the access targets (destination PRN,
-// byte offset within it) are deliberately NOT declared here a second time:
-// they are the nOP.v-scoped cursor fields already carried by the wrapped
-// MicroOp (v_split_dst_prn, v_split_dst_byte_off, v_elem_cursor) — declaring
-// them again would give the drain side two places to read the same thing
-// from, and one of them would go stale.
 class VecElemAccess(implicit p: Parameters) extends BoomBundle
   with HasBoomUOP
 {
@@ -156,19 +71,96 @@ class VecElemAccess(implicit p: Parameters) extends BoomBundle
   val last    = Bool() // last access of the group
 }
 
-// =============================================================================
+// ---- VecSnoopCandidate / VecLcamSearch: the disambiguation seam ----
+// Two-sided contracts (VecLsu + the LSU delta on one side, VecCrossLsuSnoop and
+// VecStoreForward on the other), so they live here rather than in either module.
+//@req-spec-memord.a15
+class VecSnoopCandidate(implicit p: Parameters) extends BoomBundle
+{
+  val is_store       = Bool()
+  val is_unit_stride = Bool()
+  val paddr          = UInt(corePAddrBits.W)
+  val len            = UInt(log2Ceil(maxVecMembers * vecVLen / 8 + 1).W)
+  val eew            = UInt(2.W)
+  // BYTE-granular over a whole LMUL=8 group. Not vecVLen/8, and not the same
+  // quantity as VecRangeEntry.mask, which counts ELEMENTS.
+  val active_mask    = UInt((maxVecMembers * vecVLen / 8).W)
+  val uop            = new MicroOp
+  val queue_idx      = UInt(resvPtrSz.W)
+  val ordinal        = UInt(log2Ceil(ssiQueueEntries + 1).W)
+  val q_base         = UInt(resvPtrSz.W)
+  val members        = UInt(log2Ceil(maxVecMembers + 1).W)
+  val us_data_base   = UInt(log2Ceil(usQueueEntries).W)
+  val data_filled    = Bool()
+}
+
+// The REDUCED tier-2 hit VecCrossLsuSnoop exports and VecStoreForward consumes. Not
+// VecSnoopCandidate: this one is stored per snoop-window entry, where a full MicroOp
+// would be prohibitive, so it carries the wrapped stq_idx directly instead.
+//@req-spec-memord.a15
+class VecSnoopHit(implicit p: Parameters) extends BoomBundle
+{
+  val is_store       = Bool()
+  val is_unit_stride = Bool()
+  val stq_idx        = UInt((1 + stqAddrSz).W)
+  val paddr          = UInt(corePAddrBits.W)
+  val len            = UInt(log2Ceil(maxVecMembers * vecVLen / 8 + 1).W)
+  val eew            = UInt(2.W)
+  val active_mask    = UInt((maxVecMembers * vecVLen / 8).W)
+  val queue_idx      = UInt(resvPtrSz.W)
+  val ordinal        = UInt(log2Ceil(ssiQueueEntries + 1).W)
+  val us_data_base   = UInt(log2Ceil(usQueueEntries).W)
+  val members        = UInt(log2Ceil(maxVecMembers + 1).W)
+  val data_filled    = Bool()
+}
+
+// The LCAM-stage load tap, consumed by BOTH VecCrossLsuSnoop and VecStoreForward.
+// One declaration because the LSU delta must drive them from identical values in the
+// same cycle; two views of one tap is how the two sides silently disagree.
+//@req-spec-memord.a19
+class VecLdSearch(implicit p: Parameters) extends BoomBundle
+{
+  val paddr          = UInt(corePAddrBits.W)
+  val byte_mask      = UInt(coreDataBytes.W)
+  val uop            = new MicroOp
+  val ldq_idx        = UInt((1 + ldqAddrSz).W)
+  val next_stq_idx   = UInt((1 + stqAddrSz).W)
+  val is_vec         = Bool()
+  val is_unit_stride = Bool()
+  val range_base     = UInt(corePAddrBits.W)
+  val range_len      = UInt(log2Ceil(maxVecMembers * vecVLen / 8 + 1).W)
+  // Forwarding-side qualifiers.
+  val can_forward    = Bool()
+  val kill_forward   = Bool()
+  // Ordering-side: the LSU's existing per-STQ-entry "older than this load" mask.
+  val stq_age_mask   = UInt(numStqEntries.W)
+}
+
+//@req-spec-memord.a19
+class VecLcamSearch(implicit p: Parameters) extends BoomBundle
+{
+  val is_store_search = Bool()
+  val is_load_search  = Bool()
+  val paddr           = UInt(corePAddrBits.W)
+  val byte_mask       = UInt(coreDataBytes.W)
+  val is_range        = Bool()
+  val range_lo        = UInt((corePAddrBits - 3).W)
+  val range_hi        = UInt((corePAddrBits - 3).W)
+  val uop             = new MicroOp
+}
+
+// ---- VecMemAccess: the drain-to-arbiter beat ----
+//@req-spec-lsu.h1
+class VecMemAccess(implicit p: Parameters) extends VecElemAccess
+{
+  val data           = UInt((coreDataBytes * 8).W)
+  val uses_tlb       = Bool()
+  val uses_dcache    = Bool()
+  val uses_lcam      = Bool()
+  val lcam_range_len = UInt(log2Ceil(maxVecMembers * vecVLen / 8 + 1).W)
+}
+
 // ---- The element queue set ----
-// =============================================================================
-//
-// Named enumeration rather than six unrelated queue instances, so a module
-// naming a queue cannot name one that does not exist. Exactly six members,
-// `{ld,st}_{SSI,US}_{ADDR,DATA}_Q`. Deliberately NO ld_*_DATA_Q in either
-// class: a load's returning data goes to the LCB for assembly, not into a
-// queue — the asymmetry is real, not an omission.
-//
-// Address generation delivers its nOP.v bundles into these dedicated queues
-// and nowhere else — never into an LDQ or STQ slot, which hold one
-// placeholder entry per vector instruction for ordering/commit only.
 //@req-spec-lsu.a14
 //@req-spec-lsu.a15
 //@req-spec-agen.a5
@@ -177,17 +169,6 @@ object VecQueueId {
     Enum(6)
 }
 
-// `VecRangeEntry` is the unit-stride counterpart of `VecElemAccess`: one entry
-// describing a whole contiguous byte range, standing in for what would
-// otherwise be up to `vLen` element accesses.
-//
-// THE FIELD LIST BELOW IS THE COMPLETE AUTHORITATIVE ENUMERATION per the
-// nlhdl source: it is the ONLY thing that remembers a unit-stride instruction
-// (which is precisely how VecRangeAgen stays free of per-instruction state),
-// so anything the drain side, the LCB, the forwarder or the squash unit needs
-// about that instruction must be on the entry. A generator must emit exactly
-// this list; a consumer needing a fifth thing amends this list rather than
-// deriving it locally.
 //@req-spec-lsu.a14
 //@req-spec-lsu.a15
 //@req-spec-agen.a5
@@ -219,49 +200,22 @@ class VecRangeEntry(implicit p: Parameters) extends BoomBundle
   // a fault-only-first load from an ordinary one. Assert is_unit_stride on
   // every entry carrying it.
   val is_ff          = Bool()
-  // Segment field count, read by VecBeatExpander's segment constraint
-  // (1 << eew when nf > 1, unbounded when nf == 1). nf > 1 does not in
-  // practice reach the US queues; this is a representability safety net.
   val nf             = UInt(3.W) // matches MicroOp.v_seg_nf's encoding width
-  // The access's ACTIVE MASK.
-  // ===> REPORTED, NOT RESOLVED (mirrors the nlhdl source's own note): this
-  // file's own text states BYTE mask, vLen/8 = 32 bits, and that is what is
-  // implemented below. Three consumers (VecRangeAgen, VecBeatExpander,
-  // VecMaskStream) are cited in the spec as reading it ELEMENT-granular and
-  // wider (up to VLMAX = 256 bits). The two readings are not interchangeable
-  // and this file does not pick a side beyond restating its own declared
-  // position — see the nlhdl source's dependencies section for the full
-  // cross-file conflict. A generator must not silently truncate; flagged here
-  // for the same reason the source flags it.
-  val mask           = UInt((vecVLen / 8).W)
+  // ELEMENT-granular, vecVLen bits: one bit per element, matching VecMaskStream's
+  // us_mask. At (vecVLen/8) it silently dropped every mask bit above element 31.
+  val mask           = UInt(vecVLen.W)
   // Destination group's base PRN and member count, from pvdest/v_emul.
-  val pvdest_base    = UInt(vecPregSz.W)
+  // FULL per-member PRN vector, never base+count: a renamed group's members are NOT
+  // contiguous (VecFreeList hands out a contiguous window of PORTS, not of PRNs).
+  val pvdest         = Vec(maxVecMembers, UInt(vecPregSz.W))
   val members        = UInt(log2Ceil(maxVecMembers + 1).W)
-  // For a STORE, the absolute base INDEX of this access's region in
-  // st_US_DATA_Q, filled from reservation slot 1. NOT derivable from the
-  // address region's base (see VecReservation / the nlhdl source's note on
-  // why the US store address/data regions are not in identity
-  // correspondence). Meaningless (don't-care) on a load or on an ld_*
-  // queue's entry.
   val us_data_base   = UInt(log2Ceil(usQueueEntries).W)
-  // Ownership fields, so the drain side, the LCB and the squash unit can each
-  // name the instruction from the entry alone. Both are carried (rather than
-  // only whichever applies) because one VecRangeEntry class is shared by both
-  // the ld_* and st_* members of the queue set; the unused one is don't-care.
   val rob_idx        = UInt(robAddrSz.W)
   val ldq_idx        = UInt((1 + ldqAddrSz).W)
   val stq_idx        = UInt((1 + stqAddrSz).W)
 }
 
-// =============================================================================
 // ---- VecReservation ----
-// =============================================================================
-//
-// The dispatch-time capacity claim: which queue, how many entries, and the
-// owning rob_idx plus the reserving ldq_idx/stq_idx. Carries the
-// reservation's index region (base + count) so a squash can roll a queue's
-// tail pointer back to the youngest surviving reservation without a
-// per-entry comparison.
 class VecReservation(implicit p: Parameters) extends BoomBundle
 {
   // One of the six VecQueueId values. Width derived from the enumeration
@@ -270,53 +224,24 @@ class VecReservation(implicit p: Parameters) extends BoomBundle
   val queue   = UInt(VecQueueId.ld_SSI_ADDR_Q.getWidth.W)
   // Base index of the reserved region. Sized against the deeper (SSI) queue
   // class so one field covers a reservation in either class.
-  val base    = UInt(log2Ceil(ssiQueueEntries).W)
+  val base    = UInt(resvPtrSz.W)
   val entries = UInt(log2Ceil(ssiQueueEntries + 1).W)
   val rob_idx = UInt(robAddrSz.W)
   val ldq_idx = UInt((1 + ldqAddrSz).W)
   val stq_idx = UInt((1 + stqAddrSz).W)
 }
 
-// =============================================================================
 // ---- VecException ----
-// =============================================================================
-//
-// Reports a vector memory fault to the ROB as a plain precise exception.
-// Deliberately carries NO element index: a faulting vector op traps with
-// vstart = 0 and restarts whole, so an element index reaching the ROB could
-// only be misused.
+// `uop` is load-bearing, not convenience: the ROB latches it and reads uop.br_mask
+// for GetNewBrMask, so a rob_idx-only bundle cannot drive rob.io.lxcpt at all.
 class VecException(implicit p: Parameters) extends BoomBundle
 {
-  val valid    = Bool()
-  val rob_idx  = UInt(robAddrSz.W)
-  val cause    = UInt(xLen.W)
+  val uop      = new MicroOp
+  val cause    = UInt(log2Ceil(freechips.rocketchip.rocket.Causes.all.max + 2).W)
   val badvaddr = UInt(coreMaxAddrBits.W)
 }
 
-// =============================================================================
 // ---- The four CII channel payloads ----
-// =============================================================================
-//
-// The Chisel view of the frozen SV contract in tt_cii_caracal_pkg.svh. Every
-// width is derived from ciiTagBits, vecVLen or a named constant of that
-// package — never a literal — because the SV side is authoritative and a
-// disagreement here is a silent protocol break, not a compile error.
-//
-// ALL FOUR ARE PER-LANE PAYLOADS, AND THE CHANNEL'S GRAIN IS THE BEAT:
-// tt_cii_interface.sv gives each channel exactly ONE valid and ONE credit for
-// a beat of N lanes. So NO bundle here may grow a valid, credit, ready or
-// lane-index field: per-lane ACTIVITY is encoded in the payload itself (e.g.
-// op_id = CII_SRC_NONE on an unused Src-Request lane). The only index a
-// payload carries is a MEMBER index (op_offset, wb_dst_offset), never a lane
-// index and never a register number.
-
-// All four tt_cii_caracal_pkg.svh localparams the spec names are mirrored, so
-// no width below is a bare literal: CII_TAG_W -> `ciiTagBits`,
-// CII_NUM_SRC_SLOTS -> `ciiNumSrcSlots` (added to VectorParams at A2, for
-// exactly this), CII_VL_W -> the derived `vecVLSz`, CII_MEMBER_W ->
-// `log2Ceil(maxVecMembers)`. All are in scope on BoomBundle via
-// HasBoomCoreParameters. The rule matters because a flat BlackBox port
-// disagreeing by one bit shifts a whole payload without a width error.
 object VecBundlesConsts
 {
   //@req-spec-cii.a12
@@ -331,9 +256,6 @@ object VecBundlesConsts
 
 //@req-spec-cii.a6
 //@req-spec-cii.a14
-// Host to coprocessor. vtype/vl/vxrm are the Caracal EXTENSION to the
-// generic tt_cii_interface.sv issue struct (which carries tag+instr only) —
-// they let the coprocessor hold no cross-instruction configuration state.
 class CiiIssueReq(implicit p: Parameters) extends BoomBundle
 {
   val tag   = UInt(ciiTagBits.W)
@@ -358,8 +280,6 @@ class CiiIssueReq(implicit p: Parameters) extends BoomBundle
 }
 
 //@req-spec-cii.a8
-// Coprocessor to host. Names operands by abstract slot and group member
-// only — no register number of any kind, architectural or physical.
 class CiiSrcReq(implicit p: Parameters) extends BoomBundle
 {
   val tag       = UInt(ciiTagBits.W)
@@ -371,12 +291,6 @@ class CiiSrcReq(implicit p: Parameters) extends BoomBundle
 }
 
 //@req-spec-cii.a10
-// Host to coprocessor. Carries the operand data and NOTHING else — not even
-// the tag: the channel is ordered, so the coprocessor correlates a beat with
-// its request by arrival order rather than by a field. That is exactly why a
-// killed tag's request must still be answered: an omitted beat would
-// desynchronise the channel for every surviving instruction (see
-// VecCiiFlush).
 class CiiSrcData(implicit p: Parameters) extends BoomBundle
 {
   val data = UInt(vecVLen.W)
@@ -384,11 +298,6 @@ class CiiSrcData(implicit p: Parameters) extends BoomBundle
 
 //@req-spec-cii.a12
 //@req-spec-cii.a15
-// Coprocessor to host. `last` is the Caracal extension to the generic
-// writeback struct and is the ONLY completion signal: the channel carries no
-// expected-count field, and the host must never infer completion by counting
-// beats (widening/narrowing ops emit a member count that differs from the
-// source EMUL).
 class CiiWbStatus(implicit p: Parameters) extends BoomBundle
 {
   val last     = Bool() // final beat of this tag
@@ -410,49 +319,9 @@ class CiiWriteback(implicit p: Parameters) extends BoomBundle
   val wb_status      = new CiiWbStatus
 }
 
-// =============================================================================
 // ---- The host-seam declarations A2 deferred to D2 ----
-// =============================================================================
-//
-// Five members of `vec_pipeline_io` were OMITTED at A2 rather than declared
-// wrong, each with a note in this file naming step D2 as its owner. This
-// section settles all five, discharging VecPipeline's amendment 1 ("STILL
-// REQUIRED: declare IntWakeupBus, FpWakeupBus, IntWbSnoop and VecRobFlags in
-// VecBundles") and the A34 assignment with it.
-//
-// THREE OF THE FIVE NAMES IN hierarchy.yaml ARE DESCRIPTIONS OF A SHAPE, NOT
-// REQUESTS FOR A NEW TYPE, and generating a class for them would be the WORSE
-// outcome. `IntWakeupBus`, `FpWakeupBus` and `DecoupledReadReq` each describe
-// something BOOM already declares: a wakeup bus is `Vec(n, Valid(new
-// Wakeup))` (`Wakeup` from execution-unit.scala carries uop/bypassable/
-// speculative_mask/rebusy — a structurally-equal Caracal copy would FORK that
-// bundle), and `DecoupledReadReq` is exactly `RegisterFile.io.arb_read_reqs`'s
-// type, `Flipped(Decoupled(UInt(log2Ceil(numRegisters).W)))` — its whole
-// purpose is to be assignable to that port with `<>`, which a bespoke bundle
-// could not be. So these three are declared AS THE SEAM MEMBERS THEMSELVES,
-// below in `VecPipelineIO`, in terms of BOOM's own types. The two that DO
-// carry new structure — `VecRobFlags` and `IntWbSnoop` — become real classes
-// here.
 
 // ---- VecRobFlags (this is A34) ----
-//
-// The CSR side effect of a vector instruction on its way to COMMIT. Crosses
-// as `Vec(numVecClrPorts, Valid(new VecRobFlags))`, one lane per completion
-// producer, matching `vec_clr_bsy` lane for lane — lane 0 the LCB group-done,
-// lane 1 VecCiiComplete, lane 2 VecGroupCopy.
-//
-// It lives here, not inside its producer, by part 13's test: VecPipeline
-// emits it and Rob consumes it, so both sides must review the declaration,
-// and VecBundles already declares VecGroupDone, the bundle it travels beside.
-//
-// APPLIED AT COMMIT AND NEVER AT WRITEBACK: rob.scala:405 asserts
-// `!rob_fflags(row_idx).valid` on a write, so a vector op must write the
-// per-entry fflags slot AT MOST ONCE — a CII scalar-dest writeback must leave
-// ExeUnitResp.fflags invalid and route its flags through this bundle instead.
-// Pulsing csr.io.vector.set_vxsat at writeback is separately wrong: a
-// past-PNR CII op can still be squashed by a ROB-head flush, so a writeback
-// pulse would dirty architectural state for an instruction that never
-// retires.
 class VecRobFlags(implicit p: Parameters) extends BoomBundle
 {
   val rob_idx = UInt(robAddrSz.W)
@@ -461,25 +330,6 @@ class VecRobFlags(implicit p: Parameters) extends BoomBundle
 }
 
 // ---- IntWbSnoop ----
-//
-// The INT-writeback tap, crossing as `Vec(numIrfWritePorts, Valid(new
-// IntWbSnoop))`. NOT the same thing as `int_wakeups` — a wakeup carries
-// readiness without a value, and this carries the value.
-//
-// `addr` IS `maxPregSz` WIDE, NOT `ipregSz`, because this bundle exists to be
-// compared against `RegisterFile.io.write_ports(i).bits.addr`, which
-// regfile.scala:35 declares as `UInt(maxPregSz.W)`. Taking the narrower
-// INT-specific width would be arithmetically sufficient on every config and
-// still wrong: the comparison would then be between two different widths and
-// Chisel would zero-extend one side silently. Match the port being snooped.
-//
-// Without this tap the M1 stale-scalar-base bug has no fix: a vector
-// load/store is woken speculatively, so VecScalarOperandRead's INT-RF read
-// can fire in the same cycle the base GPR's writeback commits, and the INT RF
-// is a registered Mem read with no read-during-write bypass — so the read
-// returns the OLD base. The forward needs the DATA, and the port count must
-// include the scalar-dest write port, or a base produced by vmv.x.s is
-// missed.
 class IntWbSnoop(implicit p: Parameters) extends BoomBundle
 {
   val addr = UInt(maxPregSz.W)
@@ -487,32 +337,6 @@ class IntWbSnoop(implicit p: Parameters) extends BoomBundle
 }
 
 // ---- The CSR seam: there is no CSRVectorIO ----
-//
-// hierarchy.yaml types `csr_vector` as `CSRVectorIO`. NO SUCH CLASS EXISTS.
-// Rocket declares the port anonymously —
-// `val vector = usingVector.option(new Bundle { ... })` at
-// rocket-chip/src/main/scala/rocket/CSR.scala:310 — so there is no name to
-// reference. Restating rocket's bundle field-for-field here would drift from
-// it silently, and inventing a Chisel type in rocket's name would claim
-// ownership of state ground rule 9 says is rocket's.
-//
-// `VecCsrRead` is Caracal's own READ-DIRECTION VIEW of that port. It uses
-// rocket's `VConfig` for the field that has a name, so vtype/vl cannot drift;
-// the two bare-UInt fields restate rocket's own EXPRESSIONS (maxVLMax.log2,
-// 2), never a literal. It carries ONLY the output-direction fields — exactly
-// what part 8 of VecPipeline says the container consumes. Rocket's
-// input-direction fields (set_vconfig, set_vstart, set_vxsat, set_vs_dirty)
-// are driven by BoomCore and the Rob delta and deliberately do NOT appear
-// here — that is why csr_vs_dirty is a separate backward bit on the
-// vec_pipeline_io seam rather than a member of this bundle. Because it holds
-// no write path, it CANNOT be used to write architectural vector CSR state,
-// which is the property ground rule 9 actually wants; a faithful copy of
-// rocket's bundle would have handed the container one.
-// `.log2` is rocket's own `IntToAugmentedInt.log2` (util/package.scala:236) --
-// `log2Ceil` plus a `require(isPow2)`. It is imported by NAME above rather than
-// via a wildcard, and NOT rewritten as `log2Ceil(maxVLMax)`, so this stays the
-// same expression rocket writes at CSR.scala:312 for the field it mirrors. The
-// isPow2 check comes with it and is worth keeping.
 class VecCsrRead(implicit p: Parameters) extends BoomBundle
 {
   val vconfig = new VConfig
@@ -520,63 +344,8 @@ class VecCsrRead(implicit p: Parameters) extends BoomBundle
   val vxrm    = UInt(2.W)
 }
 
-// =============================================================================
 // ---- VecPipelineIO ----
-// =============================================================================
-//
-// Realizes the `vec_pipeline_io` interface declared in hierarchy.yaml — the
-// single bundle across which BoomCore and VecPipeline communicate. Declared
-// field-for-field against that interface entry, as the nlhdl source
-// instructs.
-//
-// Direction convention (the nlhdl source does not spell this out, so it is
-// documented here as the conservative, single choice this file makes): this
-// bundle is authored from VecPipeline's OWN io perspective, matching the
-// `instantiates: connect: io: { interface: vec_pipeline_io }` entry on
-// VecPipeline in hierarchy.yaml. `dir: fwd` (BoomCore -> VecPipeline) is
-// therefore Input(...) and `dir: bwd` (VecPipeline -> BoomCore) is
-// Output(...).
-//
-// ===> THE RENAME INPUTS ARE NAMED ren2_uops AND dis_fire, NOT dec_uops, and
-// the name is load-bearing rather than cosmetic. Vector rename must allocate
-// in lockstep with the scalar RenameStage's REGISTERED ren1->ren2 pipeline.
-// Driving it combinationally from dec_uops runs it one cycle ahead, so at
-// dispatch the vector fields describe the NEXT cycle's (bubble) uop and two
-// ops free the same PRN. With these port names, connecting dec_uops here is
-// visibly wrong at the connection site.
-//
-// ===> RESOLVED (step D2) — THE FIVE FIELDS A2 OMITTED ARE NOW DECLARED, in
-// the host-seam section above and below. `vec_rob_flags`, `int_wakeups`,
-// `fp_wakeups` and `int_wb_snoop` are `Vec(..., Valid(...))` taps typed
-// against `VecRobFlags`/`Wakeup`/`IntWbSnoop`; `int_rf_read_req` is a bare
-// `Vec(5, Decoupled(UInt(ipregSz.W)))`, the exact type of
-// `RegisterFile.io.arb_read_reqs` (flipped there), connected with `<>` and
-// carrying no separate direction wrapper of its own. `int_rf_read_req`'s
-// correlated response half, `int_rf_read_rsp`, stays a plain UInt Vec: the
-// two were never a single indivisible type.
-//
-// `csr_vector`'s type is `VecCsrRead` (declared above), Caracal's own
-// read-direction view of rocket's anonymous `csr.io.vector` bundle — there is
-// no `CSRVectorIO` class in rocket-chip to reference, and restating rocket's
-// bundle field-for-field would drift from it silently.
-//
-// The three port counts — `numIntWakeupPorts`, `numFpWakeupPorts`,
-// `numIrfWritePorts` — are now CONSTRUCTOR PARAMETERS of this bundle, taken
-// from the length of the actual bus rather than re-derived: `core.scala:113,
-// 116` compute `numIrfWritePorts`/`numIntWakeups` INSIDE the BoomCore class
-// body, so they are not core parameters this file can read, and copying the
-// arithmetic would put a second copy of a scalar-side decision in the vector
-// package that a change to BOOM's writeback set would leave silently stale.
-// `VecPipeline` takes the same three and passes them through; BoomCore
-// constructs this bundle as `new VecPipelineIO(int_wakeups.length,
-// fp_pipeline.io.wakeups.length, numIrfWritePorts)`.
-//
-// lsu_vec's type, `boom.v4.lsu.VecLsuCoreIO`, is a genuine forward reference
-// too, but a RESOLVED one: `src/main/nlhdl/host/LSU.nlhdl.scala` states
-// unambiguously "VecLsuCoreIO is declared HERE, beside LSUCoreIO, NOT [in
-// VecBundles]" — so its absence from this file is the documented design, not
-// a gap. That omission is owned by step E7, not D2, and is left untouched.
-class VecPipelineIO(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int, val numIrfWritePorts: Int)
+class VecPipelineIO(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
   (implicit p: Parameters) extends BoomBundle
 {
   // ---- decode feed (vector decode lives inside VecPipeline) ------------
@@ -590,7 +359,7 @@ class VecPipelineIO(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int, val n
   val dec_uops_out    = Output(Vec(coreWidth, new MicroOp()))
   val dec_vec_illegal = Output(Vec(coreWidth, Bool()))
 
-  // ---- rename / dispatch lockstep (see load-bearing-names note above) ---
+  // ---- rename / dispatch lockstep ----
   val ren2_uops       = Input(Vec(coreWidth, new MicroOp()))
   val ren2_mask       = Input(Vec(coreWidth, Bool()))
   val dis_fire        = Input(Vec(coreWidth, Bool()))
@@ -599,17 +368,16 @@ class VecPipelineIO(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int, val n
   // per-lane, per-queue capacity check. Ordering is
   // {IQ_V_LOAD, IQ_V_STORE, IQ_V_ALU} x coreWidth.
   val dis_vec_valids  = Input(Vec(3, Vec(coreWidth, Bool())))
+  // The COMPACTED payload that goes with dis_vec_valids. The CompactingDispatcher moves
+  // uops between lanes, so pairing dis_vec_valids(q)(w) with the lane-w renamed uop
+  // enqueues the wrong instruction as soon as more than one vector op co-dispatches.
+  val dis_vec_uops    = Input(Vec(3, Vec(coreWidth, new MicroOp())))
   val dis_vec_ready   = Output(Vec(3, Vec(coreWidth, Bool())))
-  // The return path for the renamed uop: Rob.io.enq_uops needs the vector
-  // PRNs. Consumed by rob.io.enq_uops ONLY.
   val dis_uops_out    = Output(Vec(coreWidth, new MicroOp()))
 
   // ---- speculation / recovery -----------------------------------------
   val brupdate        = Input(new BrUpdateInfo)
   val rob_pnr_idx     = Input(UInt(robAddrSz.W))
-  // The 3-arg IsOlder(a, b, head) age comparison needs the head to
-  // disambiguate ROB wraparound; without it a past-PNR gate would invert
-  // across a wrap boundary.
   val rob_head_idx    = Input(UInt(robAddrSz.W))
   val rob_flush       = Input(Bool())
   val rob_flush_kill  = Input(Bool())
@@ -621,57 +389,21 @@ class VecPipelineIO(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int, val n
   val commit_rollback = Input(Bool())
 
   // ---- completion back into the ROB (group-done) -----------------------
-  // ONE LANE PER PRODUCER, never arbitrated: a lost clear is unrecoverable
-  // and the ROB entry never retires. Lane 0 = LCB group-done, lane 1 =
-  // VecCiiComplete, lane 2 = VecGroupCopy.
   val vec_clr_bsy      = Output(Vec(vectorParams.numVecClrPorts, Valid(UInt(robAddrSz.W))))
   val vec_clr_unsafe   = Output(Valid(UInt(robAddrSz.W)))
   val vec_xcpt         = Output(Valid(new VecException))
-  // The commit-time CSR side effect (fflags/vxsat), one lane per completion
-  // producer, lane-for-lane with vec_clr_bsy above (D2 / A34).
   val vec_rob_flags    = Output(Vec(vectorParams.numVecClrPorts, Valid(new VecRobFlags)))
 
   // ---- scalar feeders: vector ops read INT/FP for base/stride/.vx/.vf ---
-  // Five vector readers against a partially-ported INT RF (numIrfReadPorts <
-  // 5) means denial is routine, not exceptional — so this is Decoupled, held
-  // until fire, and NOT a bare address (D2). No direction wrapper: Decoupled's
-  // members already carry their own directions, and it is connected to
-  // iregfile.io.arb_read_reqs with `<>`; an Output(...) wrapper would flip
-  // `ready` the wrong way.
   val int_rf_read_req  = Vec(5, Decoupled(UInt(ipregSz.W)))
   val int_rf_read_rsp  = Input(Vec(5, UInt(xLen.W)))
-  // Taps of the EXISTING scalar INT/FP wakeup buses (D2) — readiness without
-  // a value. `Wakeup` is boom.v4.exu's own type; declaring a Caracal copy
-  // would fork it from the scalar issue units' view.
   val int_wakeups      = Input(Vec(numIntWakeupPorts, Valid(new Wakeup)))
-  // The RETRACTION half of BOOM's speculative wakeup, and the grant squash.
-  //
-  // `IntWakeupBus` in VecPipeline's ports section is an AGGREGATE of three
-  // things -- the wakeup Vec plus these two -- and D2's first pass declared
-  // only the Vec, on the reasoning that a Caracal copy of `Wakeup` would fork
-  // it. That reasoning is right about the Vec and silently dropped these two.
-  //
-  // They are NOT optional and NOT no-effect. VecIssueUnit declares both as
-  // unconditional inputs and uses `child_rebusys` to RE-MARK A SLOT BUSY when
-  // a speculatively-woken scalar .vx/.vf feeder's parent load misses. Held at
-  // zero, the retraction never arrives and the vector op issues against a
-  // stale GPR -- with no width error and no assertion anywhere.
-  //
-  // Declared as separate members rather than wrapped in a Caracal bundle, for
-  // the same reason the Vec is bare: they are BOOM's own terms
-  // (`alu_exe_units.map(_.io_squash_iss).reduce(_||_)`), and an aggregate
-  // around them would be a second place to keep in step. There is no FP
-  // counterpart -- BOOM has no FP analogue of either term.
   val int_child_rebusys = Input(UInt(aluWidth.W))
   val int_squash_grant  = Input(Bool())
   val fp_wakeups       = Input(Vec(numFpWakeupPorts,  Valid(new Wakeup)))
-  // The INT-writeback tap (D2): carries the VALUE, unlike int_wakeups above.
-  // Needed for the M1 stale-scalar-base fix — see IntWbSnoop's own note.
   val int_wb_snoop     = Input(Vec(numIrfWritePorts,  Valid(new IntWbSnoop)))
-  // Naming assumption: the nlhdl source names this field's width bare
-  // `pregSz`, a name with no declaration anywhere in HasBoomCoreParameters.
-  // Read as `fpregSz` (the FP physical-register address width) since the
-  // sole reader is VecCiiIssue's `.vf` scalar operand, which is FP-typed.
+  // The host LSU tap. VecLsu owns its contents; this file inspects no member of it.
+  val lsu_vec          = Flipped(new boom.v4.lsu.VecLsuCoreIO)
   val fp_rf_read_req   = Output(UInt(fpregSz.W))
   val fp_rf_read_rsp   = Input(UInt(xLen.W))
 
@@ -680,39 +412,16 @@ class VecPipelineIO(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int, val n
   val fp_wb            = Output(Valid(new ExeUnitResp(xLen)))
 
   // ---- vector CSR state (OWNED by rocket CSRFile, see frontend.rst) -----
-  // ===> RESOLVED (D2). The spec named a `CSRVectorIO` in rocket-chip as this
-  // field's type; NO SUCH CLASS EXISTS — rocket declares the port
-  // anonymously as `val vector = usingVector.option(new Bundle { ... })` at
-  // rocket-chip/src/main/scala/rocket/CSR.scala:310. `VecCsrRead` (declared
-  // above) is Caracal's own read-direction view of that port: BoomCore wires
-  // its three fields from csr.io.vector.get, field by field, at the one site
-  // where that port is in scope. Ground rule 9 is unaffected — the CSR state
-  // is still rocket's; this bundle holds no write path.
   val csr_vector       = Input(new VecCsrRead)
   val csr_frm          = Input(UInt(3.W))
   val csr_vs_dirty     = Output(Bool())
 
   // ---- vset: the dual-destination rule (is_vl_producer) ----------------
-  // Replicated per ALU EU (never arbitrated: a single-shot VL wakeup lost to
-  // arbitration is a permanent hang).
   val vset_resp        = Input(Vec(aluWidth, Valid(new ExeUnitResp(xLen))))
-  // Two lanes, never arbitrated: the ALU vset writeback and the vleff VL trim
-  // are independent producers.
   val vl_wakeup        = Output(Vec(numVlWakeupPorts, Valid(UInt(vlPregSz.W))))
-  // VL-RF commit read data. The read ADDRESS is selected inside VecPipeline
-  // from commit_uops, so no address member is needed here.
   val commit_vl        = Output(Valid(UInt(vecVLSz.W)))
 
   // ---- memory: the vector LSU's own D$ port + ordering hooks -----------
-  // FORWARD REFERENCE TO A LATER PHASE, deliberately omitted at A2.
-  // `VecLsuCoreIO` is declared by the LSU delta (src/main/nlhdl/host/LSU.nlhdl
-  // .scala -> src/main/scala/v4/lsu/lsu.scala), which lands at step E7, not
-  // here: A2 generates the four packages only. Declaring it now would mean
-  // inventing the LSU seam ahead of the step that owns it.
-  // When E7 lands, restore as:
-  //   val lsu_vec = Flipped(new boom.v4.lsu.VecLsuCoreIO)
-  // with Flipped() presenting that sub-bundle's LSU-side Input/Output split
-  // from VecPipelineIO's (core-receives) perspective.
   val lsu_fencei_rdy_vec = Output(Bool())
 
   // ---- debug / trace (ground rule: guarded printf, off by default) -----

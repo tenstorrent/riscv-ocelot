@@ -18,6 +18,7 @@ from Tenstorrent Inc.
 /*
   VtypeTable — the one place that turns a `vtype` value into {VLMAX, EMUL,
   vill}, and an AVL into a VL.
+*/
 
   hierarchy.yaml: kind: package, mode: new,
   output src/main/scala/v4/vec/generated/VtypeTable.scala,
@@ -49,7 +50,6 @@ from Tenstorrent Inc.
 
   Governing spec anchor: frontend.rst `vector-rvv-decode`, plus the VSET
   handling section for the VL computation.
-*/
 
 <|begin_module|>
 
@@ -104,11 +104,11 @@ from Tenstorrent Inc.
     - `max_vsew < vsew` — SEW greater than ELEN, since
       `max_vsew = log2Ceil(eLen/8)`.
     - `reserved =/= 0`.
-  // The reserved vlmul=3'b100 encoding falls out of the same expression rather
-  // than needing a case of its own: 3'b100 is vlmul_sign=1 with vlmul_mag=0,
-  // so lmul_ok's `vlmul_mag =/= 0` term is false and vill is set. Do not add a
-  // separate comparison against 3'b100 — a redundant check that disagrees with
-  // rocket's is worse than no check.
+  The reserved vlmul=3'b100 encoding falls out of the same expression rather
+  than needing a case of its own: 3'b100 is vlmul_sign=1 with vlmul_mag=0,
+  so lmul_ok's `vlmul_mag =/= 0` term is false and vill is set. Do not add a
+  separate comparison against 3'b100 — a redundant check that disagrees with
+  rocket's is worse than no check.
 
   Expose this as `decode(bits: UInt): VtypeInfo`, which calls
   `VType.fromUInt(bits)` and fills `vlmax` from that `VType`'s `vlMax`, `vill`
@@ -133,20 +133,20 @@ from Tenstorrent Inc.
        IS rocket's `maxVLMax` (`tile/Core.scala`: `def maxVLMax = vLen`) as BOOM
        supplies it, so the pad follows the same number rocket's slice uses.
 
-       // This does NOT reintroduce the addvector wrap-instead-of-saturate bug
-       // above: `.pad` only ever WIDENS. That bug came from NARROWING a wide AVL
-       // to `vecVLSz+1` bits; this widens a narrow one, and a 64-bit
-       // `rs1_data` AVL passes through untouched.
-       //
-       // ===> AND NOTE WHERE THIS WAS FOUND, because it is the clearest evidence
-       // for the gate hole recorded in the plan's Phase C addendum. This defect
-       // was introduced in PHASE B (VConfigUnit's `vsetivli` call) and survived
-       // Phases B and C untouched, because gate (a) cannot see it (it is an
-       // elaboration-time width error, not a type error) and gate (f) cannot
-       // reach it (a `usingRVV=false` build never constructs any of this). It
-       // surfaced the first time ANY gate elaborated a vector config, which was
-       // gate (c) at D2. Anything reachable only under `usingRVV=true` was
-       // unverified by every automated gate until that point.
+       This does NOT reintroduce the addvector wrap-instead-of-saturate bug
+       above: `.pad` only ever WIDENS. That bug came from NARROWING a wide AVL
+       to `vecVLSz+1` bits; this widens a narrow one, and a 64-bit
+       `rs1_data` AVL passes through untouched.
+       
+       ===> AND NOTE WHERE THIS WAS FOUND, because it is the clearest evidence
+       for the gate hole recorded in the plan's Phase C addendum. This defect
+       was introduced in PHASE B (VConfigUnit's `vsetivli` call) and survived
+       Phases B and C untouched, because gate (a) cannot see it (it is an
+       elaboration-time width error, not a type error) and gate (f) cannot
+       reach it (a `usingRVV=false` build never constructs any of this). It
+       surfaced the first time ANY gate elaborated a vector config, which was
+       gate (c) at D2. Anything reachable only under `usingRVV=true` was
+       unverified by every automated gate until that point.
 
   ---- `resolve`: the FULL `VType`, for the consumers that need the bundle ----
 
@@ -184,10 +184,10 @@ from Tenstorrent Inc.
   `resolve` is a pure delegation and deliberately has no logic of its own — its
   entire value is being the one name consumers can reach.
 
-  // VConfigUnit's existing direct `VType.fromUInt` call is BEHAVIOURALLY
-  // IDENTICAL to `resolve` (that is all `resolve` is), so it is not a
-  // divergence and does not need an urgent regeneration — normalize it to
-  // `resolve` the next time that file is regenerated, so there is one name.
+  VConfigUnit's existing direct `VType.fromUInt` call is BEHAVIOURALLY
+  IDENTICAL to `resolve` (that is all `resolve` is), so it is not a
+  divergence and does not need an urgent regeneration — normalize it to
+  `resolve` the next time that file is regenerated, so there is one name.
 
   ---- EMUL: the group size a rename must allocate ----
 
@@ -198,43 +198,43 @@ from Tenstorrent Inc.
   EEW and EMUL is `LMUL * EEW / SEW`. Clamp the result to at least 1 — a
   fractional EMUL still occupies one whole register.
 
-  // ===> AN EMUL ABOVE `maxMembers` IS AN ILLEGAL INSTRUCTION, NOT AN
-  // IMPOSSIBLE STATE, AND THIS FUNCTION MUST NOT ASSERT ON IT. A legal `vtype`
-  // ALONE cannot produce a group wider than `maxMembers`, but `vtype` PLUS an
-  // EEW that differs from SEW can, and routinely does: a widening op
-  // (EEW = 2*SEW) at LMUL=8 gives EMUL=16, and an indexed access with EEW=64
-  // against SEW=8 gives EMUL = 8*LMUL. RVV 1.0 reserves exactly those
-  // encodings, and Caracal traps them at DECODE — VDecode's EMUL-bound term is
-  // the architectural check, and it can only be reached because this function
-  // RETURNS the out-of-range case instead of dying on it. An assertion here
-  // fires on a machine that is behaving correctly: every `vwadd`/`vwmul` at
-  // LMUL=8 would abort a cosim run while the DUT was, correctly, raising an
-  // illegal-instruction trap. This project has no unit tests (plan v2 ground
-  // rule 11), so that abort is the ONLY thing the engineer would see.
-  //
-  // ===> THE OUT-OF-RANGE INDICATION IS THE RETURN VALUE 0, AND THAT IS A
-  // CONTRACT, NOT AN ACCIDENT OF TRUNCATION. `raw` is always a power of two —
-  // it is `vlmax` shifted up by the EEW code and down by a compile-time
-  // constant — so every out-of-range EMUL is 16, 32, 64 or 128, each of which
-  // is congruent to 0 modulo 2^`emulWidth`. Zero is otherwise unreachable,
-  // because the fractional case is clamped UP to 1. Callers therefore test
-  // `emul === 0` for "group too wide", and NO caller may treat 0 as a group
-  // size. `decode()` above independently drives `emul` to 0 when `vill` is
-  // set, which is the same contract from the other direction: 0 always means
-  // "this is not a usable group size", never "a group of no registers".
-  //
-  // The assertion that remains is the one that is actually invariant, and it
-  // is what makes the 0-contract sound rather than decorative: the returned
-  // value is either 0 or in 1..`maxMembers`. It fires precisely when `raw`
-  // was not a power of two — i.e. when someone has broken the shift-only
-  // derivation below — which is the bug that would let a genuine group size
-  // alias onto the reserved 0 encoding.
+  ===> AN EMUL ABOVE `maxMembers` IS AN ILLEGAL INSTRUCTION, NOT AN
+  IMPOSSIBLE STATE, AND THIS FUNCTION MUST NOT ASSERT ON IT. A legal `vtype`
+  ALONE cannot produce a group wider than `maxMembers`, but `vtype` PLUS an
+  EEW that differs from SEW can, and routinely does: a widening op
+  (EEW = 2*SEW) at LMUL=8 gives EMUL=16, and an indexed access with EEW=64
+  against SEW=8 gives EMUL = 8*LMUL. RVV 1.0 reserves exactly those
+  encodings, and Caracal traps them at DECODE — VDecode's EMUL-bound term is
+  the architectural check, and it can only be reached because this function
+  RETURNS the out-of-range case instead of dying on it. An assertion here
+  fires on a machine that is behaving correctly: every `vwadd`/`vwmul` at
+  LMUL=8 would abort a cosim run while the DUT was, correctly, raising an
+  illegal-instruction trap. This project has no unit tests (plan v2 ground
+  rule 11), so that abort is the ONLY thing the engineer would see.
+  
+  ===> THE OUT-OF-RANGE INDICATION IS THE RETURN VALUE 0, AND THAT IS A
+  CONTRACT, NOT AN ACCIDENT OF TRUNCATION. `raw` is always a power of two —
+  it is `vlmax` shifted up by the EEW code and down by a compile-time
+  constant — so every out-of-range EMUL is 16, 32, 64 or 128, each of which
+  is congruent to 0 modulo 2^`emulWidth`. Zero is otherwise unreachable,
+  because the fractional case is clamped UP to 1. Callers therefore test
+  `emul === 0` for "group too wide", and NO caller may treat 0 as a group
+  size. `decode()` above independently drives `emul` to 0 when `vill` is
+  set, which is the same contract from the other direction: 0 always means
+  "this is not a usable group size", never "a group of no registers".
+  
+  The assertion that remains is the one that is actually invariant, and it
+  is what makes the 0-contract sound rather than decorative: the returned
+  value is either 0 or in 1..`maxMembers`. It fires precisely when `raw`
+  was not a power of two — i.e. when someone has broken the shift-only
+  derivation below — which is the bug that would let a genuine group size
+  alias onto the reserved 0 encoding.
 
-  // This is the value that reaches the vector mapper as v_emul and decides how
-  // many PRNs an OP.v allocates atomically. An EMUL that disagrees with the
-  // one the VPU derives from the same issue packet would corrupt member
-  // indexing on the CII, so it is derived from vtype+eew only — never from a
-  // separate decode path.
+  This is the value that reaches the vector mapper as v_emul and decides how
+  many PRNs an OP.v allocates atomically. An EMUL that disagrees with the
+  one the VPU derives from the same issue packet would corrupt member
+  indexing on the CII, so it is derived from vtype+eew only — never from a
+  separate decode path.
 
   ---- VL from AVL ----
 
@@ -246,14 +246,14 @@ from Tenstorrent Inc.
   including the `rs1 = x0` max and keep-current cases the register-sourced
   forms need.
 
-  // ===> COMPARE THE FULL-WIDTH AVL. This is where an earlier implementation
-  // truncated AVL to vecVLSz+1 bits before comparing against VLMAX, so a large
-  // AVL WRAPPED instead of saturating and AVL=2048 produced vl=0. That breaks
-  // the canonical strip-mining idiom, where AVL is the whole remaining element
-  // count and is expected to saturate to VLMAX on every iteration but the
-  // last. Rocket's `vl(...)` handles this correctly by testing the high bits
-  // separately (`atLeastMaxVLMax`) instead of truncating, which is the second
-  // reason to delegate rather than reimplement.
+  ===> COMPARE THE FULL-WIDTH AVL. This is where an earlier implementation
+  truncated AVL to vecVLSz+1 bits before comparing against VLMAX, so a large
+  AVL WRAPPED instead of saturating and AVL=2048 produced vl=0. That breaks
+  the canonical strip-mining idiom, where AVL is the whole remaining element
+  count and is expected to saturate to VLMAX on every iteration but the
+  last. Rocket's `vl(...)` handles this correctly by testing the high bits
+  separately (`atLeastMaxVLMax`) instead of truncating, which is the second
+  reason to delegate rather than reimplement.
 
   A VL of zero is a legal, reachable result and not an error: consumers handle
   it (see VecGroupCopy for the destination-group consequence). This function

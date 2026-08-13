@@ -20,6 +20,7 @@ from Tenstorrent Inc.
   describes only what Caracal ADDS to the existing hand-written
   src/main/scala/v4/lsu/lsu.scala (`class LSU`, `class LSUCoreIO`, `LDQEntry`,
   `STQEntry`), which stays in place as baseline BOOM v4.
+*/
 
   hierarchy.yaml: kind: module, mode: edit_existing,
   target src/main/scala/v4/lsu/lsu.scala. No `output:` — the pre-existing file is
@@ -55,7 +56,6 @@ from Tenstorrent Inc.
   `rename-stage`; overview.rst `caracal-pipeline`;
   caracal-milestone-plan-v2.md section 2 (structural changes + bug list), steps
   E5/E8/G1.
-*/
 
 <|begin_module|>
 
@@ -266,17 +266,17 @@ from Tenstorrent Inc.
   vector beat when it pre-claimed — which is why section 3 muxes the beat into
   `exe_tlb_vaddr` at the head of the chain rather than later.
 
-  // ===> THE PRE-CLAIM MUST NOT BLOCK AN INCOMING agen OR AN sfence, and this is
-  // the sharpest hazard in the delta. `io.core.agen` and `io.core.sfence` are
-  // bare Valid inputs with NO back-pressure path — lsu.scala:682 asserts that a
-  // valid agen always fires — so a pre-claim that stole the TLB or LCAM from an
-  // incoming agen would DROP a scalar memory operation, not delay it. The veto
-  // therefore belongs in the arbiter's elevation decision, which is why
-  // `scalar_demand` carries `agen_incoming` / `sfence_incoming`. This stays
-  // acyclic: those valids and every `can_fire_*` term are computed BEFORE the
-  // chain and depend on none of the three avail vars. What must never feed
-  // `vec_claim` is `scalar_avail`, the post-chain residual — that path is
-  // combinationally cyclic through this file.
+  ===> THE PRE-CLAIM MUST NOT BLOCK AN INCOMING agen OR AN sfence, and this is
+  the sharpest hazard in the delta. `io.core.agen` and `io.core.sfence` are
+  bare Valid inputs with NO back-pressure path — lsu.scala:682 asserts that a
+  valid agen always fires — so a pre-claim that stole the TLB or LCAM from an
+  incoming agen would DROP a scalar memory operation, not delay it. The veto
+  therefore belongs in the arbiter's elevation decision, which is why
+  `scalar_demand` carries `agen_incoming` / `sfence_incoming`. This stays
+  acyclic: those valids and every `can_fire_*` term are computed BEFORE the
+  chain and depend on none of the three avail vars. What must never feed
+  `vec_claim` is `scalar_avail`, the post-chain residual — that path is
+  combinationally cyclic through this file.
 
   ---- 5. Routing vector addresses through the LCAM, in BOTH directions ----
 
@@ -315,12 +315,12 @@ from Tenstorrent Inc.
   per-STQ-entry summary VecCrossLsuSnoop keeps for the other direction, and it
   belongs here because this file owns the LDQ.
 
-  // A vector-load placeholder's `ldq_executed` is set when its FIRST element
-  // access fires (the same event that sets `s0_executing_loads` for a scalar
-  // load), because `l_executed || l_succeeded` is what admits it to the ST->LD
-  // match. Symmetrically the nack handler's `ldq_executed(...) := false.B` is
-  // gated `!is_vec`: one nacked element must not un-execute a whole vector load,
-  // since the drain re-offers that beat by itself.
+  A vector-load placeholder's `ldq_executed` is set when its FIRST element
+  access fires (the same event that sets `s0_executing_loads` for a scalar
+  load), because `l_executed || l_succeeded` is what admits it to the ST->LD
+  match. Symmetrically the nack handler's `ldq_executed(...) := false.B` is
+  gated `!is_vec`: one nacked element must not un-execute a whole vector load,
+  since the drain re-offers that beat by itself.
 
   //@req-spec-memord.a18
   //@req-spec-memord.a20
@@ -336,13 +336,13 @@ from Tenstorrent Inc.
   already-generated address would read a line the store has not yet written and
   nothing would replay it.
 
-  // A vector store address queue entry is NOT presented to the LCAM until its
-  // paired `st_*_DATA_Q` entry is valid. That gate lives in VecCrossLsuSnoop and
-  // this file must not second-guess it: the LSU never synthesizes a store
-  // searcher out of a queue entry itself, it only consumes `lcam(i)`. Assert that
-  // an accepted store presentation had its data half filled, so a regression on
-  // the far side fails loudly here rather than forwarding a byte that does not
-  // exist yet.
+  A vector store address queue entry is NOT presented to the LCAM until its
+  paired `st_*_DATA_Q` entry is valid. That gate lives in VecCrossLsuSnoop and
+  this file must not second-guess it: the LSU never synthesizes a store
+  searcher out of a queue entry itself, it only consumes `lcam(i)`. Assert that
+  an accepted store presentation had its data half filled, so a regression on
+  the far side fails loudly here rather than forwarding a byte that does not
+  exist yet.
 
   ---- 6. order_fail, the replay path, and the one lxcpt ----
 
@@ -418,15 +418,15 @@ from Tenstorrent Inc.
        `clear_store` itself needs no new term, because `stq_succeeded` for a
        vector placeholder is defined next.
 
-  // `stq_succeeded(idx)` for a vector placeholder is set by `st_drain_done(idx)`
-  // — the LAST element irrevocably accepted — and NOT by `io.dmem.store_ack`,
-  // whose handler is gated `!is_vec`. Setting it on the first element's ack would
-  // let `clear_store` fire, free the entry and advance `stq_head` while most of
-  // the store was still in the queues. Same shape on the load side:
-  // `ld_group_done(idx)` sets `ldq_executed(idx)` and `ldq_will_succeed(idx)`,
-  // which is what satisfies the existing commit assertion
-  // `(ldq_executed || ldq_forward_std_val) && ldq_succeeded`; a vector load's
-  // completion is the LCB's group-done, never an `iresp` beat.
+  `stq_succeeded(idx)` for a vector placeholder is set by `st_drain_done(idx)`
+  — the LAST element irrevocably accepted — and NOT by `io.dmem.store_ack`,
+  whose handler is gated `!is_vec`. Setting it on the first element's ack would
+  let `clear_store` fire, free the entry and advance `stq_head` while most of
+  the store was still in the queues. Same shape on the load side:
+  `ld_group_done(idx)` sets `ldq_executed(idx)` and `ldq_will_succeed(idx)`,
+  which is what satisfies the existing commit assertion
+  `(ldq_executed || ldq_forward_std_val) && ldq_succeeded`; a vector load's
+  completion is the LCB's group-done, never an `iresp` beat.
 
   //@req-spec-lsu.a8
   //@req-spec-lsu.a9
@@ -441,10 +441,12 @@ from Tenstorrent Inc.
   arbiter's business — atomicity is per entry, not per port.
 
   //@req-spec-lsu.a10
-  A faulting vector load or store commits NO elements. A page/access fault on any
-  element arrives through this file's own DTLB response, and the existing
-  `mem_xcpt_valids` machinery writes it to the placeholder because the beat's uop
-  carries the placeholder's `ldq_idx`/`stq_idx`: `ldq_uop(idx).exception := true.B`
+  A faulting vector load or store commits NO elements. NO RTL IS ADDED HERE FOR THIS:
+  a page/access fault on any element arrives through this file's own DTLB response,
+  and the EXISTING, UNTOUCHED `mem_xcpt_valids` machinery writes it to the placeholder
+  because the beat's uop carries the placeholder's `ldq_idx`/`stq_idx` (VecBeatExpander
+  copies them onto every beat it composes, so the attribution is by construction):
+  `ldq_uop(idx).exception := true.B`
   or `stq_uop(idx).exception := true.B`, one exception on one entry. The
   placeholder never commits, its fresh destination group is reclaimed by the ROB
   rollback, and the op traps with `vstart = 0` and restarts whole from element 0.

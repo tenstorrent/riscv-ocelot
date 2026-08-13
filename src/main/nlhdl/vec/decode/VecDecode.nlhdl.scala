@@ -18,6 +18,7 @@ from Tenstorrent Inc.
 /*
   VecDecode — the RVV decode CONTAINER: it holds the four decode-stage units and
   MERGES their per-lane results into one outgoing uOP per lane.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/decode/VecDecode.scala,
@@ -57,7 +58,6 @@ from Tenstorrent Inc.
   glossary.rst `glossary-terms` (uOP / OP.v / nOP.v). Plan v2 section 5 ground
   rules 1 (usingRVV), 2 (one uOP per instruction), 9 (rocket owns the
   architectural vector CSRs), 11 (guarded tracing).
-*/
 
 <|begin_module|>
 
@@ -112,12 +112,12 @@ from Tenstorrent Inc.
   - `dec_fire`     — Input `Vec(coreWidth, Bool)`, the lane ADVANCES out of
                      decode this cycle (BOOM's `dec_fire(w)`). Wired to
                      `vcfg.dec_fire` and to nothing else.
-                     // ===> `dec_valids` IS NOT A SUBSTITUTE. A decode bundle
-                     // can fire partially, so a mirror keyed on validity would
-                     // absorb a `vset` from a lane that did not advance and then
-                     // see the same `vset` re-presented next cycle. This signal
-                     // is NOT currently on the `vec_pipeline_io` interface —
-                     // flagged in the authoring report as a required addition.
+                     ===> `dec_valids` IS NOT A SUBSTITUTE. A decode bundle
+                     can fire partially, so a mirror keyed on validity would
+                     absorb a `vset` from a lane that did not advance and then
+                     see the same `vset` re-presented next cycle. This signal
+                     is NOT currently on the `vec_pipeline_io` interface —
+                     flagged in the authoring report as a required addition.
   - `dec_uops_in`  — Input `Vec(coreWidth, new MicroOp())`, the uOP as baseline
                      `DecodeUnit` decoded it. The merge BASE.
 
@@ -177,11 +177,11 @@ from Tenstorrent Inc.
   mutually exclusive by opcode, so the assertion is a check on the children's
   recognition rather than behaviour of its own.
 
-  // `rvv_recognized` is NOT the same thing as DecodeUnit's `v_legal` gate. That
-  // gate decides whether the RVV extension is enabled and reachable at all
-  // (including rocket's `mstatus.VS = Off` trap, which is the CSR file's and is
-  // not evaluated anywhere in this node). This term only says which of the three
-  // decoders owns the lane.
+  `rvv_recognized` is NOT the same thing as DecodeUnit's `v_legal` gate. That
+  gate decides whether the RVV extension is enabled and reachable at all
+  (including rocket's `mstatus.VS = Off` trap, which is the CSR file's and is
+  not evaluated anywhere in this node). This term only says which of the three
+  decoders owns the lane.
 
   ---- 2. The single zeroing, and why it is exactly one assignment ----
 
@@ -192,16 +192,17 @@ from Tenstorrent Inc.
   would dispatch a vector uOP to a scalar issue queue and hand it to a scalar
   functional unit.
 
-  // ===> THE ZEROING LIVES HERE AND NOWHERE ELSE, AND THAT IS A CONTRACT WITH
-  // ALL THREE DECODERS. `VDecode` sets only `IQ_V_ALU`/`FC_ALU` and deliberately
-  // does not clear the others; `VsetDecode` drives `IQ_ALU`/`FC_ALU`; this module
-  // sets `IQ_V_LOAD`/`IQ_V_STORE`. Because the field arrives already zero, every
-  // one of those writes is a SET and the composition is order-independent. If a
-  // child also cleared the field, the result would depend on the order this
-  // module chained its children — a last-connect ordering dependence that
-  // survives review and breaks silently on the next reorder. `VsetDecode`'s
-  // "all-clear" for the front-end-only shape is a no-op re-assertion of this
-  // zeroing, not a second mechanism.
+  ===> THE ZEROING LIVES HERE AND NOWHERE ELSE, AND THAT IS A CONTRACT WITH
+  ALL THREE DECODERS. `VDecode` sets only `IQ_V_ALU`/`FC_ALU` and deliberately
+  does not clear the others; `VsetDecode` drives `IQ_ALU`/`FC_ALU`; this module
+  sets `IQ_V_LOAD`/`IQ_V_STORE` AND THE MATCHING `FC_AGEN`/`FC_DGEN`. Because the
+  field arrives already zero, every
+  one of those writes is a SET and the composition is order-independent. If a
+  child also cleared the field, the result would depend on the order this
+  module chained its children — a last-connect ordering dependence that
+  survives review and breaks silently on the next reorder. `VsetDecode`'s
+  "all-clear" for the front-end-only shape is a no-op re-assertion of this
+  zeroing, not a second mechanism.
 
   On a lane where `rvv_recognized` is false, nothing in this module writes any
   field: `dec_uops_out(w)` is `dec_uops_in(w)` verbatim, with the ONE exception
@@ -246,15 +247,15 @@ from Tenstorrent Inc.
   fold; `VsetDecode` states the same obligation from its side, and both
   statements describe THIS assignment rather than two mechanisms.
 
-  // ===> THE `DecodeUnit` DELTA MUST MERGE `vconfig` UNCONDITIONALLY TOO. That
-  // delta gates its merge of the vector MicroOp fields on its `v_legal` /
-  // RVV-opcode term. `vconfig` must be OUTSIDE that gate. If it is inside,
-  // scalar branches carry no snapshot, `ren_br_vconfig` is garbage, and the
-  // per-`br_tag` restore corrupts the mirror on the first mispredicted branch of
-  // any program that has ever executed a `vset`. Strictly only uops that can
-  // allocate a `br_tag` need it; writing it on every lane is cheaper than the
-  // predicate and cannot be got wrong by a later change to which uops allocate
-  // tags.
+  ===> THE `DecodeUnit` DELTA MUST MERGE `vconfig` UNCONDITIONALLY TOO. That
+  delta gates its merge of the vector MicroOp fields on its `v_legal` /
+  RVV-opcode term. `vconfig` must be OUTSIDE that gate. If it is inside,
+  scalar branches carry no snapshot, `ren_br_vconfig` is garbage, and the
+  per-`br_tag` restore corrupts the mirror on the first mispredicted branch of
+  any program that has ever executed a `vset`. Strictly only uops that can
+  allocate a `br_tag` need it; writing it on every lane is cheaper than the
+  predicate and cannot be got wrong by a later change to which uops allocate
+  tags.
 
   ---- 5. The memory field group: descriptor to uOP ----
 
@@ -270,16 +271,16 @@ from Tenstorrent Inc.
   `uop.inst`.
 
   `v_seg_nf := Mux(desc.is_segment, desc.nf, 0.U)`.
-  // ===> QUALIFY IT. `nf` is NFIELDS-1 for a segmented access and NREG-1 for
-  // `vl<n>re<eew>`, so passing `desc.nf` through raw makes `vl8re64` present as
-  // an 8-field segmented access to any reader of `v_seg_nf`.
+  ===> QUALIFY IT. `nf` is NFIELDS-1 for a segmented access and NREG-1 for
+  `vl<n>re<eew>`, so passing `desc.nf` through raw makes `vl8re64` present as
+  an 8-field segmented access to any reader of `v_seg_nf`.
 
   `v_is_masked := !desc.vm && !desc.is_whole_reg && !desc.is_mask`.
-  // ===> THE SENSE IS INVERTED. RVV's `vm` bit is 1 for UNMASKED, so the field
-  // is the COMPLEMENT of `inst(25)`, and copying `desc.vm` into it gives every
-  // masked op an unmasked descriptor and vice versa. The two non-maskable
-  // unit-stride forms are forced false so a reader never consults `pvm` for
-  // them. The arithmetic side of this field is `arith`'s.
+  ===> THE SENSE IS INVERTED. RVV's `vm` bit is 1 for UNMASKED, so the field
+  is the COMPLEMENT of `inst(25)`, and copying `desc.vm` into it gives every
+  masked op an unmasked descriptor and vice versa. The two non-maskable
+  unit-stride forms are forced false so a reader never consults `pvm` for
+  them. The arithmetic side of this field is `arith`'s.
 
   The two element widths, which is where an indexed access is got wrong:
   `v_eew := Mux(desc.eew_is_index, vcfg.dec_vconfig(w).vsew, desc.eew)` and
@@ -304,14 +305,14 @@ from Tenstorrent Inc.
        to these three bits and to `v_is_masked`: cleared ONCE on the merge base
        for every lane, so each child's write is a SET and composition stays
        order-independent.
-       // Note this is the container's job precisely because no child sees the
-       // lanes it did not claim. VLSDecode cannot zero an arithmetic lane's bits
-       // and VDecode cannot zero a vset's.
-  // `v_eew` is the DATA width by definition. For an indexed access the
-  // instruction's `width` field describes the INDEX elements and the data width
-  // is `vtype.vsew`; `VLSDecode` cannot see vtype and correctly refuses to guess,
-  // which is why this combination happens here, in the one module that has both
-  // the descriptor and the vtype snapshot.
+       Note this is the container's job precisely because no child sees the
+       lanes it did not claim. VLSDecode cannot zero an arithmetic lane's bits
+       and VDecode cannot zero a vset's.
+  `v_eew` is the DATA width by definition. For an indexed access the
+  instruction's `width` field describes the INDEX elements and the data width
+  is `vtype.vsew`; `VLSDecode` cannot see vtype and correctly refuses to guess,
+  which is why this combination happens here, in the one module that has both
+  the descriptor and the vtype snapshot.
 
   //@req-spec-decode.a3
   The DESTINATION GROUP SIZE of a memory access, which is the number the vector
@@ -351,6 +352,32 @@ from Tenstorrent Inc.
   ordering and commit only — the cracked element accesses go to `VecLsu`'s own
   six queues and never to an LDQ or STQ slot.
 
+  AND THE FUNCTIONAL-UNIT CODES ALONGSIDE THEM, WHICH `iq_type` DOES NOT IMPLY:
+  `fu_code(FC_AGEN) := true.B` and `fu_code(FC_DGEN) := is_store`. `iq_type` picks
+  the QUEUE; `fu_code` is what `VecIssueUnit` matches against that queue's
+  `fu_types` (VecPipeline drives both memory queues with the constant
+  `{FC_AGEN, FC_DGEN}`) before it will grant. Leave these zero and the uOP reaches
+  a slot, becomes ready, raises `request` — and is never granted, because
+  `fu_code_match` ORs an all-zero `fu_code` against `fu_types`. That is a silent
+  hang at the first vector memory instruction, with the issue slot occupied and
+  requesting forever and no assertion anywhere: the slot is entitled to request,
+  and the unit is entitled not to grant.
+  AND `mem_cmd := is_store ? M_XWR : M_XRD`, WHICH NOTHING ELSE SUPPLIES. The
+  baseline table has no row for an RVV opcode, so `decode_default` applies and its
+  `mem_cmd` column is `M_X` — `BitPat("b?????")`, every bit a don't-care.
+  `DecodeLogic` is free to resolve those bits however the minimizer likes, and
+  whatever it lands on is what reaches the TLB's permission check and the D$'s
+  command port: `lsu.scala` takes `exe_cmd` and `dmem_req.bits.uop` straight off
+  the vector access's uOP. The zeroing in part 2 does NOT cover this field, and a
+  load that works because the minimizer happened to pick `M_XRD` (== 0) is working
+  by luck, not by decode — a store on the same path asks the D$ to read.
+
+  A STORE MUST ADVERTISE BOTH `fu_code` BITS ON ARRIVAL, not just `FC_DGEN`:
+  `VecStoreDgenPath` reads `fu_code(FC_AGEN)`/`fu_code(FC_DGEN)` off the slot uOP
+  as its two-pass state — both set means "neither pass taken yet" — gates
+  `agen_request` on `FC_AGEN`, and asserts the pair is not both clear on arrival.
+  A load advertises `FC_AGEN` only; it has no data pass.
+
   Register specifiers, extracted here because `VLSDecode` writes no uOP and
   `VDecode` does not claim these lanes:
     - a LOAD writes a vector group: `lvd := inst(11,7)`, `dst_rtype := RT_VEC`;
@@ -368,22 +395,22 @@ from Tenstorrent Inc.
     - `lvm := 0.U`, the mask being architecturally `v0`, so it reads through the
       same map-table path as any other source.
 
-  // ===> THE x0 CONVERSION IS MANDATORY ON BOTH INTEGER SOURCES.
-  // `rename-stage.scala:109` asserts
-  // `!(r_valid && lrs1_rtype === RT_FIX && lrs1 === 0.U)`, and a vector load
-  // based at `x0` or strided by `x0` is legal RVV. The same omission fired on
-  // `vmv.s.x v12, zero` in the arithmetic path; mirror the scalar decoder
-  // (`decode.scala:505`) rather than rediscovering it a third time.
+  ===> THE x0 CONVERSION IS MANDATORY ON BOTH INTEGER SOURCES.
+  `rename-stage.scala:109` asserts
+  `!(r_valid && lrs1_rtype === RT_FIX && lrs1 === 0.U)`, and a vector load
+  based at `x0` or strided by `x0` is legal RVV. The same omission fired on
+  `vmv.s.x v12, zero` in the arithmetic path; mirror the scalar decoder
+  (`decode.scala:505`) rather than rediscovering it a third time.
 
   `is_vl_producer := desc.is_ff`. `vleff` writes its trimmed element count to the
   VL register file and wakes `pvl` in its dependents, so it IS a VL producer and
   the VL-RF write port for it is declared from day one even though it does not
   fire until the fault-trim path lands.
-  // This contradicts `VLSDecode`'s prose, which keeps `is_vl_producer` clear for
-  // `vleff` on the strength of a hierarchy.yaml comment that has since been
-  // corrected. `VLSDecode` writes no uOP, so this module is the writer and
-  // settles it in favour of the corrected comment, loadstore.rst and
-  // spec-lsu.g6/g7. Flagged in the authoring report.
+  This contradicts `VLSDecode`'s prose, which keeps `is_vl_producer` clear for
+  `vleff` on the strength of a hierarchy.yaml comment that has since been
+  corrected. `VLSDecode` writes no uOP, so this module is the writer and
+  settles it in favour of the corrected comment, loadstore.rst and
+  spec-lsu.g6/g7. Flagged in the authoring report.
 
   ---- 6. `dec_vec_illegal`: the aggregation ----
 
@@ -419,12 +446,12 @@ from Tenstorrent Inc.
       `is_whole_reg := desc.is_whole_reg` and the RAW `nf := desc.nf`
       (= `inst(31,29)`, NFIELDS-1). `arith` needs all five to compute
       `is_shared` as `is_mem && !is_whole_reg && nf =/= 0`.
-      // The whole point of routing `nf` through the descriptor instead of
-      // letting `arith` slice it out of `inst` is that `nf` and `is_whole_reg`
-      // must be read by the SAME decoder: `vl8r.v` carries `nf = 7` and a
-      // second reader would eventually mark it an 8-field segmented access,
-      // dispatching a coprocessor half that transposes nothing and never
-      // completes.
+      The whole point of routing `nf` through the descriptor instead of
+      letting `arith` slice it out of `inst` is that `nf` and `is_whole_reg`
+      must be read by the SAME decoder: `vl8r.v` carries `nf = 7` and a
+      second reader would eventually mark it an 8-field segmented access,
+      dispatching a coprocessor half that transposes nothing and never
+      completes.
 
   (b) `vcfg` to `arith`. `arith.vtype_in(w) := vcfg.dec_vconfig(w)` — the
       self-EXCLUSIVE value on a consumer lane, which is what an arithmetic op
@@ -438,13 +465,13 @@ from Tenstorrent Inc.
       `VConfigUnit`'s port list: it is the per-lane INPUT side of the prefix
       `scanLeft` that already computes `dec_vconfig`, so exporting it costs one
       wire and no logic.
-      // The identity that bounds the cost of that addition:
-      // `dec_prev_vconfig(w)` equals `dec_vconfig(w-1)` for every `w >= 1` — on a
-      // `vset` lane the self-inclusive select IS the running value out, and on a
-      // non-`vset` lane in and out are the same value — so the only genuinely new
-      // information is lane 0's, the mirror register. Exporting the whole vector
-      // is still preferred over reconstructing it here, which would put a second
-      // copy of the prefix convention in a second file.
+      The identity that bounds the cost of that addition:
+      `dec_prev_vconfig(w)` equals `dec_vconfig(w-1)` for every `w >= 1` — on a
+      `vset` lane the self-inclusive select IS the running value out, and on a
+      non-`vset` lane in and out are the same value — so the only genuinely new
+      information is lane 0's, the mirror register. Exporting the whole vector
+      is still preferred over reconstructing it here, which would put a second
+      copy of the prefix convention in a second file.
 
   (d) `vset` to `vcfg`. The shape and field outputs go across by name —
       `dec_is_vset`, `dec_vtype_is_imm`, `dec_vtype_imm`, `dec_avl_imm`,
@@ -453,14 +480,14 @@ from Tenstorrent Inc.
       the mirror's `vill`, or the reserved keep-VL encoding poisons the uOP but
       not the mirror and younger ops decode against a configuration the
       architecture calls illegal.
-      // ===> THIS IS NOT A COMBINATIONAL LOOP, AND IT IS WORTH PROVING RATHER
-      // THAN ASSUMING. `keep_vl_illegal(w)` depends on `prev_vtype(w)`, which
-      // depends on the mirror and on lanes `0..w-1` only — including their own
-      // `keep_vl_illegal`. The dependence is strictly triangular in the lane
-      // index, so the prefix chain remains acyclic; `dec_vtype_imm` is pure
-      // bit-slicing of `inst` and closes no loop either. A generator that
-      // implements the fold as a whole-vector reduction instead of per-lane
-      // inside the `scanLeft` WOULD create a loop.
+      ===> THIS IS NOT A COMBINATIONAL LOOP, AND IT IS WORTH PROVING RATHER
+      THAN ASSUMING. `keep_vl_illegal(w)` depends on `prev_vtype(w)`, which
+      depends on the mirror and on lanes `0..w-1` only — including their own
+      `keep_vl_illegal`. The dependence is strictly triangular in the lane
+      index, so the prefix chain remains acyclic; `dec_vtype_imm` is pure
+      bit-slicing of `inst` and closes no loop either. A generator that
+      implements the fold as a whole-vector reduction instead of per-lane
+      inside the `scanLeft` WOULD create a loop.
 
   `dec_vl_imm_valid` is where the fifth seam is settled: `vcfg` raises its own
   qualifier on `dec_is_vsetivli`, and this module publishes
@@ -477,16 +504,16 @@ from Tenstorrent Inc.
    (desc.is_vls && !desc.is_whole_reg && !desc.is_mask)`, where
   `is_whole_reg_move` is the `vmv<n>r.v` encoding (OP-V, `funct3` = OPIVI,
   `funct6` = `0b100111`).
-  // The whole-register forms MUST be exempt: `vmv<n>r.v`, `vl<n>r.v` and
-  // `vs<n>r.v` take their group size from their own NREG field, so the mis-sized
-  // group hazard cannot arise for them — and they are how vector state is saved
-  // and restored, so trapping them under poison would leave the machine unable
-  // to recover from a `vill` at all. `is_whole_reg_move` is a two-comparator
-  // predicate that `VDecode` also computes internally for its own `vill_trap`;
-  // re-deriving it here is a duplicated comparator, not a duplicated decoder,
-  // and the alternative was adding an output to an already-written child.
-  // Flagged in the authoring report: the right long-term fix is for `VDecode` to
-  // export it.
+  The whole-register forms MUST be exempt: `vmv<n>r.v`, `vl<n>r.v` and
+  `vs<n>r.v` take their group size from their own NREG field, so the mis-sized
+  group hazard cannot arise for them — and they are how vector state is saved
+  and restored, so trapping them under poison would leave the machine unable
+  to recover from a `vill` at all. `is_whole_reg_move` is a two-comparator
+  predicate that `VDecode` also computes internally for its own `vill_trap`;
+  re-deriving it here is a duplicated comparator, not a duplicated decoder,
+  and the alternative was adding an output to an already-written child.
+  Flagged in the authoring report: the right long-term fix is for `VDecode` to
+  export it.
 
   ---- 8. Assertions and trace ----
 
@@ -507,10 +534,10 @@ from Tenstorrent Inc.
   `vecTrace` plusarg and `!reset`, off by default: one per valid recognized lane
   carrying which decoder claimed it, the merged `iq_type`, `v_emul`, `v_eew` and
   `is_shared`; and one on `dec_vec_illegal` naming WHICH of part 6's terms fired.
-  // The children each trace their own decision. This module's line is the only
-  // record of the MERGED result, which is what a wrong `iq_type` or a dropped
-  // `is_shared` is diagnosed from — and those are container bugs, invisible in
-  // any child's trace.
+  The children each trace their own decision. This module's line is the only
+  record of the MERGED result, which is what a wrong `iq_type` or a dropped
+  `is_shared` is diagnosed from — and those are container bugs, invisible in
+  any child's trace.
   <|end_logic|>
 
 <|end_module|>

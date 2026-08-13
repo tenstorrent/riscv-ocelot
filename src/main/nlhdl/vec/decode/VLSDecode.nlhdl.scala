@@ -20,36 +20,36 @@ from Tenstorrent Inc.
   `mop`, `nf`, the unit-stride / strided / indexed / segment / whole-register /
   mask flags, and which vector source operands the form actually encodes, decoded
   from the instruction word alone.
-
-  hierarchy.yaml: kind: module, mode: new,
-  output src/main/scala/v4/vec/generated/decode/VLSDecode.scala,
-  package boom.v4.vec.generated.decode, group vec_decode.
-  depends_on MicroOp, VecTrace. Instantiated once, as `ls`, by VecDecode.
-
-  ===> WHAT THIS DESCRIPTOR IS FOR, AND IT IS NOT A DETAIL. The descriptor is
-       what selects the FILL-side address generator downstream: `VecRangeAgen`
-       (one range entry for the whole access) for unit-stride, `VecElemAgen`
-       (one element access per ACTIVE element) for strided, segmented and
-       indexed. That selection is by ACCESS CLASS and NEVER by direction —
-       load and store take the identical three rules, and direction is a
-       PARAMETER of the agen instances (`isStore`), not an input to the choice.
-       Everything in the logic section below exists to make that selection a
-       decode-time, one-hot, exhaustive function of fixed instruction bits, so
-       that no downstream module ever has to guess a class or fall back to one.
-
-  ===> THIS MODULE READS `vtype` FOR NOTHING. Every field it produces comes from
-       the 32-bit instruction word — EEW, `mop` and `nf` are ENCODED, whereas
-       SEW, LMUL and EMUL are CONFIGURATION. That is why its `depends_on` list
-       has neither VtypeTable nor VectorParams. Mixing the two here is the
-       classic vector-memory decode bug; the indexed case below is where it bites.
-
-  Governing spec anchors: execution.rst `vector-agen` (the selection rules and
-  the Packer / Skipper / Walker paragraphs), loadstore.rst `elem-progress`
-  ("Fault-only-first (``vleff.v``)"), frontend.rst `vector-rvv-decode`. Plan
-  section 2 deletes the six inherited OVI Packer/Skipper/Walker modules in favour
-  of VecElemAgen / VecRangeAgen / VecBeatExpander cut by pipeline position; their
-  selection OBLIGATIONS are discharged here, which is why this file names them.
 */
+
+hierarchy.yaml: kind: module, mode: new,
+output src/main/scala/v4/vec/generated/decode/VLSDecode.scala,
+package boom.v4.vec.generated.decode, group vec_decode.
+depends_on MicroOp, VecTrace. Instantiated once, as `ls`, by VecDecode.
+
+===> WHAT THIS DESCRIPTOR IS FOR, AND IT IS NOT A DETAIL. The descriptor is
+     what selects the FILL-side address generator downstream: `VecRangeAgen`
+     (one range entry for the whole access) for unit-stride, `VecElemAgen`
+     (one element access per ACTIVE element) for strided, segmented and
+     indexed. That selection is by ACCESS CLASS and NEVER by direction —
+     load and store take the identical three rules, and direction is a
+     PARAMETER of the agen instances (`isStore`), not an input to the choice.
+     Everything in the logic section below exists to make that selection a
+     decode-time, one-hot, exhaustive function of fixed instruction bits, so
+     that no downstream module ever has to guess a class or fall back to one.
+
+===> THIS MODULE READS `vtype` FOR NOTHING. Every field it produces comes from
+     the 32-bit instruction word — EEW, `mop` and `nf` are ENCODED, whereas
+     SEW, LMUL and EMUL are CONFIGURATION. That is why its `depends_on` list
+     has neither VtypeTable nor VectorParams. Mixing the two here is the
+     classic vector-memory decode bug; the indexed case below is where it bites.
+
+Governing spec anchors: execution.rst `vector-agen` (the selection rules and
+the Packer / Skipper / Walker paragraphs), loadstore.rst `elem-progress`
+("Fault-only-first (``vleff.v``)"), frontend.rst `vector-rvv-decode`. Plan
+section 2 deletes the six inherited OVI Packer/Skipper/Walker modules in favour
+of VecElemAgen / VecRangeAgen / VecBeatExpander cut by pipeline position; their
+selection OBLIGATIONS are discharged here, which is why this file names them.
 
 <|begin_module|>
 
@@ -138,9 +138,9 @@ from Tenstorrent Inc.
   access uses `000` (EEW 8), `101` (16), `110` (32) or `111` (64), while scalar
   FP uses `010` and `011`. Set `is_vls` from exactly that conjunction.
 
-  // Wrong in the permissive direction, every fld acquires a vector access
-  // descriptor; wrong in the restrictive direction, vector loads decode as
-  // scalar FP. Both fail silently at decode and surface far away.
+  Wrong in the permissive direction, every fld acquires a vector access
+  descriptor; wrong in the restrictive direction, vector loads decode as
+  scalar FP. Both fail silently at decode and surface far away.
 
   `is_store` comes from the opcode and NOTHING else. It is recorded in the
   descriptor for the LSU's direction routing and for the trace line. It is
@@ -183,8 +183,8 @@ from Tenstorrent Inc.
   from the index interface, and a strided access has no index vector to drive
   it, so a fallback would drive that interface with an undriven or stale
   offset. Emit a Chisel `assert` that the three flags are exactly one-hot
-  whenever `valid && is_vls`. // The assert is a check, not behaviour: deleting
-  // every one leaves the emitted datapath bit-identical.
+  whenever `valid && is_vls`. The assert is a check, not behaviour: deleting
+  every one leaves the emitted datapath bit-identical.
 
   ---- 4. What each class selects downstream ----
 
@@ -216,10 +216,10 @@ from Tenstorrent Inc.
   elements survive — and is NOT a selection criterion. `vm` therefore appears
   in the descriptor as plain data and in none of the class expressions.
 
-  // In v2 the Skipper/Walker distinction is no longer a module boundary:
-  // masked-skip and index-driven differ only in where the per-element address
-  // comes from, so they are two modes of VecElemAgen. The selection OBLIGATION
-  // survives the merge and lives here, in the one place that decides the class.
+  In v2 the Skipper/Walker distinction is no longer a module boundary:
+  masked-skip and index-driven differ only in where the per-element address
+  comes from, so they are two modes of VecElemAgen. The selection OBLIGATION
+  survives the merge and lives here, in the one place that decides the class.
 
   ---- 5. Unit-stride sub-forms: the `umop` decode ----
 
@@ -268,8 +268,8 @@ from Tenstorrent Inc.
   serialization was never needed, because VL is renamed into the VL register
   file, so a trimmed VL reaches consumers through `pvl` and the VL wakeup
   network with correct ordering by construction.
-  // vleff is hot in strlen/memchr-style loops, so any is_unique term reachable
-  // from is_ff is a reject, not a conservatism.
+  vleff is hot in strlen/memchr-style loops, so any is_unique term reachable
+  from is_ff is a reject, not a conservatism.
 
   `vleff` IS A VL PRODUCER. It writes its final (possibly trimmed) element count
   to its VL register file destination and wakes `pvl` in its dependents, per
@@ -278,16 +278,16 @@ from Tenstorrent Inc.
   module contributes the `is_ff` bit that decision is made from, and nothing here
   may suggest otherwise.
 
-  // CORRECTED. An earlier draft of this paragraph said `is_ff` does NOT make the
-  // uop a VL producer "until the real fault-trim path exists", citing a
-  // hierarchy.yaml comment that has since been corrected. That was a STAGING note
-  // that read as a design statement, and it contradicted two requirements
-  // allocated to sibling nodes (`VlRegFile`'s write port and
-  // `VecLoadCoalescingBuffer`'s trim report) as well as `VecDecode`, the actual
-  // writer. Staging is real but belongs in the plan's step table: the VL-RF write
-  // port for `vleff` is declared from day one and simply never fires until step
-  // G4 lands. It must NOT be retrofitted as an arbiter on the ALU write port —
-  // `spec-decode.c27` forbids arbitrated VL-RF write ports.
+  CORRECTED. An earlier draft of this paragraph said `is_ff` does NOT make the
+  uop a VL producer "until the real fault-trim path exists", citing a
+  hierarchy.yaml comment that has since been corrected. That was a STAGING note
+  that read as a design statement, and it contradicted two requirements
+  allocated to sibling nodes (`VlRegFile`'s write port and
+  `VecLoadCoalescingBuffer`'s trim report) as well as `VecDecode`, the actual
+  writer. Staging is real but belongs in the plan's step table: the VL-RF write
+  port for `vleff` is declared from day one and simply never fires until step
+  G4 lands. It must NOT be retrofitted as an arbiter on the ALU write port —
+  `spec-decode.c27` forbids arbitrated VL-RF write ports.
 
   The `vleff` FAULT AND TRIM POLICY is not this module's either, and no longer
   lives in the file that used to claim it: `vleff` is architecturally unit-stride,
@@ -350,20 +350,20 @@ from Tenstorrent Inc.
        The MicroOp delta (section 4) carries the full argument. The bits are the
        load side of the same fix `v_is_masked` already provides for `pvm`.
 
-  // ===> `uses_vs3` IS THE DIRECTION BIT, AND THIS IS THE ONE PLACE IN THIS FILE
-  // WHERE `is_store` LEGITIMATELY APPEARS ON THE RIGHT-HAND SIDE. It is NOT a
-  // class decision — part 3's rule that the agen is selected by class and never
-  // by direction is untouched, since `uses_vs3` selects no generator and reaches
-  // no agen enable. It says only which register file the DGEN reads, which is a
-  // property of the direction by definition.
+  ===> `uses_vs3` IS THE DIRECTION BIT, AND THIS IS THE ONE PLACE IN THIS FILE
+  WHERE `is_store` LEGITIMATELY APPEARS ON THE RIGHT-HAND SIDE. It is NOT a
+  class decision — part 3's rule that the agen is selected by class and never
+  by direction is untouched, since `uses_vs3` selects no generator and reaches
+  no agen enable. It says only which register file the DGEN reads, which is a
+  property of the direction by definition.
 
-  // And the store's SCALAR operands are INTEGER ONLY: `rs1` (base) and `rs2`
-  // (stride). No RVV store form takes an FP scalar operand — store data is
-  // always `vs3` — so nothing in this descriptor implies an FP read on the store
-  // path, and nothing downstream should provide one. `vfmul.vf`, the instruction
-  // once cited for a store-side FP read, is vector-scalar ARITHMETIC dispatched
-  // to the coprocessor and is not a store at all; the store-side FP read lane is
-  // deleted and the only remaining FP reader is the CII issue path.
+  And the store's SCALAR operands are INTEGER ONLY: `rs1` (base) and `rs2`
+  (stride). No RVV store form takes an FP scalar operand — store data is
+  always `vs3` — so nothing in this descriptor implies an FP read on the store
+  path, and nothing downstream should provide one. `vfmul.vf`, the instruction
+  once cited for a store-side FP read, is vector-scalar ARITHMETIC dispatched
+  to the coprocessor and is not a store at all; the store-side FP read lane is
+  deleted and the only remaining FP reader is the CII issue path.
 
   ---- 8. Reserved encodings ----
 
@@ -378,9 +378,9 @@ from Tenstorrent Inc.
   A segmented INDEXED access is LEGAL (`vluxseg`/`vsuxseg`) and must not appear
   in this list. Everything else legal decodes with `illegal` low.
 
-  // Reporting a reserved encoding here rather than letting it reach rename is
-  // what stops a mis-sized PRN group being allocated for an instruction with no
-  // defined meaning.
+  Reporting a reserved encoding here rather than letting it reach rename is
+  what stops a mis-sized PRN group being allocated for an instruction with no
+  defined meaning.
 
   ---- 9. Trace ----
 
@@ -395,11 +395,11 @@ from Tenstorrent Inc.
 
   `io.lanes(i).uop` is read for the trace context only, and this module reads no
   other field of it — specifically not `vconfig`.
-  // The `traceDecode` variant is mandatory here, not a preference: at DECODE the
-  // uop's rob_idx is not yet assigned (the ROB allocates at DISPATCH), so a
-  // rob_idx-keyed line would claim `rob=0` and alias with real ROB entry 0 in
-  // every grep. `traceDecode` prints `rob=?` and keys on `ftq_idx`/`pc_lob`, so
-  // correlation with later stages is by PC/ftq_idx.
+  The `traceDecode` variant is mandatory here, not a preference: at DECODE the
+  uop's rob_idx is not yet assigned (the ROB allocates at DISPATCH), so a
+  rob_idx-keyed line would claim `rob=0` and alias with real ROB entry 0 in
+  every grep. `traceDecode` prints `rob=?` and keys on `ftq_idx`/`pc_lob`, so
+  correlation with later stages is by PC/ftq_idx.
   <|end_logic|>
 
 <|end_module|>

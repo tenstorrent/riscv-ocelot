@@ -21,43 +21,43 @@ from Tenstorrent Inc.
   `class ALUUnit(dataWidth: Int)` in
   src/main/scala/v4/exu/execution-units/functional-unit.scala, which is
   hand-written baseline BOOM v4 and stays in place.
-
-  hierarchy.yaml: kind: module, mode: edit_existing,
-  target src/main/scala/v4/exu/execution-units/functional-unit.scala,
-  group: host. No `output:` — the pre-existing file is the artifact.
-  depends_on MicroOp, ScalarOpConstants, VtypeTable.
-  Budget (plan v2 §11 file-touch summary): ~70 added lines.
-
-  THE CHANGE, IN ONE SENTENCE: under `usingRVV`, when the uOP arriving at the
-  integer ALU is a register-sourced `vset` (`vsetvli` or `vsetvl`), the unit
-  resolves that instruction's `vtype`, computes the new VL through the
-  VtypeTable package, and drives that VL onto its EXISTING result bus in place
-  of the rocket-ALU output. Nothing else about the unit moves.
-
-  Everything already in `class ALUUnit` is unchanged and is not restated below —
-  the operand selects, the rocket ALU instance, the branch comparators and
-  `brinfo`, the SFB path. Any signal this file does not name keeps its current
-  definition and behaviour exactly.
-
-  ===> THIS DELTA ADDS NO PORT. `vsetvli`/`vsetvl` arrive through the ordinary
-       `io.req` with `fu_code(FC_ALU)` set (see ALUExeUnit's delta), and the
-       result leaves on the existing `io.resp`. Both destinations — `rd` in the
-       integer RF and `pvl` in the VL RF — take the SAME value off that ONE
-       result bus, which is what makes the dual-destination rule cheap. A new
-       VL-RF port or a mirror-write port appearing here is a failed review.
-
-  ===> THE BUG NOT TO RE-INTRODUCE: COMPARE THE FULL-WIDTH AVL. `addvector`
-       truncated the AVL to `vecVLSz+1` bits before comparing it against VLMAX,
-       so a large AVL WRAPPED instead of saturating — AVL=2048 produced vl=0 —
-       which breaks the canonical strip-mining loop, where AVL is the whole
-       remaining element count and must saturate to VLMAX on every iteration
-       but the last. Pass `io.req.bits.rs1_data` at its full `xLen` width. Note
-       `vecVLSz` is 9 bits, not 6.
-
-  Governing spec anchors: frontend.rst `vector-rvv-decode` ("VSET Special
-  Handling") and `vset-dual-dest` and `vl-delivery`; midcore.rst
-  `regfiles-bypass` and `vl-vtype-rename`; issue.rst `issue-vl-delivery`.
 */
+
+hierarchy.yaml: kind: module, mode: edit_existing,
+target src/main/scala/v4/exu/execution-units/functional-unit.scala,
+group: host. No `output:` — the pre-existing file is the artifact.
+depends_on MicroOp, ScalarOpConstants, VtypeTable.
+Budget (plan v2 §11 file-touch summary): ~70 added lines.
+
+THE CHANGE, IN ONE SENTENCE: under `usingRVV`, when the uOP arriving at the
+integer ALU is a register-sourced `vset` (`vsetvli` or `vsetvl`), the unit
+resolves that instruction's `vtype`, computes the new VL through the
+VtypeTable package, and drives that VL onto its EXISTING result bus in place
+of the rocket-ALU output. Nothing else about the unit moves.
+
+Everything already in `class ALUUnit` is unchanged and is not restated below —
+the operand selects, the rocket ALU instance, the branch comparators and
+`brinfo`, the SFB path. Any signal this file does not name keeps its current
+definition and behaviour exactly.
+
+===> THIS DELTA ADDS NO PORT. `vsetvli`/`vsetvl` arrive through the ordinary
+     `io.req` with `fu_code(FC_ALU)` set (see ALUExeUnit's delta), and the
+     result leaves on the existing `io.resp`. Both destinations — `rd` in the
+     integer RF and `pvl` in the VL RF — take the SAME value off that ONE
+     result bus, which is what makes the dual-destination rule cheap. A new
+     VL-RF port or a mirror-write port appearing here is a failed review.
+
+===> THE BUG NOT TO RE-INTRODUCE: COMPARE THE FULL-WIDTH AVL. `addvector`
+     truncated the AVL to `vecVLSz+1` bits before comparing it against VLMAX,
+     so a large AVL WRAPPED instead of saturating — AVL=2048 produced vl=0 —
+     which breaks the canonical strip-mining loop, where AVL is the whole
+     remaining element count and must saturate to VLMAX on every iteration
+     but the last. Pass `io.req.bits.rs1_data` at its full `xLen` width. Note
+     `vecVLSz` is 9 bits, not 6.
+
+Governing spec anchors: frontend.rst `vector-rvv-decode` ("VSET Special
+Handling") and `vset-dual-dest` and `vl-delivery`; midcore.rst
+`regfiles-bypass` and `vl-vtype-rename`; issue.rst `issue-vl-delivery`.
 
 <|begin_module|>
 
@@ -164,10 +164,10 @@ from Tenstorrent Inc.
   `vsetvl` and leaves `lrs2_rtype` non-`RT_FIX` for `vsetvli`. Call that
   `vset_vtype_from_rs2`.
 
-  // NO INSTRUCTION RE-DECODE. The unit must NOT look at `uop.inst` to tell the
-  // forms apart — same structural reason MicroOp's delta gives for the
-  // access-class fields: a second decoder that disagrees with the first is a
-  // silent wrong answer, and this one would sit in the ALU's result path.
+  NO INSTRUCTION RE-DECODE. The unit must NOT look at `uop.inst` to tell the
+  forms apart — same structural reason MicroOp's delta gives for the
+  access-class fields: a second decoder that disagrees with the first is a
+  silent wrong answer, and this one would sit in the ALU's result path.
 
   //@req-spec-decode.c11
   ---- 2. The `vtype` this instruction configures ----
@@ -188,14 +188,14 @@ from Tenstorrent Inc.
   Both forms go through that single call, so `vsetvli` and `vsetvl` cannot
   disagree about whether a configuration is legal.
 
-  // DELEGATE; DO NOT REIMPLEMENT. VtypeTable wraps rocket-chip's
-  // `freechips.rocketchip.rocket.VType`, the same declaration rocket's CSRFile
-  // uses for architectural `vtype` under `usingVector`; an ALU-local vill/VLMAX
-  // rule would let this unit admit a `vtype` the architectural CSR calls
-  // `vill`. A `vill` result is NOT an exception here — RVV 1.0 says such a vset
-  // sets `vill` and forces VL to 0 — so this unit never touches
-  // `uop.exception`/`uop.exc_cause`, and for `vsetvl` the poison reaches
-  // younger uOPs through `flush_on_commit`, not from here.
+  DELEGATE; DO NOT REIMPLEMENT. VtypeTable wraps rocket-chip's
+  `freechips.rocketchip.rocket.VType`, the same declaration rocket's CSRFile
+  uses for architectural `vtype` under `usingVector`; an ALU-local vill/VLMAX
+  rule would let this unit admit a `vtype` the architectural CSR calls
+  `vill`. A `vill` result is NOT an exception here — RVV 1.0 says such a vset
+  sets `vill` and forces VL to 0 — so this unit never touches
+  `uop.exception`/`uop.exc_cause`, and for `vsetvl` the poison reaches
+  younger uOPs through `flush_on_commit`, not from here.
 
   //@req-spec-decode.c10
   ---- 3. The VL computation ----
@@ -207,17 +207,17 @@ from Tenstorrent Inc.
   which is `min(rs1, VLMAX)`, with `vill` forcing 0, delegated to rocket's
   `VType.vl(...)`. The result is `vecVLSz` (9) bits wide.
 
-  // ===> THE AVL ARRIVES AT FULL `xLen` WIDTH AND IS NOT NARROWED BEFORE THE
-  // COMPARE. This is the `addvector` bug verbatim: it truncated AVL to
-  // `vecVLSz+1` bits first, so AVL=2048 wrapped to 0 and produced vl=0 instead
-  // of saturating at VLMAX, and the canonical strip-mining loop
-  // (`vsetvli t0, a0, ...` with a0 = elements remaining) silently made no
-  // progress. Rocket's `vl(...)` is correct BY CONSTRUCTION and that is the
-  // reason to delegate: it forms `atLeastMaxVLMax` from the FULL-width
-  // `avl >= maxVLMax` comparison FIRST and only then indexes the low
-  // `log2(maxVLMax)` bits, so the truncation it does perform applies to a
-  // residue already known to be below maxVLMax. Anything narrower than
-  // `rs1_data` passed here re-creates the bug.
+  ===> THE AVL ARRIVES AT FULL `xLen` WIDTH AND IS NOT NARROWED BEFORE THE
+  COMPARE. This is the `addvector` bug verbatim: it truncated AVL to
+  `vecVLSz+1` bits first, so AVL=2048 wrapped to 0 and produced vl=0 instead
+  of saturating at VLMAX, and the canonical strip-mining loop
+  (`vsetvli t0, a0, ...` with a0 = elements remaining) silently made no
+  progress. Rocket's `vl(...)` is correct BY CONSTRUCTION and that is the
+  reason to delegate: it forms `atLeastMaxVLMax` from the FULL-width
+  `avl >= maxVLMax` comparison FIRST and only then indexes the low
+  `log2(maxVLMax)` bits, so the truncation it does perform applies to a
+  residue already known to be below maxVLMax. Anything narrower than
+  `rs1_data` passed here re-creates the bug.
 
   //@req-spec-decode.i10
   `vset_use_max` is `uop.lrs1_rtype === RT_ZERO`, i.e. the AVL source is
@@ -238,13 +238,13 @@ from Tenstorrent Inc.
   `useZero` is tied false because `vill` already forces VL to 0 inside
   `VType.vl(...)`.
 
-  // The M1 implementation gave this unit a VL-RF READ PORT (`pvl_src`) for
-  // keep-VL and paid for it with an iss+3 pipe-timing fix. v2 deletes that path
-  // by making keep-VL a non-producer at decode. Do NOT add the read port back:
-  // VlRegFile's port table has no ALU read port (R_exe is one per vector issue
-  // queue, R_commit is the ROB's). If a keep-VL uOP does reach this unit, its
-  // `is_vl_producer` is clear, so the computed VL is discarded by the mux in
-  // part 4 and no VL-RF write is enabled anywhere.
+  The M1 implementation gave this unit a VL-RF READ PORT (`pvl_src`) for
+  keep-VL and paid for it with an iss+3 pipe-timing fix. v2 deletes that path
+  by making keep-VL a non-producer at decode. Do NOT add the read port back:
+  VlRegFile's port table has no ALU read port (R_exe is one per vector issue
+  queue, R_commit is the ROB's). If a keep-VL uOP does reach this unit, its
+  `is_vl_producer` is clear, so the computed VL is discarded by the mux in
+  part 4 and no VL-RF write is enabled anywhere.
 
   //@req-spec-decode.c17
   ---- 4. One result bus, two destinations ----
@@ -322,11 +322,11 @@ from Tenstorrent Inc.
   uOP — including `vsetvli` — `vconfig` passes through unmodified, since the
   decode snapshot is already correct.
 
-  // SEAM, not a local decision: the Rob delta must latch `vconfig` from this
-  // writeback for a `vsetvl`, because a ROB entry captures its uop at dispatch.
-  // If it does not, `vsetvl`'s architectural `vtype` write has no carrier and
-  // the ALU's computed VTYPE is dead. Chosen over widening `ExeUnitResp`
-  // because that bundle is shared by every EU in the machine.
+  SEAM, not a local decision: the Rob delta must latch `vconfig` from this
+  writeback for a `vsetvl`, because a ROB entry captures its uop at dispatch.
+  If it does not, `vsetvl`'s architectural `vtype` write has no carrier and
+  the ALU's computed VTYPE is dead. Chosen over widening `ExeUnitResp`
+  because that bundle is shared by every EU in the machine.
 
   //@req-spec-decode.e5
   ---- 8. What this unit must NOT do: write the speculative `vtype` mirror ----
@@ -340,9 +340,9 @@ from Tenstorrent Inc.
   write would instead need a new recovery path for a mirror updated out of
   program order by a possibly-wrong-path uOP, and buys nothing.
 
-  // KNOWN SPEC DEFECT: overview.rst:158 says the ALU DOES write the mirror at
-  // execute. frontend.rst `vector-rvv-decode` and plan v2 contradict it and
-  // WIN. A mirror-write port appearing here is a failed review.
+  KNOWN SPEC DEFECT: overview.rst:158 says the ALU DOES write the mirror at
+  execute. frontend.rst `vector-rvv-decode` and plan v2 contradict it and
+  WIN. A mirror-write port appearing here is a failed review.
 
   ---- 9. Non-interference, speculation, and tracing ----
 

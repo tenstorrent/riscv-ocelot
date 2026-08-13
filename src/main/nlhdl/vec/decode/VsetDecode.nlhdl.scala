@@ -19,38 +19,38 @@ from Tenstorrent Inc.
   VsetDecode — the per-lane decoder that splits the three `vset` encodings into
   the three different pipeline paths they take, and drives the uOP fields that
   commit each one to its path.
-
-  hierarchy.yaml: kind: module, mode: new,
-  output src/main/scala/v4/vec/generated/decode/VsetDecode.scala,
-  package boom.v4.vec.generated.decode. depends_on MicroOp, VecTrace,
-  VtypeTable. Instantiated ONCE, as `vset`, inside VecDecode; its ports are
-  `coreWidth`-wide vectors, one element per decode lane.
-
-  THE SPLIT IS THE SUBSTANCE OF THIS FILE:
-
-    vsetivli  both VTYPE and AVL immediate. With `rd == x0` the uOP is FRONT-END
-              ONLY: no issue queue, no EU. VL is computed at decode; the VL-RF
-              write happens in the RENAME cycle, where `pvl` exists. No busy bit,
-              `pvl` born ready, ROB entry dispatched non-busy.
-    vsetvli   VTYPE immediate, AVL from `rs1` -> integer ALU EU.
-    vsetvl    VTYPE from `rs2` AND AVL from `rs1` -> integer ALU EU, plus
-              `is_unique` AND `flush_on_commit`.
-
-  ===> `vsetvli rd = x0, rs1 = x0` IS THE RESERVED KEEP-VL FORM, NOT `AVL = 0`.
-       Reading the zero `rs1` field as an AVL of zero sets VL to 0 and silently
-       turns every following vector instruction into a no-op — a failure that
-       looks like a masking or tail-policy bug, miles from its cause.
-
-  ===> A REGISTER-SOURCED `vset` HAS TWO DESTINATIONS IN TWO RENAME SPACES:
-       `pdst` in the integer RF and `pvl` in the VL RF. That is what
-       `is_vl_producer` exists for; it is ORTHOGONAL to `dst_rtype`, which reads
-       `RT_ZERO` when `rd == x0` while the VL RF is still written.
-
-  Governing spec anchors: frontend.rst `vector-rvv-decode` ("VSET Special
-  Handling"), `vset-dual-dest`, `vl-delivery`. Plan v2 ground rules 1 (usingRVV),
-  9 (rocket owns the architectural vector CSRs), 10 (reuse the existing wakeup
-  networks), 11 (guarded tracing).
 */
+
+hierarchy.yaml: kind: module, mode: new,
+output src/main/scala/v4/vec/generated/decode/VsetDecode.scala,
+package boom.v4.vec.generated.decode. depends_on MicroOp, VecTrace,
+VtypeTable. Instantiated ONCE, as `vset`, inside VecDecode; its ports are
+`coreWidth`-wide vectors, one element per decode lane.
+
+THE SPLIT IS THE SUBSTANCE OF THIS FILE:
+
+  vsetivli  both VTYPE and AVL immediate. With `rd == x0` the uOP is FRONT-END
+            ONLY: no issue queue, no EU. VL is computed at decode; the VL-RF
+            write happens in the RENAME cycle, where `pvl` exists. No busy bit,
+            `pvl` born ready, ROB entry dispatched non-busy.
+  vsetvli   VTYPE immediate, AVL from `rs1` -> integer ALU EU.
+  vsetvl    VTYPE from `rs2` AND AVL from `rs1` -> integer ALU EU, plus
+            `is_unique` AND `flush_on_commit`.
+
+===> `vsetvli rd = x0, rs1 = x0` IS THE RESERVED KEEP-VL FORM, NOT `AVL = 0`.
+     Reading the zero `rs1` field as an AVL of zero sets VL to 0 and silently
+     turns every following vector instruction into a no-op — a failure that
+     looks like a masking or tail-policy bug, miles from its cause.
+
+===> A REGISTER-SOURCED `vset` HAS TWO DESTINATIONS IN TWO RENAME SPACES:
+     `pdst` in the integer RF and `pvl` in the VL RF. That is what
+     `is_vl_producer` exists for; it is ORTHOGONAL to `dst_rtype`, which reads
+     `RT_ZERO` when `rd == x0` while the VL RF is still written.
+
+Governing spec anchors: frontend.rst `vector-rvv-decode` ("VSET Special
+Handling"), `vset-dual-dest`, `vl-delivery`. Plan v2 ground rules 1 (usingRVV),
+9 (rocket owns the architectural vector CSRs), 10 (reuse the existing wakeup
+networks), 11 (guarded tracing).
 
 <|begin_module|>
 
@@ -146,11 +146,11 @@ from Tenstorrent Inc.
     vsetvli   `!inst[31]`                vtype = `inst[30:20]`, AVL = `rs1`
     vsetvl    `inst[31:25] === 0b1000000` vtype = `rs2`,        AVL = `rs1`
 
-  // Take the field positions from rocket, not from a fresh reading of the ISA
-  // manual. rocket's CSRFile owns architectural vtype (ground rule 9), so a
-  // disagreement about where the vtype bits live would leave the speculative
-  // mirror and the architectural CSR in different configurations with no
-  // exception raised anywhere.
+  Take the field positions from rocket, not from a fresh reading of the ISA
+  manual. rocket's CSRFile owns architectural vtype (ground rule 9), so a
+  disagreement about where the vtype bits live would leave the speculative
+  mirror and the architectural CSR in different configurations with no
+  exception raised anywhere.
 
   Legality is NOT computed here, and the extracted vtype bits leave as RAW
   `dec_vtype_imm`. VConfigUnit is the caller that turns them into a checked
@@ -185,17 +185,17 @@ from Tenstorrent Inc.
   through `pvl` exactly like any other VL producer. There is NO decode-time VL fast
   path, no bypass around the VL RF and no statically-known-VL route for consumers.
 
-  // Delegating the computation is also what keeps the M1 AVL bug out: that
-  // implementation truncated AVL before comparing it against VLMAX, so a large AVL
-  // WRAPPED instead of saturating (AVL = 2048 gave vl = 0) and the canonical
-  // strip-mining loop broke. VtypeTable tests the high bits instead of truncating.
+  Delegating the computation is also what keeps the M1 AVL bug out: that
+  implementation truncated AVL before comparing it against VLMAX, so a large AVL
+  WRAPPED instead of saturating (AVL = 2048 gave vl = 0) and the canonical
+  strip-mining loop broke. VtypeTable tests the high bits instead of truncating.
 
-  // ===> DO NOT REINTRODUCE THE M1 `vl_is_known` MicroOp FIELD. The MicroOp delta
-  // forbids it by name and it is unnecessary: born-readiness is a property of the
-  // WRITE REQUEST, seen by the rename cycle as it allocates. The VL value must
-  // also ride the SAME registered decode -> ren2 stage as its uop; a shadow
-  // pipeline for it is the shape of the M1 free-list double-free, where vector
-  // logic ran a cycle ahead and acted on the next cycle's bubble.
+  ===> DO NOT REINTRODUCE THE M1 `vl_is_known` MicroOp FIELD. The MicroOp delta
+  forbids it by name and it is unnecessary: born-readiness is a property of the
+  WRITE REQUEST, seen by the rename cycle as it allocates. The VL value must
+  also ride the SAME registered decode -> ren2 stage as its uop; a shadow
+  pipeline for it is the shape of the M1 free-list double-free, where vector
+  logic ran a cycle ahead and acted on the next cycle's bubble.
 
   //@req-spec-decode.c6
   This uOP has no writeback, so nothing exists that could ever clear its ROB busy
@@ -236,12 +236,12 @@ from Tenstorrent Inc.
   `lrs2_rtype = RT_FIX`, so the uOP is woken by `rs1` (and `rs2`) exactly like any
   integer op. `lrs3_rtype` and `frs3_en` are cleared.
 
-  // ===> AN `x0` SOURCE MUST DECODE RT_ZERO, NOT RT_FIX: drive
-  // `Mux(field === 0.U, RT_ZERO, RT_FIX)`, mirroring the scalar decoder, because
-  // `rename-stage.scala` asserts `!(r_valid && lrs1_rtype === RT_FIX && lrs1 ===
-  // 0.U)` and it fires on the very first `vsetvli rd, x0, vtypei` otherwise. Both
-  // fields need it — `rs1 == x0` is a defined and common vset form, and
-  // `rs2 == x0` on a `vsetvl` legally requests the all-zero vtype.
+  ===> AN `x0` SOURCE MUST DECODE RT_ZERO, NOT RT_FIX: drive
+  `Mux(field === 0.U, RT_ZERO, RT_FIX)`, mirroring the scalar decoder, because
+  `rename-stage.scala` asserts `!(r_valid && lrs1_rtype === RT_FIX && lrs1 ===
+  0.U)` and it fires on the very first `vsetvli rd, x0, vtypei` otherwise. Both
+  fields need it — `rs1 == x0` is a defined and common vset form, and
+  `rs2 == x0` on a `vsetvl` legally requests the all-zero vtype.
 
   //@req-spec-decode.c16
   These uOPs have TWO destinations in TWO independent rename spaces. Drive
@@ -278,16 +278,16 @@ from Tenstorrent Inc.
   immediate so EMUL is known at decode, and `vsetvl` does not — its VTYPE is in
   `rs2` and exists only after execute.
 
-  // `is_unique` ALONE IS NOT ENOUGH, and an earlier draft of the chapter claimed
-  // it was. It gates only this uop's OWN dispatch (`core.scala:739-740`) until
-  // everything OLDER has retired, and says nothing about YOUNGER uops, which
-  // decode against a stale vtype mirror, derive the wrong EMUL and make the
-  // mapper allocate the wrong number of vector PRNs — silent group mis-sizing
-  // with no misprediction involved, so the per-br_tag VCFG snapshot recovery
-  // never fires. `flush_on_commit` is what makes younger code observe the effect:
-  // everything younger is refetched once the `vsetvl` commits, and that flush
-  // reloads the speculative mirror from the committed shadow. So NO execute-time
-  // mirror write is needed and none may be added.
+  `is_unique` ALONE IS NOT ENOUGH, and an earlier draft of the chapter claimed
+  it was. It gates only this uop's OWN dispatch (`core.scala:739-740`) until
+  everything OLDER has retired, and says nothing about YOUNGER uops, which
+  decode against a stale vtype mirror, derive the wrong EMUL and make the
+  mapper allocate the wrong number of vector PRNs — silent group mis-sizing
+  with no misprediction involved, so the per-br_tag VCFG snapshot recovery
+  never fires. `flush_on_commit` is what makes younger code observe the effect:
+  everything younger is refetched once the `vsetvl` commits, and that flush
+  reloads the speculative mirror from the committed shadow. So NO execute-time
+  mirror write is needed and none may be added.
 
   Both bits are also set by the `DecodeUnit` delta for this encoding: the SAME
   signal reached from the other side of the merge, not a second mechanism. If the
@@ -316,7 +316,7 @@ from Tenstorrent Inc.
       `RT_ZERO`, retiring through an ordinary writeback that writes neither
       register file — uniform with the other sub-cases, and cheaper than a fourth
       dispatch path for an instruction whose only effect is a vtype update.
-      // The zero in the rs1 FIELD selects a behaviour; it is not an operand value.
+      The zero in the rs1 FIELD selects a behaviour; it is not an operand value.
 
   //@req-spec-decode.i13
       RESERVED-ENCODING CHECK for case (c): if the new immediate vtype changes
@@ -326,14 +326,14 @@ from Tenstorrent Inc.
       and drive it on `keep_vl_illegal`, which VConfigUnit must OR into the mirror's
       `vill`; OR it into `uop_out.vconfig.vill` here as well, so the uOP that must
       trap carries its own poison and does not depend on the neighbour's fold.
-      // VLMAX equality IS the SEW/LMUL-ratio test, since VLMAX = VLEN*LMUL/SEW.
-      // Compare the derived VLMAX rather than rebuilding the ratio from the
-      // fields, so this check cannot drift from VtypeTable's legality rules. An
-      // already-illegal vtype is caught by its own `vill` term and has `vlmax`
-      // driven to zero, so the comparison cannot manufacture a spurious pass. The
-      // `vill` set here poisons the VCFG mirror, which is what makes younger
-      // vtype-dependent uOPs trap at decode instead of allocating a mis-sized PRN
-      // group.
+      VLMAX equality IS the SEW/LMUL-ratio test, since VLMAX = VLEN*LMUL/SEW.
+      Compare the derived VLMAX rather than rebuilding the ratio from the
+      fields, so this check cannot drift from VtypeTable's legality rules. An
+      already-illegal vtype is caught by its own `vill` term and has `vlmax`
+      driven to zero, so the comparison cannot manufacture a spurious pass. The
+      `vill` set here poisons the VCFG mirror, which is what makes younger
+      vtype-dependent uOPs trap at decode instead of allocating a mis-sized PRN
+      group.
 
   //@req-spec-decode.i14
   (d) Otherwise — `rd == x0` together with a VL CHANGE, i.e. `rd == x0` and

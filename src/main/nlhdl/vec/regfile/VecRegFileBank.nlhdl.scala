@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecRegFileBank — one width slice of the vector register file: a
   `numVecPhysRegisters x (vLen/4)` array of standard-cell flip-flops carrying all
   12 VRF ports at `vLen/4` bits.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/regfile/VecRegFileBank.scala,
@@ -56,7 +57,6 @@ from Tenstorrent Inc.
   midcore.rst `vrf-ports` (the partition this bank serves but does not define),
   midcore.rst `regfiles-bypass` (the 96-PRN / 24 kbit sizing figures),
   loadstore.rst `load-coalesce` (the LCB, sole driver of W0/W1).
-*/
 
 <|begin_module|>
 
@@ -229,8 +229,8 @@ from Tenstorrent Inc.
   groups. If it fires, the defect is in rename or in the LCB/CII write routing,
   never here, and the fix is not to add priority to this module.
 
-  // The assert is the enforcement of the property that licenses the OR-reduce
-  // write path. Weakening it to a priority mux would hide a rename bug.
+  The assert is the enforcement of the property that licenses the OR-reduce
+  write path. Weakening it to a priority mux would hide a rename bug.
 
   ---- Read path (combinational, single cycle) ----
 
@@ -292,16 +292,16 @@ from Tenstorrent Inc.
   bug several stages downstream. Neither may introduce a register or a wire that
   functional logic reads.
 
-  // ===> DO NOT HAND-ROLL A `printf` BEHIND `VecTrace.traceEnabled`. An earlier
-  // version of THIS paragraph said "guarded printf ... gated on
-  // `VecTrace.traceEnabled && !reset`", and the first generation duly emitted a
-  // raw `printf` with its own format string — the only node in the design to do
-  // so, which is exactly the divergence the shared package exists to prevent.
-  // `traceStruct` did not exist at the time; it does now, it applies the
-  // `traceEnabled && !reset` gate itself inside the private `emitLine`, and the
-  // VecTrace spec now forbids hand-rolled emission outright. `traceEnabled`
-  // remains public only for gating a caller's own NON-emitting debug logic.
-  // Corrected 2026-08-10; the generated RTL was fixed in the same pass.
+  ===> DO NOT HAND-ROLL A `printf` BEHIND `VecTrace.traceEnabled`. An earlier
+  version of THIS paragraph said "guarded printf ... gated on
+  `VecTrace.traceEnabled && !reset`", and the first generation duly emitted a
+  raw `printf` with its own format string — the only node in the design to do
+  so, which is exactly the divergence the shared package exists to prevent.
+  `traceStruct` did not exist at the time; it does now, it applies the
+  `traceEnabled && !reset` gate itself inside the private `emitLine`, and the
+  VecTrace spec now forbids hand-rolled emission outright. `traceEnabled`
+  remains public only for gating a caller's own NON-emitting debug logic.
+  Corrected 2026-08-10; the generated RTL was fixed in the same pass.
   <|end_logic|>
 
 <|end_module|>

@@ -18,6 +18,7 @@ from Tenstorrent Inc.
 /*
   VecBusyTable — the per-PRN readiness bit vector of one renamed vector-side
   register space, set on group allocation and cleared by group-done.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/rename/VecBusyTable.scala,
@@ -60,7 +61,6 @@ from Tenstorrent Inc.
   set/read/clear model and every width), `vl-vtype-rename` (the VL instance),
   `cii-shared-mapping` and `regfiles-bypass` (pvtmp is an ordinary group),
   glossary.rst `glossary-terms` (pvtmp).
-*/
 
 <|begin_module|>
 
@@ -164,13 +164,13 @@ from Tenstorrent Inc.
   that forgot to mask, while a clear bit in a slot nobody reads is harmless. Same
   fail-safe direction as VecFreeList padding a short group with member 0 instead of
   PRN 0.
-  // Sense is BUSY here and READY at VecRenameSpace's `member_rdy`, which inverts
-  // these bits and ORs in its own in-bundle prefix hit. Two names, two senses, one
-  // conversion site — do not also invert here.
-  // `pvold_busy` is the per-member readiness of `stale_pvdest` (D6): `IQ_V_LOAD`
-  // (the LCB pre-loads from it on R2 when vta=0/vma=0) and `IQ_V_ALU` (the
-  // coprocessor may pull STALE_VD) gate issue on it through a FIFTH VecGroupReady
-  // instance, `rdy_vold`. See part 10 for why it exists ONLY per member.
+  Sense is BUSY here and READY at VecRenameSpace's `member_rdy`, which inverts
+  these bits and ORs in its own in-bundle prefix hit. Two names, two senses, one
+  conversion site — do not also invert here.
+  `pvold_busy` is the per-member readiness of `stale_pvdest` (D6): `IQ_V_LOAD`
+  (the LCB pre-loads from it on R2 when vta=0/vma=0) and `IQ_V_ALU` (the
+  coprocessor may pull STALE_VD) gate issue on it through a FIFTH VecGroupReady
+  instance, `rdy_vold`. See part 10 for why it exists ONLY per member.
 
   //@req-spec-rename.g24
   //@req-spec-rename.g25
@@ -209,9 +209,9 @@ from Tenstorrent Inc.
   group structure in it at all. Group structure exists only in the ADDRESS lists
   that index it, which arrive on the ports above.
 
-  // Flat, not Vec(numGroups, Bits): a group's members are non-contiguous PRNs
-  // from the free list, so no grouping of the storage could match a group that
-  // is actually allocated.
+  Flat, not Vec(numGroups, Bits): a group's members are non-contiguous PRNs
+  from the free list, so no grouping of the storage could match a group that
+  is actually allocated.
 
   ---- 2. Set-busy on allocation ----
 
@@ -228,10 +228,10 @@ from Tenstorrent Inc.
   logic beyond the wider port. A shared instruction sets TWO groups this way,
   `pvdest` and `pvtmp` (part 6).
 
-  // The j < v_emul qualifier keeps an EMUL=1 op from marking 7 unrelated PRNs
-  // busy. Do NOT instead rely on unused pvdest members being zero: PRN 0 is a
-  // real allocatable vector PRN, so a stale member would mark it busy forever
-  // and hang the first consumer of whatever op later owns it.
+  The j < v_emul qualifier keeps an EMUL=1 op from marking 7 unrelated PRNs
+  busy. Do NOT instead rely on unused pvdest members being zero: PRN 0 is a
+  real allocatable vector PRN, so a stale member would mark it busy forever
+  and hang the first consumer of whatever op later owns it.
 
   ---- 3. Clear-busy on group-done ----
 
@@ -249,11 +249,11 @@ from Tenstorrent Inc.
   clear side is therefore `numWbPorts` by up-to-8 bits wide: `numVecWbPorts` ×
   `maxGroupSize`.
 
-  // ONE EVENT, THREE CONSUMERS: the ROB's single-shot rob_bsy clear, this
-  // table's clear, and the vector wakeup network into the issue slots — same
-  // group-done, same cycle. Do not re-time this clear against the ROB's: a table
-  // clearing a cycle later would let a dependent's rename read busy for a group
-  // whose producer the machine has already retired.
+  ONE EVENT, THREE CONSUMERS: the ROB's single-shot rob_bsy clear, this
+  table's clear, and the vector wakeup network into the issue slots — same
+  group-done, same cycle. Do not re-time this clear against the ROB's: a table
+  clearing a cycle later would let a dependent's rename read busy for a group
+  whose producer the machine has already retired.
 
   ---- 4. Next state, and set beats clear ----
 
@@ -332,14 +332,14 @@ from Tenstorrent Inc.
   member that does not exist. Part 5's reduction masks the same slots for the same
   reason — one term, applied on both paths, not a new comparator.
 
-  // ===> WHY THE AGGREGATE ALONE HANGS THE MACHINE. A source group's members can
-  // come from DIFFERENT producers, so a group can be not-ready in AGGREGATE while
-  // members 0..2 are already done. VecGroupReady INITIALIZES its per-member state
-  // from `in_member_rdy` and thereafter only ORs in matches against live
-  // group-dones. Load the aggregate into all members and the slot waits for
-  // group-dones that ALREADY FIRED and will never fire again — a permanent hang,
-  // with no assertion. Two nodes (VecIssueSlot, VecGroupReady) depend on this port
-  // existing; the only alternative is a second busy table.
+  ===> WHY THE AGGREGATE ALONE HANGS THE MACHINE. A source group's members can
+  come from DIFFERENT producers, so a group can be not-ready in AGGREGATE while
+  members 0..2 are already done. VecGroupReady INITIALIZES its per-member state
+  from `in_member_rdy` and thereafter only ORs in matches against live
+  group-dones. Load the aggregate into all members and the slot waits for
+  group-dones that ALREADY FIRED and will never fire again — a permanent hang,
+  with no assertion. Two nodes (VecIssueSlot, VecGroupReady) depend on this port
+  existing; the only alternative is a second busy table.
 
   With `exportMemberRdy` false the port and the `stale_pvdest` read are absent, so
   the VL instance is exactly the module part 7 describes.
@@ -367,10 +367,10 @@ from Tenstorrent Inc.
   no architectural read can alias it — a VecMapTable property, not a busy-table
   one, and free for this module.
 
-  // Reading pvtmp takes the per-lane read count from 25 to up to 33, and
-  // `stale_pvdest` (part 5b, vector instance only) to up to 41. The spec's
-  // "~25 bit-reads per lane" counts the ENCODED sources only; pvtmp is the fifth
-  // operand, read on lanes whose uop is_shared.
+  Reading pvtmp takes the per-lane read count from 25 to up to 33, and
+  `stale_pvdest` (part 5b, vector instance only) to up to 41. The spec's
+  "~25 bit-reads per lane" counts the ENCODED sources only; pvtmp is the fifth
+  operand, read on lanes whose uop is_shared.
 
   ---- 7. The VL instance, and where the pvl bit comes from ----
 
@@ -400,10 +400,10 @@ from Tenstorrent Inc.
   `io.ren_uops(i).pvl` from its own state and drives `pvl_busy`; VecRenameSpace
   joins the two responses when it writes the uop's busy fields.
 
-  // The M1 pvl busy-bit bugs came from reading pvl out of the wrong table. Two
-  // instances of one module with one read port each makes the mistake
-  // unspellable: neither instance has an index wide enough, or a state vector
-  // large enough, to answer the other's read.
+  The M1 pvl busy-bit bugs came from reading pvl out of the wrong table. Two
+  instances of one module with one read port each makes the mistake
+  unspellable: neither instance has an index wide enough, or a state vector
+  large enough, to answer the other's read.
 
   ---- 8. Misprediction and flush: no port, on purpose ----
 
@@ -415,12 +415,12 @@ from Tenstorrent Inc.
   nothing reads a PRN's bit unless some uop names it, and naming it requires
   having allocated it.
 
-  // ASSUMPTION TO CHECK AT BRING-UP: the wakeup ports carry no wrong-path
-  // group-done for a PRN already reallocated. Vector completions are killed at
-  // their source (VecCiiFlush answers and drops killed tags; the LSU squash path
-  // drops killed element accesses) and rename does not restart inside the flush
-  // window. If that stops holding, the fix belongs at the producer — a
-  // flush-clear of the whole table would also clear surviving older producers.
+  ASSUMPTION TO CHECK AT BRING-UP: the wakeup ports carry no wrong-path
+  group-done for a PRN already reallocated. Vector completions are killed at
+  their source (VecCiiFlush answers and drops killed tags; the LSU squash path
+  drops killed element accesses) and rename does not restart inside the flush
+  window. If that stops holding, the fix belongs at the producer — a
+  flush-clear of the whole table would also clear surviving older producers.
 
   ---- 9. Trace and assertions ----
 
@@ -454,19 +454,19 @@ from Tenstorrent Inc.
   this module's per-member export. This matches the prior M2 implementation, whose
   hang needed exactly this term.
 
-  // ===> AND A SINGLE AGGREGATE `stale_pvdest_busy` BIT IS THE TEMPTING WRONG
-  // ANSWER — it is UNSAFE, not merely conservative. `stale_pvdest` can span up to
-  // `maxGroupSize` DIFFERENT producers: an LMUL=1 op writes v0, then an LMUL=8 op
-  // renames v0..v7, so that op's stale group is the CURRENT mappings of eight arch
-  // vregs, installed by up to eight different instructions. One bit cannot express
-  // "waiting on producer 3 of 8" and one group-done cannot clear it correctly.
-  // That is the same argument that makes `pvs*` per-member (rename.g20), and it is
-  // why `VecBusyResp` gains no field: the aggregate would be a legal-looking bit
-  // that is wrong in the multi-producer case, which is the common case at LMUL>1.
+  ===> AND A SINGLE AGGREGATE `stale_pvdest_busy` BIT IS THE TEMPTING WRONG
+  ANSWER — it is UNSAFE, not merely conservative. `stale_pvdest` can span up to
+  `maxGroupSize` DIFFERENT producers: an LMUL=1 op writes v0, then an LMUL=8 op
+  renames v0..v7, so that op's stale group is the CURRENT mappings of eight arch
+  vregs, installed by up to eight different instructions. One bit cannot express
+  "waiting on producer 3 of 8" and one group-done cannot clear it correctly.
+  That is the same argument that makes `pvs*` per-member (rename.g20), and it is
+  why `VecBusyResp` gains no field: the aggregate would be a legal-looking bit
+  that is wrong in the multi-producer case, which is the common case at LMUL>1.
 
-  // Still NOT read here, and not to be added by a generator: any per-PRN read
-  // driven by anything other than a `ren_uops` field, and any read on the VL
-  // instance beyond `pvl` (part 7).
+  Still NOT read here, and not to be added by a generator: any per-PRN read
+  driven by anything other than a `ren_uops` field, and any read on the VL
+  instance beyond `pvl` (part 7).
   <|end_logic|>
 
 <|end_module|>
@@ -490,11 +490,11 @@ vector at that fan-out. Run the timing spike hierarchy.yaml calls for on
 VecRenameSpace BEFORE the rename integration step lands; if the vector side
 loses, the whole core's rename stage pays.
 
-// 41, not 33: `stale_pvdest`'s 8 members (D6) are the only NEW reads either
-// amendment adds. `member_busy_resps` itself costs NOTHING in this budget — it is
-// a fan-out of the bypassed per-member wires ahead of the AND-trees, so it adds
-// fan-out load and no depth, and it removes nothing either: `busy_resps` still
-// needs the reduction for the rename-cycle read.
+41, not 33: `stale_pvdest`'s 8 members (D6) are the only NEW reads either
+amendment adds. `member_busy_resps` itself costs NOTHING in this budget — it is
+a fan-out of the bypassed per-member wires ahead of the AND-trees, so it adds
+fan-out load and no depth, and it removes nothing either: `busy_resps` still
+needs the reduction for the rename-cycle read.
 
 No throughput target beyond one full dispatch bundle per cycle. This module must
 never be the reason a bundle fails to rename, so it has no ready/valid handshake

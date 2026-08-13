@@ -18,40 +18,40 @@ from Tenstorrent Inc.
 /*
   VDecode — the arithmetic RVV opcode decoder: one combinational lane per decode
   lane that turns an OP-V instruction word into the vector fields of ONE MicroOp.
-
-  hierarchy.yaml: kind: module, mode: new,
-  output src/main/scala/v4/vec/generated/decode/VDecode.scala,
-  package boom.v4.vec.generated.decode. group vec_decode.
-  depends_on MicroOp, VecTrace, VtypeTable. Instantiated once, as `arith`, by
-  VecDecode alongside VLSDecode (`ls`), VsetDecode (`vset`) and VConfigUnit
-  (`vcfg`). Instantiates nothing.
-
-  ===> ONE uOP PER INSTRUCTION, AND NOTHING HERE MAY EXPAND ONE. This module is
-       purely combinational, holds no register, and emits exactly one uOP per
-       lane per cycle. Element expansion into nOP.v happens in the vector LS
-       AGEN and nowhere else; a destination-per-register expansion at decode
-       would multiply the ROB entry count of every vector program by up to 8 and
-       is the single thing this node exists to not do.
-
-  ===> IT IS DELIBERATELY NOT A FULL RVV DECODER. The CII issue packet carries
-       the raw 32-bit instruction word (`CiiIssueReq.instr`) plus vtype/vl/
-       vstart/vxrm, and the coprocessor decodes the operation itself. So VDecode
-       decodes only what the HOST needs: which architectural registers are read
-       and written, which rename space each destination belongs to, which issue
-       queue the uOP is routed to, how many registers the destination group has,
-       and whether a second execution resource is needed. It reads funct6 ONLY
-       for the destination-SHAPE classes (widening, single-register destination,
-       whole-register move); there is no operation table, no ALU function code
-       and no immediate extraction. A second full decoder of the same instruction
-       would be a second thing to keep in agreement with the VPU's decoder, which
-       is the class of divergence the CII's raw-instruction field exists to avoid.
-
-  Governing spec anchors: frontend.rst `vector-rvv-decode` (the decoder itself,
-  "CII Shared Instruction Decoding", "VSET Special Handling" for the EMUL
-  obligation, `vector-csr-ownership` for the vill poison and its whole-register
-  exemption), glossary.rst `glossary-terms` (uOP / OP.v / nOP.v / shared
-  instruction), issue.rst `cii-shared-sched`, midcore.rst `old-vd`.
 */
+
+hierarchy.yaml: kind: module, mode: new,
+output src/main/scala/v4/vec/generated/decode/VDecode.scala,
+package boom.v4.vec.generated.decode. group vec_decode.
+depends_on MicroOp, VecTrace, VtypeTable. Instantiated once, as `arith`, by
+VecDecode alongside VLSDecode (`ls`), VsetDecode (`vset`) and VConfigUnit
+(`vcfg`). Instantiates nothing.
+
+===> ONE uOP PER INSTRUCTION, AND NOTHING HERE MAY EXPAND ONE. This module is
+     purely combinational, holds no register, and emits exactly one uOP per
+     lane per cycle. Element expansion into nOP.v happens in the vector LS
+     AGEN and nowhere else; a destination-per-register expansion at decode
+     would multiply the ROB entry count of every vector program by up to 8 and
+     is the single thing this node exists to not do.
+
+===> IT IS DELIBERATELY NOT A FULL RVV DECODER. The CII issue packet carries
+     the raw 32-bit instruction word (`CiiIssueReq.instr`) plus vtype/vl/
+     vstart/vxrm, and the coprocessor decodes the operation itself. So VDecode
+     decodes only what the HOST needs: which architectural registers are read
+     and written, which rename space each destination belongs to, which issue
+     queue the uOP is routed to, how many registers the destination group has,
+     and whether a second execution resource is needed. It reads funct6 ONLY
+     for the destination-SHAPE classes (widening, single-register destination,
+     whole-register move); there is no operation table, no ALU function code
+     and no immediate extraction. A second full decoder of the same instruction
+     would be a second thing to keep in agreement with the VPU's decoder, which
+     is the class of divergence the CII's raw-instruction field exists to avoid.
+
+Governing spec anchors: frontend.rst `vector-rvv-decode` (the decoder itself,
+"CII Shared Instruction Decoding", "VSET Special Handling" for the EMUL
+obligation, `vector-csr-ownership` for the vill poison and its whole-register
+exemption), glossary.rst `glossary-terms` (uOP / OP.v / nOP.v / shared
+instruction), issue.rst `cii-shared-sched`, midcore.rst `old-vd`.
 
 <|begin_module|>
 
@@ -165,12 +165,12 @@ from Tenstorrent Inc.
   - `iq_type(IQ_V_ALU) := true.B` and `fu_code(FC_ALU) := true.B`, so the uOP
     matches the `fu_types` the CII host advertises to `IQ_V_ALU`.
 
-  // This module sets ONLY the IQ_V_ALU position and does not clear the others.
-  // Clearing the scalar-derived iq_type/fu_code bits for a recognized RVV
-  // instruction is VecDecode's single assignment, made once before the four
-  // children's field writes compose. If this module cleared them too, the result
-  // would depend on the order the parent chains its children — a last-connect
-  // ordering dependence that survives review and breaks on the next reorder.
+This module sets ONLY the IQ_V_ALU position and does not clear the others.
+Clearing the scalar-derived iq_type/fu_code bits for a recognized RVV
+instruction is VecDecode's single assignment, made once before the four
+children's field writes compose. If this module cleared them too, the result
+would depend on the order the parent chains its children — a last-connect
+ordering dependence that survives review and breaks on the next reorder.
 
   `lvs1` is the vs1 field `inst(19,15)` when it names a vector register, i.e. the
   OPIVV/OPFVV/OPMVV forms; for the scalar-feeder and funct5-selector forms it is
@@ -185,10 +185,10 @@ from Tenstorrent Inc.
   never requests, and adds no dependency that was not there already — `IQ_V_ALU`
   must gate on the old destination group regardless, since the coprocessor pulls
   STALE_VD for merges.
-  // Do NOT instead have rename copy stale_pvdest into pvs3, and do NOT add a
-  // funct6 table of the RMW families here. The first makes two fields alias
-  // through a hidden assignment, which is what design invariant 7 forbids; the
-  // second is another copy of the VPU's decoder.
+Do NOT instead have rename copy stale_pvdest into pvs3, and do NOT add a
+funct6 table of the RMW families here. The first makes two fields alias
+through a hidden assignment, which is what design invariant 7 forbids; the
+second is another copy of the VPU's decoder.
 
   ---- 3. Scalar feeders, and the x0 rule that bit us ----
 
@@ -201,13 +201,13 @@ from Tenstorrent Inc.
   - funct3 OPFVF (`0b101`): `lrs1 := inst(19,15)` with `lrs1_rtype := RT_FLT`.
   - otherwise: `lvs1 := inst(19,15)` and `lrs1_rtype := RT_X`.
 
-  // ===> THE x0 CONVERSION IS MANDATORY, NOT DEFENSIVE. RVV permits `.vx` and
-  // `vmv.s.x` to read x0 (value 0), and rename-stage.scala:109 asserts
-  // `!(r_valid && lrs1_rtype === RT_FIX && lrs1 === 0.U)`. An earlier
-  // implementation omitted the conversion and the assertion fired on the first
-  // real kernel that used `vmv.s.x v12, zero`. Mirror the scalar decoder
-  // (decode.scala:505) exactly: RT_FIX becomes RT_ZERO when the specifier is 0.
-  // RT_FLT needs no such conversion — f0 is a real register.
+===> THE x0 CONVERSION IS MANDATORY, NOT DEFENSIVE. RVV permits `.vx` and
+`vmv.s.x` to read x0 (value 0), and rename-stage.scala:109 asserts
+`!(r_valid && lrs1_rtype === RT_FIX && lrs1 === 0.U)`. An earlier
+implementation omitted the conversion and the assertion fired on the first
+real kernel that used `vmv.s.x v12, zero`. Mirror the scalar decoder
+(decode.scala:505) exactly: RT_FIX becomes RT_ZERO when the specifier is 0.
+RT_FLT needs no such conversion — f0 is a real register.
 
   Scalar-DESTINATION arithmetic (funct6 `0b010000`): under OPMVV this is
   `vmv.x.s`/`vcpop.m`/`vfirst.m`, which write an integer GPR, and under OPFVV it
@@ -225,17 +225,17 @@ from Tenstorrent Inc.
   source at all. Only decode knows the format, and the instruction word does not
   reach rename or issue, so these bits cannot be recovered anywhere else.
 
-  ===> AN UNENCODED SOURCE LEFT UNMARKED IS A HANG, NOT A LOST OPTIMIZATION. For
-       `vadd.vx` the vs1 field is unencoded, `lvs1` is meaningless, and the
-       mapper's map-table read returns the current mapping of `v0` — the MASK
-       register, rewritten constantly by any masked program. If that mapping's
-       producer fired its group-done BEFORE the issue slot captured its
-       member-ready bits, nothing will ever clear them again and the slot waits
-       forever on an operand the instruction does not read. The MicroOp delta
-       (section 4) carries the full argument; this module is where the bits are
-       produced. The two consumers are the vector mapper (skip renaming an
-       unencoded source, leave its busy bit clear) and `VecIssueSlot` (drive the
-       bit onto the matching `used` input).
+===> AN UNENCODED SOURCE LEFT UNMARKED IS A HANG, NOT A LOST OPTIMIZATION. For
+     `vadd.vx` the vs1 field is unencoded, `lvs1` is meaningless, and the
+     mapper's map-table read returns the current mapping of `v0` — the MASK
+     register, rewritten constantly by any masked program. If that mapping's
+     producer fired its group-done BEFORE the issue slot captured its
+     member-ready bits, nothing will ever clear them again and the slot waits
+     forever on an operand the instruction does not read. The MicroOp delta
+     (section 4) carries the full argument; this module is where the bits are
+     produced. The two consumers are the vector mapper (skip renaming an
+     unencoded source, leave its busy bit clear) and `VecIssueSlot` (drive the
+     bit onto the matching `used` input).
 
   `v_uses_vs1` is true for the VECTOR-VECTOR forms — funct3 OPIVV (`0b000`),
   OPFVV (`0b001`) and OPMVV (`0b010`) — and false everywhere else. Two
@@ -288,12 +288,12 @@ from Tenstorrent Inc.
   are defaulted false by the `DecodeUnit` delta (see the MicroOp delta's edit
   scope), which is the only place a *scalar* uop's copies can be driven.
 
-  // ===> THE AUTHORITY FOR THESE LISTS IS THE RVV 1.0 ENCODING TABLE PLUS THE
-  // VPU's own decode, NOT intuition about which operands an instruction "uses".
-  // A wrongly-true bit hangs; a wrongly-false bit drops a real dependency and
-  // reads a stale group, which is silent corruption. Review both directions
-  // against the same tables part 5's single-register-destination list is
-  // reviewed against.
+===> THE AUTHORITY FOR THESE LISTS IS THE RVV 1.0 ENCODING TABLE PLUS THE
+VPU's own decode, NOT intuition about which operands an instruction "uses".
+A wrongly-true bit hangs; a wrongly-false bit drops a real dependency and
+reads a stale group, which is silent corruption. Review both directions
+against the same tables part 5's single-register-destination list is
+reviewed against.
 
   Also write `v_is_masked := !inst(25)` on every arithmetic lane. RVV's `vm` bit
   is 1 for UNMASKED, so the field is the COMPLEMENT of the encoded bit, and this
@@ -342,19 +342,19 @@ from Tenstorrent Inc.
                vnsrl/vnsra/vnclip do not. Listed here only so a reader does not
                "fix" it by symmetry with `vfwcvt`.
 
-  // ===> THIS WAS A REAL GAP, AND IT WAS SILENT. Bounding the widening test to
-  // funct6 0x30..0x3F leaves every `vfwcvt` taking the vtype-derived EMUL — that
-  // is, LMUL rather than 2*LMUL — so the mapper allocates HALF the destination
-  // group the instruction writes. Atomic group rename means the upper members are
-  // never allocated at all, so the coprocessor's writeback lands on PRNs owned by
-  // some other architectural register: silent corruption of an unrelated vreg,
-  // with no assertion and no trap anywhere on the path. Found at Phase B and left
-  // implemented-as-literally-specified rather than guessed; amended 2026-08-10.
-  //
-  // Note `VXUNARY0` is the SAME funct6 (0x12) under OPMVV, not OPFVV, and holds
-  // `vzext`/`vsext`. Those need no adjustment either: their destination is SEW and
-  // it is the source that is narrower. Two different families behind one funct6 —
-  // gate on funct3 as well, not on funct6 alone.
+===> THIS WAS A REAL GAP, AND IT WAS SILENT. Bounding the widening test to
+funct6 0x30..0x3F leaves every `vfwcvt` taking the vtype-derived EMUL — that
+is, LMUL rather than 2*LMUL — so the mapper allocates HALF the destination
+group the instruction writes. Atomic group rename means the upper members are
+never allocated at all, so the coprocessor's writeback lands on PRNs owned by
+some other architectural register: silent corruption of an unrelated vreg,
+with no assertion and no trap anywhere on the path. Found at Phase B and left
+implemented-as-literally-specified rather than guessed; amended 2026-08-10.
+
+Note `VXUNARY0` is the SAME funct6 (0x12) under OPMVV, not OPFVV, and holds
+`vzext`/`vsext`. Those need no adjustment either: their destination is SEW and
+it is the source that is narrower. Two different families behind one funct6 —
+gate on funct3 as well, not on funct6 alone.
 
   A source-side group size is deliberately NOT carried, and no second field is
   added for one. The only host consumers of a group size are the mapper's atomic
@@ -381,16 +381,16 @@ from Tenstorrent Inc.
   - the scalar-destination ops of part 3, which allocate no vector group at all
     and take 1 so that nothing downstream reads a larger count.
 
-  // ===> GET THIS WRONG AND THE MACHINE HANGS, IT DOES NOT MISCOMPUTE. The
-  // coprocessor emits `last` on the writeback beat of member (dst_nm - 1). If
-  // the host sizes an LMUL>1 `vmv.s.x` as an 8-member group while the VPU emits
-  // one result beat, the `last` beat never arrives, the CII tag is never freed,
-  // the ROB entry never clears and in-order commit stalls until the
-  // "Pipeline has hung" assertion fires. This was first seen on a `vmv.s.x` in
-  // conv1d. The host's classification must therefore agree with the VPU's own
-  // `o_ignore_lmul` (vmv.x.s|vmv.s.x|vmv.s.f|vmv.f.s) and `o_ignore_dstincr`
-  // (mask_only|reductop) — those two signals are the authoritative definition
-  // and this list must be reviewed against them, not against the ISA manual.
+===> GET THIS WRONG AND THE MACHINE HANGS, IT DOES NOT MISCOMPUTE. The
+coprocessor emits `last` on the writeback beat of member (dst_nm - 1). If
+the host sizes an LMUL>1 `vmv.s.x` as an 8-member group while the VPU emits
+one result beat, the `last` beat never arrives, the CII tag is never freed,
+the ROB entry never clears and in-order commit stalls until the
+"Pipeline has hung" assertion fires. This was first seen on a `vmv.s.x` in
+conv1d. The host's classification must therefore agree with the VPU's own
+`o_ignore_lmul` (vmv.x.s|vmv.s.x|vmv.s.f|vmv.f.s) and `o_ignore_dstincr`
+(mask_only|reductop) — those two signals are the authoritative definition
+and this list must be reviewed against them, not against the ISA manual.
 
   ---- 6. Whole-register moves, and the two illegal-instruction terms ----
 
@@ -434,16 +434,16 @@ from Tenstorrent Inc.
   uOP, so `is_shared` is false on every lane where neither `is_arith` nor
   `ls_in.is_mem` holds.
 
-  // ===> TWO ENCODING TRAPS IN ONE THREE-TERM EXPRESSION. (a) `nf` is
-  // NFIELDS-1, so "segmented" is `nf =/= 0`, not `nf > 1`; testing `> 1` marks
-  // no 2-field access shared and testing the count marks every access shared.
-  // (b) The whole-register forms `vl<n>r.v`/`vs<n>r.v` REUSE the nf field to
-  // encode NREG-1, so `vl8r.v` carries nf = 7 and would be misread as an
-  // 8-field segmented access — dispatching a coprocessor half that transposes
-  // nothing and never completes. This is why `nf` arrives from VLSDecode's
-  // descriptor together with `is_whole_reg` instead of being sliced out of the
-  // instruction word here: the two bits must be read by the same decoder or
-  // they will eventually disagree.
+===> TWO ENCODING TRAPS IN ONE THREE-TERM EXPRESSION. (a) `nf` is
+NFIELDS-1, so "segmented" is `nf =/= 0`, not `nf > 1`; testing `> 1` marks
+no 2-field access shared and testing the count marks every access shared.
+(b) The whole-register forms `vl<n>r.v`/`vs<n>r.v` REUSE the nf field to
+encode NREG-1, so `vl8r.v` carries nf = 7 and would be misread as an
+8-field segmented access — dispatching a coprocessor half that transposes
+nothing and never completes. This is why `nf` arrives from VLSDecode's
+descriptor together with `is_whole_reg` instead of being sliced out of the
+instruction word here: the two bits must be read by the same decoder or
+they will eventually disagree.
 
   //@req-spec-issue.c4
   A vector ARITHMETIC instruction is NEVER `is_shared`, in any configuration.
@@ -473,13 +473,13 @@ from Tenstorrent Inc.
   - `is_unique` / `flush_on_commit` — DecodeUnit's, and needed by no arithmetic
     op. Marking arithmetic unique would serialize the whole vector pipeline.
 
-  // CORRECTED, and the old text was factually false rather than merely stale: it
-  // said no mask-enable bit exists and that the `IQ_V_ALU` slot's `pvm` gate
-  // reads `inst(25)` for itself. `MicroOp` DOES carry `v_is_masked`, its delta
-  // forbids re-deriving it from `inst(25)` at a use site, and `MicroOp` does not
-  // carry `inst` to issue at all — `VecIssueSlot` reads the field. VecDecode
-  // already assigns the arithmetic side of that field to this module, so it is
-  // written in part 3b above rather than disowned here.
+CORRECTED, and the old text was factually false rather than merely stale: it
+said no mask-enable bit exists and that the `IQ_V_ALU` slot's `pvm` gate
+reads `inst(25)` for itself. `MicroOp` DOES carry `v_is_masked`, its delta
+forbids re-deriving it from `inst(25)` at a use site, and `MicroOp` does not
+carry `inst` to issue at all — `VecIssueSlot` reads the field. VecDecode
+already assigns the arithmetic side of that field to this module, so it is
+written in part 3b above rather than disowned here.
 
   ---- 9. Trace ----
 
@@ -490,15 +490,15 @@ from Tenstorrent Inc.
   — plus one on `vill_trap` naming which term fired. Gated on the `vecTrace`
   plusarg and `!reset`, off by default.
 
-  // ===> NOT the `rob_idx`-keyed entry point, which an earlier draft of this
-  // section named. THERE IS NO `rob_idx` AT DECODE: the ROB entry is allocated at
-  // DISPATCH, so this module has none to tag a line with, and a line claiming
-  // `rob=0` would silently alias with real ROB entry 0 in every grep.
-  // `traceDecode` is keyed on `ftq_idx`/`pc_lob` — the identifier this stage does
-  // have — and prints `rob=?` in that position, which is why VecDecode,
-  // VLSDecode, VsetDecode and VConfigUnit all use the same variant. Correlating
-  // a decode line with a later pipeline line is then a two-step join through the
-  // dispatch line; that is the honest cost of the ROB entry not existing yet.
+===> NOT the `rob_idx`-keyed entry point, which an earlier draft of this
+section named. THERE IS NO `rob_idx` AT DECODE: the ROB entry is allocated at
+DISPATCH, so this module has none to tag a line with, and a line claiming
+`rob=0` would silently alias with real ROB entry 0 in every grep.
+`traceDecode` is keyed on `ftq_idx`/`pc_lob` — the identifier this stage does
+have — and prints `rob=?` in that position, which is why VecDecode,
+VLSDecode, VsetDecode and VConfigUnit all use the same variant. Correlating
+a decode line with a later pipeline line is then a two-step join through the
+dispatch line; that is the honest cost of the ROB entry not existing yet.
 
   There are no unit tests in this project and validation is end-to-end VCS plus
   Whisper cosim, where a wrong decode field is first visible as a mismatch

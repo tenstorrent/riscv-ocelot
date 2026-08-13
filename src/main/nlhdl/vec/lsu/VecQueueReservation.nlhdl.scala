@@ -21,6 +21,7 @@ from Tenstorrent Inc.
   for a store, a capped quantum for a load — hands each OP.v the index region its
   AGEN will later write, and reclaims that region when the op's LDQ/STQ placeholder
   deallocates.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecQueueReservation.scala,
@@ -85,7 +86,6 @@ from Tenstorrent Inc.
   Governing spec anchors: issue.rst `vec-queue-reservation` and
   `cii-shared-sched`, loadstore.rst `ssi-queues`, `store-data-queue`,
   `us-queue`, `vec-store-algo`, `vec-load-algo` and `vec-squash`.
-*/
 
 <|begin_module|>
 
@@ -100,15 +100,15 @@ from Tenstorrent Inc.
   the quantum's sanity check, plus `robAddrSz`, `ldqAddrSz` and `stqAddrSz` for
   the ownership fields and the reservation table.
 
-  // `ldResvMembers` is BOUND FROM VectorParams, never re-defaulted here and
-  // never compared against a literal 4. Elaboration must hold
-  //   require(ldResvMembers * vLen/eew_min >= lsuWidth * 2)
-  // — the agen fills one element per cycle while the drain consumes up to
-  // `lsuWidth` per cycle, so a too-small quantum lets the agen starve the drain.
-  // VectorParams is the single owner of that `require` (it owns the parameter);
-  // it is written out here because it is THIS module's arithmetic it protects,
-  // and a generator that reads only this file must still know the constraint
-  // exists rather than inventing a second, weaker one.
+  `ldResvMembers` is BOUND FROM VectorParams, never re-defaulted here and
+  never compared against a literal 4. Elaboration must hold
+    require(ldResvMembers * vLen/eew_min >= lsuWidth * 2)
+  — the agen fills one element per cycle while the drain consumes up to
+  `lsuWidth` per cycle, so a too-small quantum lets the agen starve the drain.
+  VectorParams is the single owner of that `require` (it owns the parameter);
+  it is written out here because it is THIS module's arithmetic it protects,
+  and a generator that reads only this file must still know the constraint
+  exists rather than inventing a second, weaker one.
 
   Derived, as named values so no expression is repeated at a use site: `nQueues`
   = 6, fixed by VecBundles' queue enumeration rather than chosen here; `qDepth(q)`
@@ -150,10 +150,10 @@ from Tenstorrent Inc.
   stores only). Fields are VecBundles' `VecReservation` — queue id, entry count,
   index region, owning `rob_idx`, reserving `ldq_idx`/`stq_idx` — and VecLsu
   routes each to a VecElemQueue by the `queue` field.
-  // THE TWO SLOTS CARRY INDEPENDENT BASES AND INDEPENDENT COUNTS. They agree for
-  // an SSI store and they DO NOT for a US store (logic section 2). `us_data_base`
-  // on the range entry is slot 1's base — that is the consumer which makes the
-  // second base load-bearing rather than decorative.
+  THE TWO SLOTS CARRY INDEPENDENT BASES AND INDEPENDENT COUNTS. They agree for
+  an SSI store and they DO NOT for a US store (logic section 2). `us_data_base`
+  on the range entry is slot 1's base — that is the consumer which makes the
+  second base load-bearing rather than decorative.
 
   ---- Execute side (four lanes, one per AGEN instance) ----
 
@@ -179,11 +179,26 @@ from Tenstorrent Inc.
   of the vector placeholder being DEALLOCATED this cycle, presented by VecLsu from
   the LSU's `ldq_head`/`stq_head`. One per cycle is enough — an LSQ deallocates at
   most one entry per direction per cycle and a region is freed whole.
-  // A DEDICATED PORT PAIR, NOT A FIFTH `resv_lookup` LANE AND NOT A REUSED ONE.
-  // The four lookup lanes are permanently assigned to the four AGENs (see the
-  // execute side above), so there is no free lane; and reclamation must not be
-  // able to lose a cycle to an AGEN's read, because a dropped retire is capacity
-  // never returned — the same hang by a slower route.
+  A DEDICATED PORT PAIR, NOT A FIFTH `resv_lookup` LANE AND NOT A REUSED ONE.
+  The four lookup lanes are permanently assigned to the four AGENs (see the
+  execute side above), so there is no free lane; and reclamation must not be
+  able to lose a cycle to an AGEN's read, because a dropped retire is capacity
+  never returned — the same hang by a slower route.
+
+  `retire_row_valid` — output, `Bool`: whether the row addressed by `retire.bits`
+  (`is_store` selects the table, `q_idx` the row) currently holds a live
+  reservation. Combinational and INDEPENDENT of `retire.valid`, so the driver may
+  use it to decide that valid in the same cycle.
+  ===> THIS EXISTS BECAUSE THE LDQ AND STQ ARE SHARED WITH SCALAR MEMORY OPS. A
+  vector placeholder is a minority of the entries VecLsu's head-side walk passes
+  over; every scalar load and store deallocates through the same `ldq_head`/
+  `stq_head` and reserved nothing. Without this bit VecLsu's only options are to
+  pulse `retire` on every deallocation — which retires against an empty row, the
+  invalid-row assertion below and, unasserted, a corrupt `occ(q)` — or to shadow
+  this module's validity bits locally, a second source of truth that drifts on the
+  mispredict cycle rollback clears a row here and not there. It is NOT a
+  replacement for that assertion: the assertion still fires if a retire arrives
+  against a row this output reports empty.
 
   `region_free` — output, `Vec(nQueues, Valid({ base: UInt, count: UInt }))`: the
   echo. Looking `retire.q_idx` up in the reservation table yields that op's base
@@ -201,22 +216,54 @@ from Tenstorrent Inc.
   one, so the six element queues would have filled exactly once and never freed —
   reached by any program issuing more vector memory ops than one reservation's
   worth, i.e. the first real vector test.
-  // WHY NO PER-FILE REVIEW COULD HAVE CAUGHT IT, which is the part worth
-  // remembering: every file was individually self-consistent. This file correctly
-  // said the queues report reclamation on `q_free`; VecElemQueue correctly
-  // consumed a region free at its head. The signal simply had no producer. A
-  // missing driver is invisible to any check that looks at one file at a time,
-  // and is exactly what a cross-file seam pass exists to find.
+  WHY NO PER-FILE REVIEW COULD HAVE CAUGHT IT, which is the part worth
+  remembering: every file was individually self-consistent. This file correctly
+  said the queues report reclamation on `q_free`; VecElemQueue correctly
+  consumed a region free at its head. The signal simply had no producer. A
+  missing driver is invisible to any check that looks at one file at a time,
+  and is exactly what a cross-file seam pass exists to find.
 
   ---- Squash side ----
 
-  `rollback` — input, `Valid({ ldq_idx: UInt(ldqAddrSz.W), stq_idx:
-  UInt(stqAddrSz.W) })`: the rolled-back LDQ/STQ tail indices, whatever their
+  `rollback` — input, `Valid({ ldq_idx: UInt((1 + ldqAddrSz).W), stq_idx:
+  UInt((1 + stqAddrSz).W) })`: the rolled-back LDQ/STQ tail indices, whatever their
   cause. THESE ARE BOOM'S EXCLUSIVE TAILS — each names the FIRST DEAD entry, not
   the youngest survivor; see logic section 8, which is where getting it wrong
   keeps a killed instruction's entries alive. VecSquashUnit owns the
   branch-versus-flush policy; this module owns only the translation from an
   LDQ/STQ index to a queue index.
+
+  ===> THE WIDTHS INCLUDE THE CARRY BIT — `1 + ldqAddrSz`, not `ldqAddrSz` —
+  corrected at E2, where the narrow declaration was found to make logic section 8
+  unimplementable. The value driven here is `brupdate.b2.uop.ldq_idx`, which this
+  spec's own section 8 names as its source, and `MicroOp.ldq_idx` is
+  `UInt((1 + ldqAddrSz).W)`. Declaring the port one bit narrower silently discards
+  the wrap-disambiguating bit, and WITHOUT IT NO AGE COMPARISON IS POSSIBLE: real
+  indices alone cannot tell "younger than the pivot" from "older and wrapped", so
+  the kill sweep degenerates into scanning for contiguously-valid rows — which
+  stops at the first interleaved SCALAR entry and leaves younger vector
+  reservations alive. Those rows are never freed, so the queue leaks capacity
+  permanently and the machine deadlocks after enough mispredicts: the same failure
+  class as an unreserved store queue, reached by a different route. A port width is
+  not a detail when the bit being dropped is the one that orders the events.
+
+  `ldq_head` — input, `UInt((1 + ldqAddrSz).W)` — and `stq_head`,
+  `UInt((1 + stqAddrSz).W)`, tapped from the LSU's own pointer registers through
+  `VecLsuCoreIO`. These exist so section 8 can call `IsOlderLSU(a, b, head)` with
+  the head argument it actually takes, which is how the rest of `lsu.scala`,
+  `VecLsu` and `VecSquashUnit` all spell an LSQ age comparison (ground rule 10:
+  reuse BOOM's machinery rather than a private comparator). They are pure reads of
+  state the LSU already maintains — this module adds no pointer tracking of its
+  own for the LDQ/STQ, and must not: a second copy would drift on exactly the
+  mispredict cycle it is needed.
+
+  TWO PORTS, NOT FOUR: the heads only. An earlier E2 revision of this paragraph
+  also declared `ldq_tail`/`stq_tail` "for symmetry with the `VecLsuCoreIO` tap".
+  Nothing here reads them — `IsOlderLSU` takes a head, the no-survivor fallback
+  drives the VEC queue's head, and `occ(q)` is recomputed from the vec queue's own
+  pointers. An input port no logic consumes is not free: mode `new` forbids "extra",
+  VecLsu would wire two signals to nothing, and the next reader has to work out
+  whether the omission is a bug. Declare exactly what is read.
 
   `rollback_tail` — output, `Vec(nQueues, UInt)`: the recomputed allocation tail
   per queue, for VecSquashUnit to apply to the six queues in the same cycle this
@@ -260,15 +307,15 @@ from Tenstorrent Inc.
   with EMUL=8 gives `8 * (32 >> 0)` = 256 elements, the worst case; EEW=64 with
   EMUL=8 gives 32.
 
-  // RVV guarantees NF*EMUL <= 8, so assert emul_total <= maxMembers. Not
-  // redundant: if VLSDecode ever folded nf into v_emul this expression would
-  // over-reserve by a factor of nf, and the assertion is what catches the
-  // double-count instead of a machine that mysteriously admits fewer stores.
-  // IMPLEMENT THE PRODUCT AS A CONSTANT TABLE, NOT A MULTIPLIER — it is needed
-  // coreWidth times per cycle in the dispatch stage's combinational path, and
-  // nf is not always a power of two (3, 5, 6, 7 are legal) so it is not a
-  // shift. A 4 x 8 table indexed by {v_eew, emul_total} of elaboration-time
-  // constants puts no arithmetic in the dispatch path.
+  RVV guarantees NF*EMUL <= 8, so assert emul_total <= maxMembers. Not
+  redundant: if VLSDecode ever folded nf into v_emul this expression would
+  over-reserve by a factor of nf, and the assertion is what catches the
+  double-count instead of a machine that mysteriously admits fewer stores.
+  IMPLEMENT THE PRODUCT AS A CONSTANT TABLE, NOT A MULTIPLIER — it is needed
+  coreWidth times per cycle in the dispatch stage's combinational path, and
+  nf is not always a power of two (3, 5, 6, 7 are legal) so it is not a
+  shift. A 4 x 8 table indexed by {v_eew, emul_total} of elaboration-time
+  constants puts no arithmetic in the dispatch path.
 
   A STORE REQUESTS THAT WORST CASE, UNMODIFIED. The four-step argument in the
   header is why, and it is the whole reason the number is computed from EMUL/EEW
@@ -283,23 +330,23 @@ from Tenstorrent Inc.
   and the only reason that path is reachable at all. Nothing else about a load's
   reservation changes: it is still claimed at dispatch, still in program order,
   still contiguous, still rolled back by a tail move.
-  // ===> AND THAT IS WHY THE MECHANISM IS EEW-RELATIVE RATHER THAN A FLAT ENTRY
-  //      COUNT. The agen produces ONE element per cycle while the drain consumes
-  //      up to `lsuWidth` per cycle, so a region too small to hold more than a
-  //      few beats lets the agen STARVE THE DRAIN — the queue empties faster than
-  //      it refills, and target P2 is undercut by a reservation policy rather than
-  //      by memory bandwidth. Scaling by `vLen/eew` keeps the wave a fixed number
-  //      of MEMBERS regardless of SEW, which is the unit the drain rate is in.
-  // ===> THE TRAP, RECORDED SO A FUTURE TUNER DOES NOT WALK INTO IT:
-  //      `ldResvMembers >= 8` MAKES THIS MECHANISM DEAD AGAIN. `worstCase =
-  //      emul_total * elemsPerReg` and EMUL <= 8 always, so at 8 the `min` would
-  //      always select `worstCase`, no load could ever exceed its reservation,
-  //      and `spec-lsu.b11`'s precondition would be unreachable — identical in
-  //      effect to deleting the streaming path. At 512 entries with EMUL=8 and
-  //      SEW=8: 2 gives 8 loads in flight, 4 gives 4 loads, 8 gives 2 loads and
-  //      no streaming. 4 is the shipped point: double the in-flight loads of the
-  //      worst-case rule, with margin above the starvation floor the `require` in
-  //      the parameters section enforces.
+  ===> AND THAT IS WHY THE MECHANISM IS EEW-RELATIVE RATHER THAN A FLAT ENTRY
+       COUNT. The agen produces ONE element per cycle while the drain consumes
+       up to `lsuWidth` per cycle, so a region too small to hold more than a
+       few beats lets the agen STARVE THE DRAIN — the queue empties faster than
+       it refills, and target P2 is undercut by a reservation policy rather than
+       by memory bandwidth. Scaling by `vLen/eew` keeps the wave a fixed number
+       of MEMBERS regardless of SEW, which is the unit the drain rate is in.
+  ===> THE TRAP, RECORDED SO A FUTURE TUNER DOES NOT WALK INTO IT:
+       `ldResvMembers >= 8` MAKES THIS MECHANISM DEAD AGAIN. `worstCase =
+       emul_total * elemsPerReg` and EMUL <= 8 always, so at 8 the `min` would
+       always select `worstCase`, no load could ever exceed its reservation,
+       and `spec-lsu.b11`'s precondition would be unreachable — identical in
+       effect to deleting the streaming path. At 512 entries with EMUL=8 and
+       SEW=8: 2 gives 8 loads in flight, 4 gives 4 loads, 8 gives 2 loads and
+       no streaming. 4 is the shipped point: double the in-flight loads of the
+       worst-case rule, with margin above the starvation floor the `require` in
+       the parameters section enforces.
 
   A unit-stride, whole-register (`vl1re*`/`vs1r`) or mask (`vlm`/`vsm`) ADDRESS
   entry is exactly ONE entry regardless of EMUL and EEW, because a US queue entry
@@ -336,14 +383,14 @@ from Tenstorrent Inc.
        Both `VecStoreForward` and `VecLsu` reported this gap independently, which
        is a fair signal of how easy the identity reading is to fall into.
 
-  // The equal-count / one-shared-base rule holds for the SSI PAIR ONLY, and there
-  // it is worth asserting: the two SSI queues have EQUAL DEPTH and are allocated
-  // by the same event with the same count, so their allocation pointers are
-  // provably identical — assert slot 0's and slot 1's bases and counts agree
-  // whenever the class is SSI, and do NOT assert it for US. Their HEADS are never
-  // identical in either class, since address and data entries retire
-  // independently, so free space is always checked PER QUEUE against that queue's
-  // own count and a lane is granted only if both fit.
+  The equal-count / one-shared-base rule holds for the SSI PAIR ONLY, and there
+  it is worth asserting: the two SSI queues have EQUAL DEPTH and are allocated
+  by the same event with the same count, so their allocation pointers are
+  provably identical — assert slot 0's and slot 1's bases and counts agree
+  whenever the class is SSI, and do NOT assert it for US. Their HEADS are never
+  identical in either class, since address and data entries retire
+  independently, so free space is always checked PER QUEUE against that queue's
+  own count and a lane is granted only if both fit.
 
   ---- 3. The grant rule, and program order inside a dispatch group ----
 
@@ -357,11 +404,11 @@ from Tenstorrent Inc.
   section 2 computed for it: the worst-case active element count for a store, the
   capped count for a load, and a per-queue count for a US store. This is BOOM's
   existing LDQ/STQ discipline extended to the element queues, not a new mechanism.
-  // The grant rule itself does NOT know about the load cap or the US asymmetry —
-  // it compares a requested count against free space per queue and nothing else.
-  // Keeping the direction-and-class arithmetic entirely inside section 1/2 is what
-  // keeps the dispatch-critical-path structure (prefix sum, compare) unchanged by
-  // decision D9/D10.
+  The grant rule itself does NOT know about the load cap or the US asymmetry —
+  it compares a requested count against free space per queue and nothing else.
+  Keeping the direction-and-class arithmetic entirely inside section 1/2 is what
+  keeps the dispatch-critical-path structure (prefix sum, compare) unchanged by
+  decision D9/D10.
 
   //@req-spec-lsu.b4
   //@req-spec-lsu.b5
@@ -399,32 +446,32 @@ from Tenstorrent Inc.
   Per queue: an allocation tail pointer `alloc_tail(q)` of `qIdxSz(q)` bits and
   an occupancy counter `occ(q)` of `qIdxSz(q)+1` bits; free space is
   `qDepth(q) - occ(q)`.
-  // An explicit counter, not a maybe-full bit over a wrapped pointer compare:
-  // this tail moves BACKWARD on a release and on a rollback as well as forward
-  // on a reservation, and a wrap-compare full/empty scheme is not robust to a
-  // backward-moving pointer. The counter costs ten flops per queue.
+  An explicit counter, not a maybe-full bit over a wrapped pointer compare:
+  this tail moves BACKWARD on a release and on a rollback as well as forward
+  on a reservation, and a wrap-compare full/empty scheme is not robust to a
+  backward-moving pointer. The counter costs ten flops per queue.
 
   A reservation table with one row per LDQ entry and one per STQ entry, indexed
   by `ldq_idx`/`stq_idx`, each holding { valid, released, and PER QUEUE SLOT a
   { queue, base, count } }: two slots, slot 0 the address queue and slot 1 the
   data queue, exactly as `resv_out` carries them. Slot 1 is invalid for a load.
-  // TWO BASES AND TWO COUNTS, NOT ONE OF EACH — section 2 says why: a US store's
-  // address and data regions have different counts and therefore different bases.
-  // Sharing one pair was the original reading and it is wrong; it would place
-  // `us_data_base` at the address queue's base and scatter a US store's data
-  // writes over another op's region.
-  // This table is per-LDQ/STQ-ENTRY state, NOT state scoped to "the current
-  // instruction", and it exports no busy — it is what the vector-LSU invariant
-  // relies on, not a violation of it, and it is the only place in the machine
-  // that knows which queue indices an OP.v owns. Ground rule 6 has since been
-  // AMENDED to enumerate THREE legal homes for in-flight vector-LSU state rather
-  // than two — (a) the six VecElemQueue instances, (b) the LCB's per-PRN assembly
-  // entries, (c) VecLsu's per-LDQ/STQ-entry descriptor pending table (decision
-  // D5) — and this table is the same KIND as (a) and (c): indexed by an LSQ entry
-  // the dispatch-time allocation already guaranteed, structurally
-  // un-overflowable, and exporting no busy. Do not read the amendment as a
-  // licence for a fourth: it names three, and a `busy` from any of them is still
-  // a failed review.
+  TWO BASES AND TWO COUNTS, NOT ONE OF EACH — section 2 says why: a US store's
+  address and data regions have different counts and therefore different bases.
+  Sharing one pair was the original reading and it is wrong; it would place
+  `us_data_base` at the address queue's base and scatter a US store's data
+  writes over another op's region.
+  This table is per-LDQ/STQ-ENTRY state, NOT state scoped to "the current
+  instruction", and it exports no busy — it is what the vector-LSU invariant
+  relies on, not a violation of it, and it is the only place in the machine
+  that knows which queue indices an OP.v owns. Ground rule 6 has since been
+  AMENDED to enumerate THREE legal homes for in-flight vector-LSU state rather
+  than two — (a) the six VecElemQueue instances, (b) the LCB's per-PRN assembly
+  entries, (c) VecLsu's per-LDQ/STQ-entry descriptor pending table (decision
+  D5) — and this table is the same KIND as (a) and (c): indexed by an LSQ entry
+  the dispatch-time allocation already guaranteed, structurally
+  un-overflowable, and exporting no busy. Do not read the amendment as a
+  licence for a fourth: it names three, and a `busy` from any of them is still
+  a failed review.
 
   On `dis_fire` for a granted lane: write the row, emit the reservation on
   `resv_out`, and for EACH queue slot the lane requested add that slot's count to
@@ -459,13 +506,17 @@ from Tenstorrent Inc.
   IN ORDER with the rest of the region — and it is what keeps each occupied region
   contiguous. The cost is head-of-line blocking on RECLAMATION only; draining is
   never blocked by it.
-  // Assert the retiring row is VALID and that its slot-0 base equals that queue's
-  // head. A retire against an invalid row means an LSQ placeholder deallocated
-  // without ever having reserved; a base that is not the head means reclamation
-  // has gone out of program order, which is the one thing the region discipline
-  // cannot survive. Both are silent corruptions otherwise.
-  // A streaming load changes NOTHING here: its region is freed whole, once, when
-  // its LDQ entry deallocates, however many waves it took to fill.
+  Drive `retire_row_valid` from the same row this section looks up, unconditionally
+  in `retire.valid` — it is how the driver tells a vector placeholder apart from the
+  scalar entries that share the LDQ and STQ, and it must therefore be readable on
+  the cycle the driver is still deciding whether to pulse.
+  Assert the retiring row is VALID and that its slot-0 base equals that queue's
+  head. A retire against an invalid row means an LSQ placeholder deallocated
+  without ever having reserved; a base that is not the head means reclamation
+  has gone out of program order, which is the one thing the region discipline
+  cannot survive. Both are silent corruptions otherwise.
+  A streaming load changes NOTHING here: its region is freed whole, once, when
+  its LDQ entry deallocates, however many waves it took to fill.
 
   ---- 7. The surplus release: tail-only ----
 
@@ -481,23 +532,23 @@ from Tenstorrent Inc.
   all, so its whole region is surplus). For a store the one release event trims
   the address and data queues together, which is sound because the pair is always
   allocated by the same event and so always has the same youngest owner.
-  // ===> BUT THE TWO QUEUES ARE TRIMMED BY DIFFERENT AMOUNTS FOR A US STORE, so
-  //      `release.used_count` is PER QUEUE SLOT — a `Vec(2, UInt)` — not one
-  //      number. SSI: both slots carry the same value, and assert that they do.
-  //      US store: slot 0 is 1 (a range entry never has address surplus) and slot
-  //      1 is the number of group MEMBERS actually written, which VecRangeAgen
-  //      knows once VL is read. A single `used_count` would trim the US data queue
-  //      by the address queue's count, i.e. release almost the entire data region
-  //      while it is still in use — a silent overwrite of live store data, not a
-  //      lost-performance bug. This is the same non-identity as section 2.
-  // Assert each slot's used_count <= that slot's count: a violation means the
-  // AGEN's element walk and this module's count computation disagree, and that
-  // must not be discovered later as a silent queue overrun.
-  // A LOAD'S RELEASE MAY BE A NO-OP AND THAT IS EXPECTED. With the load cap, a
-  // load whose active count meets or exceeds its reservation has no surplus at
-  // all; it drives `used_count` equal to its count and the release changes
-  // nothing. Do not treat "loads rarely release" as evidence of a broken release
-  // path — under decision D9/D10 it is the normal case for a large VL.
+  ===> BUT THE TWO QUEUES ARE TRIMMED BY DIFFERENT AMOUNTS FOR A US STORE, so
+       `release.used_count` is PER QUEUE SLOT — a `Vec(2, UInt)` — not one
+       number. SSI: both slots carry the same value, and assert that they do.
+       US store: slot 0 is 1 (a range entry never has address surplus) and slot
+       1 is the number of group MEMBERS actually written, which VecRangeAgen
+       knows once VL is read. A single `used_count` would trim the US data queue
+       by the address queue's count, i.e. release almost the entire data region
+       while it is still in use — a silent overwrite of live store data, not a
+       lost-performance bug. This is the same non-identity as section 2.
+  Assert each slot's used_count <= that slot's count: a violation means the
+  AGEN's element walk and this module's count computation disagree, and that
+  must not be discovered later as a silent queue overrun.
+  A LOAD'S RELEASE MAY BE A NO-OP AND THAT IS EXPECTED. With the load cap, a
+  load whose active count meets or exceeds its reservation has no surplus at
+  all; it drives `used_count` equal to its count and the release changes
+  nothing. Do not treat "loads rarely release" as evidence of a broken release
+  path — under decision D9/D10 it is the normal case for a large VL.
 
   //@req-spec-issue.b6
   //@req-spec-issue.b8
@@ -510,12 +561,12 @@ from Tenstorrent Inc.
   to trim either, or its row would stop describing its own regions.
   A MID-QUEUE RELEASE IS NOT PERMITTED. If a younger OP.v has already reserved
   past this region, `release_ok` is false and the surplus stays held.
-  // A mid-queue release would punch a hole in the occupied region and break the
-  // program-ordered-tail invariant that pointer-rollback squash depends on: the
-  // rolled-back tail would no longer bound exactly the killed entries. This is
-  // the one rule in this file that a plausible-looking "optimization" would
-  // break invisibly — nothing observable goes wrong until a mispredict lands on
-  // top of a hole.
+  A mid-queue release would punch a hole in the occupied region and break the
+  program-ordered-tail invariant that pointer-rollback squash depends on: the
+  rolled-back tail would no longer bound exactly the killed entries. This is
+  the one rule in this file that a plausible-looking "optimization" would
+  break invisibly — nothing observable goes wrong until a mispredict lands on
+  top of a hole.
 
   A release colliding with a reservation for the same queue in the same cycle is
   DENIED, not retried — the reservation has priority, so the region is no longer
@@ -526,11 +577,11 @@ from Tenstorrent Inc.
   case: the surplus is simply freed in order with the rest of the region at
   reclamation, exactly as above. Denying rather than retrying also keeps the
   release out of the dispatch grant's combinational path.
-  // The spec records the honest cost: under a stream of vector memory ops the
-  // release usually cannot fire, so the RESERVED count rather than VL is what
-  // bounds in-flight vector memory — the worst case for stores, the capped count
-  // for loads. That is precisely why the load cap exists: it lowers the number the
-  // release cannot be relied upon to lower.
+  The spec records the honest cost: under a stream of vector memory ops the
+  release usually cannot fire, so the RESERVED count rather than VL is what
+  bounds in-flight vector memory — the worst case for stores, the capped count
+  for loads. That is precisely why the load cap exists: it lowers the number the
+  release cannot be relied upon to lower.
 
   ---- 8. Squash: pointer rollback, against BOOM's EXCLUSIVE tail ----
 
@@ -542,33 +593,51 @@ from Tenstorrent Inc.
 
   On `rollback.valid`, find the row owned by the YOUNGEST LSQ entry STRICTLY OLDER
   than the driven index — using BOOM's `IsOlderLSU`/`EntryValidFromAge` against
-  that queue's head, the same comparators VecLsu and VecSquashUnit use — and drive
+  that queue's head, taken from the `ldq_head`/`stq_head` ports the ports section
+  declares for exactly this call, the same comparators VecLsu and VecSquashUnit use
+  — and drive
   each queue's new allocation tail on `rollback_tail` as THAT row's
   `base + count`, per queue slot. If no such row exists (the surviving range is
   empty, which is what a ROB-head flush of the load side looks like) drive the
   queue's HEAD. Apply the same value to `alloc_tail(q)`, recompute `occ(q)` as
   `new_tail - head` in the same cycle, and invalidate the driven index's row AND
   every row younger than it. Because allocation was in program order this drops
-  exactly the killed entries with no per-entry comparison — the same shape as BOOM
-  rolling `stq_tail` — and the reservations are released in the same event.
+  exactly the killed entries — the same shape as BOOM rolling `stq_tail` — and the
+  reservations are released in the same event.
   Drain-and-discard is not an alternative: a squashed load's `pvdest` PRNs are
   recycled within a few cycles.
-  // ===> AN INCLUSIVE READING IS THE FAILURE THIS PARAGRAPH EXISTS TO PREVENT, and
-  //      it is the reading the text originally had. Taking the driven index as a
-  //      SURVIVOR and rolling to ITS `base + count` leaves ONE KILLED
-  //      INSTRUCTION'S ENTRIES ALIVE in every one of the six queues — and they are
-  //      the entries whose destination PRNs have just been returned to the free
-  //      list, so the surviving addresses will be drained against re-allocated
-  //      registers. Nothing asserts, nothing hangs; a later load simply reads
-  //      someone else's data.
-  // ASSERT IT, both directions: assert the driven index's row is invalid after the
-  // rollback, and assert no surviving valid row has `base + count` greater than the
-  // new tail. VecSquashUnit drives the exclusive tail and asserts the same
-  // property from its side; the two assertions are cheap and they are what pins a
-  // convention that no width or type check can pin.
-  // Streaming loads need no special case: a killed load's region is bounded by its
-  // `base + count` however many waves it had run, because streaming never extends
-  // past `tail`.
+
+  ===> THE VALIDITY SWEEP IS AN AGE COMPARISON PER ROW, NOT A WALK OVER A CONTIGUOUS
+       RUN OF VALID ROWS. Corrected at E2, where this paragraph's former phrase "with
+       no per-entry comparison" was read as licensing a walk outward from the pivot
+       that stops at the first invalid row. That is wrong, and the reason is that THE
+       LDQ AND STQ ARE SHARED WITH SCALAR MEMORY OPS: one scalar load between two
+       vector loads leaves an invalid row in THIS module's table, the walk halts
+       there, and every younger vector reservation survives a squash that should have
+       killed it. Nothing then ever frees those regions — the owning instruction no
+       longer exists to retire them — so each mispredict leaks queue capacity until
+       the machine deadlocks. Kill row `i` iff
+       `row(i).valid && !IsOlderLSU(row_idx(i), pivot, head)`, evaluated
+       INDEPENDENTLY per row.
+       "No per-entry comparison" was only ever true of the TAIL computation, which is
+       a single selection; the phrase has been removed because it does not survive
+       contact with the sweep.
+  ===> AN INCLUSIVE READING IS THE FAILURE THIS PARAGRAPH EXISTS TO PREVENT, and
+       it is the reading the text originally had. Taking the driven index as a
+       SURVIVOR and rolling to ITS `base + count` leaves ONE KILLED
+       INSTRUCTION'S ENTRIES ALIVE in every one of the six queues — and they are
+       the entries whose destination PRNs have just been returned to the free
+       list, so the surviving addresses will be drained against re-allocated
+       registers. Nothing asserts, nothing hangs; a later load simply reads
+       someone else's data.
+  ASSERT IT, both directions: assert the driven index's row is invalid after the
+  rollback, and assert no surviving valid row has `base + count` greater than the
+  new tail. VecSquashUnit drives the exclusive tail and asserts the same
+  property from its side; the two assertions are cheap and they are what pins a
+  convention that no width or type check can pin.
+  Streaming loads need no special case: a killed load's region is bounded by its
+  `base + count` however many waves it had run, because streaming never extends
+  past `tail`.
 
   ---- 9. Depth is an architectural limit ----
 

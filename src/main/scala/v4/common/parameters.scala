@@ -303,6 +303,14 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   require(memWidth >= 2)
   require(memWidth >= lsuWidth)
 
+  // Here rather than in BoomCore because four vec/lsu and vec/cii modules need the
+  // INT writeback-port count and cannot be handed a constructor argument.
+  // `def`, NOT `val`: `usingRVV` is declared further down this trait, and a `val` here
+  // would read it before initialization -- silently 0 write ports with vectors ON.
+  def numVecIrfWritePorts: Int = if (usingRVV) 1 else 0
+  def numVecIrfReadPorts:  Int = if (usingRVV) 5 else 0
+  def numIrfWritePorts:    Int = aluWidth + lsuWidth + 1 + numVecIrfWritePorts
+
   issueParams.map(x => require(x.dispatchWidth <= coreWidth && x.dispatchWidth > 0))
 
   //************************************
@@ -356,12 +364,16 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   def maxVecVL: Int = hvp.maxVecVL
   def vecVLSz: Int = hvp.vecVLSz
   def maxVecMembers: Int = vectorParams.maxMembers
+  def ldRespTags: Int = vectorParams.ldRespTags
+  def ldRespTagSz: Int = hvp.ldRespTagSz
+  def stallReportCycles: Int = vectorParams.stallReportCycles
   def ciiTagBits: Int = vectorParams.ciiTagBits
   def ciiNumSrcSlots: Int = vectorParams.ciiNumSrcSlots
   def ssiQueueEntries: Int = vectorParams.ssiQueueEntries
   def usQueueEntries: Int = vectorParams.usQueueEntries
   def lcbEntries: Int = vectorParams.lcbEntries
   def dcacheArbiterMode: String = vectorParams.dcacheArbiterMode
+  def resvPtrSz: Int = hvp.resvPtrSz
 
   // Delegated from VectorParams (A2): needs aluWidth/coreWidth/lsuWidth,
   // which a zero-dependency VectorParams can't see. Not new obligations --

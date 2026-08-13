@@ -44,9 +44,41 @@ A file is free-form text plus comments and delimited sections:
 - **Body text has no special syntax** — it is descriptive, concise prose (and
   optionally pseudo-code, tables, or equations).
 - **Comments (`//`, `/* */`) are preserved in the generated RTL, placed near the
-  relevant code.** They are author annotations, distinct from body text.
+  relevant code.** They are author annotations, distinct from body text — and
+  because they are the only thing that crosses into the RTL, they are rationed.
+  See "Comment policy" below.
 - Delimiters are literal tokens. Match them exactly. Treat any unrecognized
   `<|...|>` token as an error and surface it rather than guessing.
+
+## Comment policy
+
+The nlhdl file is where intent, context, and behavior are recorded. The RTL is
+the mechanical projection of it. A comment in an nlhdl file is therefore not
+documentation — it is an explicit request to push text into the generated RTL,
+and generated RTL should carry as little prose as it can.
+
+Only two kinds of comment belong in an nlhdl file:
+
+1. **`//@req-<id>` requirement tags — required.** Every ID allocated to the
+   module must appear. These are the traceability chain and are never optional,
+   never collected in the header, and never dropped. See below.
+2. **A short file description — 1–2 lines.** What the module is, not how it
+   works. "Synchronous FIFO, parameterized width/depth, with occupancy count."
+   is the right length. A paragraph is not.
+
+Everything else stays in the body prose:
+
+- **Do not** write a comment that describes what the code does, restates the
+  logic, labels a block ("// write pointer update"), or explains an algorithm.
+  That description is the body text's job, and it is already in this file.
+- **Rare exception:** a genuinely critical note a future reader of the RTL alone
+  would get wrong — a hazard, an off-by-one that looks like a bug, a timing or
+  ordering constraint that is invisible locally. Two lines maximum.
+- Assumptions you had to make (a defaulted width, an unstated reset polarity)
+  belong in the body prose and the report, not in an RTL comment.
+
+Rule of thumb: if deleting the comment would lose nothing that isn't already in
+the nlhdl body, it should not be a comment.
 
 ## Requirement tags — `//@req-<id>`
 

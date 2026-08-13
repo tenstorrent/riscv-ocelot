@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecMaskStream — reads `v0` once per OP.v and streams its mask bits to that
   direction's address generators at ELEMENT granularity, with the one-entry
   lookahead the element agen's start rule depends on.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecMaskStream.scala,
@@ -80,7 +81,6 @@ from Tenstorrent Inc.
   Skipper's priority encoder, the once-per-OP.v latch, the stage-1/stage-2
   split), midcore.rst `vrf-ports` (the canonical port table and the
   one-reader-per-port statement).
-*/
 
 <|begin_module|>
 
@@ -130,7 +130,14 @@ from Tenstorrent Inc.
   VecLsu drives it from that direction's `VecScalarOperandRead` output, for an
   `OP.v` of EITHER class — this is a per-direction port, not a per-agen one.
   Fields read: `pvm` (the renamed mask PRN — one register, never a group),
-  `rob_idx`, `v_eew`, `v_emul`, `v_seg_nf`.
+  `rob_idx`, and `v_is_unit_stride` (which `done` case 1 needs).
+
+  `v_eew`, `v_emul` and `v_seg_nf` were listed here and are NOT read — trimmed at E3
+  after generation confirmed nothing computes from them. They were never dead by
+  oversight: the logic section states that mask indexing is NOT scaled by `v_eew` and
+  that `v_seg_nf` does not divide the mask, so a mask bit is one ELEMENT regardless of
+  element width or segment count. Reading them would be the bug. Do not add reads to
+  match a field list; fix the list.
 
   `op_masked` — Bool, valid with `op`. True when the instruction actually has a
   mask operand (`vm = 0` in the encoding). VecLsu supplies it already resolved
@@ -199,8 +206,66 @@ from Tenstorrent Inc.
   zero active elements (VL = 0, or every in-VL mask bit clear). Exported rather
   than left to VecGroupCopy to re-derive, for the single-owner reason above.
 
-  `done` — output Bool, one cycle, when the cursor passes the last element,
-  retiring the cursor. NOT a completion signal; it does not reach the ROB.
+  `done` — output Bool, one cycle, retiring the cursor. NOT a completion signal; it
+  does not reach the ROB.
+
+  ===> `done` HAS THREE CAUSES, NOT ONE, and this port doc listed only the third.
+  Corrected at E3, where generating the module against the one-case reading produced
+  a cursor that a unit-stride OP.v could occupy for hundreds of cycles.
+    1. UNIT-STRIDE — `op.bits.v_is_unit_stride`. Retire as soon as the latch is
+       loaded and `us_mask` is published. THERE IS NO WALK: the US path consumes the
+       whole `vLen`-bit mask in one shot as a byte-enable, which is the entire reason
+       `us_mask` is a `vLen`-wide port rather than a cursor. This is the case the perf
+       section already states ("occupies the cursor for one cycle: load the latch,
+       publish `us_mask`, retire") — the two statements disagreed, and the perf
+       section was right.
+    2. ZERO ACTIVE ELEMENTS — `all_inactive` (VL = 0, or every in-VL bit clear).
+       Retire when the latch loads. With no element to generate a `step` or a `skip`,
+       a walk-only `done` never fires and the cursor wedges forever on a case this
+       spec names explicitly elsewhere.
+    3. SSI — the cursor PASSES the last element via `step`/`skip`.
+
+  ===> "PASSES" IS LITERAL AND AN EQUALITY TEST IS A HANG. Found at E4 by
+  `VecElemAgen`, whose own completion test was already written the robust way.
+  `skip` advances by `1 << skip_log2`, and `skip_log2` is computed from a
+  FIXED-SIZE lookahead window that may extend past `vl` into the always-zero tail —
+  so when the window is entirely inactive the distance is `1 << maxSkipLog2`
+  regardless of how few real elements remain. The cursor can therefore step straight
+  OVER the last element without ever equalling it. Retire on
+  `elem_ptr + advance >= vl` (computed unwrapped, before any truncation), NOT on
+  `elem_ptr === vl - 1`.
+  The failure is a deadlock, not a wrong result, and it is self-concealing: this
+  module's cursor stays occupied forever, the element agen retires normally because
+  its own test is `>=`, and the symptom surfaces one instruction later as this
+  module's own "new grant while mask still valid" assertion. Anyone debugging it
+  starts at the wrong instruction.
+  Do NOT fix this by clamping the skip distance instead — the spec states the
+  distance is consumed as given, never recomputed, and clamping puts an arithmetic
+  dependency on `vl` into the skip path that the window computation deliberately
+  does not have.
+  NO NEW PORT IS NEEDED for case 1: `op` is a full `MicroOp` and
+  `MicroOp.v_is_unit_stride` already exists. Do not add an `is_unit_stride` input,
+  and do not have VecLsu tell this module to retire early — the information is
+  already on the grant.
+
+  "WHEN THE LATCH LOADS" IS TWO DIFFERENT CYCLES, and cases 1 and 2 fire in whichever
+  one applies — stated explicitly because a consumer gating on the wrong one samples
+  `us_mask` before it is published:
+    - MASKED (`op_masked`): the latch loads ONE CYCLE AFTER `op.valid`, because
+      `mask_rd_data` is a registered VRF read.
+    - UNMASKED/ELIDED: the latch loads in the SAME cycle as `op.valid`, via the
+      all-ones bypass with no VRF read at all.
+  In both, `us_mask.valid` and `done` assert in that same load cycle — never one apart.
+  Since `op.bits` is only valid while `op.valid` is high but the retire event can land a
+  cycle later, `v_is_unit_stride` must be LATCHED at grant exactly as `op_vl` and
+  `rob_idx` are; reading it combinationally at the retire cycle reads a stale uop.
+
+  WHY THIS ONE MATTERS BEYOND ITS OWN MODULE: `VecRangeAgen` is combinational and
+  one-shot with no `ready`, so it assumes `us_mask` is available essentially
+  immediately. Under the walk-only reading that assumption holds only for VL = 0 or a
+  fully-elided unmasked op, and every other unit-stride access would either stall the
+  range agen or have its mask sampled before publication. A cursor-lifetime error in
+  this module is a data-correctness error in that one.
 
   `us_mask` — output bundle {`valid`, `bits` (`vLen`), `rob_idx`}: the latched,
   tail-cleared mask vector, published for the unit-stride path (logic rule 5).
@@ -270,11 +335,11 @@ from Tenstorrent Inc.
   during address generation: stage 1 applies it per element here, and stage 2
   receives it by carriage rather than by a VRF read of its own (rule 5).
 
-  // ELEMENT granularity, not byte granularity. mask_q(i) is element i's bit at
-  // EVERY eew — the mask index is NOT scaled by v_eew. This is the exact
-  // inverse of the index/address side, where the per-element offset MUST be
-  // shifted by eew, and getting the two the same way round is a bug that
-  // corrupts only element 0 of a misaligned access and hides everywhere else.
+  ELEMENT granularity, not byte granularity. mask_q(i) is element i's bit at
+  EVERY eew — the mask index is NOT scaled by v_eew. This is the exact
+  inverse of the index/address side, where the per-element offset MUST be
+  shifted by eew, and getting the two the same way round is a bug that
+  corrupts only element 0 of a misaligned access and hides everywhere else.
 
   For a SEGMENTED access the cursor granularity is the SEGMENT: one mask bit
   governs all `v_seg_nf` fields of segment `i` — "packs whole segments per
@@ -298,12 +363,12 @@ from Tenstorrent Inc.
   waits at the element boundary instead of entering wait states mid-stream with
   a half-formed packet.
 
-  // Because the mask is read whole and latched (rule 1), `ahead.valid` can only
-  // be low in the load cycle or after a kill — never mid-stream. Publish it
-  // anyway, and do not "simplify" it away: it is the same shape as VecIdxGen's
-  // staging signal, which genuinely can go low mid-stream, so the agen's start
-  // gate stays one AND of two identically-shaped conditions. A start gate whose
-  // two halves have different shapes is how the index case gets forgotten.
+  Because the mask is read whole and latched (rule 1), `ahead.valid` can only
+  be low in the load cycle or after a kill — never mid-stream. Publish it
+  anyway, and do not "simplify" it away: it is the same shape as VecIdxGen's
+  staging signal, which genuinely can go low mid-stream, so the agen's start
+  gate stays one AND of two identically-shaped conditions. A start gate whose
+  two halves have different shapes is how the index case gets forgotten.
 
   ---- 4. The priority encoder over the mask bits ----
 
@@ -317,11 +382,11 @@ from Tenstorrent Inc.
   `skip_log2 = maxSkipLog2`; otherwise publish the largest `k` such that all of
   elements `[elem_ptr, elem_ptr + (1 << k))` are inactive.
 
-  // The jump is a POWER OF TWO and that is a datapath requirement, not a
-  // rounding convenience. The agen advances a strided address by
-  // `addr += stride << k`, a shifted add; an arbitrary jump distance would need
-  // `addr += stride * d`, a multiplier in the AGEN's critical loop. The encoder
-  // knows the exact distance and deliberately gives back less.
+  The jump is a POWER OF TWO and that is a datapath requirement, not a
+  rounding convenience. The agen advances a strided address by
+  `addr += stride << k`, a shifted add; an arbitrary jump distance would need
+  `addr += stride * d`, a multiplier in the AGEN's critical loop. The encoder
+  knows the exact distance and deliberately gives back less.
 
   The window — rather than all `vLen` bits — is also what keeps this
   synthesizable at the target frequency: the encoder's fan-in is
@@ -346,11 +411,11 @@ from Tenstorrent Inc.
   the `mask`/`vm` half of its `io.scalar` input, which attaches it to the range
   entry.
 
-  // ===> THIS RULE IS WHY THE MODULE SITS AT VecLsu LEVEL. Inside the element
-  // agen, a unit-stride OP.v never reached a mask reader, because unit-stride
-  // self-selects into `VecRangeAgen` — which has no reader and adds no VRF port.
-  // The requirement is spec-agen.e12 and it is not satisfiable from inside the
-  // element agen at all.
+  ===> THIS RULE IS WHY THE MODULE SITS AT VecLsu LEVEL. Inside the element
+  agen, a unit-stride OP.v never reached a mask reader, because unit-stride
+  self-selects into `VecRangeAgen` — which has no reader and adds no VRF port.
+  The requirement is spec-agen.e12 and it is not satisfiable from inside the
+  element agen at all.
 
   Were stage 2 to read the mask itself, a US OP.v in stage 2 and an SSI OP.v in
   stage 1 would be two concurrent readers of `R1`, which a statically partitioned

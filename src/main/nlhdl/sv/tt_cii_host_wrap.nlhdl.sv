@@ -18,6 +18,7 @@ from Tenstorrent Inc.
 /*
   tt_cii_host_wrap — the flatten shim joining the Chisel BOOM host to the
   SystemVerilog TT-CII stack, and the only new SystemVerilog module in v2.
+*/
 
   hierarchy.yaml: kind: module, mode: new, target_hdl: sv, group: coproc,
   output src/main/sv/v4/generated/tt_cii_host_wrap.sv,
@@ -60,7 +61,6 @@ from Tenstorrent Inc.
   cii.rst `cii-interface` (the four channels and their credit direction),
   execution.rst `vector-execution` "Channel overview" (relay = pure latency
   pipes; each channel's receiver owns the FIFO).
-*/
 
 `include "tt_cii_caracal_pkg.svh"
 
@@ -184,7 +184,7 @@ from Tenstorrent Inc.
   active-low reset in the same domain: no synchronizer, no reset sequencing and
   no assertion-width shaping is needed or permitted here.
 
-  // The design's only reset-polarity conversion. See hierarchy.yaml `resets:`.
+  The design's only reset-polarity conversion. See hierarchy.yaml `resets:`.
   core_rst_n = ~core_reset
 
   ---- The two interface instances ----
@@ -203,12 +203,12 @@ from Tenstorrent Inc.
   `CII_NUM_DST_WB`, `CII_MISA`. Identical parameterization is mandatory: the
   relay cannot bridge two differently-typed instances.
 
-  // The overridden lane counts must EQUAL tt_cii_interface's own defaults
-  // (1/4/4/1). tt_cii sizes each tt_cii_channel as type(cii_host.<sig>), which
-  // VCS resolves against the interface DEFAULTS and not against these instance
-  // overrides; a disagreement gives PCWM-L port-width errors rather than a
-  // clean elaboration failure. Both the interface and the package carry this
-  // warning. Change a default and its override together.
+  The overridden lane counts must EQUAL tt_cii_interface's own defaults
+  (1/4/4/1). tt_cii sizes each tt_cii_channel as type(cii_host.<sig>), which
+  VCS resolves against the interface DEFAULTS and not against these instance
+  overrides; a disagreement gives PCWM-L port-width errors rather than a
+  clean elaboration failure. Both the interface and the package carry this
+  warning. Change a default and its override together.
 
   Each instance's DV timing reference ports are connected, `.clk(clk)` and
   `.rst_n(core_rst_n)`. They are in no modport, so they are invisible to the RTL
@@ -226,11 +226,11 @@ from Tenstorrent Inc.
   (all 16) and so are the four lane counts, because `tt_cii`'s own defaults are
   1/2/2/2 and disagree with the package's 1/4/4/1.
 
-  // tt_cii's lane-count parameters currently only feed tt_cii_channel's WIDTH,
-  // which that module never references (the payload type T carries the full
-  // beat width), so overriding them is cosmetic TODAY. Do it anyway: relying on
-  // an unused parameter staying unused is how a 4-lane channel silently
-  // becomes a 2-lane one.
+  tt_cii's lane-count parameters currently only feed tt_cii_channel's WIDTH,
+  which that module never references (the payload type T carries the full
+  beat width), so overriding them is cosmetic TODAY. Do it anyway: relying on
+  an unused parameter staying unused is how a 4-lane channel silently
+  becomes a 2-lane one.
 
   ---- Issue channel: flat inputs -> ifh.iss_data[0] ----
 
@@ -246,10 +246,10 @@ from Tenstorrent Inc.
   explicitly rather than by whole-array assignment, so that a widened
   `CII_NUM_INST_ISSUE` becomes a compile error here instead of silent aliasing.
 
-  // The vtype cast reinterprets a flat 8-bit port as
-  // {vsew[2:0], vlmul[2:0], vta, vma}. If the Chisel side ever assembles that
-  // byte in a different field order, this is where the corruption enters and
-  // nothing downstream can detect it.
+  The vtype cast reinterprets a flat 8-bit port as
+  {vsew[2:0], vlmul[2:0], vta, vma}. If the Chisel side ever assembles that
+  byte in a different field order, this is where the corruption enters and
+  nothing downstream can detect it.
 
   ---- Source-operand request: ifh.req_data -> flat outputs ----
 
@@ -294,13 +294,13 @@ from Tenstorrent Inc.
   `.wb_wr_en`, `wb_status` from the appended-status field. `ifh.wb_credit` is
   driven from the flat `wb_credit` input, unaltered.
 
-  // NAMING TRAP, and it costs an hour every time. tt_cii_interface's own
-  // `cii_result_t` calls the appended-status field `wb_fp_flags`, a legacy name
-  // from when it carried only FP flags, so through an interface instance it is
-  // `ifh.wb_data[k].wb_fp_flags`. The package's convenience typedef
-  // `cii_caracal_result_t` calls the same field `wb_status`, and it now carries
-  // {last, dst_kind, vxsat, fflags}. Same bits, two names, depending on which
-  // declaration you reached them through. Use the interface's name here.
+  NAMING TRAP, and it costs an hour every time. tt_cii_interface's own
+  `cii_result_t` calls the appended-status field `wb_fp_flags`, a legacy name
+  from when it carried only FP flags, so through an interface instance it is
+  `ifh.wb_data[k].wb_fp_flags`. The package's convenience typedef
+  `cii_caracal_result_t` calls the same field `wb_status`, and it now carries
+  {last, dst_kind, vxsat, fflags}. Same bits, two names, depending on which
+  declaration you reached them through. Use the interface's name here.
 
   //@req-spec-cii.c6
   The `last` bit inside that status field is forwarded as data and is not

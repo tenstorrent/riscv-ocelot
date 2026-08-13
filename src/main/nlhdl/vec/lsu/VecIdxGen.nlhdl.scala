@@ -18,61 +18,61 @@ from Tenstorrent Inc.
 /*
   VecIdxGen — serializes one index vector register group into per-element UNSIGNED
   (zero-extended) byte offsets for an indexed (gather/scatter) access.
-
-  hierarchy.yaml: kind: module, mode: new,
-  output src/main/scala/v4/vec/generated/lsu/VecIdxGen.scala,
-  package boom.v4.vec.generated.lsu, group vec_lsu.
-  depends_on VecBundles, VectorParams, VecTrace. Instantiates nothing.
-  Instantiated as `idx` inside VecElemAgen — twice in the machine, once in
-  `ld_elem_agen` and once in `st_elem_agen`, never shared between them. It is the
-  index half of what execution.rst calls the Walker; the element walk itself,
-  the segment packing and the address add all live in the parent.
-
-  ===> ONE-ENTRY LOOKAHEAD IS A CORRECTNESS RULE, NOT AN OPTIMIZATION. This
-       module presents the NEXT element's offset ready-ahead and names the case
-       where it cannot. The parent agen must neither start nor emit an element
-       access whose index entry is not yet staged — it stalls instead. The
-       inherited Walker's rule was "to avoid stall/wait states it won't release
-       the final segment or start until the next index arrives", and that rule is
-       carried over from bring-up rather than derived from the architecture: an
-       agen that walked ahead of the index stream emitted an address computed
-       from a stale or undriven staging register, which is a wrong address rather
-       than a slow one.
-
-  ===> OFFSETS ARE UNSIGNED, AND THE INDEX EEW IS `uop.v_idx_eew`. Two
-       corrections, both against earlier revisions of this file, the map and the
-       plan, and both are the kind that produce plausible addresses rather than
-       obvious breakage:
-
-       (1) AN INDEX ELEMENT IS AN UNSIGNED BYTE OFFSET FROM THE SCALAR BASE, so
-       widening it from its EEW to the address width is a ZERO-extension. RVV 1.0
-       indexed offsets are unsigned — spike's `VI_LDST_GET_INDEX` reads them as
-       `uint8_t`/`uint16_t`/`uint32_t` — and Whisper, the cosim reference this
-       design is validated against, agrees. A sign-extension diverges on EVERY
-       index whose top EEW bit is set, and the divergence presents as an LSU
-       ADDRESSING bug rather than as an extension bug, which is the mis-diagnosis
-       that costs days. Earlier text here said "signed"; that was a spec defect,
-       corrected in `hierarchy.yaml` and the plan as well. The extension stays in
-       ONE named function (logic section) so a future correction is a one-line
-       change.
-
-       (2) THE EEW THAT GOVERNS THE INDEX STREAM IS `uop.v_idx_eew`, NOT
-       `uop.v_eew` and not `vtype.vsew`. For an indexed access the two uop fields
-       are INDEPENDENT: `v_eew` is the DATA element width (how wide each loaded or
-       stored element is, and therefore how destination bytes are placed) while
-       `v_idx_eew` is the INDEX element width (how wide each entry of the index
-       vector is). This file predates that split and said `v_eew`; sourcing the
-       descriptor from `v_eew` walks the index vector at the WRONG STRIDE, reading
-       the wrong offsets from the right register group. Everything derived below —
-       elements per register, how many group members are read, where an element
-       sits inside a member, the extension arm — is derived from the INDEX EEW for
-       that reason, and `v_eew` appears nowhere in this module.
-
-  Governing spec anchors: execution.rst `vector-agen` ("Walker", and the
-  paragraph naming the two vector reads that feed the generators),
-  midcore.rst `vrf-ports` (the canonical, 0-based port assignment),
-  caracal-milestone-plan-v2.md Phase E (step E3) and ground rules 6 and 11.
 */
+
+hierarchy.yaml: kind: module, mode: new,
+output src/main/scala/v4/vec/generated/lsu/VecIdxGen.scala,
+package boom.v4.vec.generated.lsu, group vec_lsu.
+depends_on VecBundles, VectorParams, VecTrace. Instantiates nothing.
+Instantiated as `idx` inside VecElemAgen — twice in the machine, once in
+`ld_elem_agen` and once in `st_elem_agen`, never shared between them. It is the
+index half of what execution.rst calls the Walker; the element walk itself,
+the segment packing and the address add all live in the parent.
+
+===> ONE-ENTRY LOOKAHEAD IS A CORRECTNESS RULE, NOT AN OPTIMIZATION. This
+     module presents the NEXT element's offset ready-ahead and names the case
+     where it cannot. The parent agen must neither start nor emit an element
+     access whose index entry is not yet staged — it stalls instead. The
+     inherited Walker's rule was "to avoid stall/wait states it won't release
+     the final segment or start until the next index arrives", and that rule is
+     carried over from bring-up rather than derived from the architecture: an
+     agen that walked ahead of the index stream emitted an address computed
+     from a stale or undriven staging register, which is a wrong address rather
+     than a slow one.
+
+===> OFFSETS ARE UNSIGNED, AND THE INDEX EEW IS `uop.v_idx_eew`. Two
+     corrections, both against earlier revisions of this file, the map and the
+     plan, and both are the kind that produce plausible addresses rather than
+     obvious breakage:
+
+     (1) AN INDEX ELEMENT IS AN UNSIGNED BYTE OFFSET FROM THE SCALAR BASE, so
+     widening it from its EEW to the address width is a ZERO-extension. RVV 1.0
+     indexed offsets are unsigned — spike's `VI_LDST_GET_INDEX` reads them as
+     `uint8_t`/`uint16_t`/`uint32_t` — and Whisper, the cosim reference this
+     design is validated against, agrees. A sign-extension diverges on EVERY
+     index whose top EEW bit is set, and the divergence presents as an LSU
+     ADDRESSING bug rather than as an extension bug, which is the mis-diagnosis
+     that costs days. Earlier text here said "signed"; that was a spec defect,
+     corrected in `hierarchy.yaml` and the plan as well. The extension stays in
+     ONE named function (logic section) so a future correction is a one-line
+     change.
+
+     (2) THE EEW THAT GOVERNS THE INDEX STREAM IS `uop.v_idx_eew`, NOT
+     `uop.v_eew` and not `vtype.vsew`. For an indexed access the two uop fields
+     are INDEPENDENT: `v_eew` is the DATA element width (how wide each loaded or
+     stored element is, and therefore how destination bytes are placed) while
+     `v_idx_eew` is the INDEX element width (how wide each entry of the index
+     vector is). This file predates that split and said `v_eew`; sourcing the
+     descriptor from `v_eew` walks the index vector at the WRONG STRIDE, reading
+     the wrong offsets from the right register group. Everything derived below —
+     elements per register, how many group members are read, where an element
+     sits inside a member, the extension arm — is derived from the INDEX EEW for
+     that reason, and `v_eew` appears nowhere in this module.
+
+Governing spec anchors: execution.rst `vector-agen` ("Walker", and the
+paragraph naming the two vector reads that feed the generators),
+midcore.rst `vrf-ports` (the canonical, 0-based port assignment),
+caracal-milestone-plan-v2.md Phase E (step E3) and ground rules 6 and 11.
 
 <|begin_module|>
 
@@ -109,13 +109,13 @@ from Tenstorrent Inc.
   its read request must be able to WAIT a cycle — see the ports section's grant
   line — and never that it may assume the port is free.
 
-  // ===> THE 2:1 `R4` MUX IS `VecLsu`'S, NOT THIS MODULE'S AND NOT THE PARENT
-  //      AGEN'S. `VecRegFile` publishes NO read `ready`, so the hold-off cannot
-  //      live there, and `R4` must reach it as exactly one request. VecLsu
-  //      resolves it with static priority — MASK WINS, INDEX WAITS — using
-  //      `VecMaskStream.owns_port` as the hold-off; the grant arrives here as the
-  //      `ready` on `io.vrf_read`, routed through VecElemAgen. On the load path
-  //      `R0` has exactly one reader and that `ready` is a constant true.
+  ===> THE 2:1 `R4` MUX IS `VecLsu`'S, NOT THIS MODULE'S AND NOT THE PARENT
+       AGEN'S. `VecRegFile` publishes NO read `ready`, so the hold-off cannot
+       live there, and `R4` must reach it as exactly one request. VecLsu
+       resolves it with static priority — MASK WINS, INDEX WAITS — using
+       `VecMaskStream.owns_port` as the hold-off; the grant arrives here as the
+       `ready` on `io.vrf_read`, routed through VecElemAgen. On the load path
+       `R0` has exactly one reader and that `ready` is a constant true.
 
   Sizes are taken from VectorParams (`vLen`, `eLen`, `maxMembers`, `vecPregSz`,
   `vecVLSz`) and from `HasBoomCoreParameters` (`xLen`, `robAddrSz`). No width in
@@ -137,6 +137,19 @@ from Tenstorrent Inc.
   truncation; and `vLen % eLen == 0`, so that elements-per-member is a power of two
   for every legal index EEW and the member/offset split below is a shift rather
   than a divide.
+
+  THAT REQUIRE BOUNDS THE LEGAL EEWs, NOT THE ELABORATED ONES, so the extension must
+  narrow to `xLen` EXPLICITLY rather than trusting it. `idx_eew` is a runtime 2-bit
+  field, so the 4-way mux structurally elaborates a 64-bit arm on every config,
+  including one where `xLen < 64` — and Chisel's `pad` is a zero-extend that never
+  truncates, so that arm would hand the `UInt(xLen.W)` offset port a wider value and
+  `:=` would cut it silently. Zero-extend AND narrow: `x.pad(xLen)(xLen-1, 0)`.
+  Reaching that arm requires an index EEW above ELEN, which RVV reserves, so its
+  value is a don't-care and the narrowing costs nothing; making the width provable
+  for every config is the point. If decode does not already raise illegal-instruction
+  on an index EEW above ELEN that is `VLSDecode`'s gap to close, not this module's —
+  this module must not be the place that silently defines a reserved encoding.
+  (Not live today: `xLen == 64` in every config here.)
   <|end_parameters|>
 
   <|begin_ports|>
@@ -251,13 +264,13 @@ from Tenstorrent Inc.
   The number of members actually read is derived from TOTAL BYTES,
   `ceil((vl << idx_eew) / (vLen/8))`, and NOT from a member count handed down
   from rename. Two things follow, and both are deliberate:
-  // (1) A partial final member is the normal case, not a special case: the walk
-  //     simply stops at element vl-1 wherever inside a member that falls.
-  // (2) Only the members that contain a live index are ever read. A hardcoded
-  //     8-member walk is the back-to-back vector-store corruption bug from the
-  //     M1 log — it streamed phantom members after a 1-member op and then
-  //     stalled. Deriving the count from total bytes is what makes that
-  //     unrepresentable rather than merely unlikely.
+  (1) A partial final member is the normal case, not a special case: the walk
+      simply stops at element vl-1 wherever inside a member that falls.
+  (2) Only the members that contain a live index are ever read. A hardcoded
+      8-member walk is the back-to-back vector-store corruption bug from the
+      M1 log — it streamed phantom members after a 1-member op and then
+      stalled. Deriving the count from total bytes is what makes that
+      unrepresentable rather than merely unlikely.
 
   ---- Zero extension: ONE named function, used once ----
 
@@ -266,29 +279,29 @@ from Tenstorrent Inc.
   It is a 4-way mux, one arm per legal EEW, and at `idx_eew = 3` with
   `eLen == xLen` the extension is the identity.
 
-  // The extension is UNSIGNED, and this is the ONE place in the design that
-  // decides it. RVV 1.0 indexed offsets are unsigned: spike's
-  // `VI_LDST_GET_INDEX` reads them as `uint8_t`/`uint16_t`/`uint32_t`, and
-  // Whisper — the cosim reference — matches spike. A SIGN-extension would
-  // diverge on every index whose top `idx_eew` bit is set (any `uint8_t` index
-  // >= 0x80, which a stride-16 gather over a 4 KiB buffer hits immediately), and
-  // it would present as a wrong ADDRESS, i.e. as an LSU bug, not as an extension
-  // bug. Earlier revisions of this file, of hierarchy.yaml and of the plan said
-  // "signed"; all three are corrected, and this comment is the record so the
-  // next reader does not "fix" it back.
-  //
-  // Keeping it in this one named function is what makes the choice reviewable
-  // and ONE-LINE-REVISABLE: a Whisper divergence on an indexed access localises
-  // to exactly this mux. Do NOT open-code the extension at the address adder in
-  // the parent — two extension sites is two chances to get the EEW arm wrong,
-  // and the narrow EEWs are the ones tests exercise least. `VecElemAgen`'s own
-  // spec states the matching obligation from its side: the offset arrives
-  // already zero-extended and must not be re-extended.
-  //
-  // The arms are selected by `idx_eew` (= `uop.v_idx_eew`), never by `v_eew`. A
-  // 4-way mux driven from the DATA width extends the wrong number of bits out of
-  // the right member, which is the same class of silent-wrong-address bug as
-  // walking at the wrong stride.
+  The extension is UNSIGNED, and this is the ONE place in the design that
+  decides it. RVV 1.0 indexed offsets are unsigned: spike's
+  `VI_LDST_GET_INDEX` reads them as `uint8_t`/`uint16_t`/`uint32_t`, and
+  Whisper — the cosim reference — matches spike. A SIGN-extension would
+  diverge on every index whose top `idx_eew` bit is set (any `uint8_t` index
+  >= 0x80, which a stride-16 gather over a 4 KiB buffer hits immediately), and
+  it would present as a wrong ADDRESS, i.e. as an LSU bug, not as an extension
+  bug. Earlier revisions of this file, of hierarchy.yaml and of the plan said
+  "signed"; all three are corrected, and this comment is the record so the
+  next reader does not "fix" it back.
+  
+  Keeping it in this one named function is what makes the choice reviewable
+  and ONE-LINE-REVISABLE: a Whisper divergence on an indexed access localises
+  to exactly this mux. Do NOT open-code the extension at the address adder in
+  the parent — two extension sites is two chances to get the EEW arm wrong,
+  and the narrow EEWs are the ones tests exercise least. `VecElemAgen`'s own
+  spec states the matching obligation from its side: the offset arrives
+  already zero-extended and must not be re-extended.
+  
+  The arms are selected by `idx_eew` (= `uop.v_idx_eew`), never by `v_eew`. A
+  4-way mux driven from the DATA width extends the wrong number of bits out of
+  the right member, which is the same class of silent-wrong-address bug as
+  walking at the wrong stride.
 
   The sum with the scalar base is formed in the parent, at `xLen` width, as an
   UNSIGNED add, so that wraparound matches the ISA before the result is narrowed

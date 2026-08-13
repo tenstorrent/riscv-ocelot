@@ -18,6 +18,7 @@ from Tenstorrent Inc.
 /*
   VecMapTable — the vector Rename Map Table: architectural vreg -> physical
   GROUP, read EMUL-wide and written atomically per group.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/rename/VecMapTable.scala,
@@ -60,7 +61,6 @@ from Tenstorrent Inc.
   Governing spec anchors: midcore.rst `rmt`, `rename-stage`, `snapshots`,
   `cii-shared-mapping`, `vl-vtype-rename`, `old-vd`; glossary.rst
   `glossary-terms`.
-*/
 
 <|begin_module|>
 
@@ -116,20 +116,20 @@ from Tenstorrent Inc.
   group member COUNT as a 1..maxGroupSize value; `valid`, the lane's `is_vec` (for
   the VL instance, "produces or reads VL").
 
-  // ===> `lregSz` IS INHERITED, NOT A CONSTRUCTOR PARAMETER. `BoomBundle` mixes in
-  // `HasBoomCoreParameters`, which already declares `val lregSz`
-  // (`parameters.scala:430`), so a `class VecMapReq(val lregSz: Int, ...)` does not
-  // compile — scalac demands an `override` modifier for a concrete inherited member.
-  // Adding `override` would be worse than the error: it introduces a second source
-  // of truth for a width whose whole purpose is "match the MicroOp fields of the
-  // same names", and a caller could then pass something else. The same applies to
-  // `VecRemapReq`'s `lvd`. Take `lregSz` from the trait; parameterize only
-  // `pregSz`, `maxGroupSize` and `emulSz`, which the trait does NOT provide and
-  // which genuinely differ between the vector and VL instances.
-  //
-  // Found at Phase C's gate (a) — the first generation produced constructor
-  // parameters and every call site then passed the trait's own `lregSz` into them,
-  // which is the proof they were redundant.
+  ===> `lregSz` IS INHERITED, NOT A CONSTRUCTOR PARAMETER. `BoomBundle` mixes in
+  `HasBoomCoreParameters`, which already declares `val lregSz`
+  (`parameters.scala:430`), so a `class VecMapReq(val lregSz: Int, ...)` does not
+  compile — scalac demands an `override` modifier for a concrete inherited member.
+  Adding `override` would be worse than the error: it introduces a second source
+  of truth for a width whose whole purpose is "match the MicroOp fields of the
+  same names", and a caller could then pass something else. The same applies to
+  `VecRemapReq`'s `lvd`. Take `lregSz` from the trait; parameterize only
+  `pregSz`, `maxGroupSize` and `emulSz`, which the trait does NOT provide and
+  which genuinely differ between the vector and VL instances.
+
+  Found at Phase C's gate (a) — the first generation produced constructor
+  parameters and every call site then passed the trait's own `lregSz` into them,
+  which is the proof they were redundant.
 
   `map_resps` — Output(Vec(plWidth, VecMapResp)). Per lane: `pvs1`, `pvs2`, `pvs3`,
   `stale_pvdest`, each `Vec(maxGroupSize, UInt(pregSz.W))`; `pvm`, a single
@@ -189,11 +189,11 @@ from Tenstorrent Inc.
   ARBITRARY FRAGMENTATION — the members returned need bear no relation to each
   other in PRN space, and typically do not.
 
-  // RVV requires a group's base register to be a multiple of EMUL, so `lvs + m`
-  // needs no adder: row i is in the group iff i's bits above log2(emul) match the
-  // base's, and the member index is i's low log2(emul) bits. Implement the read as
-  // a mux over the four legal member counts (1, 2, 4, 8) rather than maxGroupSize
-  // dynamic adders — this read is on the rename critical path.
+  RVV requires a group's base register to be a multiple of EMUL, so `lvs + m`
+  needs no adder: row i is in the group iff i's bits above log2(emul) match the
+  base's, and the member index is i's low log2(emul) bits. Implement the read as
+  a mux over the four legal member counts (1, 2, 4, 8) rather than maxGroupSize
+  dynamic adders — this read is on the rename critical path.
 
   A fractional EMUL (1/2, 1/4, 1/8) is a member count of 1; the mapper sees only
   the count, never the fraction, so it needs no case for it.
@@ -260,14 +260,14 @@ from Tenstorrent Inc.
   two ops writing the same architectural vreg in one bundle means the younger one's
   stale group is the older one's `pvdest`, and getting that wrong frees a live group.
 
-  // ===> THE BYPASS COMPARE IS PER MEMBER AND AGAINST A RANGE, NOT AGAINST THE
-  // BASE. An older LMUL=8 write to v0..v7 must bypass into a younger LMUL=2 read at
-  // v4, delivering that write's members 4 and 5. Comparing `remap.lvd` to
-  // `map_req.lvs*` — the scalar table's test, correct there because a scalar mapping
-  // is one register — misses every sub-range read and the younger op issues against
-  // a stale PRN pair. Per read member m the test is "does row (lvs + m) fall inside
-  // older lane k's destination group", and the bypassed value is that lane's
-  // `pvdest(row - remap.lvd)`. Same sub-range argument the group-done wakeup rests on.
+  ===> THE BYPASS COMPARE IS PER MEMBER AND AGAINST A RANGE, NOT AGAINST THE
+  BASE. An older LMUL=8 write to v0..v7 must bypass into a younger LMUL=2 read at
+  v4, delivering that write's members 4 and 5. Comparing `remap.lvd` to
+  `map_req.lvs*` — the scalar table's test, correct there because a scalar mapping
+  is one register — misses every sub-range read and the younger op issues against
+  a stale PRN pair. Per read member m the test is "does row (lvs + m) fall inside
+  older lane k's destination group", and the bypassed value is that lane's
+  `pvdest(row - remap.lvd)`. Same sub-range argument the group-done wakeup rests on.
 
   //@req-spec-rename.h20
   For the VL instance that same prefix bypass lets a `vset` and its dependent share

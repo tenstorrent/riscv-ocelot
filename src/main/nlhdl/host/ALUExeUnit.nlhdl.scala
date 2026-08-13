@@ -21,6 +21,7 @@ from Tenstorrent Inc.
   execution unit. The target is `class ALUExeUnit(val id: Int)` in
   src/main/scala/v4/exu/execution-units/execution-unit.scala, which is
   hand-written baseline BOOM v4.
+*/
 
   hierarchy.yaml: kind: module, mode: edit_existing,
   target src/main/scala/v4/exu/execution-units/execution-unit.scala,
@@ -50,7 +51,6 @@ from Tenstorrent Inc.
 
   Governing spec anchors: frontend.rst `vector-rvv-decode` ("VSET Special
   Handling"), frontend.rst `vset-dual-dest`.
-*/
 
 <|begin_module|>
 
@@ -117,10 +117,10 @@ from Tenstorrent Inc.
   no hardware. Keep it gated anyway, so that a non-vector build's config string
   is character-identical to today's.
 
-  // Which ISSUE QUEUE a vset is dispatched to (a scalar integer queue) is
-  // NOT this node's claim — that is the VsetDecode / DecodeUnit iq_type
-  // decision. This EU is statically bound to `alu_iss_unit` by core.scala and
-  // has no say in the binding.
+  Which ISSUE QUEUE a vset is dispatched to (a scalar integer queue) is
+  NOT this node's claim — that is the VsetDecode / DecodeUnit iq_type
+  decision. This EU is statically bound to `alu_iss_unit` by core.scala and
+  has no say in the binding.
 
   ---- 2. What must NOT be added to the readiness term ----
 
@@ -151,15 +151,15 @@ from Tenstorrent Inc.
   (`speculative_mask := (1 << id).U`) wakeup. This EU adds no stage and no queue;
   the `min(AVL, VLMAX)` compare must fit the existing cycle.
 
-  // The integer fast wakeup keeps its exact current condition
-  // (`io_iss_uop.bits.dst_rtype === RT_FIX`), which is already correct for a
-  // vset: with `rd == x0` decode yields RT_ZERO and no integer wakeup fires,
-  // while the VL RF is still written — that asymmetry is precisely why
-  // `is_vl_producer` exists as its own MicroOp field. Do NOT add an
-  // `is_vl_producer` term to `io_fast_wakeup`: the VL RF has no
-  // read-during-write bypass, so a `pvl` wakeup three cycles ahead of the data
-  // would be read stale. The `pvl` wakeup is derived downstream, from the
-  // writeback.
+  The integer fast wakeup keeps its exact current condition
+  (`io_iss_uop.bits.dst_rtype === RT_FIX`), which is already correct for a
+  vset: with `rd == x0` decode yields RT_ZERO and no integer wakeup fires,
+  while the VL RF is still written — that asymmetry is precisely why
+  `is_vl_producer` exists as its own MicroOp field. Do NOT add an
+  `is_vl_producer` term to `io_fast_wakeup`: the VL RF has no
+  read-during-write bypass, so a `pvl` wakeup three cycles ahead of the data
+  would be read stale. The `pvl` wakeup is derived downstream, from the
+  writeback.
 
   ---- 4. The one guard outside `class ALUExeUnit` ----
 

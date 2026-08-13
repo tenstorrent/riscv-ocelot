@@ -15,6 +15,16 @@ is strictly forbidden unless prior written permission is obtained
 from Tenstorrent Inc.
 */
 
+/*
+<one or two lines: what this module is. Not how it works — that is the body
+below. Keep it short; a paragraph here becomes a paragraph in the RTL.>
+*/
+
+// Comments in this file are copied verbatim into the generated RTL, so they are
+// rationed: `//@req-<id>` tags (required, above the description each answers)
+// and the short file description above. Everything else — behavior, rationale,
+// context — is body prose, not a comment.
+
 // Required, specify the module input/output and functionality
 <|begin_module|>
   <|begin_parameters|>

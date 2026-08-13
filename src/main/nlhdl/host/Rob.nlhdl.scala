@@ -20,54 +20,54 @@ from Tenstorrent Inc.
   It describes only the change Caracal applies to the existing `class Rob` and
   `class RobIo` in src/main/scala/v4/exu/rob.scala, which is hand-written
   baseline BOOM v4 and stays in place.
-
-  hierarchy.yaml: kind: module, mode: edit_existing,
-  target src/main/scala/v4/exu/rob.scala, group host. No `output:` — the
-  pre-existing file is the artifact. depends_on MicroOp, ScalarOpConstants.
-  Instantiates nothing new. Budget (plan section 11): ~110 added lines.
-
-  Everything already in `class Rob` is UNCHANGED and is not restated here: the
-  four-state FSM (`s_reset`/`s_normal`/`s_wait_till_empty`/`s_rollback`), the
-  `rob_head`/`rob_tail`/`rob_pnr` pointer trio and their `_lsb` fields, the
-  per-bank `rob_val`/`rob_bsy`/`rob_unsafe`/`rob_uop`/`rob_exception`/
-  `rob_predicated`/`rob_fflags` arrays, `RobCompactUop` and its SRAM plus the
-  two-deep bypass, the `io.wb_resps` writeback loop, `io.lsu_clr_bsy`,
-  `io.lsu_clr_unsafe`, `io.lxcpt`, `io.csr_replay`, the commit/exception/flush
-  logic, `can_commit`/`will_commit`/`block_commit`, the PNR block and both of its
-  pointer-ordering asserts, and the tail/full/empty logic. Anything this file
-  does not mention keeps its current declaration, wiring and cycle behaviour.
-
-  THE WHOLE DELTA, in one paragraph: one existing field widens (`dst_rtype`, to
-  hold `RT_VEC`); three input ports are added (`vec_clr_bsy` laned per producer,
-  `vec_clr_unsafe`, `vec_rob_flags`) and one output (`com_vxsat`); and three
-  narrow per-entry state items are added — `rob_other_half` (1 bit, the shared
-  instruction), `rob_vconfig` (the executed-`vtype` latch for `vsetvl`) and
-  `rob_vxsat` (1 bit). Nothing else. Almost every requirement allocated to this
-  node is a MUST-NOT-CHANGE constraint, and those are discharged by the
-  edit_scope section at the end of this file, which is the enforceable artifact —
-  not by logic added here.
-
-  ===> DO NOT ADD A PER-ENTRY GROUP COMPLETION COUNTER. A vector destination
-       group of up to EMUL = 8 physical registers completes as ONE group-done
-       event carrying the group's member-PRN vector, and the ROB's side of that
-       is the SAME single-shot `rob_bsy` clear a scalar op uses. Per-PRN counting
-       lives in the producer (the LCB's assembly entries, the CII tag table). A
-       counter here would be a second, disagreeing copy of state the producer
-       already owns, in the one structure whose entries are the most numerous.
-
-  ===> A VECTOR OP MUST CLEAR `rob_unsafe`, OR THE PNR ASSERT AT rob.scala:436-442
-       TRIPS AND THE MACHINE DEADLOCKS. A vector load/store sets `starts_unsafe`
-       through `uses_ldq`/`uses_stq` exactly like a scalar one, but it has no
-       scalar `lsu_clr_unsafe` firing for it, so without the new port the PNR
-       parks on the entry forever, `IQ_V_ALU`'s past-PNR gate never opens, and the
-       first exception reaching that row asserts. This was observed in Milestone 1
-       (plan section 2 bug list, and the plan's Phase C note).
-
-  Governing spec anchors: midcore.rst `rob-vec`, `group-done-wb`, `vec-commit`,
-  `precise-vec-exc`; issue.rst `cii-shared-sched`, `shared-store-chain`;
-  loadstore.rst `order-fail-replay`, `elem-progress`; frontend.rst
-  `vcfg-recovery`; overview.rst `caracal-pipeline`; glossary.rst.
 */
+
+hierarchy.yaml: kind: module, mode: edit_existing,
+target src/main/scala/v4/exu/rob.scala, group host. No `output:` — the
+pre-existing file is the artifact. depends_on MicroOp, ScalarOpConstants.
+Instantiates nothing new. Budget (plan section 11): ~110 added lines.
+
+Everything already in `class Rob` is UNCHANGED and is not restated here: the
+four-state FSM (`s_reset`/`s_normal`/`s_wait_till_empty`/`s_rollback`), the
+`rob_head`/`rob_tail`/`rob_pnr` pointer trio and their `_lsb` fields, the
+per-bank `rob_val`/`rob_bsy`/`rob_unsafe`/`rob_uop`/`rob_exception`/
+`rob_predicated`/`rob_fflags` arrays, `RobCompactUop` and its SRAM plus the
+two-deep bypass, the `io.wb_resps` writeback loop, `io.lsu_clr_bsy`,
+`io.lsu_clr_unsafe`, `io.lxcpt`, `io.csr_replay`, the commit/exception/flush
+logic, `can_commit`/`will_commit`/`block_commit`, the PNR block and both of its
+pointer-ordering asserts, and the tail/full/empty logic. Anything this file
+does not mention keeps its current declaration, wiring and cycle behaviour.
+
+THE WHOLE DELTA, in one paragraph: one existing field widens (`dst_rtype`, to
+hold `RT_VEC`); three input ports are added (`vec_clr_bsy` laned per producer,
+`vec_clr_unsafe`, `vec_rob_flags`) and one output (`com_vxsat`); and three
+narrow per-entry state items are added — `rob_other_half` (1 bit, the shared
+instruction), `rob_vconfig` (the executed-`vtype` latch for `vsetvl`) and
+`rob_vxsat` (1 bit). Nothing else. Almost every requirement allocated to this
+node is a MUST-NOT-CHANGE constraint, and those are discharged by the
+edit_scope section at the end of this file, which is the enforceable artifact —
+not by logic added here.
+
+===> DO NOT ADD A PER-ENTRY GROUP COMPLETION COUNTER. A vector destination
+     group of up to EMUL = 8 physical registers completes as ONE group-done
+     event carrying the group's member-PRN vector, and the ROB's side of that
+     is the SAME single-shot `rob_bsy` clear a scalar op uses. Per-PRN counting
+     lives in the producer (the LCB's assembly entries, the CII tag table). A
+     counter here would be a second, disagreeing copy of state the producer
+     already owns, in the one structure whose entries are the most numerous.
+
+===> A VECTOR OP MUST CLEAR `rob_unsafe`, OR THE PNR ASSERT AT rob.scala:436-442
+     TRIPS AND THE MACHINE DEADLOCKS. A vector load/store sets `starts_unsafe`
+     through `uses_ldq`/`uses_stq` exactly like a scalar one, but it has no
+     scalar `lsu_clr_unsafe` firing for it, so without the new port the PNR
+     parks on the entry forever, `IQ_V_ALU`'s past-PNR gate never opens, and the
+     first exception reaching that row asserts. This was observed in Milestone 1
+     (plan section 2 bug list, and the plan's Phase C note).
+
+Governing spec anchors: midcore.rst `rob-vec`, `group-done-wb`, `vec-commit`,
+`precise-vec-exc`; issue.rst `cii-shared-sched`, `shared-store-chain`;
+loadstore.rst `order-fail-replay`, `elem-progress`; frontend.rst
+`vcfg-recovery`; overview.rst `caracal-pipeline`; glossary.rst.
 
 <|begin_module|>
 
@@ -287,10 +287,10 @@ from Tenstorrent Inc.
   coprocessor, which knows when the whole OP.v has retired and signals completion
   once, on the writeback beat marked `last`. That single wakeup clears `rob_bsy`
   through the same new port, so the ROB needs no CII-specific completion path.
-  // An RT_VEC entry has NO iresp writeback: this port is the ONLY thing that can
-  // clear its rob_bsy. That is why the port is an addition and not an
-  // optimization — without it every vector op with a vector destination hangs at
-  // the ROB head, which is the first failure a bring-up test hits.
+  An RT_VEC entry has NO iresp writeback: this port is the ONLY thing that can
+  clear its rob_bsy. That is why the port is an addition and not an
+  optimization — without it every vector op with a vector destination hangs at
+  the ROB head, which is the first failure a bring-up test hits.
   A vector op with a SCALAR destination (`vmv.x.s`, `vcpop.m`, `vfirst.m`,
   `vfmv.f.s`) is the reverse case: it clears through the ordinary INT/FP
   `ExeUnitResp` on `io.wb_resps` and its `vec_clr_bsy` is suppressed at the
@@ -298,8 +298,8 @@ from Tenstorrent Inc.
 
   Add one assert mirroring the store one: a `vec_clr_bsy` must name an entry that
   is `rob_val` and `rob_bsy`. // A clear landing on an invalid or already-cleared
-  // entry means a wrong-path group-done survived its producer's kill logic, which
-  // is the failure mode VecBusyTable has no flush port to catch either.
+  entry means a wrong-path group-done survived its producer's kill logic, which
+  is the failure mode VecBusyTable has no flush port to catch either.
 
   ---- PART 4. The shared instruction: ONE BIT, NOT A COUNTER ----
 
@@ -333,12 +333,12 @@ from Tenstorrent Inc.
   "clear `rob_bsy` only if `!rob_other_half(cidx)`, else clear
   `rob_other_half(cidx)`". Under `usingRVV = false` that term is a Scala-level
   `true.B` and both blocks are textually the baseline again.
-  // Which event each half emits depends on whether it writes the VRF: a
-  // segmented LOAD's LSU half writes pvtmp and emits a real group-done
-  // (vec_clr_bsy); a segmented STORE's LSU half writes no VRF and signals
-  // lsu_clr_bsy, deferred until after DGEN has read pvtmp. The coprocessor half
-  // always emits a group-done. The flag is indifferent to which port an arrival
-  // came in on, which is precisely why one bit suffices for both forms.
+  Which event each half emits depends on whether it writes the VRF: a
+  segmented LOAD's LSU half writes pvtmp and emits a real group-done
+  (vec_clr_bsy); a segmented STORE's LSU half writes no VRF and signals
+  lsu_clr_bsy, deferred until after DGEN has read pvtmp. The coprocessor half
+  always emits a group-done. The flag is indifferent to which port an arrival
+  came in on, which is precisely why one bit suffices for both forms.
 
   //@req-spec-core.h7
   //@req-spec-rob.d7
@@ -353,14 +353,14 @@ from Tenstorrent Inc.
   six-step chain in issue.rst `shared-store-chain`). The flag is therefore
   equivalent to "wait for the consumer half", and no same-cycle arbitration case
   needs handling — do not write one.
-  // If both arrivals COULD coincide, one bit would be insufficient and this
-  // would need a counter. The absence of that case is a property of the pvtmp
-  // handoff, not an assumption about latency, so ASSERT IT: at most one
-  // completion event — across all `vec_clr_bsy` lanes and `io.lsu_clr_bsy`
-  // together — may name a given entry in a cycle. The assert is not decoration.
-  // Two arrivals in one cycle both read the OLD `rob_other_half` register, so
-  // both take the flag-clear branch, `rob_bsy` is never cleared, and the entry
-  // hangs at the ROB head — a silent deadlock that only this assert localises.
+  If both arrivals COULD coincide, one bit would be insufficient and this
+  would need a counter. The absence of that case is a property of the pvtmp
+  handoff, not an assumption about latency, so ASSERT IT: at most one
+  completion event — across all `vec_clr_bsy` lanes and `io.lsu_clr_bsy`
+  together — may name a given entry in a cycle. The assert is not decoration.
+  Two arrivals in one cycle both read the OLD `rob_other_half` register, so
+  both take the flag-clear branch, `rob_bsy` is never cleared, and the entry
+  hangs at the ROB head — a silent deadlock that only this assert localises.
 
   The flag needs NO flush or rollback path. It is written unconditionally at
   every dispatch into the row, exactly like `rob_bsy` and `rob_unsafe`, so a
@@ -378,13 +378,13 @@ from Tenstorrent Inc.
   clears `rob_unsafe(GetRowIdx(...))` on it in a block shaped like
   `io.lsu_clr_unsafe` (rob.scala:424-429). A per-sub-access clear would declare
   the instruction safe while later elements could still fault or alias.
-  // This is also what keeps the exception assert at rob.scala:436-442 true for
-  // vector ops: the element cursor STOPS at a fault, so the last element is never
-  // checked and group-safe never fires, so `rob_unsafe` is still set when the
-  // lxcpt arrives. Requirement on the producer, stated here because the assert
-  // lives here: never raise vec_clr_unsafe for a group whose element stream
-  // faulted. Even in the degenerate case where the LAST element faults, the
-  // assert reads the pre-clear register value and holds.
+  This is also what keeps the exception assert at rob.scala:436-442 true for
+  vector ops: the element cursor STOPS at a fault, so the last element is never
+  checked and group-safe never fires, so `rob_unsafe` is still set when the
+  lxcpt arrives. Requirement on the producer, stated here because the assert
+  lives here: never raise vec_clr_unsafe for a group whose element stream
+  faulted. Even in the degenerate case where the LAST element faults, the
+  assert reads the pre-clear register value and holds.
 
   //@req-spec-rob.e6
   //@req-spec-issue.d16
@@ -398,10 +398,10 @@ from Tenstorrent Inc.
   Requiring a second group-safe from the coprocessor half WOULD DEADLOCK: that
   half cannot issue until the PNR has passed the entry, which needs `rob_unsafe`
   already cleared.
-  // issue.rst says "first address translation" where midcore.rst says "the last
-  // element address has been LCAM-checked". The distinction issue.rst is drawing
-  // is WHICH HALF, not which element; for a vector op midcore.rst governs, since
-  // spec-rob.e4 forbids a per-sub-access clear.
+  issue.rst says "first address translation" where midcore.rst says "the last
+  element address has been LCAM-checked". The distinction issue.rst is drawing
+  is WHICH HALF, not which element; for a vector op midcore.rst governs, since
+  spec-rob.e4 forbids a per-sub-access clear.
 
   //@req-spec-issue.d18
   //@req-spec-core.f7
@@ -445,10 +445,10 @@ from Tenstorrent Inc.
   the MicroOp delta declares; `compact_to_uop` overrides only its eight listed
   fields, so `stale_pvdest`, `pvdest`, `pvtmp` and `v_emul` reach
   `io.commit.uops(w)` straight out of `rob_uop(rob_head)`.
-  // DELIBERATE NON-GOAL: do NOT move stale_pvdest into the compact SRAM to
-  // recover the ~56 bits/entry. That means widening compactUopWidth and touching
-  // the two-deep bypass at rob.scala:344-353 — the highest-risk lines in the file
-  // for a saving midcore.rst `vec-commit` already prices in and accepts.
+  DELIBERATE NON-GOAL: do NOT move stale_pvdest into the compact SRAM to
+  recover the ~56 bits/entry. That means widening compactUopWidth and touching
+  the two-deep bypass at rob.scala:344-353 — the highest-risk lines in the file
+  for a saving midcore.rst `vec-commit` already prices in and accepts.
 
   ---- PART 7. Precise vector exceptions: `vstart = 0`, restart whole ----
 
@@ -480,12 +480,12 @@ from Tenstorrent Inc.
   has no write path to `vstart` — which is rocket's `CSRFile` state, not
   Caracal's. `fault_elem` survives only as the element cursor's stop signal and a
   debug counter, inside the LSU.
-  // WHY vstart = k IS A SILENT-CORRUPTION BUG, not a lost optimization: elements
-  // 0..k-1 were written into pvdest, a FRESHLY renamed group. The instruction
-  // never commits, so pvdest is never installed in com_map_table and architectural
-  // vd still maps to stale_pvdest — those k elements are GONE. Resuming at k
-  // re-executes only k..VL-1 and leaves 0..k-1 holding pre-instruction values.
-  // Any reviewer seeing an element index appear on a ROB port should reject it.
+  WHY vstart = k IS A SILENT-CORRUPTION BUG, not a lost optimization: elements
+  0..k-1 were written into pvdest, a FRESHLY renamed group. The instruction
+  never commits, so pvdest is never installed in com_map_table and architectural
+  vd still maps to stale_pvdest — those k elements are GONE. Resuming at k
+  re-executes only k..VL-1 and leaves 0..k-1 holding pre-instruction values.
+  Any reviewer seeing an element index appear on a ROB port should reject it.
 
   //@req-spec-core.i9
   //@req-spec-rob.g5
@@ -582,14 +582,14 @@ from Tenstorrent Inc.
   ALUUnit must drive the resolved `vconfig` on EVERY `vset*` writeback, not only
   `vsetvl`, so that the ROB needs no per-form case; for the immediate forms it is
   the same value the decode snapshot already held.
-  // WHY A SEPARATE 9-BIT ARRAY AND NOT A WRITE INTO `rob_uop`. `rob_uop` is a
-  // Reg(Vec(numRobRows, MicroOp)) with two writers today (dispatch, brupdate).
-  // Adding a writeback-indexed writer would add numWakeupPorts write enables to
-  // the WIDEST register array in the ROB. A dedicated VType-wide array is the
-  // same function at a fraction of the cost, and it is also why relying on
-  // `vsetvl`'s `is_unique` to get away with a single register was rejected:
-  // `vsetvli`/`vsetivli` are NOT is_unique, so several can be in flight, and one
-  // uniform per-row rule is cheaper to review than two form-dependent paths.
+  WHY A SEPARATE 9-BIT ARRAY AND NOT A WRITE INTO `rob_uop`. `rob_uop` is a
+  Reg(Vec(numRobRows, MicroOp)) with two writers today (dispatch, brupdate).
+  Adding a writeback-indexed writer would add numWakeupPorts write enables to
+  the WIDEST register array in the ROB. A dedicated VType-wide array is the
+  same function at a fraction of the cost, and it is also why relying on
+  `vsetvl`'s `is_unique` to get away with a single register was rejected:
+  `vsetvli`/`vsetivli` are NOT is_unique, so several can be in flight, and one
+  uniform per-row rule is cheaper to review than two form-dependent paths.
   ===> NO REQUIREMENT IN THIS NODE'S ALLOCATION COVERS THIS LATCH. It is a corpus
        gap: `spec-decode.c11` puts the computation in the ALU and `spec-decode.h5`
        puts the commit write in the ROB, and nothing states how the value gets

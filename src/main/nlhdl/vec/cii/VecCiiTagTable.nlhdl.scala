@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecCiiTagTable — the host's 16-entry per-tag side-table: the ONE place where a
   CII `{tag, op_id, op_offset}` or `{tag, wb_dst_offset}` triple becomes a
   physical register number.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/cii/VecCiiTagTable.scala,
@@ -64,7 +65,6 @@ from Tenstorrent Inc.
   which is its single source of truth), `cii-kill-contract`, `cii-operands`,
   `cii-writeback`; execution.rst `vector-execution` (channel overview) and
   `cii-prn-arn`; midcore.rst `old-vd`. Plan v2 step F3, ground rules 1, 7 and 11.
-*/
 
 <|begin_module|>
 
@@ -130,20 +130,20 @@ from Tenstorrent Inc.
   VecCiiIssue, which combines it with its own accept-cycle shadow to pick the tag
   and to compute the registered `fu_types` advertise bit.
 
-  // ===> THERE IS NO `alloc.tag` OUTPUT AND NO REGISTERED `tag_avail` HERE, and
-  // both absences are load-bearing rather than tidying. VecCiiIssue picks the tag
-  // in its ACCEPT cycle and lands the entry in its EMIT cycle, so `tag_valid`
-  // does not show a tag taken until a cycle after it was chosen: a back-to-back
-  // grant with no shadow term would pick the SAME TAG TWICE, two instructions
-  // would share one entry, and one `last` beat would free a tag whose other owner
-  // is still running. The shadow (`s1_pending_mask`, the one-hot of the tag in the
-  // accept stage) can only live where the accept cycle is visible, and this module
-  // structurally never sees it. A registered `tag_avail` computed here would
-  // likewise be computed from CURRENT state — the off-by-one that keeps
-  // `fu_types` advertised one cycle too long, and with no `ready` line on the
-  // Issue channel that is a DROPPED INSTRUCTION, not a stall. The requirement
-  // split already reads this way: allocating the tag is VecCiiIssue's (cii.d6),
-  // recording the entry is this module's (cii.d8).
+  ===> THERE IS NO `alloc.tag` OUTPUT AND NO REGISTERED `tag_avail` HERE, and
+  both absences are load-bearing rather than tidying. VecCiiIssue picks the tag
+  in its ACCEPT cycle and lands the entry in its EMIT cycle, so `tag_valid`
+  does not show a tag taken until a cycle after it was chosen: a back-to-back
+  grant with no shadow term would pick the SAME TAG TWICE, two instructions
+  would share one entry, and one `last` beat would free a tag whose other owner
+  is still running. The shadow (`s1_pending_mask`, the one-hot of the tag in the
+  accept stage) can only live where the accept cycle is visible, and this module
+  structurally never sees it. A registered `tag_avail` computed here would
+  likewise be computed from CURRENT state — the off-by-one that keeps
+  `fu_types` advertised one cycle too long, and with no `ready` line on the
+  Issue channel that is a DROPPED INSTRUCTION, not a stall. The requirement
+  split already reads this way: allocating the tag is VecCiiIssue's (cii.d6),
+  recording the entry is this module's (cii.d8).
 
   ---- Source-Request resolve, to VecCiiOperandServer ----
 
@@ -235,10 +235,10 @@ from Tenstorrent Inc.
       instruction needing two widens this to a `Vec` indexed by the `op_offset` the
       slot already carries.
 
-  // The plan's side-table sketch also lists a "dest-group size". It is PopCount
-  // of pvdest_grp_mask, derived where needed and NOT a second field: two fields
-  // expressing one fact are two fields that can disagree, and the mask is what
-  // the writeback path needs per beat anyway.
+  The plan's side-table sketch also lists a "dest-group size". It is PopCount
+  of pvdest_grp_mask, derived where needed and NOT a second field: two fields
+  expressing one fact are two fields that can disagree, and the mask is what
+  the writeback path needs per beat anyway.
 
   ---- 2. Allocation: record the entry at the index handed in ----
 
@@ -276,28 +276,28 @@ from Tenstorrent Inc.
        dispatch presents the SAME uop to `iq_v_alu` and `iq_v_store` (VecIssueUnit
        part 8), so `uses_stq` is set on the granted coprocessor half.
 
-  // ===> WHY THE MUX IS HERE AND NOWHERE ELSE. Without it, cii.i4/i8/i11 — the
-  // coprocessor half writes the `pvtmp` group — are UNSATISFIABLE, because the
-  // only destination field a beat can resolve against would hold a group rename
-  // never allocated. It cannot be fixed downstream either: VecCiiWriteback writes
-  // `wb_lookup.resp.prn` and holds no uop, VecCiiComplete announces
-  // `wb_lookup.resp.pvdest_grp` and holds no uop, and BOTH of them explicitly
-  // forbid re-deriving the choice from `is_shared`/`is_store` — two places
-  // deciding which group a beat lands in is exactly how a segmented store
-  // silently writes the load-side group. One mux, one cycle, one place.
-  // The entry field keeps the name `pvdest_grp`: it describes the common case, and
-  // renaming it would touch four sibling specs to say nothing new. What the name
-  // is NOT is a licence to load it unconditionally from `uop.pvdest`.
+  ===> WHY THE MUX IS HERE AND NOWHERE ELSE. Without it, cii.i4/i8/i11 — the
+  coprocessor half writes the `pvtmp` group — are UNSATISFIABLE, because the
+  only destination field a beat can resolve against would hold a group rename
+  never allocated. It cannot be fixed downstream either: VecCiiWriteback writes
+  `wb_lookup.resp.prn` and holds no uop, VecCiiComplete announces
+  `wb_lookup.resp.pvdest_grp` and holds no uop, and BOTH of them explicitly
+  forbid re-deriving the choice from `is_shared`/`is_store` — two places
+  deciding which group a beat lands in is exactly how a segmented store
+  silently writes the load-side group. One mux, one cycle, one place.
+  The entry field keeps the name `pvdest_grp`: it describes the common case, and
+  renaming it would touch four sibling specs to say nothing new. What the name
+  is NOT is a licence to load it unconditionally from `uop.pvdest`.
 
   ===> `pvs3_grp` AND `stale_pvdest_grp` ARE CAPTURED FROM TWO DIFFERENT `MicroOp`
        FIELDS INTO TWO DIFFERENT ENTRY FIELDS, and this module cannot tell the
        coinciding case from the diverging one — nor does it need to. Do not add a
        comparator, do not fold them, do not add an "is RMW" bit.
 
-  // Members at or beyond v_emul are captured verbatim rather than zeroed: PRN 0 is
-  // a real allocatable vector PRN, so zeroing would make an out-of-range offset
-  // read a legitimate register belonging to someone else — harder to spot in a
-  // waveform than a stale member.
+  Members at or beyond v_emul are captured verbatim rather than zeroed: PRN 0 is
+  a real allocatable vector PRN, so zeroing would make an out-of-range offset
+  read a legitimate register belonging to someone else — harder to spot in a
+  waveform than a stale member.
 
   `alloc.valid` on a tag whose `tag_valid` bit is already set must be impossible,
   because VecCiiIssue's registered `fu_types` gate consumes `tag_free_mask` minus
@@ -345,28 +345,28 @@ from Tenstorrent Inc.
   either way. Two lanes naming the same member in one cycle is not this module's
   concern: each is answered independently and nothing coalesces.
 
-  // ===> TRACEABILITY WRINKLE, NOW CLOSED. Phase R took the first of the two
-  // options this note used to offer: decision D12 case 3 (allocation wrong,
-  // requirement fine) RE-ALLOCATED `spec-cii.f5`-`f8` and `f10` from
-  // VecCiiOperandServer to this node, because the per-slot resolutions above are
-  // where they are emitted. hierarchy.yaml now allocates the five IDs here and
-  // they are tagged here; VecCiiOperandServer keeps the prose describing the
-  // encoding, with its tags removed and a pointer to this site.
-  //
-  // What did NOT change, and is why the split existed: `opnd` still owns the
-  // OUTCOME of each slot — the `R5`-`R8` address drive, the `SCALAR` no-read path,
-  // the returned beat, the request order and the killed drain — and those are
-  // carried by its own IDs (`f4`, `f9`, `f12`, `vrf.j13`/`j14`), which stayed put.
-  // The narrow `src_lookup` response still exists so the 16-to-1 entry mux is
-  // emitted once, here, instead of crossing four ~376-bit entries to be recomputed
-  // at the same logic depth on the far side.
+  ===> TRACEABILITY WRINKLE, NOW CLOSED. Phase R took the first of the two
+  options this note used to offer: decision D12 case 3 (allocation wrong,
+  requirement fine) RE-ALLOCATED `spec-cii.f5`-`f8` and `f10` from
+  VecCiiOperandServer to this node, because the per-slot resolutions above are
+  where they are emitted. hierarchy.yaml now allocates the five IDs here and
+  they are tagged here; VecCiiOperandServer keeps the prose describing the
+  encoding, with its tags removed and a pointer to this site.
+  
+  What did NOT change, and is why the split existed: `opnd` still owns the
+  OUTCOME of each slot — the `R5`-`R8` address drive, the `SCALAR` no-read path,
+  the returned beat, the request order and the killed drain — and those are
+  carried by its own IDs (`f4`, `f9`, `f12`, `vrf.j13`/`j14`), which stayed put.
+  The narrow `src_lookup` response still exists so the 16-to-1 entry mux is
+  emitted once, here, instead of crossing four ~376-bit entries to be recomputed
+  at the same logic depth on the far side.
 
-  // Only the DESTINATION offset is bound-checked (part 4). A source offset is
-  // served verbatim, because the membership list stores no per-source member count
-  // and deliberately so: widening and narrowing make source and destination counts
-  // differ, and the coprocessor owns the member walk. An out-of-range source
-  // offset is a VPU decode bug, and the part-8 trace line is what localises it
-  // here rather than at the VRF.
+  Only the DESTINATION offset is bound-checked (part 4). A source offset is
+  served verbatim, because the membership list stores no per-source member count
+  and deliberately so: widening and narrowing make source and destination counts
+  differ, and the coprocessor owns the member walk. An out-of-range source
+  offset is a VPU decode bug, and the part-8 trace line is what localises it
+  here rather than at the VRF.
 
   ---- 4. Writeback resolve ----
 
@@ -383,15 +383,15 @@ from Tenstorrent Inc.
   completed to the renamed physical scalar register recorded at issue, and
   `is_shared` for the ROB's "other half pending" flag.
 
-  // Both readers resolve against the ONE destination group part 2 chose, so a
-  // segmented store's beats land in `pvtmp` and its group-done names `pvtmp`'s
-  // members with no case analysis on either reader's side. `is_shared` is exported
-  // for the ROB flag, for trace and for assertions ONLY — neither reader may use
-  // it to re-select the group, which was already decided at allocation.
+  Both readers resolve against the ONE destination group part 2 chose, so a
+  segmented store's beats land in `pvtmp` and its group-done names `pvtmp`'s
+  members with no case analysis on either reader's side. `is_shared` is exported
+  for the ROB flag, for trace and for assertions ONLY — neither reader may use
+  it to re-select the group, which was already decided at allocation.
 
-  // This module does not interpret `wb_status.dst_kind` and stores no writeback
-  // routing — routing arrives per beat, and VecCiiWriteback selects VRF W2 / INT
-  // RF / FP RF from it. The table supplies both candidate destinations.
+  This module does not interpret `wb_status.dst_kind` and stores no writeback
+  routing — routing arrives per beat, and VecCiiWriteback selects VRF W2 / INT
+  RF / FP RF from it. The table supplies both candidate destinations.
 
   ---- 5. Free, and the no-recycling rule ----
 
@@ -434,10 +434,10 @@ from Tenstorrent Inc.
   that already carries it. No re-initialization on the second flush, no per-tag
   flush counter, no drain restart.
 
-  // ===> DO NOT CLEAR tag_valid ON kill_all, and add no flush term to any
-  // next-state expression except tag_killed. The BOOM idiom for a flush is to
-  // invalidate, and here invalidating IS the bug: it frees tags whose beats are
-  // still in flight (part 5) and discards the routing state the drain needs.
+  ===> DO NOT CLEAR tag_valid ON kill_all, and add no flush term to any
+  next-state expression except tag_killed. The BOOM idiom for a flush is to
+  invalidate, and here invalidating IS the bug: it frees tags whose beats are
+  still in flight (part 5) and discards the routing state the drain needs.
 
   ---- 7. No buffering: what this table is not ----
 
@@ -466,12 +466,12 @@ from Tenstorrent Inc.
   the live-tag bitmap; "free" with the tag. Emit-only: no register and no counter
   that functional logic reads.
 
-  // The alloc line has the granted MicroOp in hand and uses VecTrace.trace plus
-  // the traceTag wrapper directly. Every later line has only the STORED rob_idx,
-  // because a tag outlives the uop that created it — so those lines need a
-  // rob_idx-keyed entry point, the same gap traceDecode fills at the other end of
-  // the pipeline. Fabricating a uop to satisfy the helper's signature would put an
-  // invented rob_idx in the trace, which is worse than no line.
+  The alloc line has the granted MicroOp in hand and uses VecTrace.trace plus
+  the traceTag wrapper directly. Every later line has only the STORED rob_idx,
+  because a tag outlives the uop that created it — so those lines need a
+  rob_idx-keyed entry point, the same gap traceDecode fills at the other end of
+  the pipeline. Fabricating a uop to satisfy the helper's signature would put an
+  invented rob_idx in the trace, which is worse than no line.
 
   Assertions, in the `usingRVV` build only: `alloc.valid` implies
   `!tag_valid(alloc.tag)` — the index handed in is genuinely free, which is the
@@ -498,26 +498,26 @@ from Tenstorrent Inc.
 
   ---- 9. What is NOT stored here ----
 
-  // NOT SPECIFIED, AND NOT TO BE ADDED BY A GENERATOR:
-  //  - `vl`, `vconfig`/`vtype`, `vstart`, `vxrm`, `frm`. cii.rst `cii-issue` states
-  //    explicitly that these are NOT side-table fields: they ride the
-  //    per-instruction Issue packet, the coprocessor applies vta/vma and rounding
-  //    itself, and the host never re-reads them. Storing them would add ~24 bits x
-  //    16 entries of flops for a value with no reader.
-  //  - a writeback routing field: `dst_kind` arrives per beat.
-  //  - a SECOND destination-group field. `uop.pvtmp` is read at allocation, but it
-  //    is muxed INTO the single `pvdest_grp` field (part 2), never stored beside
-  //    it. Two destination fields would need a per-beat selector to choose
-  //    between them, and that selector is exactly the re-derivation from
-  //    `is_shared` that VecCiiWriteback and VecCiiComplete forbid. Where the
-  //    transpose half needs `pvtmp` as a SOURCE it arrives as one of the pvs*
-  //    slots at issue, on the ordinary group-done machinery, and the binding from
-  //    the abstract rendezvous to real PRNs is the MicroOp field itself.
-  //  - a beat counter or expected-member count: `last` is the only completion
-  //    signal and the host must never infer completion by counting beats —
-  //    widening and narrowing ops emit a member count that differs from the source
-  //    EMUL, so any count derived here is wrong for exactly those cases.
-  //  - `v_eew` or any other access-descriptor field.
+  NOT SPECIFIED, AND NOT TO BE ADDED BY A GENERATOR:
+   - `vl`, `vconfig`/`vtype`, `vstart`, `vxrm`, `frm`. cii.rst `cii-issue` states
+     explicitly that these are NOT side-table fields: they ride the
+     per-instruction Issue packet, the coprocessor applies vta/vma and rounding
+     itself, and the host never re-reads them. Storing them would add ~24 bits x
+     16 entries of flops for a value with no reader.
+   - a writeback routing field: `dst_kind` arrives per beat.
+   - a SECOND destination-group field. `uop.pvtmp` is read at allocation, but it
+     is muxed INTO the single `pvdest_grp` field (part 2), never stored beside
+     it. Two destination fields would need a per-beat selector to choose
+     between them, and that selector is exactly the re-derivation from
+     `is_shared` that VecCiiWriteback and VecCiiComplete forbid. Where the
+     transpose half needs `pvtmp` as a SOURCE it arrives as one of the pvs*
+     slots at issue, on the ordinary group-done machinery, and the binding from
+     the abstract rendezvous to real PRNs is the MicroOp field itself.
+   - a beat counter or expected-member count: `last` is the only completion
+     signal and the host must never infer completion by counting beats —
+     widening and narrowing ops emit a member count that differs from the source
+     EMUL, so any count derived here is wrong for exactly those cases.
+   - `v_eew` or any other access-descriptor field.
   <|end_logic|>
 
 <|end_module|>

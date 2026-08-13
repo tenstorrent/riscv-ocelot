@@ -18,42 +18,42 @@ from Tenstorrent Inc.
 /*
   VlRegFile — the VL physical register file: 64 entries of ~9 bits, the ONLY
   place a vector VL value is ever stored or read from.
-
-  hierarchy.yaml: kind: module, mode: new,
-  output src/main/scala/v4/vec/generated/regfile/VlRegFile.scala,
-  package boom.v4.vec.generated.regfile,
-  depends_on VectorParams, VecTrace. Instantiated exactly once, by VecPipeline
-  as `vlrf`. Elaborated only when `usingRVV` is true — with vectors off this
-  module does not exist, it is not tied off, so a non-vector build stays
-  bit-identical to pre-Caracal BOOM v4.
-
-  ===> WHY THIS IS A SEPARATE MODULE FROM VecRegFile. The two share a
-       rename-space DEFINITION (VecRenameSpace, instantiated twice by
-       VecPipeline as `vec_rename` and `vl_rename`) and nothing else. 64x9b of
-       flops with a handful of trivial ports has no structure in common with
-       96x256b banked four ways with 12 ports, where port count is the dominant
-       area term and the flop-vs-latch-vs-SRAM question is the design's #2 risk.
-       Rename logic is shared; STORAGE is not. Do not merge these, and do not
-       copy VecRegFileBank's read-during-write bypass in here — the logic
-       section says why this file does not need one.
-
-  ===> WHAT THIS MODULE IS NOT. It holds storage and nothing else. No map
-       table, no free list, no busy table, no wakeup broadcast, no branch
-       snapshot, no `brupdate` port and no flush port. All of that is
-       VecRenameSpace's `vl_rename` instance. This module exports no `busy` and
-       no `ready` of any kind.
-
-  Governing spec anchors: frontend.rst `vector-rvv-decode` ("VSET Special
-  Handling") and `vl-delivery`, midcore.rst `vl-vtype-rename` and
-  `regfiles-bypass`, issue.rst `issue-vl-delivery`, loadstore.rst
-  `elem-progress` ("Fault-only-first").
 */
+
+hierarchy.yaml: kind: module, mode: new,
+output src/main/scala/v4/vec/generated/regfile/VlRegFile.scala,
+package boom.v4.vec.generated.regfile,
+depends_on VectorParams, VecTrace. Instantiated exactly once, by VecPipeline
+as `vlrf`. Elaborated only when `usingRVV` is true — with vectors off this
+module does not exist, it is not tied off, so a non-vector build stays
+bit-identical to pre-Caracal BOOM v4.
+
+===> WHY THIS IS A SEPARATE MODULE FROM VecRegFile. The two share a
+     rename-space DEFINITION (VecRenameSpace, instantiated twice by
+     VecPipeline as `vec_rename` and `vl_rename`) and nothing else. 64x9b of
+     flops with a handful of trivial ports has no structure in common with
+     96x256b banked four ways with 12 ports, where port count is the dominant
+     area term and the flop-vs-latch-vs-SRAM question is the design's #2 risk.
+     Rename logic is shared; STORAGE is not. Do not merge these, and do not
+     copy VecRegFileBank's read-during-write bypass in here — the logic
+     section says why this file does not need one.
+
+===> WHAT THIS MODULE IS NOT. It holds storage and nothing else. No map
+     table, no free list, no busy table, no wakeup broadcast, no branch
+     snapshot, no `brupdate` port and no flush port. All of that is
+     VecRenameSpace's `vl_rename` instance. This module exports no `busy` and
+     no `ready` of any kind.
+
+Governing spec anchors: frontend.rst `vector-rvv-decode` ("VSET Special
+Handling") and `vl-delivery`, midcore.rst `vl-vtype-rename` and
+`regfiles-bypass`, issue.rst `issue-vl-delivery`, loadstore.rst
+`elem-progress` ("Fault-only-first").
 
 <|begin_module|>
 
   <|begin_parameters|>
-  Every sizing value comes from VectorParams / `BoomCoreParams`; no width below
-  is a literal.
+Every sizing value comes from VectorParams / `BoomCoreParams`; no width below
+is a literal.
 
   `numVlPhysRegisters` — the number of entries. Default 64, straight from
   VectorParams, which also carries the `numVlPhysRegisters >= 1 + coreWidth`
@@ -260,13 +260,13 @@ from Tenstorrent Inc.
   the decode-computed VL forward one stage and writes it where the index
   becomes known. No back-end issue slot and no EU are involved.
 
-  // LOCKSTEP: W_ren[w].valid must be qualified by the SAME `dis_fire(w)` that
-  // qualifies vl_rename's allocation on lane w, off `ren2_uops` — never
-  // combinationally off `dec_uops`. The M1 free-list double-free was exactly
-  // this: vector rename running one cycle ahead of the scalar RenameStage's
-  // registered ren1->ren2 pipeline, so the fields seen at dispatch belonged to
-  // the next cycle's bubble uop. A W_ren write that fires on a lane whose
-  // allocation did not would scribble a PRN this producer does not own.
+  LOCKSTEP: W_ren[w].valid must be qualified by the SAME `dis_fire(w)` that
+  qualifies vl_rename's allocation on lane w, off `ren2_uops` — never
+  combinationally off `dec_uops`. The M1 free-list double-free was exactly
+  this: vector rename running one cycle ahead of the scalar RenameStage's
+  registered ren1->ren2 pipeline, so the fields seen at dispatch belonged to
+  the next cycle's bubble uop. A W_ren write that fires on a lane whose
+  allocation did not would scribble a PRN this producer does not own.
   The write sets no busy bit — there is no busy state in this module at all —
   and `vl_rename` leaves `pvl_busy` clear for a `vsetivli`, so its `pvl` is
   BORN READY and a dependent vector uOP in the same or the next dispatch group
@@ -307,12 +307,12 @@ from Tenstorrent Inc.
   construction, so `is_unique` buys nothing. A fault on element 0 is a normal
   precise trap instead and writes nothing here.
 
-  // STAGING, not a contradiction: VLSDecode's hierarchy.yaml entry says `vleff`
-  // is NOT a VL producer until the real fault-trim path exists. W_lsu therefore
-  // exists in the port table from day one and stays permanently invalid until
-  // that step lands. Structuring it that way is deliberate — c28 asks for one
-  // port per producer CLASS, and retrofitting a third write port later is the
-  // change most likely to be done as an arbiter on W_alu instead.
+  STAGING, not a contradiction: VLSDecode's hierarchy.yaml entry says `vleff`
+  is NOT a VL producer until the real fault-trim path exists. W_lsu therefore
+  exists in the port table from day one and stays permanently invalid until
+  that step lands. Structuring it that way is deliberate — c28 asks for one
+  port per producer CLASS, and retrofitting a third write port later is the
+  change most likely to be done as an arbiter on W_alu instead.
 
   ---- No two ports may target the same entry ----
 
@@ -338,10 +338,10 @@ from Tenstorrent Inc.
   be granted. This is the OPPOSITE of VecRegFileBank, where read-during-write
   forwarding is a stated requirement (vrf.f8). Do not copy that bypass here.
 
-  // SEAM CONSTRAINT, not an optimization: if any tier ever adds a speculative
-  // or fast VL wakeup that lets a consumer read in the SAME cycle as the
-  // write, this module needs a bypass mux and that change must come back here.
-  // Assert the distance instead of assuming it silently.
+  SEAM CONSTRAINT, not an optimization: if any tier ever adds a speculative
+  or fast VL wakeup that lets a consumer read in the SAME cycle as the
+  write, this module needs a bypass mux and that change must come back here.
+  Assert the distance instead of assuming it silently.
 
   ---- The read side is the ONLY way VL leaves this module ----
 
@@ -378,17 +378,17 @@ from Tenstorrent Inc.
   `addr`/`data` pairs with no valid or enable, so a line on either fires every
   cycle per port and buries the events that matter.
 
-  // ===> `rd_commit` WAS MANDATED HERE AND IS NOW REMOVED, because the reason
-  // this paragraph already gives for excluding `R_exe` applies verbatim to
-  // `R_commit`: it has no valid bit, so the module cannot distinguish a genuine
-  // VL-producer commit from any other cycle. Generation implemented it literally
-  // and reported the tension — the line fired unconditionally. Gating it would
-  // need an enable input added SOLELY to make a trace line emit, which the
-  // VecTrace spec explicitly forbids ("a module should not acquire a port purely
-  // to be traceable"), and the commit event is already observable from the
-  // consumer side, where a `rob_idx` genuinely exists: the ROB / VConfigUnit
-  // commit path can trace it with `traceId`. An every-cycle line in the only
-  // debug instrument the plan has is worse than no line. Corrected 2026-08-10.
+  ===> `rd_commit` WAS MANDATED HERE AND IS NOW REMOVED, because the reason
+  this paragraph already gives for excluding `R_exe` applies verbatim to
+  `R_commit`: it has no valid bit, so the module cannot distinguish a genuine
+  VL-producer commit from any other cycle. Generation implemented it literally
+  and reported the tension — the line fired unconditionally. Gating it would
+  need an enable input added SOLELY to make a trace line emit, which the
+  VecTrace spec explicitly forbids ("a module should not acquire a port purely
+  to be traceable"), and the commit event is already observable from the
+  consumer side, where a `rob_idx` genuinely exists: the ROB / VConfigUnit
+  commit path can trace it with `traceId`. An every-cycle line in the only
+  debug instrument the plan has is worse than no line. Corrected 2026-08-10.
 
   These three write lines are the whole debug surface for VL from this side — the
   project has no unit tests, validation is end-to-end VCS plus Whisper cosim

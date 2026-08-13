@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecBeatExpander — the DRAIN side of the vector LSU: pops an element-queue head
   and issues D$ accesses, coalescing a unit-stride range into D$-port-width beats
   just-in-time.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecBeatExpander.scala,
@@ -51,7 +52,6 @@ from Tenstorrent Inc.
   Governing spec anchors: loadstore.rst `us-queue`, `store-data-queue`,
   `vec-load-algo`, `elem-progress`, `vector-bw-ceiling`;
   execution.rst `vector-agen` (the Packer).
-*/
 
 <|begin_module|>
 
@@ -88,11 +88,11 @@ from Tenstorrent Inc.
     `elemIdxSz    = log2Ceil(maxElems + 1)`
     `sizeBits`    the width of the D$ request's `mem_size` field
 
-  // ===> `mem_size` in MicroOp is 2 bits, so the largest expressible beat is 8
-  // bytes today. dmemBeatBytes larger than 8 therefore ALSO requires widening
-  // mem_size, which is a MicroOp/ScalarOpConstants change outside this node's
-  // scope. Assert `log2Ceil(dmemBeatBytes) < (1 << sizeBits)` at elaboration so
-  // the configuration fails the build instead of silently truncating a beat.
+  ===> `mem_size` in MicroOp is 2 bits, so the largest expressible beat is 8
+  bytes today. dmemBeatBytes larger than 8 therefore ALSO requires widening
+  mem_size, which is a MicroOp/ScalarOpConstants change outside this node's
+  scope. Assert `log2Ceil(dmemBeatBytes) < (1 << sizeBits)` at elaboration so
+  the configuration fails the build instead of silently truncating a beat.
   <|end_parameters|>
 
   <|begin_ports|>
@@ -132,6 +132,43 @@ from Tenstorrent Inc.
   range query. Those belong in VecBundles beside `VecElemAccess`, NOT declared
   privately here — a payload declared inside its producer is readable from one
   side only, which is what VecBundles exists to prevent.
+
+  ===> THE US LANE SYNTHESIZES ITS `MicroOp`; THE SSI LANE COPIES ONE. That
+  asymmetry is forced — an SSI beat comes from a `VecElemAccess` that already
+  carries the whole uOP, while a US beat comes from a `VecRangeEntry`, which
+  carries `rob_idx`/`ldq_idx`/`stq_idx`/`pvdest` and NO uOP — so the US lane must
+  build one from `DontCare` and is responsible for every field anything downstream
+  reads. That is not just the placement fields: `lsu.scala` puts this uOP on
+  `dmem_req.bits.uop` and takes `exe_cmd`/`exe_size` off it, so `mem_cmd` and
+  `mem_size` reach the TLB and D$ from here, and its nack and response paths route
+  on `uses_ldq`/`uses_stq` and guard on `is_vec`. Set `is_vec`, `uses_ldq`/
+  `uses_stq` and `mem_cmd` from the instance's own `isStore` parameter alongside
+  the placement fields. Leave any of them at `DontCare` and the access is issued
+  with a command the minimizer chose and an identity the LSU cannot route: the
+  visible symptom is the scalar nack handler's `assert(uses_stq)` firing on a
+  vector beat, which reads as an LSU bug and is not one.
+
+  `st_us_data` (Input, `Valid`, stores only) IS A `Valid` AND ITS `valid` IS LOAD-BEARING,
+  not decoration. The US data queue is a synchronous read: VecLsu issues the read when
+  the write pass starts, so the bytes arrive a cycle later. A write-pass beat composed
+  before then carries whatever the read port held — zero out of reset — straight to the
+  D$ with `uses_dcache` set. Gate the US beat on it: during the write pass a store beat
+  requires `st_us_data.valid`; during the translate pass no data is read and the term is
+  vacuous. Consuming only `.bits` and ignoring `.valid` sends whatever the read port
+  happens to hold, and nothing asserts: the store commits, drains, retires, and the
+  corruption is found only by reading the memory back.
+
+  `st_us_data_pop` (Output, stores only) ADVANCES THE DATA MEMBER POINTER AND IS
+  THEREFORE A WRITE-PASS-ONLY EVENT, qualified by `is_write_pass` exactly as `us_pop`
+  already is. A unit-stride store walks its range TWICE — translate, then write — and
+  only the second pass consumes data. Leave the pop unqualified and the TRANSLATE pass
+  advances the pointer as well, so by the time the write pass runs it reads
+  `us_data_base + <members already walked>`, an index nothing ever filled. The queue
+  reports `filled = 0` forever: with the `.valid` gate above the store stalls, and
+  without it EVERY member is written from a stale read port, not merely the first.
+  These two are one defect seen from both ends — the missing gate makes it silent, the
+  unqualified pop makes it total — and fixing only the gate converts corruption into a
+  hang rather than into correct data.
 
   `lcb_alloc_rdy` (Input, `Bool`, loads only) says an LCB assembly entry exists
   for the PRN the next beat targets; a load beat is not requested without it,
@@ -232,11 +269,11 @@ from Tenstorrent Inc.
   the path a misaligned SCALAR access of that size takes. No vector-specific
   misalignment mechanism is added.
 
-  // ===> BUG WARNING, and it has already been paid for once: every offset on the
-  // beat is in BYTES. The placement offset is `(elem_idx << eew) % vLenBytes`
-  // plus the intra-beat byte position, never an element index. Handing the LCB an
-  // element count where it expects bytes corrupted element 0 of every misaligned
-  // load in the M1 bring-up and looked like an LSU fault, not an offset bug.
+  ===> BUG WARNING, and it has already been paid for once: every offset on the
+  beat is in BYTES. The placement offset is `(elem_idx << eew) % vLenBytes`
+  plus the intra-beat byte position, never an element index. Handing the LCB an
+  element count where it expects bytes corrupted element 0 of every misaligned
+  load in the M1 bring-up and looked like an LSU fault, not an offset bug.
 
   For a LOAD, issue the beat at the lane-aligned address with the full lane size
   and let the byte enable say which bytes are wanted. Over-fetching inside an

@@ -20,6 +20,7 @@ from Tenstorrent Inc.
   allocates a 4-bit `tag`, assembles the per-tag side-table entry, emits the
   extended Issue packet, and meters `fu_types` against the Issue channel's
   credits.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/cii/VecCiiIssue.scala,
@@ -52,7 +53,6 @@ from Tenstorrent Inc.
   write), `cii-operands`, `cii-flush`; execution.rst `vector-execution`,
   `cii-prn-arn`, `cii-issue-packet`; frontend.rst `vector-rvv-decode` (CSR read
   at execute); plan §5 rules 1, 5, 8 and 10.
-*/
 
 <|begin_module|>
 
@@ -128,24 +128,24 @@ from Tenstorrent Inc.
   `Input(Vec(numIrfWritePorts, Valid(new Bundle { addr: UInt(maxPregSz.W); data:
   UInt(xLen.W) })))`, a fan-out of the existing `vec_pipeline_io` writeback tap.
 
-  // ===> SEAM GAP, NOW CLOSED BY AMENDMENT. `vec_pipeline_io` used to give four
-  // INT read ports (two per VecScalarOperandRead instance) and one FP port, and
-  // its comment said this node needs none because it captures scalars "from the
-  // bypass". A bypass carries only values in flight, and a past-PNR CII op's
-  // scalar producer has usually retired, so the value exists ONLY in the register
-  // file — which is what execution.rst `cii-prn-arn` states ("the host reads the
-  // INT/FP RF at `prs1` at grant"). The seam is therefore FIVE INT reads (the
-  // fifth is this node's) and ONE FP read, which is likewise this node's: decision
-  // D4 deleted the store-side FP reader, so no second FP lane is needed or wanted.
-  // Do not "fix" this by deleting the read, which delivers an undefined `.vx`
-  // operand.
+  ===> SEAM GAP, NOW CLOSED BY AMENDMENT. `vec_pipeline_io` used to give four
+  INT read ports (two per VecScalarOperandRead instance) and one FP port, and
+  its comment said this node needs none because it captures scalars "from the
+  bypass". A bypass carries only values in flight, and a past-PNR CII op's
+  scalar producer has usually retired, so the value exists ONLY in the register
+  file — which is what execution.rst `cii-prn-arn` states ("the host reads the
+  INT/FP RF at `prs1` at grant"). The seam is therefore FIVE INT reads (the
+  fifth is this node's) and ONE FP read, which is likewise this node's: decision
+  D4 deleted the store-side FP reader, so no second FP lane is needed or wanted.
+  Do not "fix" this by deleting the read, which delivers an undefined `.vx`
+  operand.
 
   `csr_vstart` — `Input(UInt(...))` from `csr.io.vector.vstart`, rocket's width
   `maxVLMax.log2` = 8 bits at VLEN=256; `csr_vxrm` — `Input(UInt(2.W))` from
   `csr.io.vector.vxrm`; `csr_frm` — `Input(UInt(3.W))` from `csr.io.fcsr_rm`.
-  // `csr_vstart` is 8 bits and the packet field is 9: ZERO-EXTEND. The widths
-  // differ legitimately — `vstart` is an element INDEX (0..VLMAX-1) while `vl` is
-  // a COUNT (0..VLMAX), so only `vl` needs the extra bit.
+  `csr_vstart` is 8 bits and the packet field is 9: ZERO-EXTEND. The widths
+  differ legitimately — `vstart` is an element INDEX (0..VLMAX-1) while `vl` is
+  a COUNT (0..VLMAX), so only `vl` needs the extra bit.
 
   `rob_flush` — `Input(Bool())`, `rob.io.flush.valid`, used only to decide the
   `killed` value written with a fresh entry; this module owns no other part of
@@ -181,9 +181,9 @@ from Tenstorrent Inc.
   `iss_credit`, `−1` per beat accounted, `RegInit(ciiIssueCredits.U)`. The full
   complement at reset is required because `tt_cii_channel` keeps no counter of its
   own and the receiver returns credits only on pops, never an initial batch.
-  // Initialising to 0 does not fail safe: `fu_types` would never be advertised,
-  // `IQ_V_ALU` would never grant, and it would present as a vector hang with no
-  // assertion anywhere.
+  Initialising to 0 does not fail safe: `fu_types` would never be advertised,
+  `IQ_V_ALU` would never grant, and it would present as a vector hang with no
+  assertion anywhere.
 
   //@req-spec-cii.c14
   Account at ACCEPT, not at emit: debit on `iss.valid`, not on `iss_pkt.valid`.
@@ -207,11 +207,11 @@ from Tenstorrent Inc.
   until its `last` writeback beat, far later, so tag availability is the tighter
   resource and the same fire-and-forget argument applies to it.
 
-  // ===> THE OFF-BY-ONE THAT DROPS AN INSTRUCTION. `RegNext(iss_credits =/= 0)`
-  // looks equivalent and is not: at one credit the consuming grant fires in the
-  // same cycle the register samples, so the stale sample keeps `fu_types`
-  // advertised one cycle longer, a second grant arrives at zero credits, and its
-  // beat is lost with nothing to report it.
+  ===> THE OFF-BY-ONE THAT DROPS AN INSTRUCTION. `RegNext(iss_credits =/= 0)`
+  looks equivalent and is not: at one credit the consuming grant fires in the
+  same cycle the register samples, so the stale sample keeps `fu_types`
+  advertised one cycle longer, a second grant arrives at zero credits, and its
+  beat is lost with nothing to report it.
 
   Assert synthesizably `!(iss.valid && iss_credits === 0.U)`, `!(iss.valid &&
   tag_avail === 0.U)` and `iss_credits <= ciiIssueCredits.U` (the last catches a
@@ -226,12 +226,12 @@ from Tenstorrent Inc.
   10, no new selector). It is not the `rob_idx` and not a register number; the
   coprocessor only echoes it on every Src-Request and Writeback beat.
   `s1_pending_mask` is the one-hot of `s1_tag` qualified by `s1_valid`.
-  // ===> WITHOUT THAT SHADOW THE SAME TAG IS ALLOCATED TWICE. `tags` sets the
-  // live bit when `tag_alloc` lands, one cycle after the tag was chosen, so
-  // `tag_free_mask` still shows it free during the emit cycle; a back-to-back
-  // grant picks it again, two instructions share one entry, and one `last` beat
-  // frees a tag whose other owner is still running. One bit covers the one cycle
-  // of exposure and duplicates no state — the stage already holds the tag.
+  ===> WITHOUT THAT SHADOW THE SAME TAG IS ALLOCATED TWICE. `tags` sets the
+  live bit when `tag_alloc` lands, one cycle after the tag was chosen, so
+  `tag_free_mask` still shows it free during the emit cycle; a back-to-back
+  grant picks it again, two instructions share one entry, and one `last` beat
+  frees a tag whose other owner is still running. One bit covers the one cycle
+  of exposure and duplicates no state — the stage already holds the tag.
 
   ---- The issue packet, field by field ----
 
@@ -256,14 +256,14 @@ from Tenstorrent Inc.
   `vtype`, 8 b: `{vsew, vlmul, vta, vma}` repacked FIELD BY FIELD from
   `s1_uop.vconfig`, the decode-time snapshot of the speculative VCFG mirror riding
   the uop — NOT a read of the architectural `vtype` CSR. Two traps:
-  // (1) Do NOT `asUInt` rocket's `VType` and slice it. Its layout is
-  //     {vill, reserved, vma, vta, vsew, vlmul_sign, vlmul_mag} — a different
-  //     order, plus a `vill` bit and a reserved field the packet has no room for.
-  //     Its low 8 bits are NOT this field.
-  // (2) `vlmul` is 3 b and must be `Cat(vlmul_sign, vlmul_mag)`. Rocket's
-  //     deprecated `vlmul` accessor returns `vlmul_mag` ALONE (2 b), so using it
-  //     drops the fractional-LMUL sign and turns every mf2/mf4/mf8 op into an
-  //     m1/m2/m4 one, with no width mismatch to catch it.
+  (1) Do NOT `asUInt` rocket's `VType` and slice it. Its layout is
+      {vill, reserved, vma, vta, vsew, vlmul_sign, vlmul_mag} — a different
+      order, plus a `vill` bit and a reserved field the packet has no room for.
+      Its low 8 bits are NOT this field.
+  (2) `vlmul` is 3 b and must be `Cat(vlmul_sign, vlmul_mag)`. Rocket's
+      deprecated `vlmul` accessor returns `vlmul_mag` ALONE (2 b), so using it
+      drops the fractional-LMUL sign and turns every mf2/mf4/mf8 op into an
+      m1/m2/m4 one, with no width mismatch to catch it.
   Assert `!s1_uop.vconfig.vill`: a `vill` uop must have trapped at decode, and the
   packet has nowhere to carry the poison bit onward.
 
@@ -334,12 +334,12 @@ from Tenstorrent Inc.
 
   The member mask is a PREFIX (thermometer) mask of the DESTINATION group's size,
   `(1 << v_emul) - 1`, not a one-hot of `v_emul`.
-  // Two observed ways to get this wrong: `UIntToOH` instead of the prefix form
-  // enables one member and drops the rest; and taking the count from a SOURCE
-  // EMUL makes the mask too wide for a single-register-destination op (`vmv.s.x`,
-  // the reductions, the mask-producing compares), which hangs the coprocessor
-  // waiting to place members that are never written. `v_emul` is the destination
-  // group's member count as the mapper allocated it, already 1 for those ops.
+  Two observed ways to get this wrong: `UIntToOH` instead of the prefix form
+  enables one member and drops the rest; and taking the count from a SOURCE
+  EMUL makes the mask too wide for a single-register-destination op (`vmv.s.x`,
+  the reductions, the mask-producing compares), which hangs the coprocessor
+  waiting to place members that are never written. `v_emul` is the destination
+  group's member count as the mapper allocated it, already 1 for those ops.
 
   //@req-spec-cii.f24
   //@req-spec-cii.f41
@@ -357,8 +357,8 @@ from Tenstorrent Inc.
   data. Compare every valid `int_wb_snoop` port's `addr` against the
   stage-registered scalar PRN and on a hit substitute that port's `data`; assert
   `PopCount(hits) <= 1` and use a `Mux1H`, not a priority mux.
-  // The window is exactly the emit cycle — a cycle earlier is redundant (the
-  // write took effect at the intervening edge), a cycle later is too late.
+  The window is exactly the emit cycle — a cycle earlier is redundant (the
+  write took effect at the intervening edge), a cycle later is too late.
 
   ---- What this module does not look at, and the flush race ----
 
@@ -369,12 +369,12 @@ from Tenstorrent Inc.
   performs no RVV decode whatever, since the raw word goes in the packet and the
   VPU's decoder derives the operand set and the semantics. That is what keeps the
   host adapter free of a second RVV decoder that could disagree with VDecode's.
-  // STAGING NOTE, not a behaviour: a shared instruction's coprocessor half
-  // addresses the `pvtmp` rendezvous group on the side it transposes (source side
-  // for a segmented load, destination side for a segmented store), so the entry
-  // content substitutes `pvtmp` on that side. No requirement in the corpus names
-  // that substitution and plan step F7 owns the transpose half; recorded here so
-  // it is not silently dropped when F7 lands.
+  STAGING NOTE, not a behaviour: a shared instruction's coprocessor half
+  addresses the `pvtmp` rendezvous group on the side it transposes (source side
+  for a segmented load, destination side for a segmented store), so the entry
+  content substitutes `pvtmp` on that side. No requirement in the corpus names
+  that substitution and plan step F7 owns the transpose half; recorded here so
+  it is not silently dropped when F7 lands.
 
   A ROB-head flush can arrive in the accept or the emit cycle — after the tag is
   chosen, before the entry exists. `killed` is cleared only at allocation, so the
@@ -437,16 +437,16 @@ MicroOp — the grant payload. Reads `debug_inst`, `inst`, `vconfig`, `pvl`,
 none.
 
 VecBundles — `CiiIssueReq` (the packet) and `VecCiiTagEntry` (the entry payload).
-// BUNDLE-LOCATION NOTE. hierarchy.yaml's VecBundles entry lists `VecCiiTagEntry`
-// among its declarations, but VecBundles as written does not declare it. It
-// crosses this node, VecCiiTagTable, VecCiiOperandServer, VecCiiWriteback,
-// VecCiiComplete and VecCiiFlush, so it belongs there; Phase R should add it
-// unchanged.
-// WIDTH DISAGREEMENT, also for Phase R: VecBundles gives `CiiIssueReq` a 3-bit
-// `src_reuse_hint` while the frozen package types `instr_src_valid` as
-// `CII_NUM_SRC_SLOTS` = 4 bits. The SV is authoritative and this module drives
-// zero either way, but the flat BlackBox port must match exactly or the whole
-// issue payload shifts.
+BUNDLE-LOCATION NOTE. hierarchy.yaml's VecBundles entry lists `VecCiiTagEntry`
+among its declarations, but VecBundles as written does not declare it. It
+crosses this node, VecCiiTagTable, VecCiiOperandServer, VecCiiWriteback,
+VecCiiComplete and VecCiiFlush, so it belongs there; Phase R should add it
+unchanged.
+WIDTH DISAGREEMENT, also for Phase R: VecBundles gives `CiiIssueReq` a 3-bit
+`src_reuse_hint` while the frozen package types `instr_src_valid` as
+`CII_NUM_SRC_SLOTS` = 4 bits. The SV is authoritative and this module drives
+zero either way, but the flat BlackBox port must match exactly or the whole
+issue payload shifts.
 
 VectorParams — `ciiTagBits`, `maxMembers`, `vecVLSz`, `vecPregSz`, `vlPregSz`,
 and the mirrors of `CII_N_TAGS` / `CII_N_ISS_CREDITS` / `CII_NUM_INST_ISSUE` /

@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecLoadCoalescingBuffer — the response side of the vector load path: it turns
   out-of-order, at-most-one-element (<= ELEN) D$ responses into ONE VRF write per
   destination PRN and ONE group-done per instruction.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecLoadCoalescingBuffer.scala,
@@ -50,7 +51,6 @@ from Tenstorrent Inc.
   Governing spec anchors: loadstore.rst `load-coalesce`, `elem-progress`
   (including "Fault-only-first (``vleff.v``)"), `vec-load-algo`, `vec-squash`;
   midcore.rst `vrf-ports`, `old-vd`, `group-done-wb`, `midcore-segmented-load`.
-*/
 
 <|begin_module|>
 
@@ -208,10 +208,10 @@ from Tenstorrent Inc.
   the mask again). So the bytes the LCB waits for are exactly the bytes the AGEN
   generated accesses for, and a masked-off element — which produced no nOP.v, no
   D$ access, no TLB translation and no LCAM search — is never counted as
-  outstanding here either. // A second, independent mask evaluation in this
-  // module would be the classic way to hang a masked load: any disagreement with
-  // the AGEN leaves an entry waiting forever on a byte no access will ever
-  // return, and there is no timeout anywhere on this path.
+  outstanding here either. A second, independent mask evaluation in this
+  module would be the classic way to hang a masked load: any disagreement with
+  the AGEN leaves an entry waiting forever on a byte no access will ever
+  return, and there is no timeout anywhere on this path.
 
   ---- 2. Allocation: a credit protocol, before the access ----
 
@@ -237,8 +237,8 @@ from Tenstorrent Inc.
   `active_bytes == 0`). Such an entry has no memory traffic at all, but it must
   still be written for the group to be architecturally correct, and it must still
   be counted by the PRN-done target. // This is the "fake / bypass" beat of the M1
-  // design, and it is exactly the case that must be finalized ONE CYCLE LATER
-  // rather than in its allocation cycle — see the combinational-loop callout.
+  design, and it is exactly the case that must be finalized ONE CYCLE LATER
+  rather than in its allocation cycle — see the combinational-loop callout.
   The standalone VL = 0 / fully-inactive-GROUP case is not this module at all: it
   allocates no entry and is VecGroupCopy's.
 
@@ -369,9 +369,9 @@ from Tenstorrent Inc.
   is NO per-PRN ROB writeback and NO per-PRN vector wakeup: the only ports a
   per-PRN completion drives are `W0`/`W1`, and this module has no other output
   that could carry one. // Streaming per-PRN completions into the ROB or the
-  // wakeup network is what the single-shot rob_bsy clear and the per-PRN vector
-  // Busy Table cannot absorb (midcore.rst `group-done-wb`), so adding such a
-  // port is a design-invariant violation, not an optimization.
+  wakeup network is what the single-shot rob_bsy clear and the per-PRN vector
+  Busy Table cannot absorb (midcore.rst `group-done-wb`), so adding such a
+  port is a design-invariant violation, not an optimization.
 
   ---- 7. The per-group PRN-done count and the ONE group-done ----
 
@@ -424,9 +424,9 @@ from Tenstorrent Inc.
   the LSU half of a segmented load writes the loaded data into the `pvtmp` group
   in the VRF and emits a REAL group-done — which is what wakes the coprocessor
   half's IQ slot and what the ROB's one-bit "other half pending" flag consumes.
-  // The absence of a special case here IS the requirement: a distinct pvtmp
-  // completion path would be a second completion mechanism for the ROB to
-  // reconcile, and midcore.rst `group-done-wb` gives it exactly one.
+  The absence of a special case here IS the requirement: a distinct pvtmp
+  completion path would be a second completion mechanism for the ROB to
+  reconcile, and midcore.rst `group-done-wb` gives it exactly one.
 
   ---- 9. `vleff`: the VL write and the `pvl` wakeup ----
 
@@ -435,7 +435,19 @@ from Tenstorrent Inc.
   `is_ff` set, the LCB also drives `io.vl_wb` with the group's `pvl` and its
   `vl_final` — the FINAL ELEMENT COUNT, which is the full VL as allocated if no
   fault occurred, or `i` if element `i > 0` faulted and `io.trim` overwrote it
-  (part 5). That write goes to the VL register file
+  (part 5).
+
+  ===> READ `vl_final` AND `pvl` FROM THE GROUP'S **LAST** MEMBER
+  (`member_idx == members_target - 1`), not from an arbitrary or the first one.
+  Resolved at E6; the requirement was unstated and the two readings differ only after
+  a fault. Part 5's trim updates `vl_final` on the trim-member AND every member ABOVE
+  it, leaving members BELOW holding their allocation-time value — so the last member
+  is provably always current (it is either the trim target itself or strictly above
+  it), while a lower member still holds the UNTRIMMED VL. Publishing from the wrong
+  member writes a stale, too-large VL into the VL register file after a mid-group
+  fault, and every dependent then reads it through the ordinary `pvl` path with
+  nothing to flag the discrepancy. Only a directed `vleff`-with-fault test finds this,
+  which is precisely why the choice is written down rather than left to the reader. That write goes to the VL register file
   and WAKES `pvl` IN DEPENDENT VECTOR SLOTS ON THE VL WAKEUP NETWORK exactly as a
   `vset`'s VL write does, so dependents pick up the possibly-trimmed VL through
   the normal `pvl` path and need no `vleff` special case. The architectural `vl`
@@ -466,10 +478,10 @@ from Tenstorrent Inc.
       land and is dropped — never buffered, never retried;
     - the `W0` write and the group-done are generated from entry state alone, so
       an invalidated entry cannot generate either, in that cycle or any later one.
-  // Drain-and-discard, which is what the CII does on a flush, is NOT available
-  // here: a CII tag is opaque and is not recycled during the drain, whereas
-  // vector PRNs are recycled immediately (loadstore.rst `vec-squash` danger
-  // note).
+  Drain-and-discard, which is what the CII does on a flush, is NOT available
+  here: a CII tag is opaque and is not recycled during the drain, whereas
+  vector PRNs are recycled immediately (loadstore.rst `vec-squash` danger
+  note).
 
   Outstanding accesses need no cancellation. Accesses fire in element order, so
   no access beyond the faulting element was ever issued, and the ones below it are

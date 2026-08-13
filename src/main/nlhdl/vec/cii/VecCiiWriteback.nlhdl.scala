@@ -20,6 +20,7 @@ from Tenstorrent Inc.
   beat per cycle, returns its credit, and steers the payload to exactly one of
   three destinations — VRF write port `W2`, the INT register file, or the FP
   register file.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/cii/VecCiiWriteback.scala,
@@ -53,7 +54,6 @@ from Tenstorrent Inc.
   `cii-segmented`; execution.rst `vector-execution` ("What the coprocessor
   provides") and `cii-prn-arn`; midcore.rst `vrf-ports` and
   `midcore-segmented-store`.
-*/
 
 <|begin_module|>
 
@@ -73,12 +73,12 @@ from Tenstorrent Inc.
   `ciiNumDstWb` — derived from `CII_NUM_DST_WB` in `tt_cii_caracal_pkg.svh`,
   value 1. Require it to be exactly 1 at elaboration.
 
-  // WHY THE `require`: one writeback lane is what makes ONE VRF write port
-  // sufficient. The coprocessor cannot present two result beats in a cycle, so
-  // W2 is never contended and never arbitrated (VecRegFile owns that
-  // requirement). If the SV package ever raised CII_NUM_DST_WB, this module
-  // would silently drop a beat per cycle, and the fix is NOT a second write port
-  // — the vrf-ports partition is canonical and adds none. Fail the build.
+  WHY THE `require`: one writeback lane is what makes ONE VRF write port
+  sufficient. The coprocessor cannot present two result beats in a cycle, so
+  W2 is never contended and never arbitrated (VecRegFile owns that
+  requirement). If the SV package ever raised CII_NUM_DST_WB, this module
+  would silently drop a beat per cycle, and the fix is NOT a second write port
+  — the vrf-ports partition is canonical and adds none. Fail the build.
 
   `usingRVV` and `enableVectorArith` are Scala `Boolean`s of `BoomCoreParams`,
   not hardware signals. This module is elaborated only inside VecCiiHost, which
@@ -140,11 +140,11 @@ from Tenstorrent Inc.
   VecCiiComplete; the port is shared deliberately, since both readers present the
   same tag in the same cycle and a second 16-to-1 entry mux would be pure cost.
 
-  // ===> `wr_en` (the table's "this member is real" bit, i.e. bit
-  // `wb_dst_offset` of `pvdest_grp_mask`) IS NOT `wb_wr_en` (the beat's own write
-  // enable). Both gate the same VRF write and they mean different things; the
-  // similar names are the tag table's and are kept rather than re-spelled, so the
-  // distinction is stated here instead.
+  ===> `wr_en` (the table's "this member is real" bit, i.e. bit
+  `wb_dst_offset` of `pvdest_grp_mask`) IS NOT `wb_wr_en` (the beat's own write
+  enable). Both gate the same VRF write and they mean different things; the
+  similar names are the tag table's and are kept rather than re-spelled, so the
+  distinction is stated here instead.
 
   `io.wb_suppress` — Input Bool, meaning exactly "the writeback beat being
   consumed belongs to a killed tag: pop it, return its credit, suppress its
@@ -157,15 +157,15 @@ from Tenstorrent Inc.
   `kill_all` covers the beat arriving IN the flush cycle, one cycle before `killed`
   is readable out of the registered table. Neither alone closes the window.
 
-  // ===> THE NAMING IS SETTLED AND THE OR BELONGS TO THE PARENT. VecCiiFlush
-  // exports exactly one bare combinational bit, `kill_all`; its own reject list
-  // forbids it — correctly — from exporting any per-channel suppress output. So
-  // there is no `wb_suppress` output anywhere to import, and this module does not
-  // take `kill_all` directly either: it reads ONE pre-computed decision, which is
-  // what lets it have no flush port, no `killed` vector and no age comparator.
-  // Earlier drafts of this file described the input as coming "from the flush
-  // sibling" and, in the dependencies section, called it `io.kill_all` — both are
-  // wrong about the same seam, and the container is the authority on it.
+  ===> THE NAMING IS SETTLED AND THE OR BELONGS TO THE PARENT. VecCiiFlush
+  exports exactly one bare combinational bit, `kill_all`; its own reject list
+  forbids it — correctly — from exporting any per-channel suppress output. So
+  there is no `wb_suppress` output anywhere to import, and this module does not
+  take `kill_all` directly either: it reads ONE pre-computed decision, which is
+  what lets it have no flush port, no `killed` vector and no age comparator.
+  Earlier drafts of this file described the input as coming "from the flush
+  sibling" and, in the dependencies section, called it `io.kill_all` — both are
+  wrong about the same seam, and the container is the authority on it.
 
   ---- Placement outputs ----
 
@@ -195,13 +195,13 @@ from Tenstorrent Inc.
   into a module with no datapath is pure cost, and the 15-bit width is what makes
   the placement/completion split reviewable.
 
-  // ===> DRIVEN COMBINATIONALLY, NOT REGISTERED, for the reason in the
-  // performance section: the `last` beat's placement and its completion must be
-  // the same cycle. NEITHER SIDE REGISTERS IT — VecCiiComplete's port comment now
-  // says the same thing in the same words, and an earlier draft of that file
-  // calling this "Writeback's registered beat" is the wording this note exists to
-  // keep retired. A register on ONE side only is the failure being prevented: it
-  // would skew group-done a cycle AHEAD of the final `W2` write.
+  ===> DRIVEN COMBINATIONALLY, NOT REGISTERED, for the reason in the
+  performance section: the `last` beat's placement and its completion must be
+  the same cycle. NEITHER SIDE REGISTERS IT — VecCiiComplete's port comment now
+  says the same thing in the same words, and an earlier draft of that file
+  calling this "Writeback's registered beat" is the wording this note exists to
+  keep retired. A register on ONE side only is the failure being prevented: it
+  would skew group-done a cycle AHEAD of the final `W2` write.
 
   `io.wb_beat` — Output `Valid(UInt(ciiTagBits.W))`, and `io.wb_last` — Output
   Bool. The tag of the beat being consumed and whether it is that tag's final
@@ -229,9 +229,9 @@ from Tenstorrent Inc.
   presented — live tag or killed tag, `wb_wr_en` set or clear, `last` or not. A
   killed tag's beats drain on exactly the schedule a live one's do, so the pop
   never distinguishes them. // Unlike Src-Data, the host is the RECEIVER here, so
-  // draining costs one credit and no manufactured beat. Withholding the credit
-  // would stall the channel for every SURVIVING instruction behind the killed
-  // one and turn a squash into a permanent hang.
+  draining costs one credit and no manufactured beat. Withholding the credit
+  would stall the channel for every SURVIVING instruction behind the killed
+  one and turn a squash into a permanent hang.
 
   ---- 2. Route by dst_kind ----
 
@@ -258,13 +258,13 @@ from Tenstorrent Inc.
   re-implement the mux from a group vector. Assert `io.wb_lookup.resp.wr_en` on
   every enabled vector write.
 
-  // That assertion guards a re-introducible bring-up bug: a SINGLE-REGISTER-
-  // DESTINATION op (vmv.s.x, reductions, mask-producing ops) emits exactly one
-  // beat at offset 0 and the upper members of the renamed group must be left
-  // alone. Placing beats strictly at the offsets the beats name — never
-  // broadcasting one across the group, never synthesising a write for a member
-  // no beat arrived for — is what keeps that case correct; the M2 cosim caught
-  // the corruption only once it began checking members beyond member 0.
+  That assertion guards a re-introducible bring-up bug: a SINGLE-REGISTER-
+  DESTINATION op (vmv.s.x, reductions, mask-producing ops) emits exactly one
+  beat at offset 0 and the upper members of the renamed group must be left
+  alone. Placing beats strictly at the offsets the beats name — never
+  broadcasting one across the group, never synthesising a write for a member
+  no beat arrived for — is what keeps that case correct; the M2 cosim caught
+  the corruption only once it began checking members beyond member 0.
 
   //@req-spec-cii.g3
   //@req-spec-cii.g4
@@ -274,13 +274,13 @@ from Tenstorrent Inc.
   field exists because the LCB needs per-byte assembly on `W0`/`W1`; on `W2` it
   is a constant and must stay one.
 
-  // ===> DO NOT DERIVE THIS MASK. A byte mask built from `vl`, `vtype.vta`,
-  // `vtype.vma` or `vstart` is the forbidden re-application of vl/vtype wearing a
-  // different hat, and it would corrupt every tail-/mask-undisturbed result the
-  // VPU already filled: the VPU applied the policy against the vtype it was
-  // issued with, and a second application here has no way to agree with it. This
-  // module has no `vl` or `vtype` input, so writing this bug means adding a port
-  // — which is on the reject list.
+  ===> DO NOT DERIVE THIS MASK. A byte mask built from `vl`, `vtype.vta`,
+  `vtype.vma` or `vstart` is the forbidden re-application of vl/vtype wearing a
+  different hat, and it would corrupt every tail-/mask-undisturbed result the
+  VPU already filled: the VPU applied the policy against the vtype it was
+  issued with, and a second application here has no way to agree with it. This
+  module has no `vl` or `vtype` input, so writing this bug means adding a port
+  — which is on the reject list.
 
   ---- 4. Per-beat write enable ----
 
@@ -325,19 +325,19 @@ from Tenstorrent Inc.
   `killed` is idempotent and never cleared while a tag is live, so a second flush
   during a drain changes nothing here.
 
-  // The `wb_lookup` response also carries a `killed` bit. This module reads
-  // exactly ONE suppression source — `io.wb_suppress` — because two suppression
-  // terms that could disagree is worse than either alone: the failure is a silent
-  // VRF write to a reallocated PRN.
+  The `wb_lookup` response also carries a `killed` bit. This module reads
+  exactly ONE suppression source — `io.wb_suppress` — because two suppression
+  terms that could disagree is worse than either alone: the failure is a silent
+  VRF write to a reallocated PRN.
 
-  // ===> THE SELF-CHECK IS AN IMPLICATION, NEVER AN EQUALITY:
-  //          assert(!io.wb_lookup.resp.killed || io.wb_suppress)
-  // i.e. `killed -> wb_suppress`. An EQUALITY (`killed === wb_suppress`) FIRES ON A
-  // CORRECT CASE: in the flush cycle the parent's `kill_all` term already sets
-  // `wb_suppress` while the registered `killed` bit is still clear, which is
-  // exactly the window the OR exists to cover. The implication is the whole of
-  // what is checkable here — that no beat the table has marked killed ever gets
-  // through — and the converse is not a property of this design.
+  ===> THE SELF-CHECK IS AN IMPLICATION, NEVER AN EQUALITY:
+           assert(!io.wb_lookup.resp.killed || io.wb_suppress)
+  i.e. `killed -> wb_suppress`. An EQUALITY (`killed === wb_suppress`) FIRES ON A
+  CORRECT CASE: in the flush cycle the parent's `kill_all` term already sets
+  `wb_suppress` while the registered `killed` bit is still clear, which is
+  exactly the window the OR exists to cover. The implication is the whole of
+  what is checkable here — that no beat the table has marked killed ever gets
+  through — and the converse is not a property of this design.
 
   ---- 7. The segmented halves ----
 
@@ -366,16 +366,16 @@ from Tenstorrent Inc.
   ordinary renamed group, and that group's group-done (VecCiiComplete's) is what
   later wakes the store's DGEN slot.
 
-  // ===> THE DESTINATION-GROUP CHOICE IS THE TAG TABLE'S, MADE ONCE AT ISSUE, AND
-  // MUST NOT BE RE-DERIVED HERE FROM `is_shared`/`is_store`. Two places deciding
-  // which group a beat lands in is how a segmented store silently writes the
-  // load-side group, and re-deriving it would need the uop, which this module
-  // deliberately does not have. The `wb_lookup` response's `is_shared` bit is for
-  // the ROB's "other half pending" flag and for trace — reading it to select a
-  // group is the reject. Note that the entry field is SPELLED `pvdest_grp` — the
-  // name is the tag table's and describes the common case; the mux behind it is
-  // what makes cii.i4/i8/i11 satisfiable at all, and without it the requirement
-  // this paragraph tags could not be met from anywhere in the design.
+  ===> THE DESTINATION-GROUP CHOICE IS THE TAG TABLE'S, MADE ONCE AT ISSUE, AND
+  MUST NOT BE RE-DERIVED HERE FROM `is_shared`/`is_store`. Two places deciding
+  which group a beat lands in is how a segmented store silently writes the
+  load-side group, and re-deriving it would need the uop, which this module
+  deliberately does not have. The `wb_lookup` response's `is_shared` bit is for
+  the ROB's "other half pending" flag and for trace — reading it to select a
+  group is the reject. Note that the entry field is SPELLED `pvdest_grp` — the
+  name is the tag table's and describes the common case; the mux behind it is
+  what makes cii.i4/i8/i11 satisfiable at all, and without it the requirement
+  this paragraph tags could not be met from anywhere in the design.
 
   //@req-spec-cii.i10
   The transpose itself happens INSIDE the coprocessor (its data transpose unit),

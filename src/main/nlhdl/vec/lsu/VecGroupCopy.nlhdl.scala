@@ -20,6 +20,7 @@ from Tenstorrent Inc.
   OP.v that executes NO element architecturally correct, by copying
   `pvdest <- stale_pvdest` one VLEN-wide member at a time, with no memory
   traffic of any kind.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecGroupCopy.scala,
@@ -57,7 +58,6 @@ from Tenstorrent Inc.
   midcore.rst `group-done-wb` (completion), midcore.rst `old-vd` (`stale_pvdest`
   is a group, distinct from `pvs3`), loadstore.rst `load-coalesce` (who owns the
   ordinary masked/tail case), plan v2 section 5 rules 3, 4 and 9.
-*/
 
 <|begin_module|>
 
@@ -68,8 +68,9 @@ from Tenstorrent Inc.
   bit-identical to pre-Caracal BOOM v4.
 
   `gcopyEntries` — Int, the depth of the pending-copy work list, counted in GROUP
-  MEMBERS and not in instructions. Default `numVecPhysRegisters - 32` (64 at the
-  default sizing). It has a hard floor rather than being a tuning knob, and the
+  MEMBERS and not in instructions. Default `numVecPhysRegisters - 32` rounded up to
+  a power of two (128 at the default sizing; it was 64 while that parameter was 96,
+  and tracks it). It has a hard floor rather than being a tuning knob, and the
   reason is in the logic section: there is no back-pressure path out of this
   module, so the depth must be the structural bound on simultaneously pending
   member copies. Require at elaboration
@@ -142,11 +143,32 @@ from Tenstorrent Inc.
 
   ---- squash ----
 
-  `squash` — Input Valid(ldq_idx: UInt(ldqAddrSz.W)): the youngest surviving LDQ
-  index broadcast by VecSquashUnit. Entries younger than it are discarded by
+  `squash` — Input Valid(ldq_idx: UInt((1 + ldqAddrSz).W)): the youngest surviving
+  LDQ index broadcast by VecSquashUnit. Entries younger than it are discarded by
   pointer rollback, the same mechanism the element queues use and the same
   `ldq_idx` key by which LCB entries are invalidated.
   `flush` — Input Bool (`rob_flush`): discard everything in one cycle.
+
+  ===> `1 + ldqAddrSz`, NOT `ldqAddrSz`, corrected at E6. Every other `ldq_idx` in this
+  design — `MicroOp.ldq_idx`, `VecRangeEntry.ldq_idx`, the rollback request, the LCB's
+  key — carries the wrap-disambiguating carry bit, and `IdxAgeYt` (the comparator this
+  port exists to feed) requires equal widths. At the literal width this either fails to
+  elaborate or silently aliases two different LDQ generations onto one index.
+
+  ===> SQUASH REACHES THE EXPANSION REGISTER, NOT ONLY THE ENQUEUED ROWS. Corrected at
+  E6, where the logic section was found to scope squash to rows already in the FIFO while
+  scoping only `flush` to the expansion/staging registers. A launch still MID-EXPANSION
+  when its `ldq_idx` is squashed would keep pushing the remaining members of a group that
+  no longer exists — and this subsystem's whole reason for doing pointer rollback rather
+  than drain-and-discard is that a squashed load's `pvdest` PRNs are returned to the free
+  list within a few cycles. Those pushes would then write registers that already belong to
+  another instruction. Kill the expansion register too, on the same age test.
+
+  ===> FLUSH ALSO SUPPRESSES THE ONE-CYCLE NO-COPY COMPLETION. Same correction. The
+  `vta = 1` path decides in the launch cycle and pulses `group_done` the next one; the
+  logic section's flush list enumerated the FIFO and the expansion register but not that
+  pending pulse, so a flush landing exactly one cycle after a no-copy launch still emitted
+  a completion — clearing a ROB entry the flush had just retired.
 
   ---- what is deliberately absent ----
 
@@ -224,13 +246,13 @@ from Tenstorrent Inc.
   other; the two groups need not be contiguous in the PRN space and neither is
   addressed as a base plus an offset.
 
-  // A WHOLE-REGISTER copy, with an all-ones W0 byte mask, and no lane merging of
-  // any kind. That is not laziness: with no element written there is nothing to
-  // merge, so the byte-granular mask and the overlay logic that the LCB needs are
-  // both absent here. When `must_preserve` holds only because of ONE of vta/vma,
-  // copying the whole register is still correct, because "agnostic" permits any
-  // value INCLUDING the old one. That single observation is what keeps this
-  // module a whole-register mover and keeps every partial-lane case in the LCB.
+  A WHOLE-REGISTER copy, with an all-ones W0 byte mask, and no lane merging of
+  any kind. That is not laziness: with no element written there is nothing to
+  merge, so the byte-granular mask and the overlay logic that the LCB needs are
+  both absent here. When `must_preserve` holds only because of ONE of vta/vma,
+  copying the whole register is still correct, because "agnostic" permits any
+  value INCLUDING the old one. That single observation is what keeps this
+  module a whole-register mover and keeps every partial-lane case in the LCB.
 
   ---- 3. The pending work list: member-granular, and overflow-free ----
 
@@ -239,10 +261,10 @@ from Tenstorrent Inc.
   A group's members are pushed as a consecutive run in member order, and the run's
   final row carries `last`.
 
-  // THE FIFO HOLDS PRN NAMES ONLY — NEVER vLen-WIDE DATA. Storing register data
-  // per pending member would be `gcopyEntries * vLen` bits (16 kbit at the
-  // defaults, two thirds of the whole VRF) for a rare event. The data exists only
-  // in the single staging register of section 4.
+  THE FIFO HOLDS PRN NAMES ONLY — NEVER vLen-WIDE DATA. Storing register data
+  per pending member would be `gcopyEntries * vLen` bits (16 kbit at the
+  defaults, two thirds of the whole VRF) for a rare event. The data exists only
+  in the single staging register of section 4.
 
   There is no `full` output because there can be no back-pressure (see the ports
   section), so the depth must be a BOUND rather than a choice, and there is one: a
@@ -275,11 +297,11 @@ from Tenstorrent Inc.
   head row pops when its `W0` write is granted — never when its `R2` read is —
   so a lost write cannot lose the row.
 
-  // Do NOT collapse this into a single cycle by wiring R2's combinational read
-  // result straight into W0's data. It would put a vLen-wide read-decode plus
-  // write-decode path in one cycle at 1 GHz, and it would also force the mux to
-  // grant BOTH ports in the same cycle — turning two independent lowest-priority
-  // requests into one paired request that a busy LCB can starve for far longer.
+  Do NOT collapse this into a single cycle by wiring R2's combinational read
+  result straight into W0's data. It would put a vLen-wide read-decode plus
+  write-decode path in one cycle at 1 GHz, and it would also force the mux to
+  grant BOTH ports in the same cycle — turning two independent lowest-priority
+  requests into one paired request that a busy LCB can starve for far longer.
 
   Sustained rate with the ports idle is one member per cycle: `R2` for member
   `k+1` overlaps `W0` for member `k`, because the staging register frees in the
@@ -303,14 +325,14 @@ from Tenstorrent Inc.
   This module's `R2` request is qualified by `!lcb_r2_req.valid` and its `W0`
   request by `!lcb_w0.valid`, each independently, in the same cycle.
 
-  // NO anti-starvation counter, and that absence is deliberate. Liveness here is
-  // STRUCTURAL: the VL = 0 op holds a ROB entry, commit is in program order, so a
-  // steady stream of younger loads fills the ROB, dispatch stalls, the in-flight
-  // drains finish and the ports fall idle. The copy is rare and nothing waits on
-  // it, so eventual progress without a cycle bound is sufficient. This is the
-  // exact OPPOSITE of the D$ lane in VecDcacheArbiter, which carries scalar
-  // traffic and therefore does need a bounded round-robin guarantee. Do not
-  // copy that arbiter's shape into this mux.
+  NO anti-starvation counter, and that absence is deliberate. Liveness here is
+  STRUCTURAL: the VL = 0 op holds a ROB entry, commit is in program order, so a
+  steady stream of younger loads fills the ROB, dispatch stalls, the in-flight
+  drains finish and the ports fall idle. The copy is rare and nothing waits on
+  it, so eventual progress without a cycle bound is sufficient. This is the
+  exact OPPOSITE of the D$ lane in VecDcacheArbiter, which carries scalar
+  traffic and therefore does need a bounded round-robin guarantee. Do not
+  copy that arbiter's shape into this mux.
 
   ---- 6. Completion: one group-done, once ----
 

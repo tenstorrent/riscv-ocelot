@@ -20,6 +20,7 @@ from Tenstorrent Inc.
   only what Caracal ADDS to the existing `class FpPipeline` in
   src/main/scala/v4/exu/fp-pipeline.scala, hand-written baseline BOOM v4 that stays
   in place.
+*/
 
   hierarchy.yaml: kind: module, mode: edit_existing, target
   src/main/scala/v4/exu/fp-pipeline.scala (package boom.v4.exu). No `output:` — the
@@ -74,7 +75,6 @@ from Tenstorrent Inc.
 
   Governing spec anchors: overview.rst `boom-relationship` ("FP execution —
   Unchanged"), midcore.rst `spec-wakeups` ("the `.vf` scalar on the FP network").
-*/
 
 <|begin_module|>
 
@@ -107,12 +107,12 @@ from Tenstorrent Inc.
     edit — which is required, not incidental: a scalar FP consumer of a `vfmv.f.s`
     result must be able to wake.
 
-  // D7 states the change as "`numFrfWritePorts` 1 -> 2". The ACTUAL baseline
-  // expression is `fpWidth + lsuWidth`, which is 2 on Medium/Large and 3 on Mega,
-  // so the delta is "+1 under `usingRVV`" and D7's literal numbers are the count of
-  // added-versus-none rather than the parameter's value. Recorded because a
-  // generator that hard-coded `2` would silently drop the Mega tier's second
-  // exe-unit write port.
+  D7 states the change as "`numFrfWritePorts` 1 -> 2". The ACTUAL baseline
+  expression is `fpWidth + lsuWidth`, which is 2 on Medium/Large and 3 on Mega,
+  so the delta is "+1 under `usingRVV`" and D7's literal numbers are the count of
+  added-versus-none rather than the parameter's value. Recorded because a
+  generator that hard-coded `2` would silently drop the Mega tier's second
+  exe-unit write port.
 
   Unchanged: `numLlPorts`, `fpPregSz`, `numFrfBanks`, `fpIssueParams` and
   `dispatchWidth`.
@@ -135,12 +135,12 @@ from Tenstorrent Inc.
   load-bearing here. Medium/Large have `fpWidth = 1`, `numFrfReadPorts = 3`; Mega
   has `fpWidth = 2`, `numFrfReadPorts = 6`.
 
-  // A32, reduced to a note (D4 made it moot — the shortfall only arose from needing
-  // TWO read lanes, and Giga is not in the vector matrix): if a Giga vector config
-  // is ever added, `numFrfReadPorts` must rise to 6 in its config mixin. Giga
-  // deliberately under-ports its FP file (`fpWidth = 2`, `numFrfReadPorts = 4`),
-  // and the `require` above fails loudly at elaboration, which is the whole reason
-  // it exists.
+  A32, reduced to a note (D4 made it moot — the shortfall only arose from needing
+  TWO read lanes, and Giga is not in the vector matrix): if a Giga vector config
+  is ever added, `numFrfReadPorts` must rise to 6 in its config mixin. Giga
+  deliberately under-ports its FP file (`fpWidth = 2`, `numFrfReadPorts = 4`),
+  and the `require` above fails loudly at elaboration, which is the whole reason
+  it exists.
   <|end_parameters|>
 
   <|begin_ports|>
@@ -271,8 +271,8 @@ from Tenstorrent Inc.
   as the existing `assert (ll_wbarb.io.in(0).ready)` — a standing check that the
   port-count math is still true after a config change.
 
-  // If the per-cycle read ever matters for power, the fix is a `valid` bit on the
-  // vec_pipeline_io seam — a hierarchy.yaml amendment, so not done here.
+  If the per-cycle read ever matters for power, the fix is a `valid` bit on the
+  vec_pipeline_io seam — a hierarchy.yaml amendment, so not done here.
 
   ---- 2. The response, and the forward that makes it correct ----
 
@@ -333,14 +333,14 @@ from Tenstorrent Inc.
   nothing for the consumer to delay and no `bypassable`-hold obligation on
   `VecIssueSlot` from this module.
 
-  // The forward in part 2 STAYS anyway, and this is not belt-and-braces for its own
-  // sake: past-PNR gating is an argument about the producer having retired, and the
-  // forward is a proof about the one cycle the register file itself is incoherent.
-  // The long-latency FP producers were never exposed either — `ll_wbarb`'s wakeup
-  // fires in the SAME cycle as `fregfile.io.write_ports(0).valid`, with
-  // `speculative_mask := 0` and `bypassable := false`, so its write has landed by
-  // the end of the wakeup cycle. And note the port added in part 3b is in the same
-  // class: same-cycle wakeup and write, no bypass, no window.
+  The forward in part 2 STAYS anyway, and this is not belt-and-braces for its own
+  sake: past-PNR gating is an argument about the producer having retired, and the
+  forward is a proof about the one cycle the register file itself is incoherent.
+  The long-latency FP producers were never exposed either — `ll_wbarb`'s wakeup
+  fires in the SAME cycle as `fregfile.io.write_ports(0).valid`, with
+  `speculative_mask := 0` and `bypassable := false`, so its write has landed by
+  the end of the wakeup cycle. And note the port added in part 3b is in the same
+  class: same-cycle wakeup and write, no bypass, no window.
 
   ---- 3b. The DEDICATED scalar-FP write port and its wakeup slot (D7) ----
 
@@ -394,18 +394,18 @@ from Tenstorrent Inc.
   must not: a second, later kill qualification here would be a different window from
   the one the vector side uses, and the two disagreeing is worse than either alone.
 
-  // ===> THE RECODE TAG IS THE ONE LOOSE END, AND IT IS FLAGGED, NOT GUESSED.
-  // `recode(x, tag)` needs a type tag — `0` for single, `1` for double — and BOOM's
-  // existing long-latency path derives it as `mem_size =/= 2.U`. A `vfmv.f.s` result
-  // is `SEW` wide, so the tag is the same shape off the vector element width on the
-  // writeback uop: `<tag> = io.vec_fp_wb.bits.uop.v_eew =/= 2.U` (`v_eew` encodes
-  // 8/16/32/64 as 0..3, so `2` is 32-bit = single). `MicroOp`'s `v_eew` is DOCUMENTED
-  // as "the element width of the DATA a memory access moves", so `VDecode` must also
-  // set it for a scalar-FP-destination CII op or an `SEW=32` `vfmv.f.s` will be
-  // recoded as a double and read back as a NaN-boxed wrong value. That is a MicroOp/
-  // VDecode obligation this port depends on; reported rather than assumed. No
-  // element-width member is added to the SEAM — the tag comes off the uop already on
-  // `fp_wb`, which is why the read-seam prohibition on size inputs still stands.
+  ===> THE RECODE TAG IS THE ONE LOOSE END, AND IT IS FLAGGED, NOT GUESSED.
+  `recode(x, tag)` needs a type tag — `0` for single, `1` for double — and BOOM's
+  existing long-latency path derives it as `mem_size =/= 2.U`. A `vfmv.f.s` result
+  is `SEW` wide, so the tag is the same shape off the vector element width on the
+  writeback uop: `<tag> = io.vec_fp_wb.bits.uop.v_eew =/= 2.U` (`v_eew` encodes
+  8/16/32/64 as 0..3, so `2` is 32-bit = single). `MicroOp`'s `v_eew` is DOCUMENTED
+  as "the element width of the DATA a memory access moves", so `VDecode` must also
+  set it for a scalar-FP-destination CII op or an `SEW=32` `vfmv.f.s` will be
+  recoded as a double and read back as a NaN-boxed wrong value. That is a MicroOp/
+  VDecode obligation this port depends on; reported rather than assumed. No
+  element-width member is added to the SEAM — the tag comes off the uop already on
+  `fp_wb`, which is why the read-seam prohibition on size inputs still stands.
 
   ---- 4. IEEE, not hardfloat, on the way out ----
 
@@ -448,15 +448,15 @@ from Tenstorrent Inc.
   cycle. One network, two kinds of consumer, no vector-specific wakeup path — which
   is the same rule the rest of this section states, applied to the producer side.
 
-  // What this network does and does not carry, since the consumer's comparator
-  // depends on it: every FP wakeup port drives `rebusy := false.B`. BOOM v4 has
-  // NO speculative load-hit wakeup on the FP side — `io.lsu.fresp` feeds
-  // `ll_wbarb` on actual data return and there is no `fwakeups` analogue of
-  // `io.lsu.iwakeups` — so a `.vf` feeder needs no re-busy or replay machinery
-  // and none is added: midcore.rst's "re-busied through the same machinery if the
-  // load later misses" is discharged vacuously here, not by new logic. The only
-  // `bypassable` FP wakeup is the FMA fast wakeup of part 3, and part 3 explains
-  // why no reader of this delta is exposed to its lead.
+  What this network does and does not carry, since the consumer's comparator
+  depends on it: every FP wakeup port drives `rebusy := false.B`. BOOM v4 has
+  NO speculative load-hit wakeup on the FP side — `io.lsu.fresp` feeds
+  `ll_wbarb` on actual data return and there is no `fwakeups` analogue of
+  `io.lsu.iwakeups` — so a `.vf` feeder needs no re-busy or replay machinery
+  and none is added: midcore.rst's "re-busied through the same machinery if the
+  load later misses" is discharged vacuously here, not by new logic. The only
+  `bypassable` FP wakeup is the FMA fast wakeup of part 3, and part 3 explains
+  why no reader of this delta is exposed to its lead.
 
   ---- 6. Everything else, held still ----
 
@@ -544,10 +544,10 @@ added read port, since D4 deleted the store-side reader), `VecCiiWriteback` (thr
 `VecPipeline`, sole driver of the added write port), and `VecIssueSlot` for the
 wakeup tap — all wired by the BoomCore delta through `vec_pipeline_io`.
 
-// BoomCore's delta must widen with this one. The landing
-// site now exists here; the wiring of `fp_pipeline.io.vec_fp_wb`, and of the extra
-// `io.wakeups`/`io.wb` entry into `rob.io.wb_resps` and the FP rename/vector wakeup
-// fan-out, is BoomCore's to state. Flagged across, not silently assumed.
+BoomCore's delta must widen with this one. The landing
+site now exists here; the wiring of `fp_pipeline.io.vec_fp_wb`, and of the extra
+`io.wakeups`/`io.wb` entry into `rob.io.wb_resps` and the FP rename/vector wakeup
+fan-out, is BoomCore's to state. Flagged across, not silently assumed.
 <|end_dependencies|>
 
 <|begin_edit_scope|>
@@ -659,10 +659,10 @@ wakeup tap — all wired by the BoomCore delta through `vec_pipeline_io`.
       port; any change to `dfmaLatency`, `fastWakeupLatency`, the divSqrt latency,
       the `ll_wbarb` input order or any existing slot's `fflags` path.
 
-    // NO LONGER ON THIS LIST (D7, and deliberately so): "an FP register-file WRITE
-    // port, a change to `numFrfWritePorts`, or an added wakeup slot for the vector
-    // scalar-destination writeback". Those three were refused by the previous
-    // revision, flagged upward as A31, and granted by D7. A reviewer comparing this
-    // node's diff against an older copy of the reject list should read the amendment
-    // in the ports section before rejecting them.
+    NO LONGER ON THIS LIST (D7, and deliberately so): "an FP register-file WRITE
+    port, a change to `numFrfWritePorts`, or an added wakeup slot for the vector
+    scalar-destination writeback". Those three were refused by the previous
+    revision, flagged upward as A31, and granted by D7. A reviewer comparing this
+    node's diff against an older copy of the reject list should read the amendment
+    in the ports section before rejecting them.
 <|end_edit_scope|>

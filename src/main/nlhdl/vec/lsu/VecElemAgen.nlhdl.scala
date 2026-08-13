@@ -20,6 +20,7 @@ from Tenstorrent Inc.
   and SEGMENTED (SSI) vector memory classes: it walks the element stream of one
   OP.v and pushes ONE element access (nOP.v) per ACTIVE element into that
   direction's `*_SSI_ADDR_Q`.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecElemAgen.scala,
@@ -81,7 +82,6 @@ from Tenstorrent Inc.
   `vec-load-algo`, `vec-store-algo`; midcore.rst `precise-vec-exc` and
   `vrf-ports`; glossary.rst `glossary-terms`; issue.rst
   `vec-queue-reservation` and `shared-store-chain`.
-*/
 
 <|begin_module|>
 
@@ -174,30 +174,38 @@ from Tenstorrent Inc.
   `release_ok` (Input Bool): the surplus return. Lanes are fixed by VecLsu — 0 is
   `ld_elem_agen`, 1 is `st_elem_agen`. A denied release is NEVER retried.
 
-  // ===> BOTH OF THESE ARE PER QUEUE SLOT, AND THE WIDENING IS DELIBERATE —
-  // SLOT 0 IS THE ADDRESS QUEUE, SLOT 1 THE DATA QUEUE. `VecQueueReservation`
-  // declares `resv_resp` as `Vec(4, Vec(2, {base, count}))` and
-  // `release.used_count` as `Vec(2, UInt)`, because a US store's address and data
-  // regions are NOT in identity correspondence and therefore need a base and a
-  // count each. THE CHOICE MADE HERE IS TO WIDEN THIS MODULE'S DECLARATION TO
-  // MATCH, not to have VecLsu fan slot 0 out to it — recorded so the next reader
-  // does not have to infer it. The two sides then declare one shape, and a
-  // scalar-versus-`Vec(2, ...)` mismatch cannot generate a file that fails to
-  // elaborate.
-  // ===> FOR AN SSI ACCESS THE TWO SLOTS ARE EQUAL, AND THIS MODULE ASSERTS IT
-  // RATHER THAN ASSUMING IT. The two SSI queues have equal depth and are claimed
-  // by one event with one count, so their allocation pointers are provably
-  // identical; assert `resv_resp(lane)(0)` equals `resv_resp(lane)(1)` on every
-  // store lookup, then read SLOT 0 for the address arithmetic below. That
-  // assertion is what licenses the whole absolute-index pairing of logic rule 7 —
-  // VecDgen writes `st_SSI_DATA_Q` at the SAME absolute index this module wrote
-  // the address to, which is only meaningful while the two regions start at the
-  // same base. Do NOT assert slot equality for a unit-stride op: that is the
-  // range agen's class, and there the slots genuinely differ.
+  ===> BOTH OF THESE ARE PER QUEUE SLOT, AND THE WIDENING IS DELIBERATE —
+  SLOT 0 IS THE ADDRESS QUEUE, SLOT 1 THE DATA QUEUE. `VecQueueReservation`
+  declares `resv_resp` as `Vec(4, Vec(2, {base, count}))` and
+  `release.used_count` as `Vec(2, UInt)`, because a US store's address and data
+  regions are NOT in identity correspondence and therefore need a base and a
+  count each. THE CHOICE MADE HERE IS TO WIDEN THIS MODULE'S DECLARATION TO
+  MATCH, not to have VecLsu fan slot 0 out to it — recorded so the next reader
+  does not have to infer it. The two sides then declare one shape, and a
+  scalar-versus-`Vec(2, ...)` mismatch cannot generate a file that fails to
+  elaborate.
+  ===> FOR AN SSI ACCESS THE TWO SLOTS ARE EQUAL, AND THIS MODULE ASSERTS IT
+  RATHER THAN ASSUMING IT. The two SSI queues have equal depth and are claimed
+  by one event with one count, so their allocation pointers are provably
+  identical; assert `resv_resp(lane)(0)` equals `resv_resp(lane)(1)` on every
+  store lookup, then read SLOT 0 for the address arithmetic below. That
+  assertion is what licenses the whole absolute-index pairing of logic rule 7 —
+  VecDgen writes `st_SSI_DATA_Q` at the SAME absolute index this module wrote
+  the address to, which is only meaningful while the two regions start at the
+  same base. Do NOT assert slot equality for a unit-stride op: that is the
+  range agen's class, and there the slots genuinely differ.
 
   ---- The queue fill, to `{ld,st}_SSI_ADDR_Q` ----
 
-  `addr_enq` — Output `Decoupled({ idx: UInt(qIdxSz.W), data: VecElemAccess })`,
+  `addr_enq` — Output `Decoupled({ idx: UInt(resvPtrSz.W), data: VecElemAccess })`,
+  ===> `resvPtrSz`, NOT `qIdxSz`, corrected at E4. Every ABSOLUTE element-queue
+  position on any cross-module port carries `VecElemQueue`'s full/empty-disambiguating
+  carry bit — `resvPtrSz = log2Ceil(ssiQueueEntries) + 1`. This applies equally to the
+  reservation base/count this module receives and the used_count it releases.
+  `qIdxSz` remains correct only for things that are not queue positions, such as the
+  local emitted-access counter. Dropping the bit elaborates against a narrower port and
+  loses wrap disambiguation, so the failure appears only after the queue has wrapped
+  once — invisible in every short bring-up run.
   driving fill lane 0. `idx` is ABSOLUTE — the reservation base plus this OP.v's
   own emitted-access counter, never a FIFO write pointer, because issue is
   age-ordered-READY and a younger OP.v's agen may fill its region before an older
@@ -351,27 +359,27 @@ from Tenstorrent Inc.
     NOT re-extend it and do not open-code a second extension — two extension sites
     is two chances to get the narrow-EEW arm wrong.
 
-  // ===> RVV 1.0 INDEXED OFFSETS ARE UNSIGNED, NOT SIGNED. Spike's
-  // `VI_LDST_GET_INDEX` reads them as `uint8_t`/`uint16_t`/`uint32_t`, and Whisper
-  // — the cosim reference this design is validated against — agrees. A
-  // sign-extension would diverge on EVERY index whose top `v_idx_eew` bit is set,
-  // and the divergence would present as an LSU addressing bug rather than as an
-  // extension bug, which is exactly the kind of mis-diagnosis that costs days.
-  // Earlier revisions of the map and the plan said "signed"; that was a spec
-  // defect and is corrected. The extension lives in ONE named function inside
-  // VecIdxGen so a future correction stays a one-line change; this side asserts
-  // nothing about the extension beyond not repeating it.
+  ===> RVV 1.0 INDEXED OFFSETS ARE UNSIGNED, NOT SIGNED. Spike's
+  `VI_LDST_GET_INDEX` reads them as `uint8_t`/`uint16_t`/`uint32_t`, and Whisper
+  — the cosim reference this design is validated against — agrees. A
+  sign-extension would diverge on EVERY index whose top `v_idx_eew` bit is set,
+  and the divergence would present as an LSU addressing bug rather than as an
+  extension bug, which is exactly the kind of mis-diagnosis that costs days.
+  Earlier revisions of the map and the plan said "signed"; that was a spec
+  defect and is corrected. The extension lives in ONE named function inside
+  VecIdxGen so a future correction stays a one-line change; this side asserts
+  nothing about the extension beyond not repeating it.
 
-  // ===> AND THE INDEX STRIDE COMES FROM `uop.v_idx_eew`, NEVER FROM `uop.v_eew`.
-  // For an indexed access the two are INDEPENDENT: `v_eew` is the DATA element
-  // width (how wide each loaded or stored element is, and therefore how the
-  // destination bytes are placed) while `v_idx_eew` is the INDEX element width
-  // (how wide each entry of the index vector is, and therefore the stride at which
-  // `idx` walks `pvs2`). Sourcing the child's descriptor field from `v_eew` walks
-  // the index vector at the WRONG STRIDE and silently reads the wrong offsets —
-  // it produces plausible addresses, which is why it survives a waveform glance.
-  // `v_eew` is used HERE, for `seg_ptr << v_eew` and for the byte placement, and
-  // NOWHERE in the index descriptor.
+  ===> AND THE INDEX STRIDE COMES FROM `uop.v_idx_eew`, NEVER FROM `uop.v_eew`.
+  For an indexed access the two are INDEPENDENT: `v_eew` is the DATA element
+  width (how wide each loaded or stored element is, and therefore how the
+  destination bytes are placed) while `v_idx_eew` is the INDEX element width
+  (how wide each entry of the index vector is, and therefore the stride at which
+  `idx` walks `pvs2`). Sourcing the child's descriptor field from `v_eew` walks
+  the index vector at the WRONG STRIDE and silently reads the wrong offsets —
+  it produces plausible addresses, which is why it survives a waveform glance.
+  `v_eew` is used HERE, for `seg_ptr << v_eew` and for the byte placement, and
+  NOWHERE in the index descriptor.
 
   SEGMENTS ARE PACKED PER ELEMENT on both paths. For a segmented access the cursor
   is the pair {element, field}: element `i` contributes `v_seg_nf` accesses at
@@ -385,11 +393,11 @@ from Tenstorrent Inc.
   access the group is `pvdest`; for a SEGMENTED access it is the `pvtmp`
   rendezvous group, the field transpose being the coprocessor's half.
 
-  // ===> EVERY OFFSET ON THE nOP.v IS IN BYTES, never an element index. The mask
-  // index is the exact inverse — element-granular, NOT scaled by eew — and
-  // getting the two the same way round corrupts only element 0 of a misaligned
-  // access and hides everywhere else. Paid for once in M1 bring-up, where it read
-  // as an LSU fault rather than as an offset bug.
+  ===> EVERY OFFSET ON THE nOP.v IS IN BYTES, never an element index. The mask
+  index is the exact inverse — element-granular, NOT scaled by eew — and
+  getting the two the same way round corrupts only element 0 of a misaligned
+  access and hides everywhere else. Paid for once in M1 bring-up, where it read
+  as an LSU fault rather than as an offset bug.
 
   //@req-spec-core.c13
   The nOP.v-scoped cursor fields of the wrapped MicroOp — `v_split_first`,
@@ -450,17 +458,17 @@ from Tenstorrent Inc.
   encoder over the mask bits — the inherited Skipper's mechanism — and is
   consumed, never recomputed.
 
-  // The class condition is not a tuning choice, it is what makes this requirement
-  // and `spec-agen.c16` below SIMULTANEOUSLY SATISFIABLE: taken unconditionally
-  // they contradict each other on the indexed path, because `VecIdxGen.taken`
-  // pulses once per element INCLUDING masked-off ones. Both IDs are kept and both
-  // are read class-conditionally; execution.rst's selection text has been amended
-  // to say so, so the corpus and the RTL now agree rather than the RTL carrying a
-  // silent local exception to a requirement that reads as unconditional.
+  The class condition is not a tuning choice, it is what makes this requirement
+  and `spec-agen.c16` below SIMULTANEOUSLY SATISFIABLE: taken unconditionally
+  they contradict each other on the indexed path, because `VecIdxGen.taken`
+  pulses once per element INCLUDING masked-off ones. Both IDs are kept and both
+  are read class-conditionally; execution.rst's selection text has been amended
+  to say so, so the corpus and the RTL now agree rather than the RTL carrying a
+  silent local exception to a requirement that reads as unconditional.
 
-  // The jump is a POWER OF TWO for a datapath reason, not for rounding
-  // convenience: `stride << k` is a shifted add, while an arbitrary distance `d`
-  // would put `stride * d` — a multiplier — inside the cursor's feedback loop.
+  The jump is a POWER OF TWO for a datapath reason, not for rounding
+  convenience: `stride << k` is a shifted add, while an arbitrary distance `d`
+  would put `stride * d` — a multiplier — inside the cursor's feedback loop.
 
   //@req-spec-agen.c16
   ON THE INDEXED PATH THERE IS NO SKIP, and that is the Walker's defining property
@@ -493,10 +501,10 @@ from Tenstorrent Inc.
   index arrives", and an agen that walked ahead of the index stream computed
   addresses from stale or undriven staging registers.
 
-  // VecIdxGen FORCES `next_valid` high at the last element. Rely on that; do NOT
-  // add a local "except at the end" term. The exception belongs on the producing
-  // side, and duplicating it here is how the final element of every indexed
-  // access comes to wait forever for an index entry that does not exist.
+  VecIdxGen FORCES `next_valid` high at the last element. Rely on that; do NOT
+  add a local "except at the end" term. The exception belongs on the producing
+  side, and duplicating it here is how the final element of every indexed
+  access comes to wait forever for an index entry that does not exist.
 
   `idx.io.start` is handed {`pvs2`, `v_idx_eew`, `vl`, `rob_idx`} in the accept
   cycle for an indexed op and ONLY for an indexed op — a strided or segmented
@@ -514,22 +522,29 @@ from Tenstorrent Inc.
   normal case, not a special case — the walk stops at element `vl - 1` wherever
   inside a member that falls.
 
-  // ===> A HARDCODED 8-MEMBER WALK IS THE BACK-TO-BACK VECTOR-STORE
-  // DATA-CORRUPTION BUG from the M1 bring-up log. It streamed phantom members
-  // after a 1-member op and then stalled, and the corruption showed on the NEXT
-  // store rather than on the short one — which is why simulation found it and
-  // review did not. Deriving the count from total bytes makes the phantom member
-  // unrepresentable. `v_emul` may size a group; it may never bound the walk.
+  ===> A HARDCODED 8-MEMBER WALK IS THE BACK-TO-BACK VECTOR-STORE
+  DATA-CORRUPTION BUG from the M1 bring-up log. It streamed phantom members
+  after a 1-member op and then stalled, and the corruption showed on the NEXT
+  store rather than on the short one — which is why simulation found it and
+  review did not. Deriving the count from total bytes makes the phantom member
+  unrepresentable. `v_emul` may size a group; it may never bound the walk.
 
   ---- 7. The surplus release, and streaming the fill ----
 
   The release fires ONCE per OP.v, in the accept cycle, because that is the cycle
   VL becomes known (`VecScalarOperandRead` read it from the VL register file): the
-  count is `vl` for a non-segmented SSI access, `vl * v_seg_nf` for a segmented
+  count is `vl` for a non-segmented SSI access, `vl * (v_seg_nf + 1)` for a segmented
   one, 0 for the VL = 0 / all-inactive case, and it is DRIVEN ONTO BOTH SLOTS OF
   `used_count` — identically, since for an SSI store the address and data regions
   have the same base and the same count, and the reservation asserts as much. That
   is the one place this module's per-slot port shape does real work: the shape
+  ===> `v_seg_nf + 1`, NOT `v_seg_nf`, corrected at E4. `v_seg_nf` is the RAW RVV
+  ENCODING and is 3 bits, so it cannot hold the legal field count 8 at all; the field
+  count is always `nf + 1`. The same +1 applies everywhere this module derives a field
+  count or a segmented byte total. Under the literal reading an nf=1-encoded (two-field)
+  segment op releases and places exactly half the elements it should — and a test using
+  a small nf still "works" often enough to look correct, which is why this needs to be
+  right by construction rather than by observation.
   exists for the US store's non-identity, and stating "both slots, same value" here
   is what stops a reader from concluding an SSI store should trim only one of its
   two regions. The `nf` product is formed
@@ -550,13 +565,13 @@ from Tenstorrent Inc.
   STREAMED through `ld_SSI_ADDR_Q`. There is no progress channel from the drain
   side; the back-pressure IS the channel. Assert `emit_ctr < resv_count`.
 
-  // A store never stalls here in practice: it retains every filled entry until
-  // commit-drain, and its reservation is the WORST-CASE count, which is >= vl >=
-  // the active count — so it fills its region once, monotonically, and the
-  // streaming path is load-only. By the same argument the active count can never
-  // exceed the region at all, so the streaming clause may be dead code. It is
-  // specified rather than deleted because the mechanism is what makes the wave
-  // drain legal, and deleting it would silently couple fill to drain.
+  A store never stalls here in practice: it retains every filled entry until
+  commit-drain, and its reservation is the WORST-CASE count, which is >= vl >=
+  the active count — so it fills its region once, monotonically, and the
+  streaming path is load-only. By the same argument the active count can never
+  exceed the region at all, so the streaming clause may be dead code. It is
+  specified rather than deleted because the mechanism is what makes the wave
+  drain legal, and deleting it would silently couple fill to drain.
 
   //@req-spec-lsu.f8
   Accesses are emitted STRICTLY IN ELEMENT ORDER — and within a segmented element

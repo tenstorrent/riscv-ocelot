@@ -18,6 +18,7 @@ from Tenstorrent Inc.
 /*
   VecRenameSpace — ONE parameterized rename space: map table + free list + busy
   table + the in-bundle prefix bypass, wired into a single rename cycle.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/rename/VecRenameSpace.scala,
@@ -61,7 +62,6 @@ from Tenstorrent Inc.
   Governing spec anchors: midcore.rst `midcore-rename`, `rename-stage`, `rmt`,
   `cii-shared-mapping`, `vl-vtype-rename`, `snapshots`; frontend.rst
   `vset-dual-dest`, `vl-delivery`.
-*/
 
 <|begin_module|>
 
@@ -186,38 +186,38 @@ from Tenstorrent Inc.
   parameter. Sense is READY, not busy, to match VecGroupReady's `in_member_rdy`
   input exactly.
 
-  // ===> CORRECTED 2026-08-10. This paragraph used to say the bundle was declared
-  // IN THIS FILE, contradicting `VecIssueSlot`, `VecIssueUnit` and `VecPipeline`
-  // part 13, which all place the single declaration in `VecBundles` — part 13
-  // calls the two-name situation "a defect, not a synonym". Because `VecBundles`
-  // did not actually declare it, generation produced two structurally identical
-  // types facing each other across one seam (this file's `VecMemberRdy` and
-  // `VecIssueSlot`'s local shim), which `VecIssueUnit` cannot connect. The
-  // declaration now lives in `VecBundles`; the `maxGroupSize` parameter is gone
-  // because the export exists only on the vector instance, where it is `maxMembers`
-  // by definition. `VecBusyResp`/`VecMemberBusyResp` DO stay local to
-  // `VecBusyTable` — that is the busy sense, one producer and one consumer in the
-  // same subtree, and this file converts busy to ready.
+  ===> CORRECTED 2026-08-10. This paragraph used to say the bundle was declared
+  IN THIS FILE, contradicting `VecIssueSlot`, `VecIssueUnit` and `VecPipeline`
+  part 13, which all place the single declaration in `VecBundles` — part 13
+  calls the two-name situation "a defect, not a synonym". Because `VecBundles`
+  did not actually declare it, generation produced two structurally identical
+  types facing each other across one seam (this file's `VecMemberRdy` and
+  `VecIssueSlot`'s local shim), which `VecIssueUnit` cannot connect. The
+  declaration now lives in `VecBundles`; the `maxGroupSize` parameter is gone
+  because the export exists only on the vector instance, where it is `maxMembers`
+  by definition. `VecBusyResp`/`VecMemberBusyResp` DO stay local to
+  `VecBusyTable` — that is the busy sense, one producer and one consumer in the
+  same subtree, and this file converts busy to ready.
 
-  // `vold_rdy` is `stale_pvdest`'s per-member readiness, the FIFTH group in the
-  // side channel. `IQ_V_LOAD` and `IQ_V_ALU` slots gate issue on it through a
-  // fifth VecGroupReady instance (`rdy_vold`): `stale_pvdest` is the PREVIOUS
-  // mapping of the destination arch vregs, so its producer is OLDER — and
-  // age-ordered issue grants the oldest READY entry, which does not mean an older
-  // producer has finished. The LCB pre-loads from it on R2 for `vta=0`/`vma=0`,
-  // and the coprocessor may pull `STALE_VD`. It is PER MEMBER for the same reason
-  // `pvs*` is: an LMUL=1 op writes v0, then an LMUL=8 op renames v0..v7, so its
-  // stale group is the current mappings of eight arch vregs installed by up to
-  // eight different instructions. An aggregate `stale_pvdest_busy` bit cannot
-  // express "waiting on producer 3 of 8" and no single group-done clears it
-  // correctly, so no such bit exists here or in `VecBusyResp`.
-  //
-  // NAMING, FLAGGED NOT FIXED: VecIssueSlot declares `VecSlotMemberRdy` for the
-  // consumer end of this same channel, with four groups (pvs1/pvs2/pvs3 + pvm) and
-  // no `vtmp`/`vold`. Seam review ROUND 5 item 15 rules that ONE declaration
-  // belongs in VecBundles. When that promotion happens, this bundle and that one
-  // must become the same type with SIX fields; two near-identical bundles across
-  // this seam is a mis-connection waiting to happen.
+  `vold_rdy` is `stale_pvdest`'s per-member readiness, the FIFTH group in the
+  side channel. `IQ_V_LOAD` and `IQ_V_ALU` slots gate issue on it through a
+  fifth VecGroupReady instance (`rdy_vold`): `stale_pvdest` is the PREVIOUS
+  mapping of the destination arch vregs, so its producer is OLDER — and
+  age-ordered issue grants the oldest READY entry, which does not mean an older
+  producer has finished. The LCB pre-loads from it on R2 for `vta=0`/`vma=0`,
+  and the coprocessor may pull `STALE_VD`. It is PER MEMBER for the same reason
+  `pvs*` is: an LMUL=1 op writes v0, then an LMUL=8 op renames v0..v7, so its
+  stale group is the current mappings of eight arch vregs installed by up to
+  eight different instructions. An aggregate `stale_pvdest_busy` bit cannot
+  express "waiting on producer 3 of 8" and no single group-done clears it
+  correctly, so no such bit exists here or in `VecBusyResp`.
+
+  NAMING, FLAGGED NOT FIXED: VecIssueSlot declares `VecSlotMemberRdy` for the
+  consumer end of this same channel, with four groups (pvs1/pvs2/pvs3 + pvm) and
+  no `vtmp`/`vold`. Seam review ROUND 5 item 15 rules that ONE declaration
+  belongs in VecBundles. When that promotion happens, this bundle and that one
+  must become the same type with SIX fields; two near-identical bundles across
+  this seam is a mis-connection waiting to happen.
 
   `vl_rf_write` — Output(Vec(plWidth, Valid(addr: UInt(pregSz.W), data:
   UInt(vecVLSz.W)))), only when `hasRenameWrite`: VlRegFile's `W_ren` port,
@@ -281,12 +281,12 @@ from Tenstorrent Inc.
   `dst_rtype` and must never be inferred from it: `vsetvli x0, rs1, vtype` has
   `dst_rtype === RT_ZERO` and still writes the VL RF.
 
-  // ===> reqs INTO THE FREE LIST ARE NOT QUALIFIED BY dis_fire; alloc_fire IS.
-  // `freelist.io.reqs` takes `ren2_alloc_reqs` (fire-independent) so that
-  // `alloc_ok` -> `dis_ready` -> `dis_fire` -> `reqs` is not a combinational
-  // loop. Consumption of the selected PRNs is qualified by the fire instead.
-  // This is precisely baseline's split, where `can_allocate` comes from the
-  // free list's pre-selection REGISTER and never from `reqs`.
+  ===> reqs INTO THE FREE LIST ARE NOT QUALIFIED BY dis_fire; alloc_fire IS.
+  `freelist.io.reqs` takes `ren2_alloc_reqs` (fire-independent) so that
+  `alloc_ok` -> `dis_ready` -> `dis_fire` -> `reqs` is not a combinational
+  loop. Consumption of the selected PRNs is qualified by the fire instead.
+  This is precisely baseline's split, where `can_allocate` comes from the
+  free list's pre-selection REGISTER and never from `reqs`.
 
   ---- 3. Map table wiring ----
 
@@ -317,16 +317,16 @@ from Tenstorrent Inc.
   such an encoding, so the map table's answer for it is a real PRN belonging to
   somebody else and its busy bit is somebody else's business.
 
-  // ===> THIS IS WHY IT MATTERS, AND IT IS A HANG. For `vadd.vx` (`vd, vs2, rs1`)
-  // `lvs1` is unencoded, so `pvs1` resolves to the CURRENT MAPPING OF v0 — the mask
-  // register, which is written constantly. If v0's producer's group-done fired
-  // BEFORE the slot captured its member-ready bits, no future group-done clears
-  // them and THE SLOT WAITS FOREVER. VecIssueSlot placed this obligation on this
-  // module and this module previously could not discharge it, because no
-  // `lvs*_rtype` existed; D11 supplies the three bits, so it is discharged HERE,
-  // at the source, and `VecIssueSlot` additionally consumes the same bits as
-  // VecGroupReady's `used` input. Mirrors `v_is_masked`, which exists for exactly
-  // this reason on `pvm`. Do NOT instead special-case an opcode list here.
+  ===> THIS IS WHY IT MATTERS, AND IT IS A HANG. For `vadd.vx` (`vd, vs2, rs1`)
+  `lvs1` is unencoded, so `pvs1` resolves to the CURRENT MAPPING OF v0 — the mask
+  register, which is written constantly. If v0's producer's group-done fired
+  BEFORE the slot captured its member-ready bits, no future group-done clears
+  them and THE SLOT WAITS FOREVER. VecIssueSlot placed this obligation on this
+  module and this module previously could not discharge it, because no
+  `lvs*_rtype` existed; D11 supplies the three bits, so it is discharged HERE,
+  at the source, and `VecIssueSlot` additionally consumes the same bits as
+  VecGroupReady's `used` input. Mirrors `v_is_masked`, which exists for exactly
+  this reason on `pvm`. Do NOT instead special-case an opcode list here.
 
   //@req-spec-decode.i5
   //@req-spec-decode.i2
@@ -366,34 +366,34 @@ from Tenstorrent Inc.
        in the VL one. Use them in ANY code that elaborates in both instances;
        read `v_emul` directly only inside an `if (vectorInstance)` arm.
 
-       // ===> AND CHECK REACHABILITY FROM THE BLOCK STRUCTURE, NOT FROM NEARBY
-       // CONTEXT. A third instance of this same bug (the dealloc-range
-       // ASSERTIONS, at 3049 ns) survived an audit that concluded "all other
-       // reads are gated", because those assertions sit a few lines from the
-       // `stale_group` dealloc LOGIC and read the same expression under a
-       // DIFFERENT condition — the logic is vec-only, the assertions elaborate in
-       // both. Grepping a window around a read is not sufficient evidence about
-       // which space it belongs to; the helpers exist so the question does not
-       // have to be re-answered.
+       ===> AND CHECK REACHABILITY FROM THE BLOCK STRUCTURE, NOT FROM NEARBY
+       CONTEXT. A third instance of this same bug (the dealloc-range
+       ASSERTIONS, at 3049 ns) survived an audit that concluded "all other
+       reads are gated", because those assertions sit a few lines from the
+       `stale_group` dealloc LOGIC and read the same expression under a
+       DIFFERENT condition — the logic is vec-only, the assertions elaborate in
+       both. Grepping a window around a read is not sufficient evidence about
+       which space it belongs to; the helpers exist so the question does not
+       have to be re-answered.
 
   `ren_br_tags`, `brupdate` and
   `rollback` are forwarded. `alloc_fire(w) := ren2_alloc_fire(w)`, i.e. the
   PER-LANE `dis_fire(w) && ren2_alloc_reqs(w)`.
 
-  // ===> `alloc_fire` IS Vec(coreWidth, Bool), one bit per lane, and VecFreeList's
-  // spec now declares that shape (seam review A1 — APPLIED, no longer open). It is
-  // a CORRECTNESS amendment, not style. BOOM's
-  // `dis_stalls` is a PREFIX SCAN (core.scala:773), so a partial-prefix fire is
-  // reachable from any NON-vector hazard — `ldq_full` on lane 2 lets lanes 0..1
-  // dispatch while lane 2 does not. With one bit the free list would consume lane
-  // 2's window PRNs anyway; lane 2 then retries next cycle and allocates a SECOND
-  // group, and the first is held by nothing and freed by nothing. That is the M1
-  // double-allocate/leak class, reached without any vector-side mistake. The
-  // whole-bundle rule this module enforces is on the GRANT (`alloc_ok`), which
-  // still cannot be partial; it was never a claim that DISPATCH cannot be.
-  // Do not "restore" the single bit by OR-reducing this vector, and do not
-  // re-qualify it with `alloc_ok` — `alloc_ok` already gates every lane's
-  // `dis_fire` through `dis_ready`, so a fire implies the grant by construction.
+  ===> `alloc_fire` IS Vec(coreWidth, Bool), one bit per lane, and VecFreeList's
+  spec now declares that shape (seam review A1 — APPLIED, no longer open). It is
+  a CORRECTNESS amendment, not style. BOOM's
+  `dis_stalls` is a PREFIX SCAN (core.scala:773), so a partial-prefix fire is
+  reachable from any NON-vector hazard — `ldq_full` on lane 2 lets lanes 0..1
+  dispatch while lane 2 does not. With one bit the free list would consume lane
+  2's window PRNs anyway; lane 2 then retries next cycle and allocates a SECOND
+  group, and the first is held by nothing and freed by nothing. That is the M1
+  double-allocate/leak class, reached without any vector-side mistake. The
+  whole-bundle rule this module enforces is on the GRANT (`alloc_ok`), which
+  still cannot be partial; it was never a claim that DISPATCH cannot be.
+  Do not "restore" the single bit by OR-reducing this vector, and do not
+  re-qualify it with `alloc_ok` — `alloc_ok` already gates every lane's
+  `dis_fire` through `dis_ready`, so a fire implies the grant by construction.
 
   //@req-spec-rename.e1
   //@req-spec-rename.e3
@@ -409,22 +409,22 @@ from Tenstorrent Inc.
 
   Concretely, per lane, and this is the whole of the mapping (seam review A6 —
   APPLIED):
-    `req_shared(w) := needs_pvdest(w) && needs_pvtmp(w)`   // TWO groups
+    `req_shared(w) := needs_pvdest(w) && needs_pvtmp(w)` TWO groups
     two-group case  : `pvdest := alloc_pvdest(w)`, `pvtmp := alloc_pvtmp(w)`
     tmp-only case   : `pvtmp  := alloc_pvdest(w)`, `pvdest` left UNWRITTEN
     dest-only case  : `pvdest := alloc_pvdest(w)`, `pvtmp` left unwritten
   `reqs(w)` is high in all three (it is `needs_pvdest || needs_pvtmp`, part 2).
 
-  // ===> `req_shared` IS NOT `is_shared`, AND CONNECTING `is_shared` TO IT LEAKS A
-  // GROUP FOREVER. A SEGMENTED STORE NEEDS pvtmp AND NO pvdest — it has no vector
-  // destination, so its `dst_rtype` is not RT_VEC and `needs_pvdest` is false —
-  // yet it IS `is_shared`. Request two groups there and one of them is named by no
-  // uop field: commit frees only `stale_pvdest` and `pvtmp`, so neither ever names
-  // it, no branch reclaim covers it (it was granted, so it IS in `alloc_masks`,
-  // but only a mispredict would return it), and on the committing path it is gone
-  // until reset. The free list cannot detect this — it grants what it is asked
-  // for — so the check lives here: `req_shared` counts GROUPS, and the tmp-only
-  // lane takes its single group off `alloc_pvdest`.
+  ===> `req_shared` IS NOT `is_shared`, AND CONNECTING `is_shared` TO IT LEAKS A
+  GROUP FOREVER. A SEGMENTED STORE NEEDS pvtmp AND NO pvdest — it has no vector
+  destination, so its `dst_rtype` is not RT_VEC and `needs_pvdest` is false —
+  yet it IS `is_shared`. Request two groups there and one of them is named by no
+  uop field: commit frees only `stale_pvdest` and `pvtmp`, so neither ever names
+  it, no branch reclaim covers it (it was granted, so it IS in `alloc_masks`,
+  but only a mispredict would return it), and on the committing path it is gone
+  until reset. The free list cannot detect this — it grants what it is asked
+  for — so the check lives here: `req_shared` counts GROUPS, and the tmp-only
+  lane takes its single group off `alloc_pvdest`.
 
   //@req-spec-rename.e13
   //@req-spec-rename.e16
@@ -472,10 +472,10 @@ from Tenstorrent Inc.
        `VecBusyTable`'s part 6 already asks of this file — a vset never sets it
        today, so that one is defensive rather than a fix.
 
-  // ===> `vl_rename` MUST NOT WRITE `pvdest` ON ITS OUTPUT PATH. `pvdest` there
-  // belongs to the vector space and holds a real 7-bit vector group; a 6-bit VL
-  // PRN dropped into member 0 of the output uop would corrupt the destination
-  // group of every vector instruction that is also a VL producer.
+  ===> `vl_rename` MUST NOT WRITE `pvdest` ON ITS OUTPUT PATH. `pvdest` there
+  belongs to the vector space and holds a real 7-bit vector group; a 6-bit VL
+  PRN dropped into member 0 of the output uop would corrupt the destination
+  group of every vector instruction that is also a VL producer.
 
   //@req-spec-decode.c21
   //@req-spec-decode.i3
@@ -506,18 +506,18 @@ from Tenstorrent Inc.
   `pvl` read port and the VL instance has no vector source ports, so reading a
   `pvl` bit out of the wrong table — the M1 bug — is unspellable.
 
-  // CLOSED (was OPEN for Phase R; seam review A7, settled by decision D11). The
-  // per-source USE predicate now exists as three `MicroOp` Bools,
-  // `v_uses_vs1`/`v_uses_vs2`/`v_uses_vs3`, set by VDecode/VLSDecode — the only
-  // nodes that know the instruction format. It is consumed in TWO places on
-  // purpose: HERE, to skip renaming and leave the busy bit clear (part 3), and in
-  // VecIssueSlot, as VecGroupReady's `used` input. Neither alone is sufficient —
-  // the slot's `used` cannot repair a member-ready vector that was captured with a
-  // stale v0 mapping in it, and this module cannot stop a matcher from watching a
-  // group it was told about. Rejected alternatives, for the record: a reserved
-  // sentinel in `lvs*` (free at `lregSz = 6`, but every future reader must
-  // remember the convention and the failure mode is a silent hang) and full
-  // `lvs*_rtype` fields (3x the bits for no extra information).
+  CLOSED (was OPEN for Phase R; seam review A7, settled by decision D11). The
+  per-source USE predicate now exists as three `MicroOp` Bools,
+  `v_uses_vs1`/`v_uses_vs2`/`v_uses_vs3`, set by VDecode/VLSDecode — the only
+  nodes that know the instruction format. It is consumed in TWO places on
+  purpose: HERE, to skip renaming and leave the busy bit clear (part 3), and in
+  VecIssueSlot, as VecGroupReady's `used` input. Neither alone is sufficient —
+  the slot's `used` cannot repair a member-ready vector that was captured with a
+  stale v0 mapping in it, and this module cannot stop a matcher from watching a
+  group it was told about. Rejected alternatives, for the record: a reserved
+  sentinel in `lvs*` (free at `lregSz = 6`, but every future reader must
+  remember the convention and the failure mode is a silent hang) and full
+  `lvs*_rtype` fields (3x the bits for no extra information).
 
   ---- 6. The in-bundle prefix bypass — the part this module owns ----
 
@@ -537,28 +537,28 @@ from Tenstorrent Inc.
   up the just-renamed `pvl` and, unless the older producer was a born-ready
   `vsetivli`, also picks up its busy bit.
 
-  // Two traps in one paragraph.
-  // (1) THE PRN HALF OF THE BYPASS IS VecMapTable'S, not this module's — it
-  //     folds over `remap_reqs` internally with the same range test. Do NOT also
-  //     re-mux `pvs*`/`stale_pvdest`/`pvl` here; a second bypass can only mask a
-  //     bug in the first. Assert agreement instead: on a hit, the map response's
-  //     member must equal the older lane's `pvdest(row - lvd)`.
-  // (2) THE COMPARE IS PER MEMBER AND AGAINST A RANGE, NEVER BASE-TO-BASE. An
-  //     older LMUL=8 write to v0..v7 must bypass into a younger LMUL=2 read at
-  //     v4. Baseline's `r.ldst === uop.lrs1` is correct only because a scalar
-  //     mapping is one register; copied verbatim it misses every sub-range read
-  //     and the younger op issues against a stale PRN pair.
-  // (3) A born-ready `vsetivli` MUST NOT set the dependent's `pvl_busy`. The
-  //     bypass term is qualified by `!ren2_vl_imm_valid(k)`. Without that
-  //     qualification the dependent waits on a wakeup that will never come,
-  //     because no busy bit was ever set for that producer to clear.
-  // (4) THE BYPASS COVERS `stale_pvdest` TOO, and its range test is on `lvd`, not
-  //     on an `lvs*`: lane `i`'s stale group IS the current mapping of its own
-  //     destination rows, so if an older lane `k < i` renames any row in
-  //     `[lvd_i, lvd_i + v_emul_i)` then lane `i`'s stale group members ARE lane
-  //     `k`'s freshly allocated PRNs, which are busy by definition. Two writers of
-  //     v0 in one bundle is the everyday case (mask updates), so omitting this term
-  //     hands `rdy_vold` an all-ready vector for a group nothing has written yet.
+  Two traps in one paragraph.
+  (1) THE PRN HALF OF THE BYPASS IS VecMapTable'S, not this module's — it
+      folds over `remap_reqs` internally with the same range test. Do NOT also
+      re-mux `pvs*`/`stale_pvdest`/`pvl` here; a second bypass can only mask a
+      bug in the first. Assert agreement instead: on a hit, the map response's
+      member must equal the older lane's `pvdest(row - lvd)`.
+  (2) THE COMPARE IS PER MEMBER AND AGAINST A RANGE, NEVER BASE-TO-BASE. An
+      older LMUL=8 write to v0..v7 must bypass into a younger LMUL=2 read at
+      v4. Baseline's `r.ldst === uop.lrs1` is correct only because a scalar
+      mapping is one register; copied verbatim it misses every sub-range read
+      and the younger op issues against a stale PRN pair.
+  (3) A born-ready `vsetivli` MUST NOT set the dependent's `pvl_busy`. The
+      bypass term is qualified by `!ren2_vl_imm_valid(k)`. Without that
+      qualification the dependent waits on a wakeup that will never come,
+      because no busy bit was ever set for that producer to clear.
+  (4) THE BYPASS COVERS `stale_pvdest` TOO, and its range test is on `lvd`, not
+      on an `lvs*`: lane `i`'s stale group IS the current mapping of its own
+      destination rows, so if an older lane `k < i` renames any row in
+      `[lvd_i, lvd_i + v_emul_i)` then lane `i`'s stale group members ARE lane
+      `k`'s freshly allocated PRNs, which are busy by definition. Two writers of
+      v0 in one bundle is the everyday case (mask updates), so omitting this term
+      hands `rdy_vold` an all-ready vector for a group nothing has written yet.
 
   `member_rdy(i)` is the per-member READY vector: the busy table's PRE-REDUCTION
   per-member read, inverted, ANDed with the negation of this bypass's per-member
@@ -569,30 +569,30 @@ from Tenstorrent Inc.
   `vtmp_rdy`/`vold_rdy` carry no information on a lane that has no such group — the
   consumer's `used` input is what suppresses them there, exactly as for `vm`.
 
-  // The pre-reduction read arrives on a SECOND busy-table output,
-  // `member_busy_resps: Vec(plWidth, per-operand Vec(maxGroupSize, Bool))`, gated
-  // by the same `exportMemberRdy` this module passes down. That is an AMENDMENT to
-  // VecBusyTable (seam review A2 — APPLIED in its file), whose earlier spec exported
-  // only the AND-reduced `busy_resps`: it is a fan-out of the
-  // wires its own per-member read (rename.g11) already computes, before the
-  // reduction — zero new comparators, zero new state — and `busy_resps` keeps its
-  // stated aggregated-only shape. Two nodes (VecIssueSlot, VecGroupReady) already
-  // depend on this data existing; the alternative is a second busy table.
-  // Its FIFTH group, `pvold_busy` from `stale_pvdest`, is the one part that is a
-  // genuine added read (8 bit-reads per lane) rather than a fan-out — the cost D6
-  // accepts, in the stage that is already this design's #1 timing risk.
+  The pre-reduction read arrives on a SECOND busy-table output,
+  `member_busy_resps: Vec(plWidth, per-operand Vec(maxGroupSize, Bool))`, gated
+  by the same `exportMemberRdy` this module passes down. That is an AMENDMENT to
+  VecBusyTable (seam review A2 — APPLIED in its file), whose earlier spec exported
+  only the AND-reduced `busy_resps`: it is a fan-out of the
+  wires its own per-member read (rename.g11) already computes, before the
+  reduction — zero new comparators, zero new state — and `busy_resps` keeps its
+  stated aggregated-only shape. Two nodes (VecIssueSlot, VecGroupReady) already
+  depend on this data existing; the alternative is a second busy table.
+  Its FIFTH group, `pvold_busy` from `stale_pvdest`, is the one part that is a
+  genuine added read (8 bit-reads per lane) rather than a fan-out — the cost D6
+  accepts, in the stage that is already this design's #1 timing risk.
 
-  // ===> WHY PER MEMBER MUST LEAVE THIS MODULE. A source group's members can come
-  // from DIFFERENT producers, so the group can be not-ready in aggregate while
-  // members 0..2 are already complete. VecGroupReady initializes its per-member
-  // state from `in_member_rdy`; loading the AGGREGATE into all members makes the
-  // slot wait for group-dones that have already fired — a PERMANENT HANG, and
-  // exactly the failure two sibling nodes now depend on this port to avoid.
-  // `vold_rdy` is the sharpest case of it: `stale_pvdest` can span up to
-  // `maxGroupSize` producers (an LMUL=1 op writes v0, then an LMUL=8 op renames
-  // v0..v7, so its stale group is eight arch vregs' current mappings installed by
-  // up to eight instructions), which is precisely why D6 rejects a single
-  // aggregate `stale_pvdest_busy` bit as UNSAFE rather than merely conservative.
+  ===> WHY PER MEMBER MUST LEAVE THIS MODULE. A source group's members can come
+  from DIFFERENT producers, so the group can be not-ready in aggregate while
+  members 0..2 are already complete. VecGroupReady initializes its per-member
+  state from `in_member_rdy`; loading the AGGREGATE into all members makes the
+  slot wait for group-dones that have already fired — a PERMANENT HANG, and
+  exactly the failure two sibling nodes now depend on this port to avoid.
+  `vold_rdy` is the sharpest case of it: `stale_pvdest` can span up to
+  `maxGroupSize` producers (an LMUL=1 op writes v0, then an LMUL=8 op renames
+  v0..v7, so its stale group is eight arch vregs' current mappings installed by
+  up to eight instructions), which is precisely why D6 rejects a single
+  aggregate `stale_pvdest_busy` bit as UNSAFE rather than merely conservative.
 
   ---- 7. Branch tags, snapshots and recovery ----
 
@@ -647,17 +647,17 @@ from Tenstorrent Inc.
 
   ---- 9. What this module deliberately does NOT do ----
 
-  // No ROB-safety field is written here. `rob_unsafe` for vector ops is cleared
-  // by the Rob delta's group-safe path (`vec_clr_unsafe`), and MicroOp's edit
-  // scope freezes `starts_unsafe`. If the PNR assertion in rob.scala trips at
-  // bring-up on a vector op — the M2 symptom — the fix is that path, NOT a
-  // tie-off in the rename stage. Reported rather than silently implemented.
-  //
-  // No `child_rebusys` port and no speculative rebusy: vector operands are never
-  // woken speculatively, so there is nothing to cancel. No `despec` port and no
-  // `isImm` mode. No LDQ/STQ or ROB index assignment — those reservations happen
-  // in this same cycle but in BoomCore and VecQueueReservation, and duplicating
-  // the index arithmetic here would give two structures an opinion on program age.
+  No ROB-safety field is written here. `rob_unsafe` for vector ops is cleared
+  by the Rob delta's group-safe path (`vec_clr_unsafe`), and MicroOp's edit
+  scope freezes `starts_unsafe`. If the PNR assertion in rob.scala trips at
+  bring-up on a vector op — the M2 symptom — the fix is that path, NOT a
+  tie-off in the rename stage. Reported rather than silently implemented.
+
+  No `child_rebusys` port and no speculative rebusy: vector operands are never
+  woken speculatively, so there is nothing to cancel. No `despec` port and no
+  `isImm` mode. No LDQ/STQ or ROB index assignment — those reservations happen
+  in this same cycle but in BoomCore and VecQueueReservation, and duplicating
+  the index arithmetic here would give two structures an opinion on program age.
 
   ---- 10. Trace ----
 

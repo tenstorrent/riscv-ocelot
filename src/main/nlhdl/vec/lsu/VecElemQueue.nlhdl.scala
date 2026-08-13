@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecElemQueue — the reserved, program-ordered, pointer-rollback-squashable
   element buffer that decouples vector address/data generation from vector
   memory drain. ONE definition, SIX instances.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecElemQueue.scala,
@@ -35,16 +36,16 @@ from Tenstorrent Inc.
        to "the current instruction" and none needs to export a `busy` that gates
        issue. This module exports no `busy` either — see the ports section, which
        says so explicitly and says what it exports instead.
-       // Ground rule 6 has been AMENDED (decision D5) and now enumerates THREE
-       // legal homes for in-flight vector-LSU state, not two: (a) these six
-       // instances, (b) the LCB's per-PRN assembly entries, and (c) VecLsu's
-       // per-LDQ/STQ-entry descriptor pending table, which absorbs the mid-walk
-       // hazard and INT-RF read denial. (c) is the same KIND of state as (a) —
-       // per-queue-entry, capacity guaranteed at dispatch, structurally
-       // un-overflowable, exporting no `busy`. So "all element state is here" is
-       // the right reading and "no other module holds any state" is not. What is
-       // unchanged, and is the part the rule actually protects, is that NONE of the
-       // three exports a `busy` toward an issue unit.
+       Ground rule 6 has been AMENDED (decision D5) and now enumerates THREE
+       legal homes for in-flight vector-LSU state, not two: (a) these six
+       instances, (b) the LCB's per-PRN assembly entries, and (c) VecLsu's
+       per-LDQ/STQ-entry descriptor pending table, which absorbs the mid-walk
+       hazard and INT-RF read denial. (c) is the same KIND of state as (a) —
+       per-queue-entry, capacity guaranteed at dispatch, structurally
+       un-overflowable, exporting no `busy`. So "all element state is here" is
+       the right reading and "no other module holds any state" is not. What is
+       unchanged, and is the part the rule actually protects, is that NONE of the
+       three exports a `busy` toward an issue unit.
 
   ===> IT IS NOT A FIFO, and reading it as one is the mistake that produces the
        wrong RTL. It is a RESERVED-REGION RANDOM-ACCESS BUFFER: capacity is
@@ -57,7 +58,6 @@ from Tenstorrent Inc.
   Governing spec anchors: loadstore.rst `lsu-unified`, `ssi-queues`, `us-queue`,
   `store-data-queue`, `vec-squash`, `vec-store-algo`, `vector-bw-ceiling`;
   issue.rst `vec-queue-reservation`.
-*/
 
 <|begin_module|>
 
@@ -110,10 +110,22 @@ from Tenstorrent Inc.
   `ports` (Int, default 1) — fill/consume lanes, one per D$ request lane: 1 on
   Medium, 2 on Large/Mega where the queues are "2 x nOP.v wide". Derived by
   VecLsu from `lsuWidth`/`dcacheArbiterMode`; the two-lanes-per-cycle
-  requirement itself is VecLsu's obligation, not tagged here. `readPorts` (Int,
-  default `ports + 1`) is the indexed-read port count: one per drain lane, plus
-  one shared port for the disambiguation and store-forwarding consumers, which
-  read a store queue at an index the LCAM match produced.
+  requirement itself is VecLsu's obligation, not tagged here. `readPorts` is the
+  indexed-read port count: one per drain lane, plus one shared port for the
+  disambiguation and store-forwarding consumers, which read a store queue at an
+  index the LCAM match produced.
+
+  `readPorts` IS A DERIVED BODY VALUE, `ports + 1`, NOT A CONSTRUCTOR PARAMETER,
+  and the reason is a Scala restriction rather than a design choice: a default
+  argument may not reference an earlier parameter of the SAME parameter list, so
+  `(ports: Int = 1, readPorts: Int = ports + 1)` does not compile. The two ways to
+  keep it a parameter are both worse — a second parameter list forces every call
+  site to write an empty `()` before the implicit list, and an `Option` override
+  parameter adds a configuration knob no instantiation uses, which mode `new`
+  forbids as "extra". No instantiation overrides it and the formula is exact (one
+  drain lane each plus the one shared match-read port), so derive it. KEEP the
+  `readPorts >= ports` require: it is trivially true today and it is what fires if
+  the formula is ever changed.
   <|end_parameters|>
 
   <|begin_ports|>
@@ -286,24 +298,24 @@ from Tenstorrent Inc.
      walk and no multi-cycle drain. This is why LOADS reserve in program order too:
      they have no deadlock exposure, but without an ordered region their entries
      could not be killed this way.
-     // THE CONVENTION UPSTREAM IS BOOM'S EXCLUSIVE TAIL, and it matters here only
-     // as a statement of what this module may NOT do: `io.squash.tail` is already
-     // the exclusive boundary of the surviving range, so apply it as `tail :=
-     // io.squash.tail` and do NOT add the killing instruction's region back, do
-     // NOT round up to a region boundary, and do NOT treat it as "the last
-     // surviving entry" and add one. VecQueueReservation derived it from the LSQ
-     // index of the FIRST DEAD entry by taking `base + count` of the youngest row
-     // STRICTLY OLDER than that index (or the queue head if none), and it asserts
-     // that no surviving region extends past it. An off-by-one-region here keeps
-     // one killed instruction's entries live and drains them against PRNs already
-     // returned to the free list.
+     THE CONVENTION UPSTREAM IS BOOM'S EXCLUSIVE TAIL, and it matters here only
+     as a statement of what this module may NOT do: `io.squash.tail` is already
+     the exclusive boundary of the surviving range, so apply it as `tail :=
+     io.squash.tail` and do NOT add the killing instruction's region back, do
+     NOT round up to a region boundary, and do NOT treat it as "the last
+     surviving entry" and add one. VecQueueReservation derived it from the LSQ
+     index of the FIRST DEAD entry by taking `base + count` of the youngest row
+     STRICTLY OLDER than that index (or the queue head if none), and it asserts
+     that no surviving region extends past it. An off-by-one-region here keeps
+     one killed instruction's entries live and drains them against PRNs already
+     returned to the free list.
   2. The oldest region is always at `head`, so releasing capacity is a single
      pointer move.
 
-  // A mid-region release is NOT permitted and elaboration cannot catch it:
-  // `io.resv.release_tail` may only move `tail` backwards, and `io.resv.free`
-  // may only free at `head`. Either would punch a hole in the occupied region
-  // and break property 1 for every op behind it. Assert both.
+  A mid-region release is NOT permitted and elaboration cannot catch it:
+  `io.resv.release_tail` may only move `tail` backwards, and `io.resv.free`
+  may only free at `head`. Either would punch a hole in the occupied region
+  and break property 1 for every op behind it. Assert both.
   When `io.squash.valid` and `io.resv.release_tail.valid` collide, the SQUASH
   wins — the release describes a surplus belonging to an op that may itself have
   just been killed.
@@ -382,12 +394,12 @@ from Tenstorrent Inc.
        contiguous and still program-ordered, merely shorter, so the pointer
        rollback above is unchanged.
 
-  // The fill side does not poll and does not track drain progress: it simply
-  // sees `enq.ready` deassert on an index still holding an undrained access,
-  // and resumes when it clears. That absence of a progress channel between the
-  // two sides IS the decoupling — a single element cursor shared between fill
-  // and drain is what capped the previous attempt's concurrency at one
-  // instruction.
+  The fill side does not poll and does not track drain progress: it simply
+  sees `enq.ready` deassert on an index still holding an undrained access,
+  and resumes when it clears. That absence of a progress channel between the
+  two sides IS the decoupling — a single element cursor shared between fill
+  and drain is what capped the previous attempt's concurrency at one
+  instruction.
 
   ---- Per-cycle update ----
 
@@ -408,16 +420,63 @@ from Tenstorrent Inc.
   Runtime assertions (BOOM already uses `assert` widely; they carry no synthesis
   cost): a claim larger than `avail`; a fill whose `idx` is outside `[head,
   tail)`; a fill onto a filled entry when `isStore`; a `free` whose base is not
-  `head`; a `release_tail` or `squash` that would move `tail` behind `head`; a
-  commit-drain read of an entry whose `xlated` bit is clear.
+  `head`; a `release_tail` or `squash` that would move `tail` behind `head`.
+
+  ===> THE "commit-drain read of an entry whose `xlated` bit is clear" ASSERTION IS
+  NOT THIS MODULE'S, corrected at E2. `io.rd` is one anonymous indexed-read array
+  and nothing on it distinguishes an EXECUTE-time translate read, which is supposed
+  to see `xlated = 0`, from a post-commit DRAIN read, which must see `xlated = 1`.
+  Asserted here it would false-fire on every legitimate translate read. Do not
+  "fix" this by adding an `is_drain` flag to the read port: that pushes a caller's
+  pipeline phase into a shared port, and every future reader of the port has to get
+  it right. The assertion belongs to the DRAIN CONSUMER, which knows its own phase
+  by construction — it is `VecLsu`'s obligation, checked where the drain read is
+  issued, and it is listed there.
+
+  ORDERING WHEN `claim` COINCIDES WITH `release_tail`: `squash` overrides both. With
+  `release_tail` and `claim` together, REBASE THEN ADD — the tail becomes the
+  released tail plus the new claim. They are different instructions in different
+  pipeline stages (one retiring its surplus once VL is known, one reserving at
+  dispatch) and both must take effect, so neither may be dropped and the order is
+  the only composition that conserves both.
 
   Tracing: emit one guarded VecTrace line per key event — claim, fill, consume,
-  update, free, squash-rollback — each tagged with the instance name, the
-  requester's `rob_idx`, the entry index and the resulting occupancy, gated on
-  the `vecTrace` plusarg and off by default. With no unit tests in this project
-  these six lines are the only way to see a queue wedge in a cosim run, and the
-  occupancy field is what separates a real stall from a reservation that was
-  never released.
+  update, free, squash-rollback — each tagged with the instance name, the entry
+  index and the resulting occupancy, gated on the `vecTrace` plusarg and off by
+  default. With no unit tests in this project these six lines are the only way to
+  see a queue wedge in a cosim run, and the occupancy field is what separates a
+  real stall from a reservation that was never released.
+
+  THE INSTANCE NAME IS A CONSTRUCTOR PARAMETER, `queueName: String`, and it is not
+  optional decoration. One definition is instantiated SIX times; a trace corpus in
+  which every line says "VecElemQueue" cannot answer the first question anyone asks
+  of a wedged LSU — which queue. Chisel's own `instanceName` is not safely readable
+  from inside a module's own constructor, so there is no way to recover this after
+  the fact and it has to be passed in. VecLsu passes the normative queue name
+  (`ld_SSI_ADDR_Q` and the other five, spelled exactly as the six-queue enumeration
+  spells them). It is `queueName` and NOT `name` because `name` is an inherited
+  member of Chisel's `BaseModule`; shadowing it with a constructor `val` would
+  either fail to compile or quietly displace the naming Chisel uses for the emitted
+  module, which is a high price for a shorter identifier.
+
+  The elaboration-`require` and runtime-`assert` messages carry `queueName` too, for
+  the same reason: six instances share every check, so "claim exceeds avail" without
+  a queue name states the symptom and withholds the only fact needed to act on it.
+
+  ===> `rob_idx` IS DELIBERATELY *NOT* ON THESE LINES, corrected at E2 after the
+  first generation attempt found the contradiction: this paragraph asked for the
+  requester's `rob_idx` on every line, and NO port of this module carries one — the
+  ports section's bit-lists have none, and section "There is NO per-entry `br_mask`,
+  no owner `rob_idx`..." explicitly forbids storing one per entry. The two
+  statements cannot both hold.
+  The one that gives way is this one, because the alternative is worse: a TRACE-ONLY
+  `rob_idx` on `enq`/`consume` would be a per-ELEMENT field carrying
+  per-INSTRUCTION information, i.e. exactly the owner field the entry format forbids,
+  reintroduced through the trace port where no assertion polices it. Instead, trace
+  the ENTRY INDEX here and let `VecQueueReservation` — which holds `rob_idx` against
+  the region it granted — trace the `rob_idx`↔region binding at claim and free. The
+  join is then offline and exact: an index in a traced region belongs to that region's
+  `rob_idx`, and no new port exists to go stale.
   <|end_logic|>
 
 <|end_module|>
@@ -428,10 +487,13 @@ indexed reads accepted per cycle, with no cycle in which a fill and a consume to
 different indices conflict — the two sides must be able to run at full rate
 simultaneously, since that concurrency is the module's entire purpose.
 
-Latency: `io.rd` is one cycle, uniformly. `io.enq.ready` and `io.resv.avail` are
-the only combinational-out paths and both are deliberately shallow: `avail` is
-registered because it is read at dispatch, and `ready` is one bit selected out
-of `filled` plus a range compare.
+Latency: `io.rd` is one cycle, uniformly. `io.enq.ready` is the only
+combinational output, and it is deliberately shallow: one bit selected out of
+`filled` plus a range compare. `io.resv.avail` is REGISTERED, not combinational,
+because it is read at dispatch and must not put a fresh subtraction on that path.
+It is nonetheless never stale in a way that lets a claim over-commit: it is
+registered from `next_tail`/`next_head`, so a claim granted in one cycle is
+already reflected in the value the next cycle's claim reads.
 
 A squash must complete in ONE cycle. Rolling back by walking entries would stall
 the pipeline behind a mispredict for hundreds of cycles on the 512-entry

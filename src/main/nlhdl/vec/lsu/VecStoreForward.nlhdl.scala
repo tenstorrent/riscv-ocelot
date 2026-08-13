@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecStoreForward — the LD->ST forwarding decision and data return for a load
   that matched an OLDER VECTOR store: which pairs may forward, which element
   supplies the bytes, and when the load is replayed instead.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecStoreForward.scala,
@@ -52,7 +53,6 @@ from Tenstorrent Inc.
   granularity, mask qualification) and `order-fail-replay`; midcore.rst
   `vrf-ports` — where this module deliberately does not appear, because it adds
   no VRF port; caracal-milestone-plan-v2.md section 5 rules 3 and 10.
-*/
 
 <|begin_module|>
 
@@ -102,10 +102,10 @@ from Tenstorrent Inc.
   `entry_paddr`, `entry_active_mask` (paragraph 5) and, for the unit-stride class,
   `us_data_base` and `members`.
 
-  // Indexing candidates by STQ index is what lets this module reuse BOOM's
-  // existing age network instead of adding one. A vector store holds exactly ONE
-  // STQ placeholder, so scalar and vector candidates share one numStqEntries-wide
-  // space and a single ForwardingAgeLogic ranks both.
+  Indexing candidates by STQ index is what lets this module reuse BOOM's
+  existing age network instead of adding one. A vector store holds exactly ONE
+  STQ placeholder, so scalar and vector candidates share one numStqEntries-wide
+  space and a single ForwardingAgeLogic ranks both.
 
   `io.stq_addr_matches`, `io.stq_forward_matches` — inputs, `UInt(numStqEntries.W)`
   per lane: the LSU's existing `ldst_addr_matches` and `ldst_forward_matches`, so
@@ -183,10 +183,10 @@ from Tenstorrent Inc.
   could hold a load this module had already forwarded, or forward one the hold
   believed was waiting.
 
-  // A store address entry is not presented to the LCAM until its st_*_DATA_Q
-  // entry is valid (the snoop's obligation, not this module's), so "matched a
-  // store whose data is not captured yet" is UNREACHABLE here. `resp.filled` is
-  // checked as an assertion, never as a functional stall condition.
+  A store address entry is not presented to the LCAM until its st_*_DATA_Q
+  entry is valid (the snoop's obligation, not this module's), so "matched a
+  store whose data is not captured yet" is UNREACHABLE here. `resp.filled` is
+  checked as an assertion, never as a functional stall condition.
 
   ---- 3. Which pairs are eligible ----
 
@@ -220,10 +220,10 @@ from Tenstorrent Inc.
   to an SSI LOAD is safe in principle and is declined only to avoid building a path
   that range-checks and slices every load element against the store's range.
 
-  // The three ineligible pairs produce io.known_overlap and NOTHING else — no
-  // io.replay and no data read. Suppressing the load is the hold's business, and
-  // asserting io.replay here would replay a load VecOrderHold is already holding,
-  // turning a clean serialization back into the replay storm the hold removes.
+  The three ineligible pairs produce io.known_overlap and NOTHING else — no
+  io.replay and no data read. Suppressing the load is the hold's business, and
+  asserting io.replay here would replay a load VecOrderHold is already holding,
+  turning a clean serialization back into the replay storm the hold removes.
 
   ---- 4. Selecting the winner, and where the bytes come from ----
 
@@ -286,9 +286,9 @@ from Tenstorrent Inc.
        "simplification" that shares one predicate re-opens the masked-store
        forwarding hazard the split was written to close.
 
-  // The SSI path needs no equivalent, and it is worth knowing why: a masked-off
-  // element generates no nOP.v, so it has no st_SSI_ADDR_Q entry and can never be
-  // a candidate. Absence of the entry IS the mask qualification there.
+  The SSI path needs no equivalent, and it is worth knowing why: a masked-off
+  element generates no nOP.v, so it has no st_SSI_ADDR_Q entry and can never be
+  a candidate. Absence of the entry IS the mask qualification there.
 
   ---- 6. Partial cover replays the load ----
 
@@ -308,9 +308,9 @@ from Tenstorrent Inc.
       shared read port cannot deliver in one cycle;
     - the load's bytes straddle the end of the store's range.
 
-  // Replay is the right answer to all four precisely because it is not the
-  // correctness mechanism — order_fail is. A load that replays without forwarding
-  // is slow; a load that forwards a wrong byte is broken.
+  Replay is the right answer to all four precisely because it is not the
+  correctness mechanism — order_fail is. A load that replays without forwarding
+  is slow; a load that forwards a wrong byte is broken.
 
   ---- 7. Forwarding is not a commitment ----
 
@@ -333,10 +333,10 @@ from Tenstorrent Inc.
   make every vector-forwarded load compare against an unrelated store — failing
   loads that were fine, or worse sparing loads that were not.
 
-  // A later element of the SAME store the load forwarded from still fails the
-  // load, because the comparison is stq_idx equality and cannot see that a
-  // different element of that store is the one now aliasing. Conservative in the
-  // safe direction: an extra replay, never a missed one.
+  A later element of the SAME store the load forwarded from still fails the
+  load, because the comparison is stq_idx equality and cannot see that a
+  different element of that store is the one now aliasing. Conservative in the
+  safe direction: an extra replay, never a missed one.
 
   ---- 8. The load after an order-fail replay ----
 
@@ -353,10 +353,10 @@ from Tenstorrent Inc.
   through `io.fwd_beat` into the LCB, which writes the re-renamed `pvdest` group
   and emits one group-done.
 
-  // Nothing here knows the load is a re-execution and it must not try to: the
-  // fresh destination arrives on the uop like any other. A "was replayed" bit
-  // reaching this module would be a second source of truth for something rename
-  // already settled.
+  Nothing here knows the load is a re-execution and it must not try to: the
+  fresh destination arrives on the uop like any other. A "was replayed" bit
+  reaching this module would be a second source of truth for something rename
+  already settled.
 
   ---- 9. The unit-stride vector consumer ----
 

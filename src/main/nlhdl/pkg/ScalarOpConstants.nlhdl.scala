@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   ScalarOpConstants — DELTA SPEC. Describes only the constants Caracal ADDS to
   the existing `trait ScalarOpConstants` in
   src/main/scala/v4/common/consts.scala, which is hand-written baseline BOOM v4.
+*/
 
   hierarchy.yaml: kind: package, mode: edit_existing,
   target src/main/scala/v4/common/consts.scala. No `output:`. Budget: ~30 lines.
@@ -33,7 +34,6 @@ from Tenstorrent Inc.
   functional-unit constants in `ScalarOpConstants` itself.
 
   Governing spec anchor: overview.rst, the pipeline table's rename/dispatch rows.
-*/
 
 <|begin_module|>
 
@@ -72,10 +72,10 @@ from Tenstorrent Inc.
        even one of them would silently change decode behaviour for scalar code,
        and it would do so in a way no vector test could ever detect.
 
-  // The matching widening of `dst_rtype`, `lrs1_rtype` and `lrs2_rtype` in the
-  // MicroOp bundle, and of the ROB entry's `dst_rtype`, are the MicroOp and Rob
-  // deltas respectively. All three widths must move together: this trait is
-  // where the encoding lives, but it declares no storage.
+  The matching widening of `dst_rtype`, `lrs1_rtype` and `lrs2_rtype` in the
+  MicroOp bundle, and of the ROB entry's `dst_rtype`, are the MicroOp and Rob
+  deltas respectively. All three widths must move together: this trait is
+  where the encoding lives, but it declares no storage.
 
   ---- 2. The three vector issue queues ----
 
@@ -93,26 +93,26 @@ from Tenstorrent Inc.
        because dispatch routes purely on those bits the failure would look like
        a scheduling bug rather than a constant-numbering bug.
 
-  // Raising IQ_SZ widens MicroOp.iq_type by three bits for every uop in the
-  // machine, including in configs that never enable vectors. That is the one
-  // place this delta is NOT free, and it is accepted deliberately: gating IQ_SZ
-  // on usingRVV would make the trait depend on Parameters, which it does not
-  // today.
-  //
-  // ===> IT IS NOT MERELY AN AREA COST. THE THREE NEW POSITIONS MUST BE
-  //      EXPLICITLY DEFAULTED, AND NOT BY THIS FILE. Baseline `DecodeUnit`
-  //      assigns `uop := io.enq.uop` and then writes only iq_type positions 0..3
-  //      individually, while `io.enq.uop` originates from a bundle the frontend
-  //      sets with `f2_fetch_bundle := DontCare`. So without an explicit default
-  //      every SCALAR uop would carry three DON'T-CARE vector-queue routing bits
-  //      into dispatch — mis-routing, not just an X in a waveform. The same
-  //      hazard applies to `is_vec`, `is_shared` and `is_vl_producer`.
-  //      The fix lives in the DecodeUnit delta (six default assignments), which
-  //      is the only node that sees `io.enq.uop`. This trait must NOT attempt it:
-  //      a constants trait has no uop to default.
-  //      Gate (f) remains the bit-identity check, but note that a PASSING gate
-  //      (f) does NOT prove the defaults are present — a don't-care bit can
-  //      elaborate identically and still mis-route in simulation.
+  Raising IQ_SZ widens MicroOp.iq_type by three bits for every uop in the
+  machine, including in configs that never enable vectors. That is the one
+  place this delta is NOT free, and it is accepted deliberately: gating IQ_SZ
+  on usingRVV would make the trait depend on Parameters, which it does not
+  today.
+
+  ===> IT IS NOT MERELY AN AREA COST. THE THREE NEW POSITIONS MUST BE
+       EXPLICITLY DEFAULTED, AND NOT BY THIS FILE. Baseline `DecodeUnit`
+       assigns `uop := io.enq.uop` and then writes only iq_type positions 0..3
+       individually, while `io.enq.uop` originates from a bundle the frontend
+       sets with `f2_fetch_bundle := DontCare`. So without an explicit default
+       every SCALAR uop would carry three DON'T-CARE vector-queue routing bits
+       into dispatch — mis-routing, not just an X in a waveform. The same
+       hazard applies to `is_vec`, `is_shared` and `is_vl_producer`.
+       The fix lives in the DecodeUnit delta (six default assignments), which
+       is the only node that sees `io.enq.uop`. This trait must NOT attempt it:
+       a constants trait has no uop to default.
+       Gate (f) remains the bit-identity check, but note that a PASSING gate
+       (f) does NOT prove the defaults are present — a don't-care bit can
+       elaborate identically and still mis-route in simulation.
 
   No functional-unit code is added here. `FC_AGEN` and `FC_DGEN` already exist
   and the vector paths reuse them; `FC_SZ` stays 10.

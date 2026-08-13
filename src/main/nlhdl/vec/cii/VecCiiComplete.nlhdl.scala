@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecCiiComplete — the completion half of the CII Writeback direction: on the
   beat the coprocessor MARKS `last` it emits, exactly once, one group-done, one
   ROB busy-clear, the accrued `fflags`/`vxsat`, and the tag free.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/cii/VecCiiComplete.scala,
@@ -53,7 +54,6 @@ from Tenstorrent Inc.
   `cii-segmented`; midcore.rst `group-done-wb`, `precise-vec-exc`;
   execution.rst `vector-execution` ("What the coprocessor provides");
   issue.rst `shared-store-chain`.
-*/
 
 <|begin_module|>
 
@@ -104,10 +104,10 @@ from Tenstorrent Inc.
                       of the final `W2` write. There is deliberately NO `ready`:
                       the credit-metered channel has no back-pressure line and
                       this module always absorbs a beat.
-                      // `wb_data` and `wb_dst_offset` are NOT ports here: a
-                      // 256-bit fan-out into a module with no datapath is pure
-                      // cost, and their absence is what makes the split
-                      // reviewable — everything read here is 15 bits wide.
+                      `wb_data` and `wb_dst_offset` are NOT ports here: a
+                      256-bit fan-out into a module with no datapath is pure
+                      cost, and their absence is what makes the split
+                      reviewable — everything read here is 15 bits wide.
   - `io.wb_lookup`   — This module's reader of VecCiiTagTable's declared
                       `wb_lookup` port: combinational, no handshake, answering in
                       the SAME cycle as the beat. Of the response it reads five
@@ -128,14 +128,14 @@ from Tenstorrent Inc.
                       cycle the flush fires, one cycle before `killed` is readable
                       from the entry, so the suppression term of part 5 is
                       `io.kill_all || io.wb_lookup.killed`.
-                      // The ASYMMETRY WITH VecCiiWriteback IS DELIBERATE, and a
-                      // reader should not "unify" the two: this module forms the OR
-                      // itself because it needs `killed` from the same lookup
-                      // anyway, while `wb` takes ONE pre-computed `wb_suppress`
-                      // that VecCiiHost forms from the identical two terms, so that
-                      // `wb` needs no flush port at all. Same two terms, two homes,
-                      // one settled naming — `flush` exports `kill_all` and
-                      // exports no per-channel suppress output to either of us.
+                      The ASYMMETRY WITH VecCiiWriteback IS DELIBERATE, and a
+                      reader should not "unify" the two: this module forms the OR
+                      itself because it needs `killed` from the same lookup
+                      anyway, while `wb` takes ONE pre-computed `wb_suppress`
+                      that VecCiiHost forms from the identical two terms, so that
+                      `wb` needs no flush port at all. Same two terms, two homes,
+                      one settled naming — `flush` exports `kill_all` and
+                      exports no per-channel suppress output to either of us.
   - `io.group_done`  — Output Valid(`VecGroupDone`, from VecBundles). ONE per
                       completing vector destination group.
   - `io.clr_rob`     — Output Valid(UInt(`robAddrSz`.W)). The single-shot ROB
@@ -184,12 +184,12 @@ from Tenstorrent Inc.
   register and no comparison of any count against anything. The Writeback channel
   carries no expected-count field to compare against either, which is the same
   decision seen from the coprocessor side.
-  // WHY, concretely: the number of writeback beats is the DESTINATION member
-  // count, and a widening op (EEW doubling) or a narrowing op emits a member
-  // count that differs from the source EMUL the host renamed against. A
-  // host-derived count would therefore be correct for every ordinary op and
-  // wrong for exactly the widening/narrowing ones — a bug that passes the smoke
-  // test and fails in a kernel. One marked bit costs nothing and cannot drift.
+  WHY, concretely: the number of writeback beats is the DESTINATION member
+  count, and a widening op (EEW doubling) or a narrowing op emits a member
+  count that differs from the source EMUL the host renamed against. A
+  host-derived count would therefore be correct for every ordinary op and
+  wrong for exactly the widening/narrowing ones — a bug that passes the smoke
+  test and fails in a kernel. One marked bit costs nothing and cannot drift.
 
   For bring-up an `assert` may compare the VEC-destination beats observed for a
   tag against `io.wb_lookup.members`. It lives entirely inside the assertion — no
@@ -239,10 +239,10 @@ from Tenstorrent Inc.
   beat is a VRF `W2` write, and that is VecCiiWriteback's, visible only to the
   register file; no beat other than `last` produces any ROB-facing or
   wakeup-facing event, and this module has no port on which one could appear.
-  // This is exactly why the ROB needs NO per-entry completion counter
-  // (midcore.rst `group-done-wb`). Streaming per-member completions in is what
-  // a single-shot `rob_bsy` clear and a per-PRN vector Busy Table cannot
-  // absorb, so adding one is a design-invariant violation, not an optimization.
+  This is exactly why the ROB needs NO per-entry completion counter
+  (midcore.rst `group-done-wb`). Streaming per-member completions in is what
+  a single-shot `rob_bsy` clear and a per-PRN vector Busy Table cannot
+  absorb, so adding one is a design-invariant violation, not an optimization.
   The one event drives three consumers — the ROB single-shot busy-clear, the
   vector Busy-Table clear and the VECTOR wakeup network — so all three see the
   same completion in the same cycle and cannot drift.
@@ -273,12 +273,12 @@ from Tenstorrent Inc.
   BOTH suppressed — there is no vector destination group to announce, and the
   ROB busy-clear rides the ordinary INT/FP writeback (`int_wb`/`fp_wb`, an
   `ExeUnitResp`) that VecCiiWriteback already drives, per the reuse ground rule.
-  // TWO SINGLE-SOURCE RULES FOLLOW, and both are seam obligations on
-  // VecCiiWriteback: exactly one ROB busy-clear per instruction (its
-  // ExeUnitResp for a scalar dest, this module's `clr_rob` for a vector dest),
-  // and exactly one fflags write per instruction (always this module's) — so
-  // the scalar-dest `ExeUnitResp.fflags` must be driven to zero/invalid, or the
-  // rob_fflags assert above fires on the second write.
+  TWO SINGLE-SOURCE RULES FOLLOW, and both are seam obligations on
+  VecCiiWriteback: exactly one ROB busy-clear per instruction (its
+  ExeUnitResp for a scalar dest, this module's `clr_rob` for a vector dest),
+  and exactly one fflags write per instruction (always this module's) — so
+  the scalar-dest `ExeUnitResp.fflags` must be driven to zero/invalid, or the
+  rob_fflags assert above fires on the second write.
 
   ---- 5. The kill contract: suppress, do not skip ----
 
@@ -298,9 +298,9 @@ from Tenstorrent Inc.
   POPPED and its `wb_credit` still returned; that is VecCiiWriteback's obligation
   and not optional, because the channels have no ready line and a swallowed beat
   stalls the channel for every surviving instruction.
-  // Suppression is at the EFFECT, not at the beat. A killed instruction must be
-  // allowed to FINISH ON JUNK: the VPU is in-order and the SV has no kill line,
-  // so there is no way to stop the beats — only to make them inert.
+  Suppression is at the EFFECT, not at the beat. A killed instruction must be
+  allowed to FINISH ON JUNK: the VPU is in-order and the SV has no kill line,
+  so there is no way to stop the beats — only to make them inert.
 
   ---- 6. Tag lifetime is identical for a killed tag ----
 
@@ -310,14 +310,14 @@ from Tenstorrent Inc.
   qualified by `dst_kind` either. `killed` is idempotent — a second flush while
   the tag is draining re-sets a bit that is already set — so no re-initialization
   and no per-tag flush counter exist here.
-  // FREEING EARLY IS THE BUG THIS PARAGRAPH EXISTS TO PREVENT. If a flush freed
-  // its tags immediately, a tag could be REALLOCATED to a new instruction while
-  // the killed instruction's beats were still arriving; those beats would then
-  // resolve against the new tag's side-table entry and be placed into a live,
-  // unrelated `pvdest` group — silent corruption of a correctly-executing
-  // instruction. The CII avoids it by NOT recycling the tag during the drain,
-  // which is why the LSU's PRN-recycling squash needs a different mechanism
-  // entirely (see VecSquashUnit); do not port this pattern there.
+  FREEING EARLY IS THE BUG THIS PARAGRAPH EXISTS TO PREVENT. If a flush freed
+  its tags immediately, a tag could be REALLOCATED to a new instruction while
+  the killed instruction's beats were still arriving; those beats would then
+  resolve against the new tag's side-table entry and be placed into a live,
+  unrelated `pvdest` group — silent corruption of a correctly-executing
+  instruction. The CII avoids it by NOT recycling the tag during the drain,
+  which is why the LSU's PRN-recycling squash needs a different mechanism
+  entirely (see VecSquashUnit); do not port this pattern there.
 
   ---- 7. Segmented (shared) instructions: one shape, no special case ----
 
@@ -375,11 +375,11 @@ from Tenstorrent Inc.
   exception port at all; should the VPU ever report a fault it is a plain precise
   exception on the shared `vec_xcpt` path, whose `VecException` bundle has no
   element field either.
-  // The two properties are the same property. A per-member ROB completion
-  // (part 3) would make an instruction look resumable mid-group, and then an
-  // element index would be needed to describe where to resume — which
-  // midcore.rst `precise-vec-exc` shows to be unimplementable here, because the
-  // partially-written `pvdest` group is returned to the free list on the trap.
+  The two properties are the same property. A per-member ROB completion
+  (part 3) would make an instruction look resumable mid-group, and then an
+  element index would be needed to describe where to resume — which
+  midcore.rst `precise-vec-exc` shows to be unimplementable here, because the
+  partially-written `pvdest` group is returned to the free list on the trap.
 
   ---- 9. Trace ----
 
@@ -392,12 +392,12 @@ from Tenstorrent Inc.
   never arrived, one that arrived for a killed tag, and a tag freed without one.
   Tracing declares no state, so deleting every call site leaves the design
   bit-identical.
-  // NOTE FOR THE VecTrace SEAM: this module holds a real `rob_idx` (from the
-  // side-table) but NO MicroOp, while the `trace` helper's signature takes a
-  // MicroOp. It needs the rob_idx-keyed form of the helper — the analogue of the
-  // `traceDecode` variant that exists because decode has no rob_idx. It must
-  // neither fabricate a MicroOp nor fall back to `rob=?`, since it knows the
-  // real value.
+  NOTE FOR THE VecTrace SEAM: this module holds a real `rob_idx` (from the
+  side-table) but NO MicroOp, while the `trace` helper's signature takes a
+  MicroOp. It needs the rob_idx-keyed form of the helper — the analogue of the
+  `traceDecode` variant that exists because decode has no rob_idx. It must
+  neither fabricate a MicroOp nor fall back to `rob=?`, since it knows the
+  real value.
   <|end_logic|>
 
 <|end_module|>

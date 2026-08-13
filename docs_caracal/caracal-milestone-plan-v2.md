@@ -776,8 +776,29 @@ implementation, because that seam is what rule 6 depends on.
 | **E4** | Chisel | `VecElemAgen` ×2 (fill, SSI) and `VecRangeAgen` ×2 (fill, US). |
 | **E5** | Chisel | `VecBeatExpander` ×2 (drain, coalescing) + `VecDcacheArbiter`. **P1 and P2 land here.** |
 | **E6** | Chisel | `VecLoadCoalescingBuffer` + `VecDgen` + **`VecGroupCopy`**. **P5 lands here.** |
+| **E6.5** | Chisel | `VecCrossLsuSnoop`, `VecStoreForward`, `VecOrderHold` — **moved here from G1–G3 during E**, see the note below. |
 | **E7** | Chisel | `VecLsu` container + the `LSU` delta. **Gate (e2) must pass. P3, P4, P7 land here.** |
 | **E8** | Chisel | `VecSquashUnit`. |
+
+> **⚠ E6.5: the three ordering nodes cannot stay in Phase G, and this was found at E7 planning.**
+> `VecLsu`'s logic section 10 wires `snoop`/`fwd`/`hold` as load-bearing rather than optional:
+> `fwd.known_overlap` feeds `hold.known_overlap` (the two predicates must be exact complements,
+> which is why there is ONE match and `hold` may not build a second overlap test), and
+> `hold.hold_ldq` feeds `arb.io.hold_ldq`, which owns suppression. There is no "absent" mode in
+> that spec, and `hierarchy.yaml` instantiates all three unconditionally. Staging them off the
+> way D2 staged the whole LSU off would mean inventing an **unspecified conservative-wait mode**
+> — new behavior in a `mode: new` node, which fails gate (i) — so they are generated in E.
+> `vecScalarSnoopEnable` then gates their BEHAVIOR, not their existence, which is what a config
+> flag should do.
+>
+> **The Phase-G ordering constraint this appears to violate, and why it does not, yet.** Phase G
+> says *"Do not land G2 before F6"*, because an order-fail replay raises
+> `MINI_EXCEPTION_MEM_ORDERING` at the ROB head and can squash past-PNR coprocessor work — the
+> hole `VecCiiFlush` closes. During Phase E the **CII is staged off entirely**, so there is no
+> past-PNR coprocessor work for a replay to squash and the constraint is vacuous. It becomes
+> live the moment Phase F attaches the CII. **RE-CHECK IT AT F6 rather than assuming E6.5
+> discharged it** — what was landed here is the ordering hardware, not the argument that it is
+> safe alongside a coprocessor.
 
 **Notes.**
 `VecQueueReservation` claims capacity **in program order at dispatch**, sized to the worst-case

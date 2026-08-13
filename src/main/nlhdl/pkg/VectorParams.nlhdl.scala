@@ -17,6 +17,7 @@ from Tenstorrent Inc.
 
 /*
   VectorParams — the single declaration of every Caracal vector sizing constant.
+*/
 
   hierarchy.yaml: kind: package, mode: new,
   output src/main/scala/v4/vec/generated/VectorParams.scala,
@@ -43,7 +44,6 @@ from Tenstorrent Inc.
        LMUL=8 groups can be renamed at once. Changing either changes an
        architectural limit, so each is documented with its derived consequence
        rather than just its value.
-*/
 
 <|begin_module|>
 
@@ -76,9 +76,10 @@ from Tenstorrent Inc.
   //@req-spec-vrf.a1
   //@req-spec-vrf.a4
   `numVecPhysRegisters` is the size of the vector physical register file.
-  Default 96. The vector architectural register count is fixed at 32 by RVV and
+  Default 128. The vector architectural register count is fixed at 32 by RVV and
   is not a parameter. Legal range is bounded below by the capacity requirement
-  in the logic section.
+  in the logic section AND by VecFreeList's own require, which is the binding one
+  because it alone can see `coreWidth`.
 
   //@req-spec-vrf.a5
   //@req-spec-rename.h1
@@ -103,6 +104,12 @@ from Tenstorrent Inc.
   `lcbEntries` is the number of VLEN-wide Load-Coalescing-Buffer assembly
   entries. Default 8, i.e. one whole LMUL=8 group in flight.
 
+  `ldRespTags` is how many vector load beats may be outstanding at once, each
+  holding one entry of the tag-keyed response-alignment table in `VecLsu` and one
+  value of `uop.v_mem_tag`. Default 8. A beat cannot fire without a free tag, so
+  this bounds load-beat concurrency; it must be at least `lsuWidth`, since every
+  lane reserves its own tag from the busy register in the same cycle.
+
   ---- Coprocessor interface figures (DERIVED, not chosen) ----
 
   //@req-spec-cii.b4
@@ -115,13 +122,13 @@ from Tenstorrent Inc.
   Fixed at 8, matching `MAX_MEMBERS` in the same package. It is exposed as a
   parameter only so that every module reads one name instead of writing 8.
 
-  // ADDED AT A2. VecBundles' spec requires every CII width to derive from a
-  // mirror of a tt_cii_caracal_pkg.svh localparam, naming four: CII_TAG_W,
-  // CII_NUM_SRC_SLOTS, CII_VL_W and CII_MEMBER_W. Three were already covered
-  // — CII_TAG_W by `ciiTagBits`, CII_VL_W by the derived `vecVLSz`, and
-  // CII_MEMBER_W by `log2Ceil(maxMembers)`. CII_NUM_SRC_SLOTS had no mirror
-  // at all, so VecBundles had nowhere to read it from and pinned a bare
-  // literal instead. That is the gap this field closes.
+  ADDED AT A2. VecBundles' spec requires every CII width to derive from a
+  mirror of a tt_cii_caracal_pkg.svh localparam, naming four: CII_TAG_W,
+  CII_NUM_SRC_SLOTS, CII_VL_W and CII_MEMBER_W. Three were already covered
+  — CII_TAG_W by `ciiTagBits`, CII_VL_W by the derived `vecVLSz`, and
+  CII_MEMBER_W by `log2Ceil(maxMembers)`. CII_NUM_SRC_SLOTS had no mirror
+  at all, so VecBundles had nowhere to read it from and pinned a bare
+  literal instead. That is the gap this field closes.
   `ciiNumSrcSlots` is the number of hintable coprocessor source slots. Default
   4, and again not a free choice: it must equal `CII_NUM_SRC_SLOTS` in the
   frozen package. It sizes the `src_reuse_hint` bit-per-slot field (which is
@@ -152,18 +159,18 @@ from Tenstorrent Inc.
   circular reuse and never extends past its tail — so an older load's region sits ahead,
   drains first and refills into its own region, and no younger reservation can block it.
 
-  // The quantum is EEW-RELATIVE, not a flat entry count, because the agen produces one
-  // element per cycle while the drain consumes up to `lsuWidth` per cycle: too small a
-  // reservation lets the agen STARVE the drain and undercut target P2.
-  // ===> DO NOT SET IT TO 8 OR MORE. worstCase = EMUL * vLen/eew and EMUL <= 8 always,
-  //      so `min` would always select worstCase, spec-lsu.b11's streaming precondition
-  //      would be unreachable, and the streaming path would be DEAD CODE in the most
-  //      instantiated leaf in the subtree. At 512 entries / EMUL=8 / SEW=8:
-  //      2 -> 8 loads in flight, 4 -> 4 loads, 8 -> 2 loads (i.e. no streaming at all).
-  // DELEGATED (A2): `require(ldResvMembers * vLen/eew_min >= lsuWidth * 2)` is stated
-  // here but CANNOT be checked here — `lsuWidth` is a BoomCoreParams quantity and this
-  // node has no dependencies. BoomCoreParams owns the check; see its logic section.
-  // The obligation is unchanged, only its location.
+  The quantum is EEW-RELATIVE, not a flat entry count, because the agen produces one
+  element per cycle while the drain consumes up to `lsuWidth` per cycle: too small a
+  reservation lets the agen STARVE the drain and undercut target P2.
+  ===> DO NOT SET IT TO 8 OR MORE. worstCase = EMUL * vLen/eew and EMUL <= 8 always,
+       so `min` would always select worstCase, spec-lsu.b11's streaming precondition
+       would be unreachable, and the streaming path would be DEAD CODE in the most
+       instantiated leaf in the subtree. At 512 entries / EMUL=8 / SEW=8:
+       2 -> 8 loads in flight, 4 -> 4 loads, 8 -> 2 loads (i.e. no streaming at all).
+  DELEGATED (A2): `require(ldResvMembers * vLen/eew_min >= lsuWidth * 2)` is stated
+  here but CANNOT be checked here — `lsuWidth` is a BoomCoreParams quantity and this
+  node has no dependencies. BoomCoreParams owns the check; see its logic section.
+  The obligation is unchanged, only its location.
 
   ---- Port counts named by requirements but previously declared nowhere ----
 
@@ -211,15 +218,15 @@ from Tenstorrent Inc.
        subclass is constructed. `def` would work too but recomputes; these feed
        hardware widths and are read many times.
 
-       // ===> NEITHER GATE (a) NOR GATE (f) CAN CATCH THIS, WHICH IS WHY IT SAT
-       // UNDETECTED FROM PHASE A THROUGH PHASE C. It is not a compile error —
-       // the types are fine — and a `usingRVV = false` build never constructs
-       // `HasVectorParams` at all, so the vectors-off gate cannot reach it
-       // either. It surfaced only when a VECTOR config was first elaborated
-       // end-to-end (the `MegaBoomV4VectorConfig` cosim pipeclean, 2026-08-10),
-       // and it fired BEFORE the known D2 dispatcher `require`, masking it.
-       // The abstract `val vectorParams: VectorParams` itself stays a plain
-       // `val` — it is the thing being supplied, not a derived value.
+       ===> NEITHER GATE (a) NOR GATE (f) CAN CATCH THIS, WHICH IS WHY IT SAT
+       UNDETECTED FROM PHASE A THROUGH PHASE C. It is not a compile error —
+       the types are fine — and a `usingRVV = false` build never constructs
+       `HasVectorParams` at all, so the vectors-off gate cannot reach it
+       either. It surfaced only when a VECTOR config was first elaborated
+       end-to-end (the `MegaBoomV4VectorConfig` cosim pipeclean, 2026-08-10),
+       and it fired BEFORE the known D2 dispatcher `require`, masking it.
+       The abstract `val vectorParams: VectorParams` itself stays a plain
+       `val` — it is the thing being supplied, not a derived value.
 
   ===> AND NO ELABORATION CHECK MAY SIT AS A BARE STATEMENT IN THE TRAIT BODY,
        for the same reason: a bare `require(...)` executes during trait
@@ -241,17 +248,17 @@ from Tenstorrent Inc.
   **256 elements** at the defaults. `vecVLSz` is the width needed to hold a VL
   value, `log2Ceil(maxVecVL) + 1` = **9 bits**.
 
-  // ===> DO NOT WRITE `maxVecVL = vLen / 8`. That is VLMAX for LMUL=1 only (32
-  // elements, 6 bits) and it SILENTLY TRUNCATES: a real VL of 256 at LMUL=8,
-  // SEW=8 wraps to 0 in a 6-bit field. This is the same failure mode as the M1
-  // AVL-truncation bug that ALUUnit's delta warns about — a value that should
-  // saturate instead wraps — and it would corrupt every consumer of VL at once:
-  // the VL register file entry width, the element cursors, the reservation
-  // sizing, and the 9-bit `vl` field of the CII issue packet.
-  // The spec is explicit and independently confirms 9: midcore.rst and
-  // frontend.rst both describe the VL register file as "64 entries of ~9 bits".
-  // Require `vecVLSz >= log2Ceil(vLen * maxMembers / 8 + 1)` so a future edit
-  // that narrows it fails the build rather than truncating at run time.
+  ===> DO NOT WRITE `maxVecVL = vLen / 8`. That is VLMAX for LMUL=1 only (32
+  elements, 6 bits) and it SILENTLY TRUNCATES: a real VL of 256 at LMUL=8,
+  SEW=8 wraps to 0 in a 6-bit field. This is the same failure mode as the M1
+  AVL-truncation bug that ALUUnit's delta warns about — a value that should
+  saturate instead wraps — and it would corrupt every consumer of VL at once:
+  the VL register file entry width, the element cursors, the reservation
+  sizing, and the 9-bit `vl` field of the CII issue packet.
+  The spec is explicit and independently confirms 9: midcore.rst and
+  frontend.rst both describe the VL register file as "64 entries of ~9 bits".
+  Require `vecVLSz >= log2Ceil(vLen * maxMembers / 8 + 1)` so a future edit
+  that narrows it fails the build rather than truncating at run time.
 
   //@req-spec-cii.a16
   The CII operand and result buses are `vLen` bits wide — 256 by default — for
@@ -260,15 +267,24 @@ from Tenstorrent Inc.
   its payloads on VLEN too, and a hard-coded 256 on the Chisel side would
   silently disagree the moment either changes.
 
-  ---- Vector PRN capacity: what 96 actually buys ----
+  ---- Vector PRN capacity: what 128 actually buys ----
 
   //@req-spec-vrf.b3
   //@req-spec-vrf.b2
   The committed rename map table maps all 32 architectural vector registers at
   all times, whatever the current LMUL — a mapping is a mapping regardless of
-  how many registers the current `vtype` groups together. So 32 of the 96 PRNs
+  how many registers the current `vtype` groups together. So 32 of the 128 PRNs
   are permanently committed architectural state and are never available for
   in-flight renaming. Only `numVecPhysRegisters - 32` are.
+
+  ===> AND NOT EVEN ALL OF THOSE. VecFreeList's pre-selection stage parks one PRN
+  per port in a holding register, `allocWidth = coreWidth * 2 * maxMembers` of them,
+  refillable only from `free_list`. Those are unavailable at rest too, so the pool
+  a running machine can actually reach is `numVecPhysRegisters - 32 - allocWidth`.
+  This term is invisible from here — `coreWidth` is a BoomCoreParams quantity — which
+  is why the binding require lives in VecFreeList and this file's is the weaker
+  necessary condition, not the sufficient one. Do not size this parameter from the
+  `- 32` figure alone.
 
   //@req-spec-vrf.b4
   An LMUL=8 OP.v renames its whole destination group atomically and therefore
@@ -280,21 +296,26 @@ from Tenstorrent Inc.
 
   Declare these consequences as named derived values so the limit is visible
   where the parameter is read, not just in a comment:
-  `maxRenamableGroups = (numVecPhysRegisters - 32) / maxMembers`, which is 8 at
-  the default, and `maxRenamableSegGroups = maxRenamableGroups / 2`, which is 4.
+  `maxRenamableGroups = (numVecPhysRegisters - 32) / maxMembers`, which is 12 at
+  the default, and `maxRenamableSegGroups = maxRenamableGroups / 2`, which is 6.
+  Both overstate the reachable figure by `allocWidth / maxMembers` for the reason
+  above; they bound the file, not the free list.
 
-  // At 128 PRNs these were 12 and 6. The 96-PRN choice trades in-flight groups
-  // for area (the port count already dominates the storage term), so the
-  // free-list stall rate is the number to watch in the LS regression.
+  The default was 96 until E7, which trades in-flight groups for area (the port
+  count already dominates the storage term). That is a sound trade in isolation and
+  it was ALSO the deadlock: at `coreWidth = 4` it left `96 - 32 - 64 = 0` reachable
+  PRNs, so the first vector load hung the machine at rename. Restored to 128, which
+  leaves 32. Free-list stall rate remains the number to watch in the LS regression;
+  it is now a throughput signal rather than a liveness one.
 
   Require `numVecPhysRegisters >= 32 + maxMembers` so at least one full LMUL=8
   group can ever be renamed; without it the machine cannot make forward
   progress on a wide group and would deadlock at rename rather than stall.
 
-  // DELEGATED (A2): `require(numVlPhysRegisters >= 1 + coreWidth)` — a full dispatch
-  // group of VL producers must be able to allocate, plus the one committed pointer.
-  // `coreWidth` is a BoomCoreParams quantity this node cannot see, so BoomCoreParams
-  // owns the check. The obligation is unchanged, only its location.
+  DELEGATED (A2): `require(numVlPhysRegisters >= 1 + coreWidth)` — a full dispatch
+  group of VL producers must be able to allocate, plus the one committed pointer.
+  `coreWidth` is a BoomCoreParams quantity this node cannot see, so BoomCoreParams
+  owns the check. The obligation is unchanged, only its location.
 
   ---- Element-queue depth is an architectural limit ----
 

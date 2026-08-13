@@ -36,7 +36,8 @@ file: descriptive, concise, unambiguous, and ready for `gen-rtl`.
    `<module_name>.nlhdl.<target_hdl>`. Confirm the target HDL if unstated.
 3. **Draft the file** from `template.nlhdl.sv`:
    - Keep the license header block.
-   - A brief `/* ... */` summary comment describing the module.
+   - A `/* ... */` file description: **1–2 lines**, what the module is, not how
+     it works. Not a paragraph — the details go in the body sections below it.
    - `<|begin_module|>` containing `<|begin_parameters|>`, `<|begin_ports|>`,
      `<|begin_logic|>`.
    - File-scope `<|begin_perf|>` (optional) and `<|begin_dependencies|>`
@@ -57,8 +58,16 @@ file: descriptive, concise, unambiguous, and ready for `gen-rtl`.
      really implies a rewrite, say so and propose `new` (or a new module)
      rather than smuggling a rewrite in as an edit.
 4. **Write the body as prose**, not `//` lines. Body text is descriptive and
-   concise. Reserve `//` / `/* */` comments for annotations meant to survive
-   into generated RTL near the relevant code (e.g. a non-obvious algorithm note).
+   concise, and it is where *all* intent, context, and behavioral explanation
+   lives. Comments are a separate, rationed channel: every comment you write
+   gets copied into the generated RTL, so the only ones that belong are
+   `//@req-<id>` tags (step 5b) and — rarely — a critical note a reader of the
+   RTL alone would get wrong, two lines maximum. Read "Comment policy" in
+   `references/format.md` and hold to it.
+   - Never comment to describe, restate, or label logic. If the sentence would
+     be at home in the body prose, put it in the body prose.
+   - Assumptions (defaulted width, unstated reset polarity) go in the body and
+     in your report — not into a comment destined for the RTL.
 5. **Be complete and consistent.** Every port referenced by the logic must be
    declared; every parameter used must be defined with a default and, where
    sensible, a legal range. State clock/reset conventions explicitly.
@@ -88,7 +97,8 @@ file: descriptive, concise, unambiguous, and ready for `gen-rtl`.
 
 - Conforms to `references/format.md`; delimiters exact; sections in the right
   scope (perf/dependencies/edit_scope outside the module block).
-- Prose body, comments used only for carry-through annotations.
+- Prose body. Comments are `//@req-` tags, a 1–2 line file description, and at
+  most a rare two-line critical note — nothing that describes or labels logic.
 - Scope matches the mode: whole-module specs are complete; delta specs describe
   only the change and carry an `<|begin_edit_scope|>` that a generator can hold
   itself to.

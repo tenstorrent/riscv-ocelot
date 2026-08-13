@@ -277,6 +277,12 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   // each need it and none of them re-decodes the instruction word.
   val v_is_masked          = if (usingRVV) Some(Bool()) else None
 
+  // vtype's vta/vma, inverted to the sense the LSU needs. Carried rather than
+  // re-read at issue: the LSU sees no vtype, and the value must be the one that
+  // was architecturally current at DECODE, not at completion.
+  val v_tail_undist        = if (usingRVV) Some(Bool()) else None
+  val v_mask_undist        = if (usingRVV) Some(Bool()) else None
+
   // access CLASS -- which agen this op goes to, decoded once by VLSDecode.
   val v_mop                = if (usingRVV) Some(UInt(2.W)) else None
   val v_is_unit_stride     = if (usingRVV) Some(Bool()) else None
@@ -328,6 +334,11 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   // from the element index without re-deriving EMUL and the mask.
   val v_split_dst_prn      = if (usingRVV) Some(UInt(vecPregSz.W)) else None
   val v_split_dst_byte_off = if (usingRVV) Some(UInt(log2Ceil(vecVLen / 8).W)) else None
+
+  // Identifies which outstanding load beat a D$ response belongs to. The response
+  // carries the request's uop back, so this is what lets the alignment table be
+  // keyed by request instead of by lane -- ll_resp always returns on the last lane.
+  val v_mem_tag             = if (usingRVV) Some(UInt(ldRespTagSz.W)) else None
 
   // One named sub-bundle (see VecElemCursor above), not three loose fields.
   val v_elem_cursor        = if (usingRVV) Some(new VecElemCursor) else None

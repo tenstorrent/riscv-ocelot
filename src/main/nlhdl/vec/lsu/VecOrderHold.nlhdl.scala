@@ -15,9 +15,8 @@ is strictly forbidden unless prior written permission is obtained
 from Tenstorrent Inc.
 */
 
-/*
-  VecOrderHold — decides WHICH younger vector load is held behind WHICH older
-  in-flight vector store, for the class combinations that do not forward.
+/* VecOrderHold — decides WHICH younger vector load is held behind WHICH older
+  in-flight vector store, for the class combinations that do not forward. */
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecOrderHold.scala,
@@ -55,7 +54,6 @@ from Tenstorrent Inc.
   Disambiguation", the Known / Predicted / Held-by / Released-by table),
   `order-fail-replay`, `dcache-arbiter`, `elem-progress` (the element cursor this
   module waits on).
-*/
 
 <|begin_module|>
 
@@ -117,10 +115,10 @@ from Tenstorrent Inc.
   their trust levels differ and the trace must distinguish them; they are
   otherwise handled identically.
 
-  // Neither event carries an "is a vector store" bit and none is needed: a store
-  // entry that is not a live vector store with elements left to write reads
-  // `st_drained` ASSERTED, so the admission term below rejects it. One definition
-  // does two jobs, and there is no second place for the two to disagree.
+  Neither event carries an "is a vector store" bit and none is needed: a store
+  entry that is not a live vector store with elements left to write reads
+  `st_drained` ASSERTED, so the admission term below rejects it. One definition
+  does two jobs, and there is no second place for the two to disagree.
 
   `st_drained` (Input, `Vec(numStqEntries, Bool)`) — the release, a LEVEL, one bit
   per STQ entry, driven by `VecLsu`, indexed by the REAL STQ index so every lookup
@@ -180,10 +178,10 @@ from Tenstorrent Inc.
   US/US pair whose forward only PARTIALLY covers the load is still not this
   module's case — that is a partial-forward replay, and `VecStoreForward` owns it.
 
-  // A SCALAR load is never held; it forwards out of the store data queues at
-  // either class. That asymmetry is the reason this module exists: a scalar load
-  // costs at most ONE replay, whereas a multi-element vector load would re-fail
-  // on every replay until the store commits.
+  A SCALAR load is never held; it forwards out of the store data queues at
+  either class. That asymmetry is the reason this module exists: a scalar load
+  costs at most ONE replay, whereas a multi-element vector load would re-fail
+  on every replay until the store commits.
 
   ---- The age rule: the hard direction constraint ----
 
@@ -247,10 +245,10 @@ from Tenstorrent Inc.
   delta extends what feeds those matches to the cross-queue vector case and
   presents the outcome here.
 
-  // Read the port, not the predictor. If BOOM later gains a trained store-set
-  // predictor (an SSIT/LFST pair), it drives this same port with this same
-  // payload and nothing in this file changes. That is the point of taking the
-  // prediction as an input instead of growing one here.
+  Read the port, not the predictor. If BOOM later gains a trained store-set
+  predictor (an SSIT/LFST pair), it drives this same port with this same
+  payload and nothing in this file changes. That is the point of taking the
+  prediction as an input instead of growing one here.
 
   Accuracy is explicitly not this module's problem in either direction: a false
   positive costs the wait, a false negative costs a replay, neither can produce a

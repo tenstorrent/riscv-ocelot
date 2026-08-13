@@ -20,6 +20,7 @@ from Tenstorrent Inc.
   the change Caracal applies to `class DecodeUnit` / `class DecodeUnitIo` in
   src/main/scala/v4/exu/decode.scala, which is hand-written baseline BOOM v4 and
   stays in place.
+*/
 
   hierarchy.yaml: kind: module, mode: edit_existing,
   target src/main/scala/v4/exu/decode.scala, group host.
@@ -55,7 +56,6 @@ from Tenstorrent Inc.
   Handling"), `vector-csr-explicit`, `vector-csr-ownership`, `frontend-stages`;
   loadstore.rst `fences`; overview.rst `caracal-pipeline`; glossary.rst
   `glossary-terms`.
-*/
 
 <|begin_module|>
 
@@ -162,30 +162,30 @@ from Tenstorrent Inc.
 
   `v_legal` is `v_opcode` ANDed with `!io.csr_decode.vector_illegal`.
 
-  // ===> THEY MUST BE TWO NAMED PREDICATES, NOT ONE. `v_opcode` answers "is
-  // this encoding in the RVV opcode space", a fixed property of `inst`;
-  // `v_legal` additionally answers "is vector state enabled", which depends on
-  // a CSR. Only `v_legal` may qualify `id_illegal_insn` — that is the whole
-  // point of the `vector_illegal` term. But the pass-through assertion in part
-  // 4 must be guarded on `v_opcode`, because the vector decoders recognize an
-  // instruction from `inst` alone and cannot see `vector_illegal`: an RVV
-  // encoding executed with `mstatus.VS = Off` has `v_legal` false while they
-  // still legitimately write its fields, so guarding that assertion on
-  // `v_legal` fires it on a machine that is trapping VS=Off CORRECTLY. An
-  // earlier draft of this file named only `v_legal` and referred to "the local
-  // RVV opcode predicate" in part 4, and the two were duly conflated.
+  ===> THEY MUST BE TWO NAMED PREDICATES, NOT ONE. `v_opcode` answers "is
+  this encoding in the RVV opcode space", a fixed property of `inst`;
+  `v_legal` additionally answers "is vector state enabled", which depends on
+  a CSR. Only `v_legal` may qualify `id_illegal_insn` — that is the whole
+  point of the `vector_illegal` term. But the pass-through assertion in part
+  4 must be guarded on `v_opcode`, because the vector decoders recognize an
+  instruction from `inst` alone and cannot see `vector_illegal`: an RVV
+  encoding executed with `mstatus.VS = Off` has `v_legal` false while they
+  still legitimately write its fields, so guarding that assertion on
+  `v_legal` fires it on a machine that is trapping VS=Off CORRECTLY. An
+  earlier draft of this file named only `v_legal` and referred to "the local
+  RVV opcode predicate" in part 4, and the two were duly conflated.
 
-  // ===> MATCH THE LOAD/STORE WIDTHS POSITIVELY. The tempting form is "LOAD-FP
-  // with a width other than FLW's 010 or FLD's 011", and it is wrong: width 001
-  // is FLH and 100 is FLQ, neither in `F_table`, so both are illegal today. The
-  // negative form silently admits them as vector, stops them trapping, and routes
-  // an FLH encoding into VLSDecode. RVV's data widths are exactly the four above.
+  ===> MATCH THE LOAD/STORE WIDTHS POSITIVELY. The tempting form is "LOAD-FP
+  with a width other than FLW's 010 or FLD's 011", and it is wrong: width 001
+  is FLH and 100 is FLQ, neither in `F_table`, so both are illegal today. The
+  negative form silently admits them as vector, stops them trapping, and routes
+  an FLH encoding into VLSDecode. RVV's data widths are exactly the four above.
 
-  // ===> THE `vector_illegal` TERM IS LOAD-BEARING, NOT DEFENSIVE. `mstatus.VS`
-  // and the VS=Off illegal-instruction gate are rocket's (frontend.rst
-  // `vector-csr-ownership`). Without this term a vector instruction executed with
-  // VS=Off is admitted by the gate below and never traps — an architectural hole
-  // no vector test can find, because vector tests enable VS first.
+  ===> THE `vector_illegal` TERM IS LOAD-BEARING, NOT DEFENSIVE. `mstatus.VS`
+  and the VS=Off illegal-instruction gate are rocket's (frontend.rst
+  `vector-csr-ownership`). Without this term a vector instruction executed with
+  VS=Off is admitted by the gate below and never traps — an architectural hole
+  no vector test can find, because vector tests enable VS first.
 
   ---- 2. The two terms added to `id_illegal_insn` ----
 
@@ -205,13 +205,13 @@ from Tenstorrent Inc.
   `bp_xcpt_if`, `xcpt_pf_if`, `xcpt_ae_if`, illegal. A vector-specific trap IS an
   illegal-instruction trap and gets no new cause code.
 
-  // ===> NO COMBINATIONAL LOOP, BUT IT IS CONDITIONAL ON A NEIGHBOUR.
-  // `uop.exception` depends on `illegal`, which comes from VecDecode, which is fed
-  // `uop_to_vdec` — a bundle that CONTAINS `exception`. That is a loop if and only
-  // if a vector decoder derives its illegal output from `uop_in.exception`. None
-  // does (VDecode: `vtype.vill` and the EMUL bound; VsetDecode: the keep-VL VLMAX
-  // comparison; VLSDecode: an encoding check), so the vector decoders must NOT
-  // read `uop_in.exception`/`exc_cause`. Recorded here, host-side.
+  ===> NO COMBINATIONAL LOOP, BUT IT IS CONDITIONAL ON A NEIGHBOUR.
+  `uop.exception` depends on `illegal`, which comes from VecDecode, which is fed
+  `uop_to_vdec` — a bundle that CONTAINS `exception`. That is a loop if and only
+  if a vector decoder derives its illegal output from `uop_in.exception`. None
+  does (VDecode: `vtype.vill` and the EMUL bound; VsetDecode: the keep-VL VLMAX
+  comparison; VLSDecode: an encoding check), so the vector decoders must NOT
+  read `uop_in.exception`/`exc_cause`. Recorded here, host-side.
 
   ---- 3. Vector-field defaults: this file is the LAST-RESORT WRITER ----
 
@@ -226,15 +226,15 @@ from Tenstorrent Inc.
   arithmetic on the third, and a segmented access on TWO bits (two issue slots,
   one ROB entry). The default is all this file owns.
 
-  // ===> NOT BELT-AND-BRACES: THE UNCOVERED POSITIONS ARE `DontCare`. The body
-  // begins `uop := io.enq.uop`, and `io.enq.uop` comes from
-  // `dec_fbundle.uops(w).bits`, whose producer does `f2_fetch_bundle := DontCare`
-  // (frontend.scala:480). Without these assignments a SCALAR uop carries three
-  // don't-care queue-routing bits into dispatch, and whatever FIRRTL's
-  // invalidation folds them to decides whether ordinary integer code is dispatched
-  // into the vector load queue. Same argument for `is_vec`, `is_shared` and
-  // `is_vl_producer` — drive all three `false.B`. `is_vl_producer` alone would
-  // allocate a `pvl` and write the VL register file for a scalar uop.
+  ===> NOT BELT-AND-BRACES: THE UNCOVERED POSITIONS ARE `DontCare`. The body
+  begins `uop := io.enq.uop`, and `io.enq.uop` comes from
+  `dec_fbundle.uops(w).bits`, whose producer does `f2_fetch_bundle := DontCare`
+  (frontend.scala:480). Without these assignments a SCALAR uop carries three
+  don't-care queue-routing bits into dispatch, and whatever FIRRTL's
+  invalidation folds them to decides whether ordinary integer code is dispatched
+  into the vector load queue. Same argument for `is_vec`, `is_shared` and
+  `is_vl_producer` — drive all three `false.B`. `is_vl_producer` alone would
+  allocate a `pvl` and write the VL register file for a scalar uop.
 
   The other added `MicroOp` fields — the `lv*` specifiers, the `pv*` groups,
   `v_emul`/`v_eew`/`v_seg_nf`/`v_idx_eew`, the `v_mop`/`v_is_*` access class and
@@ -319,18 +319,18 @@ from Tenstorrent Inc.
   committed-shadow restore the recovery path, and why no execute-time mirror write
   exists anywhere in the design.
 
-  // ===> THE PROOF THAT `is_unique` ALONE IS INSUFFICIENT IS IN THE BASELINE.
-  // `core.scala:739-740` reads
-  //   wait_for_empty_pipeline(w) = (dis_uops(w).is_unique || !enableOOO) &&
-  //                                (!rob.io.empty || !io.lsu.fencei_rdy ||
-  //                                 dis_prior_slot_valid(w))
-  // — a condition on ONE uop's own DISPATCH. Nothing in it, and nothing else in
-  // BOOM, holds back the DECODE of the next bundle, and the vtype mirror is
-  // written at decode, a stage earlier, so it is not ordered by `is_unique` at
-  // all. An earlier draft of frontend.rst claimed it was. VsetDecode sets the same
-  // pair from the other side of the merge; that duplication is intentional, so the
-  // property holds from the instruction word alone and does not depend on
-  // VecPipeline being present, elaborated or correctly wired.
+  ===> THE PROOF THAT `is_unique` ALONE IS INSUFFICIENT IS IN THE BASELINE.
+  `core.scala:739-740` reads
+    wait_for_empty_pipeline(w) = (dis_uops(w).is_unique || !enableOOO) &&
+                                 (!rob.io.empty || !io.lsu.fencei_rdy ||
+                                  dis_prior_slot_valid(w))
+  — a condition on ONE uop's own DISPATCH. Nothing in it, and nothing else in
+  BOOM, holds back the DECODE of the next bundle, and the vtype mirror is
+  written at decode, a stage earlier, so it is not ordered by `is_unique` at
+  all. An earlier draft of frontend.rst claimed it was. VsetDecode sets the same
+  pair from the other side of the merge; that duplication is intentional, so the
+  property holds from the instruction word alone and does not depend on
+  VecPipeline being present, elaborated or correctly wired.
 
   //@req-spec-memord.f17
   //@req-spec-memord.f18
@@ -345,12 +345,12 @@ from Tenstorrent Inc.
   Buffer to drain. This decoder's whole contribution is asserting `is_unique` on
   the right instructions.
 
-  // A head-side handshake is worse than redundant, it deadlocks: a YOUNGER
-  // vector store fills `st_SSI_*_Q`, whose entries free only at commit-drain,
-  // which cannot happen while the fence sits at the ROB head. The dispatch-side
-  // wait cannot deadlock — at dispatch the ROB is already empty, so every older
-  // vector store has committed and drains unconditionally, and nothing younger
-  // exists yet. Do not add a `vec_lsu_empty` port here.
+  A head-side handshake is worse than redundant, it deadlocks: a YOUNGER
+  vector store fills `st_SSI_*_Q`, whose entries free only at commit-drain,
+  which cannot happen while the fence sits at the ROB head. The dispatch-side
+  wait cannot deadlock — at dispatch the ROB is already empty, so every older
+  vector store has committed and drains unconditionally, and nothing younger
+  exists yet. Do not add a `vec_lsu_empty` port here.
 
   ---- 6. What this delta does NOT add, and the four reqs that discharges ----
 
@@ -371,13 +371,13 @@ from Tenstorrent Inc.
   requirements is the must-not-regress list — those six rows, those two columns and
   that expression must survive the edit unchanged.
 
-  // For the reader checking spec against file: frontend.rst
-  // `vector-csr-explicit` argues as though the CSR rows were `flush_on_commit = N`
-  // and the `write_flush` term supplied it for writes. In THIS baseline the row
-  // already forces both bits, so a vector-CSR READ is also flush_on_commit — a
-  // superset of the requirement, costing a refetch on a rare instruction. Do not
-  // "optimize" by clearing the row bit: that would make the property depend on
-  // another repo asserting `write_flush`, for a saving nobody measured.
+  For the reader checking spec against file: frontend.rst
+  `vector-csr-explicit` argues as though the CSR rows were `flush_on_commit = N`
+  and the `write_flush` term supplied it for writes. In THIS baseline the row
+  already forces both bits, so a vector-CSR READ is also flush_on_commit — a
+  superset of the requirement, costing a refetch on a rare instruction. Do not
+  "optimize" by clearing the row bit: that would make the property depend on
+  another repo asserting `write_flush`, for a saving nobody measured.
 
   //@req-spec-memord.f6
   //@req-spec-memord.f7
@@ -389,11 +389,11 @@ from Tenstorrent Inc.
   decode is untouched and the vector path is folded into `fencei_rdy`. Nothing is
   added for these two either; the must-not-regress list discharges them.
 
-  // Observation, not a defect: the spec's "`FENCE` and `SFENCE_VMA` are also
-  // `flush_on_commit`" reads as though `FENCE_I` were not, but row 166 sets it
-  // too. The requirement demands the bit on FENCE and SFENCE_VMA and forbids it
-  // nowhere, so the baseline satisfies it; the extra bit on `fence.i` is
-  // pre-existing BOOM behaviour and must not be "corrected" here.
+  Observation, not a defect: the spec's "`FENCE` and `SFENCE_VMA` are also
+  `flush_on_commit`" reads as though `FENCE_I` were not, but row 166 sets it
+  too. The requirement demands the bit on FENCE and SFENCE_VMA and forbids it
+  nowhere, so the baseline satisfies it; the extra bit on `fence.i` is
+  pre-existing BOOM behaviour and must not be "corrected" here.
   <|end_logic|>
 
 <|end_module|>

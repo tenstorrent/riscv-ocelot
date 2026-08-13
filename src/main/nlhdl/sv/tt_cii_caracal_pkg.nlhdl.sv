@@ -21,6 +21,7 @@ from Tenstorrent Inc.
   hand-written, already-verified SystemVerilog package
   src/main/sv/v4/tt-cii/src/tt_cii_caracal_pkg.svh. Nothing else in that file
   changes semantically.
+*/
 
   hierarchy.yaml: kind: package, mode: edit_existing, target_hdl: sv,
   target src/main/sv/v4/tt-cii/src/tt_cii_caracal_pkg.svh, group: coproc.
@@ -60,7 +61,6 @@ from Tenstorrent Inc.
   Governing spec anchors: cii.rst `cii-interface`, cii.rst `cii-operands`,
   midcore.rst `vrf-ports`, midcore.rst `old-vd`;
   docs_caracal/caracal-milestone-plan-v2.md §3 (the two SV nodes) and §11.
-*/
 
 <|begin_module|>
 
@@ -72,17 +72,17 @@ from Tenstorrent Inc.
   Three tempting additions are all forbidden, because each one would convert a
   free label into a payload-width change and break the frozen contract:
 
-  // Do NOT raise CII_NUM_SRC_SLOTS from 4 to 5 to "make room" for the new slot.
-  // CII_NUM_SRC_SLOTS sizes cii_caracal_frwd_hint_t, which is a field of
-  // cii_caracal_issue_req_t. Widening it widens the Issue payload, which
-  // re-resolves the relay's `type(...)`-parameterized FIFOs and breaks both the
-  // interface instantiation and the tb's `instr_src_valid <= '0`. The reuse hint
-  // is a bitmap over the four HINTABLE slots {VS1,VS2,VS3,VM} and is IGNORED in
-  // M2 (host drives 0); it is not a count of srcid encodings.
-  // Do NOT add a CII_NUM_SRCID / CII_SRC_LAST count localparam. Nothing in the
-  // design iterates over source-slot encodings; a count would be dead and would
-  // invite someone to size a bus from it.
-  // Do NOT widen cii_caracal_srcid_t. Three bits hold 0..6 with 7 still spare.
+  Do NOT raise CII_NUM_SRC_SLOTS from 4 to 5 to "make room" for the new slot.
+  CII_NUM_SRC_SLOTS sizes cii_caracal_frwd_hint_t, which is a field of
+  cii_caracal_issue_req_t. Widening it widens the Issue payload, which
+  re-resolves the relay's `type(...)`-parameterized FIFOs and breaks both the
+  interface instantiation and the tb's `instr_src_valid <= '0`. The reuse hint
+  is a bitmap over the four HINTABLE slots {VS1,VS2,VS3,VM} and is IGNORED in
+  M2 (host drives 0); it is not a count of srcid encodings.
+  Do NOT add a CII_NUM_SRCID / CII_SRC_LAST count localparam. Nothing in the
+  design iterates over source-slot encodings; a count would be dead and would
+  invite someone to size a bus from it.
+  Do NOT widen cii_caracal_srcid_t. Three bits hold 0..6 with 7 still spare.
 
   Every existing localparam keeps its current value bit-for-bit. They are
   enumerated in the logic section because their PRESERVATION is what discharges
@@ -128,16 +128,16 @@ from Tenstorrent Inc.
        instruction-dependent reinterpretation: it serves whichever slot is
        requested, straight from the per-tag side-table.
 
-  // The host resolution table, for reference only — it is implemented in the
-  // Chisel VecCiiOperandServer, not here:
-  //   0 NONE     reserved, "no source needed"
-  //   1 VS1      pvs1_grp(offset)
-  //   2 VS2      pvs2_grp(offset)
-  //   3 VS3      pvs3_grp(offset)            explicitly encoded 3rd source only
-  //   4 VM       pvm (the v0 mask)
-  //   5 SCALAR   the .vx/.vf value captured at issue (no VRF read)
-  //   6 STALE_VD stale_pvdest_grp(offset)    old-vd, for merging   <== NEW
-  //   7          reserved, unused
+  The host resolution table, for reference only — it is implemented in the
+  Chisel VecCiiOperandServer, not here:
+    0 NONE     reserved, "no source needed"
+    1 VS1      pvs1_grp(offset)
+    2 VS2      pvs2_grp(offset)
+    3 VS3      pvs3_grp(offset)            explicitly encoded 3rd source only
+    4 VM       pvm (the v0 mask)
+    5 SCALAR   the .vx/.vf value captured at issue (no VRF read)
+    6 STALE_VD stale_pvdest_grp(offset)    old-vd, for merging   <== NEW
+    7          reserved, unused
 
   ---- 2. Why adding a label is structurally inert ----
 
@@ -166,14 +166,14 @@ from Tenstorrent Inc.
   rename to `CII_SRC_VS3` that the plan and the spec tables suggest is REJECTED
   here, on evidence rather than on principle:
 
-  // `CII_SRC_VS3_VD` has two live references outside this package:
-  //   src/main/sv/v4/vpu/tb/cii_fv_tb.sv:207        — the VERIFIED testbench,
-  //     which this project is required to keep valid, and
-  //   src/main/sv/v4/vpu/tt_vpu_cii_wrapper_top.sv:524 — a BLACKBOX in this map,
-  //     which this project may not edit at all.
-  // A rename would therefore either break the verified tb or force an edit to a
-  // file that is out of scope. Renaming is a VPU-owner change, to be bundled
-  // with the decoder work that emits slot 6, not smuggled in here.
+  `CII_SRC_VS3_VD` has two live references outside this package:
+    src/main/sv/v4/vpu/tb/cii_fv_tb.sv:207        — the VERIFIED testbench,
+      which this project is required to keep valid, and
+    src/main/sv/v4/vpu/tt_vpu_cii_wrapper_top.sv:524 — a BLACKBOX in this map,
+      which this project may not edit at all.
+  A rename would therefore either break the verified tb or force an edit to a
+  file that is out of scope. Renaming is a VPU-owner change, to be bundled
+  with the decoder work that emits slot 6, not smuggled in here.
 
   ===> NAMING SKEW ACROSS LANGUAGES, deliberate and benign: the Chisel host and
        the .rst tables call slot 3 `VS3`, while the SV keeps `CII_SRC_VS3_VD`.
@@ -212,14 +212,14 @@ from Tenstorrent Inc.
   read ports `R5`-`R8` in the canonical static partition (midcore.rst
   `vrf-ports`). Both values are unchanged.
 
-  // ===> THE VALUE 4 IS AUTHORITATIVE; THE INLINE COMMENT IS STALE. The comment
-  //      currently on CII_NUM_SRC_REQ still reads "2 VRF read ports for CII
-  //      (5,6)", a leftover from a draft that reasoned a pull interface "can
-  //      consume at most two VRF reads per cycle". That was wrong in both
-  //      directions once the SV froze: there are four request lanes and one
-  //      write port. Anyone sizing the VRF from that comment builds a 7R file
-  //      and the CII stalls on a read port — which the credit-metered protocol
-  //      cannot absorb, since it has no back-pressure line. Read the value.
+  ===> THE VALUE 4 IS AUTHORITATIVE; THE INLINE COMMENT IS STALE. The comment
+       currently on CII_NUM_SRC_REQ still reads "2 VRF read ports for CII
+       (5,6)", a leftover from a draft that reasoned a pull interface "can
+       consume at most two VRF reads per cycle". That was wrong in both
+       directions once the SV froze: there are four request lanes and one
+       write port. Anyone sizing the VRF from that comment builds a 7R file
+       and the CII stalls on a read port — which the credit-metered protocol
+       cannot absorb, since it has no back-pressure line. Read the value.
 
   //@req-spec-cii.a13
   //@req-spec-vrf.h5

@@ -21,78 +21,78 @@ from Tenstorrent Inc.
   the coprocessor host. It contains every vector module and owns no datapath of
   its own; what it owns is TOPOLOGY and the design-wide rulings that no single
   child could settle.
-
-  hierarchy.yaml: kind: module, mode: new,
-  output src/main/scala/v4/vec/generated/VecPipeline.scala,
-  package boom.v4.vec.generated, group vec.
-  depends_on MicroOp, VecBundles, VectorParams, VecTrace.
-  Instantiated ONCE, in `core.scala`, as the sole vector instance. It exists only
-  when `usingRVV` is true — a Scala `Boolean` of `BoomCoreParams`, NOT a hardware
-  `Bool` and NOT rocket's `usingVector` — so a vectors-off build has this entire
-  subtree ABSENT rather than tied off.
-
-  Nine children, eleven instances: `vdec` (VecDecode); `vec_rename` and
-  `vl_rename` (two instances of ONE VecRenameSpace definition); `iq_v_load`,
-  `iq_v_store`, `iq_v_alu` (three instances of ONE VecIssueUnit definition);
-  `vrf` (VecRegFile); `vlrf` (VlRegFile); `vlsu` (VecLsu); `cii` (VecCiiHost).
-
-  ===> THIS FILE IS WHERE THE CROSS-NODE RULINGS LIVE. Eleven questions were
-       deferred here by children that could each only see one side. Each is
-       settled in the logic section, in one place, with the reason:
-         1. VRF read latency and WHO HOLDS THE FLOP (part 8) — VecRegFile holds
-            it, one flop per read port; VecCiiOperandServer deletes its payload
-            register. This file states that ONCE, as the canonical answer.
-         2. VL-RF read timing (part 9) — combinational, unlike the VRF, and why
-            that is not an inconsistency.
-         3. The three wakeup networks and their exact fan-out (part 6), including
-            the `aluWidth + 1` VL lanes of decision D8.
-         4. The group-done fan-out to three consumers, and lanes-not-arbiters on
-            every completion path (part 7).
-         5. The decode-to-ren2 shadow register for `vl_imm` (part 3).
-         6. `numVecWbPorts` / `numVecClrPorts` / `numVlWakeupPorts` — now DECLARED
-            in `VectorParams` and BOUND here, not defaulted (parameters section).
-         7. Where the four homeless bundles live (part 13), `VecRobFlags`
-            included (A34).
-         8. `dec_fire`, and `MicroOp.vconfig` on every br_tag-allocating uop
-            (part 2).
-         9. `fu_types` toward the load/store queues is a CONSTANT (part 11) —
-            the vector LSU has no back-pressure into issue, by ground rule.
-        10. The FIFTH group-readiness matcher's side channel (decision D6):
-            `rdy_vold` on the `IQ_V_LOAD` and `IQ_V_ALU` slots means the per-member
-            channel carries FIVE groups, not four, and this container routes it
-            (parts 5 and 13).
-        11. What `dis_ready` still means now that the vector queues are wired
-            NATIVELY through `CompactingDispatcher` (decisions D2/D3) — whole-bundle
-            allocation only, never queue capacity (part 4).
-
-  ===> GATE (f) DEPENDENCY, stated so no reviewer re-derives it. Every gating
-       claim here is the structural form of `usingRVV`: instance ABSENCE, never a
-       tied-off instance. That is independent of the open plan-level ruling on gate
-       (f) bit-identity (SEAM_NOTES, "TOP OPEN RULING"), which concerns the WIDTH
-       of the shared `RT_*`/`IQ_SZ` encodings, not this container. Two choices here
-       touch it and BOTH hold either way: part 5's `iq_type(IQ_V_*)` routing needs
-       those three positions to exist and be defaulted on scalar uops (A23), and
-       part 5's `dst_rtype === RT_VEC` assertion needs the 3-bit `RT_*` encoding —
-       under option (a) both exist unconditionally, under option (b) both exist
-       exactly when `usingRVV`, which is when this module exists at all. No ruling
-       in this file changes with the outcome.
-
-  ===> AND THE ONE THING THIS CONTAINER MUST NEVER BECOME. `addvector` put 1101
-       lines of vector wiring into `core.scala`, braided line-by-line through
-       scalar wiring, and the M1 free-list double-free hid in exactly that
-       braiding: vector rename ran off `dec_uops`, one cycle ahead of the scalar
-       `RenameStage`'s registered ren1-to-ren2 pipeline. Every lockstep input on
-       this boundary is therefore named `ren2_*`/`dis_*`, so connecting a decode
-       signal to one is visibly wrong AT THE CONNECTION SITE.
-
-  Governing spec anchors: overview.rst `boom-relationship`, `caracal-pipeline`;
-  glossary.rst `glossary-terms`; execution.rst `execution-pipelines`,
-  `vector-execution`; midcore.rst `rename-stage`, `cii-shared-mapping`,
-  `vl-vtype-rename`, `regfiles-bypass`, `old-vd`, `group-done-wb`, `vrf-ports`,
-  `spec-wakeups`; issue.rst `cii-shared-sched`, `shared-store-chain`,
-  `issue-sched-stage`, `issue-vl-delivery`; frontend.rst `vector-rvv-decode`,
-  `vset-dual-dest`, `vl-delivery`; cii.rst `cii-mem-order`.
 */
+
+hierarchy.yaml: kind: module, mode: new,
+output src/main/scala/v4/vec/generated/VecPipeline.scala,
+package boom.v4.vec.generated, group vec.
+depends_on MicroOp, VecBundles, VectorParams, VecTrace.
+Instantiated ONCE, in `core.scala`, as the sole vector instance. It exists only
+when `usingRVV` is true — a Scala `Boolean` of `BoomCoreParams`, NOT a hardware
+`Bool` and NOT rocket's `usingVector` — so a vectors-off build has this entire
+subtree ABSENT rather than tied off.
+
+Nine children, eleven instances: `vdec` (VecDecode); `vec_rename` and
+`vl_rename` (two instances of ONE VecRenameSpace definition); `iq_v_load`,
+`iq_v_store`, `iq_v_alu` (three instances of ONE VecIssueUnit definition);
+`vrf` (VecRegFile); `vlrf` (VlRegFile); `vlsu` (VecLsu); `cii` (VecCiiHost).
+
+===> THIS FILE IS WHERE THE CROSS-NODE RULINGS LIVE. Eleven questions were
+     deferred here by children that could each only see one side. Each is
+     settled in the logic section, in one place, with the reason:
+       1. VRF read latency and WHO HOLDS THE FLOP (part 8) — VecRegFile holds
+          it, one flop per read port; VecCiiOperandServer deletes its payload
+          register. This file states that ONCE, as the canonical answer.
+       2. VL-RF read timing (part 9) — combinational, unlike the VRF, and why
+          that is not an inconsistency.
+       3. The three wakeup networks and their exact fan-out (part 6), including
+          the `aluWidth + 1` VL lanes of decision D8.
+       4. The group-done fan-out to three consumers, and lanes-not-arbiters on
+          every completion path (part 7).
+       5. The decode-to-ren2 shadow register for `vl_imm` (part 3).
+       6. `numVecWbPorts` / `numVecClrPorts` / `numVlWakeupPorts` — now DECLARED
+          in `VectorParams` and BOUND here, not defaulted (parameters section).
+       7. Where the four homeless bundles live (part 13), `VecRobFlags`
+          included (A34).
+       8. `dec_fire`, and `MicroOp.vconfig` on every br_tag-allocating uop
+          (part 2).
+       9. `fu_types` toward the load/store queues is a CONSTANT (part 11) —
+          the vector LSU has no back-pressure into issue, by ground rule.
+      10. The FIFTH group-readiness matcher's side channel (decision D6):
+          `rdy_vold` on the `IQ_V_LOAD` and `IQ_V_ALU` slots means the per-member
+          channel carries FIVE groups, not four, and this container routes it
+          (parts 5 and 13).
+      11. What `dis_ready` still means now that the vector queues are wired
+          NATIVELY through `CompactingDispatcher` (decisions D2/D3) — whole-bundle
+          allocation only, never queue capacity (part 4).
+
+===> GATE (f) DEPENDENCY, stated so no reviewer re-derives it. Every gating
+     claim here is the structural form of `usingRVV`: instance ABSENCE, never a
+     tied-off instance. That is independent of the open plan-level ruling on gate
+     (f) bit-identity (SEAM_NOTES, "TOP OPEN RULING"), which concerns the WIDTH
+     of the shared `RT_*`/`IQ_SZ` encodings, not this container. Two choices here
+     touch it and BOTH hold either way: part 5's `iq_type(IQ_V_*)` routing needs
+     those three positions to exist and be defaulted on scalar uops (A23), and
+     part 5's `dst_rtype === RT_VEC` assertion needs the 3-bit `RT_*` encoding —
+     under option (a) both exist unconditionally, under option (b) both exist
+     exactly when `usingRVV`, which is when this module exists at all. No ruling
+     in this file changes with the outcome.
+
+===> AND THE ONE THING THIS CONTAINER MUST NEVER BECOME. `addvector` put 1101
+     lines of vector wiring into `core.scala`, braided line-by-line through
+     scalar wiring, and the M1 free-list double-free hid in exactly that
+     braiding: vector rename ran off `dec_uops`, one cycle ahead of the scalar
+     `RenameStage`'s registered ren1-to-ren2 pipeline. Every lockstep input on
+     this boundary is therefore named `ren2_*`/`dis_*`, so connecting a decode
+     signal to one is visibly wrong AT THE CONNECTION SITE.
+
+Governing spec anchors: overview.rst `boom-relationship`, `caracal-pipeline`;
+glossary.rst `glossary-terms`; execution.rst `execution-pipelines`,
+`vector-execution`; midcore.rst `rename-stage`, `cii-shared-mapping`,
+`vl-vtype-rename`, `regfiles-bypass`, `old-vd`, `group-done-wb`, `vrf-ports`,
+`spec-wakeups`; issue.rst `cii-shared-sched`, `shared-store-chain`,
+`issue-sched-stage`, `issue-vl-delivery`; frontend.rst `vector-rvv-decode`,
+`vset-dual-dest`, `vl-delivery`; cii.rst `cii-mem-order`.
 
 <|begin_module|>
 
@@ -369,17 +369,17 @@ from Tenstorrent Inc.
   them to `vl_rename`'s same-named inputs, where consumption is qualified by
   `ren2_mask(w) && dis_fire(w)`.
 
-  // ===> `dec_fire(w)` IS THE CORRECT ENABLE AND `ren2_ready` IS NOT AVAILABLE
-  // HERE, and the two are equivalent for this purpose: baseline loads `r_uop`
-  // when `ren2_ready` and sets `r_valid := ren1_fire(w) = dec_fire(w)`, so on a
-  // `ren2_ready` cycle with no `dec_fire` the lane is INVALID at ren2 and the
-  // stale shadow value is never consumed. `dec_fire` implies `ren2_ready`.
-  // A shadow pipe that ran a cycle ahead of `ren2_uops` — or was recomputed at
-  // ren2 from the uop's immediate — is the M1 free-list double-free in a second
-  // place: it would pair a VL value with the NEXT cycle's (bubble) uop and write
-  // it into another instruction's `pvl`. No kill term is needed on the pair,
-  // because every consumer is qualified by the ren2 valid the scalar stage
-  // already branch-masks.
+  ===> `dec_fire(w)` IS THE CORRECT ENABLE AND `ren2_ready` IS NOT AVAILABLE
+  HERE, and the two are equivalent for this purpose: baseline loads `r_uop`
+  when `ren2_ready` and sets `r_valid := ren1_fire(w) = dec_fire(w)`, so on a
+  `ren2_ready` cycle with no `dec_fire` the lane is INVALID at ren2 and the
+  stale shadow value is never consumed. `dec_fire` implies `ren2_ready`.
+  A shadow pipe that ran a cycle ahead of `ren2_uops` — or was recomputed at
+  ren2 from the uop's immediate — is the M1 free-list double-free in a second
+  place: it would pair a VL value with the NEXT cycle's (bubble) uop and write
+  it into another instruction's `pvl`. No kill term is needed on the pair,
+  because every consumer is qualified by the ren2 valid the scalar stage
+  already branch-masks.
 
   ---- PART 4. The rename arm: two instances of one definition, CHAINED ----
 
@@ -418,14 +418,14 @@ from Tenstorrent Inc.
        allocation answer would leak half-allocated groups, and a broadcast capacity
        answer is the stall D2 removed.
 
-  // ===> `alloc_fire` IS PER LANE EVEN THOUGH `alloc_ok` IS NOT (A1). BOOM's
-  // `dis_stalls` is a prefix scan, so a NON-vector hazard — `ldq_full` on lane 2 —
-  // still lets lanes 0-1 dispatch. Consumption must therefore be qualified by
-  // `io.dis_fire(w)` per lane; a single fire bit consumes the non-firing lane's
-  // window PRNs, that lane retries and allocates a second group, and the first is
-  // owned by nobody. The `reqs` side is driven FIRE-INDEPENDENTLY, off the ren2
-  // uops, or `alloc_ok -> dis_ready -> dis_fire -> reqs` closes a combinational
-  // loop.
+  ===> `alloc_fire` IS PER LANE EVEN THOUGH `alloc_ok` IS NOT (A1). BOOM's
+  `dis_stalls` is a prefix scan, so a NON-vector hazard — `ldq_full` on lane 2 —
+  still lets lanes 0-1 dispatch. Consumption must therefore be qualified by
+  `io.dis_fire(w)` per lane; a single fire bit consumes the non-firing lane's
+  window PRNs, that lane retries and allocates a second group, and the first is
+  owned by nobody. The `reqs` side is driven FIRE-INDEPENDENTLY, off the ren2
+  uops, or `alloc_ok -> dis_ready -> dis_fire -> reqs` closes a combinational
+  loop.
 
   `vec_rename.member_rdy` (`exportMemberRdy`) goes to part 5's dispatch routing as
   the per-member readiness side channel, carrying FIVE groups (D6, part 5) — `vs1`,
@@ -483,34 +483,48 @@ from Tenstorrent Inc.
        plan of tying the dispatcher's vector lanes `ready := true.B` is dead — it
        was only ever needed because `BasicDispatcher` ANDs every queue's ready into
        every lane.
-       // ===> THE TRAP THAT COMES WITH IT, and it must not be discovered in
-       // simulation: `CompactingDispatcher` COMPACTS, so a queue's dispatch lane is
-       // not necessarily the rename lane of the uop occupying it. Whatever payload a
-       // vector queue latches must be the CHAINED-RENAME output — the bundle with
-       // `pvdest`, `pvs*`, `pvl` and `stale_pvdest` written (part 4) — so the
-       // dispatcher must be fed `dis_uops_out`, NOT the raw scalar `ren2_uops`
-       // bundle. Compacting the scalar bundle and handing a vector queue lane `w`
-       // one of its entries delivers a uop with unwritten vector fields and no
-       // width error anywhere. If the compaction is instead applied to a payload
-       // this container selects internally, then the compaction PERMUTATION must
-       // cross the seam too — one of the two, never neither.
-       // ===> RESOLVED A THIRD WAY, by BoomCore's delta, and this is why the trap
-       //      does not fire: an added `require(ip.dispatchWidth == coreWidth)` on
-       //      the three IQ_V_* entries. At `dispatchWidth == coreWidth` a
-       //      `Compactor` degenerates to `io.out <> io.in` (util.scala:458) — there
-       //      IS no compaction and no permutation — so a vector queue's dispatch
-       //      lane IS its rename lane, and each queue keeps latching THIS
-       //      container's own lane-`w` chained-rename uop. Neither `dis_uops_out`
-       //      nor a permutation crosses the seam; only the per-lane
-       //      `dis_vec_valids`/`dis_vec_ready` wires do.
-       //      The `require` is what keeps that sound: it holds on every tier in the
-       //      matrix (Medium/Large/Mega all set `dispatchWidth = coreWidth`), and a
-       //      future config that narrowed a vector queue's dispatch width would
-       //      FAIL ELABORATION rather than silently deliver a uop with unwritten
-       //      vector fields. Do not relax it without re-opening this trap.
-  The member-readiness side channel is routed with the uop, lane for lane, into
-  each queue's `dis_member_rdy`; it travels BESIDE the uop and never inside it, and
-  it carries FIVE per-member groups, not four — see the next paragraph.
+       ===> THE TRAP THAT COMES WITH IT, and it must not be discovered in
+       simulation: `CompactingDispatcher` COMPACTS, so a queue's dispatch lane is
+       not necessarily the rename lane of the uop occupying it. Whatever payload a
+       vector queue latches must be the CHAINED-RENAME output — the bundle with
+       `pvdest`, `pvs*`, `pvl` and `stale_pvdest` written (part 4) — so the
+       dispatcher must be fed `dis_uops_out`, NOT the raw scalar `ren2_uops`
+       bundle. Compacting the scalar bundle and handing a vector queue lane `w`
+       one of its entries delivers a uop with unwritten vector fields and no
+       width error anywhere. If the compaction is instead applied to a payload
+       this container selects internally, then the compaction PERMUTATION must
+       cross the seam too — one of the two, never neither.
+       ===> RESOLVED A THIRD WAY, by BoomCore's delta, and this is why the trap
+            does not fire: an added `require(ip.dispatchWidth == coreWidth)` on
+            the three IQ_V_* entries. At `dispatchWidth == coreWidth` a
+            `Compactor` degenerates to `io.out <> io.in` (util.scala:458) — there
+            IS no compaction and no permutation — so a vector queue's dispatch
+            lane IS its rename lane, and each queue keeps latching THIS
+            container's own lane-`w` chained-rename uop. Neither `dis_uops_out`
+            nor a permutation crosses the seam; only the per-lane
+            `dis_vec_valids`/`dis_vec_ready` wires do.
+            The `require` is what keeps that sound: it holds on every tier in the
+            matrix (Medium/Large/Mega all set `dispatchWidth = coreWidth`), and a
+            future config that narrowed a vector queue's dispatch width would
+            FAIL ELABORATION rather than silently deliver a uop with unwritten
+            vector fields. Do not relax it without re-opening this trap.
+  The member-readiness side channel is routed with the uop into each queue's
+  `dis_member_rdy`; it travels BESIDE the uop and never inside it, and it carries
+  FIVE per-member groups, not four — see the next paragraph.
+
+  ===> "LANE FOR LANE" IS WRONG, AND IT IS THE HAZARD OF TRAVELLING BESIDE THE UOP.
+       Under `usingRVV` BoomCore builds a `CompactingDispatcher`, whose `Compactor`
+       PACKS each queue's uops into the low dispatch lanes. The MicroOp goes through
+       the compactor; a side channel indexed by RENAME lane does not, so
+       `dis_member_rdy(w)` and `dis_uops(w)` name different instructions whenever
+       compaction moves one. Select the channel by matching the dispatched uop's
+       `rob_idx` against the rename-lane uops, and assert exactly one match on a
+       valid dispatch. The failure is silent and unrecoverable: `VecGroupReady` LOADS
+       this value on its fill cycle and can only ever OR into it afterwards, so a
+       member wrongly loaded not-ready waits for a `group_done` naming a PRN that
+       nothing will ever write. Measured on `ms11a4_vle_mask`: rename reported
+       `vold_rdy0 = 1` for the second `vle64`, the slot received 0, and the load
+       never issued.
 
   ===> THE FIFTH GROUP IS ROUTED HERE (decision D6). `IQ_V_LOAD` and `IQ_V_ALU`
        slots each instantiate a FIFTH `VecGroupReady`, `rdy_vold`, gating issue on
@@ -579,25 +593,25 @@ from Tenstorrent Inc.
   and have no FP comparator at all — vector memory addressing uses only GPRs, so
   an FP connection there would be dead silicon in every slot of two queues.
 
-  // ===> THE RESIDUAL FP WINDOW IS CLOSED, AND A30 IS CLOSED WITH IT (decision
-  // D4). It was a real exposure while there were TWO FP readers:
-  // `FPExeUnit.io_wakeup` is a FAST wakeup with `bypassable := true` and a
-  // writeback presented at T+3, so a slot woken at T that drove its FP read
-  // address combinationally in the grant cycle could read data one cycle STALE.
-  // D4 DELETED the store-side FP reader — no RVV store form takes an FP scalar
-  // operand, since store data is `vs3` and base and stride are both integer — so
-  // the ONLY FP reader left is `VecCiiIssue`, reached through `iq_v_alu`, and
-  // `IQ_V_ALU` IS PAST-PNR GATED. A granted CII op is therefore OLDER THAN THE
-  // PNR, which means its FP producer has genuinely written back: there is no
-  // residual window between a bypassable match and the read, on any path.
-  // DO NOT hold a BYPASSABLE FP wakeup match back one cycle inside
-  // `VecIssueSlot`. That earlier recommendation is WITHDRAWN, not deferred —
-  // implementing it now would cost a cycle on every `.vf` op to close a window
-  // that cannot occur, and it would be invisible in simulation as a bug.
-  // What D4 explicitly RETAINS is the MATCH ITSELF (`spec-vrf.e4`,
-  // `spec-issue.g8/g9/g10`): the slot still watches `.vf` on the FP wakeup
-  // network, because that is how it learns the scalar operand is ready. Only the
-  // store-side reader, and the claim that a bypass window exists, are gone.
+  ===> THE RESIDUAL FP WINDOW IS CLOSED, AND A30 IS CLOSED WITH IT (decision
+  D4). It was a real exposure while there were TWO FP readers:
+  `FPExeUnit.io_wakeup` is a FAST wakeup with `bypassable := true` and a
+  writeback presented at T+3, so a slot woken at T that drove its FP read
+  address combinationally in the grant cycle could read data one cycle STALE.
+  D4 DELETED the store-side FP reader — no RVV store form takes an FP scalar
+  operand, since store data is `vs3` and base and stride are both integer — so
+  the ONLY FP reader left is `VecCiiIssue`, reached through `iq_v_alu`, and
+  `IQ_V_ALU` IS PAST-PNR GATED. A granted CII op is therefore OLDER THAN THE
+  PNR, which means its FP producer has genuinely written back: there is no
+  residual window between a bypassable match and the read, on any path.
+  DO NOT hold a BYPASSABLE FP wakeup match back one cycle inside
+  `VecIssueSlot`. That earlier recommendation is WITHDRAWN, not deferred —
+  implementing it now would cost a cycle on every `.vf` op to close a window
+  that cannot occur, and it would be invisible in simulation as a bug.
+  What D4 explicitly RETAINS is the MATCH ITSELF (`spec-vrf.e4`,
+  `spec-issue.g8/g9/g10`): the slot still watches `.vf` on the FP wakeup
+  network, because that is how it learns the scalar operand is ready. Only the
+  store-side reader, and the claim that a bypass window exists, are gone.
 
   //@req-spec-issue.f10
   //@req-spec-issue.h1
@@ -622,35 +636,35 @@ from Tenstorrent Inc.
   A rename-cycle `vsetivli` needs NO lane: `vl_rename` leaves its `pvl_busy` clear,
   so it is born ready and there is nothing to wake.
 
-  // ===> WHY ONE LANE PER ALU EU AND NOT ONE SHARED VSET LANE (D8). The vset
-  // writeback is REPLICATED, not arbitrated, and this holds on EVERY tier rather
-  // than only on wide ones: `aluWidth == coreWidth` on every tier and SmallBoom is
-  // out of the vector matrix (D3), so the matrix is Medium(2)/Large(3)/Mega(4) and
-  // `aluWidth` is NEVER 1. `ALUExeUnit` advertises the vset FU on every ALU EU
-  // instance and its reject list forbids making that advertisement conditional on
-  // the EU's `id`, so TWO vsets really can write back in one cycle. Add the `vleff`
-  // trim, which is an independent pipeline, and the concurrency is genuine on both
-  // axes.
-  // ARBITRATION IS NOT AN OPTION, and the reason is correctness: a readiness wakeup
-  // is SINGLE-SHOT in BOOM's slot model — the slot clears its busy bit on the match
-  // and never looks again — so A VL WAKEUP LOST TO ARBITRATION IS A PERMANENT HANG,
-  // never a stall. That is the same unrecoverable-clear argument that made
-  // `vec_clr_bsy` one lane per producer, and it is already `VlRegFile`'s stated
-  // "replicate, never arbitrate" discipline. It is cheap HERE SPECIFICALLY because
-  // the VL RF is `64 x 9b`: write ports are Medium `2+2+1 = 5`, Mega `4+4+1 = 9`,
-  // i.e. nine decoders on 576 flops — not twelve ports on 24 kbit, which is why the
-  // identical argument is refused on the VRF.
-  // REJECTED, and it is the plausible alternative: route vsets to `IQ_UNQ`.
-  // `unqWidth = 1` on every tier, so a single writeback falls out by construction,
-  // and the throughput cost is ~nil since a strip-mined iteration is 6+
-  // instructions. It would require `UniqueExeUnit` — NOT A NODE IN THIS MAP — to
-  // advertise the vset capability, and it stretches `spec-decode.c7`, which says a
-  // vset must execute on an integer ALU execution unit.
-  // If any lane of this network is ever narrowed, the ONLY acceptable fallback is a
-  // one-deep skid register per producer inside this container with an assertion on
-  // overflow (a readiness wakeup may be DELAYED safely, since the VL RF has no
-  // read-during-write bypass and every wakeup-to-execute distance is already at
-  // least one cycle) — never a dropped valid.
+  ===> WHY ONE LANE PER ALU EU AND NOT ONE SHARED VSET LANE (D8). The vset
+  writeback is REPLICATED, not arbitrated, and this holds on EVERY tier rather
+  than only on wide ones: `aluWidth == coreWidth` on every tier and SmallBoom is
+  out of the vector matrix (D3), so the matrix is Medium(2)/Large(3)/Mega(4) and
+  `aluWidth` is NEVER 1. `ALUExeUnit` advertises the vset FU on every ALU EU
+  instance and its reject list forbids making that advertisement conditional on
+  the EU's `id`, so TWO vsets really can write back in one cycle. Add the `vleff`
+  trim, which is an independent pipeline, and the concurrency is genuine on both
+  axes.
+  ARBITRATION IS NOT AN OPTION, and the reason is correctness: a readiness wakeup
+  is SINGLE-SHOT in BOOM's slot model — the slot clears its busy bit on the match
+  and never looks again — so A VL WAKEUP LOST TO ARBITRATION IS A PERMANENT HANG,
+  never a stall. That is the same unrecoverable-clear argument that made
+  `vec_clr_bsy` one lane per producer, and it is already `VlRegFile`'s stated
+  "replicate, never arbitrate" discipline. It is cheap HERE SPECIFICALLY because
+  the VL RF is `64 x 9b`: write ports are Medium `2+2+1 = 5`, Mega `4+4+1 = 9`,
+  i.e. nine decoders on 576 flops — not twelve ports on 24 kbit, which is why the
+  identical argument is refused on the VRF.
+  REJECTED, and it is the plausible alternative: route vsets to `IQ_UNQ`.
+  `unqWidth = 1` on every tier, so a single writeback falls out by construction,
+  and the throughput cost is ~nil since a strip-mined iteration is 6+
+  instructions. It would require `UniqueExeUnit` — NOT A NODE IN THIS MAP — to
+  advertise the vset capability, and it stretches `spec-decode.c7`, which says a
+  vset must execute on an integer ALU execution unit.
+  If any lane of this network is ever narrowed, the ONLY acceptable fallback is a
+  one-deep skid register per producer inside this container with an assertion on
+  overflow (a readiness wakeup may be DELAYED safely, since the VL RF has no
+  read-during-write bypass and every wakeup-to-execute distance is already at
+  least one cycle) — never a dropped valid.
 
   //@req-spec-core.f6
   //@req-spec-issue.f3
@@ -672,11 +686,11 @@ from Tenstorrent Inc.
   connected length in every consumer — a matcher sized smaller than the network
   examines fewer ports than are driven, misses a single-shot group-done, and hangs.
 
-  // ===> `VecLsu` MUST EXPORT THE GROUP-DONE BUNDLES, NOT ONLY THE ROB CLEAR.
-  // Its written port list declares `vec_clr_bsy` lanes 0 and 2 (a `rob_idx`) but
-  // no `VecGroupDone` output, and the wakeup and busy-table consumers need the
-  // MEMBER-PRN VECTOR. Required amendment: `vlsu.group_done : Vec(2,
-  // Valid(VecGroupDone))`, lane-aligned with its two clear lanes.
+  ===> `VecLsu` MUST EXPORT THE GROUP-DONE BUNDLES, NOT ONLY THE ROB CLEAR.
+  Its written port list declares `vec_clr_bsy` lanes 0 and 2 (a `rob_idx`) but
+  no `VecGroupDone` output, and the wakeup and busy-table consumers need the
+  MEMBER-PRN VECTOR. Required amendment: `vlsu.group_done : Vec(2,
+  Valid(VecGroupDone))`, lane-aligned with its two clear lanes.
 
   ---- PART 7. The group-done fan-out: one event, three consumers ----
 

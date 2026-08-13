@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecCiiOperandServer — the host's Source-Request / Source-Data server: it turns
   a coprocessor pull of {tag, op_id, op_offset} into a physical VRF (or scalar
   side-table) read and returns one vLen-wide beat per request, in request order.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/cii/VecCiiOperandServer.scala,
@@ -54,7 +55,6 @@ from Tenstorrent Inc.
   Governing spec anchors: cii.rst `cii-operands` and `cii-kill-contract`,
   midcore.rst `vrf-ports` and `old-vd`, execution.rst `vector-execution`
   ("What the host provides" / "What the coprocessor provides") and `cii-prn-arn`.
-*/
 
 <|begin_module|>
 
@@ -81,15 +81,15 @@ from Tenstorrent Inc.
   it, so an extra pipeline stage cannot be added without the ordering structure
   following it. Legal range 1..2.
 
-  // ===> THE ONE CYCLE IS THE VRF'S, NOT THIS MODULE'S. VecPipeline's ruling is
-  // canonical for every port R0-R8: THE VRF READ IS A REGISTERED ONE-CYCLE READ
-  // AND THE FLOP LIVES IN `VecRegFile`. So `srcReadLatency = 1` is spent entirely
-  // inside the register file, and this module adds NO payload register — see stage
-  // 1. If both sides registered, observable latency would be 2 while
-  // `srcReadLatency` still said 1, and every Src-Data beat would answer the
-  // request one beat late, FOREVER, for every surviving instruction, with no error
-  // signal anywhere. The bank's "0-cycle, may not be pipelined" figure is
-  // BANK-INTERNAL and must not be read as a consumer-visible latency.
+  ===> THE ONE CYCLE IS THE VRF'S, NOT THIS MODULE'S. VecPipeline's ruling is
+  canonical for every port R0-R8: THE VRF READ IS A REGISTERED ONE-CYCLE READ
+  AND THE FLOP LIVES IN `VecRegFile`. So `srcReadLatency = 1` is spent entirely
+  inside the register file, and this module adds NO payload register — see stage
+  1. If both sides registered, observable latency would be 2 while
+  `srcReadLatency` still said 1, and every Src-Data beat would answer the
+  request one beat late, FOREVER, for every surviving instruction, with no error
+  signal anywhere. The bank's "0-cycle, may not be pipelined" figure is
+  BANK-INTERNAL and must not be read as a consumer-visible latency.
 
   This module is elaborated only when `usingRVV` is true. The gate lives in the
   parent (VecCiiHost) instantiation, not in a local `Bool`, so a vectors-off
@@ -132,14 +132,14 @@ from Tenstorrent Inc.
   COMBINATIONALLY in the same cycle. Four independent lanes, no handshake, no
   back-pressure either way.
 
-  // ===> THE NARROW RESPONSE, NOT THE WHOLE ENTRY. An earlier draft of this file
-  // took `tag_entry: Vec(numSrcLanes, Input(new VecCiiTagEntry))` and did the
-  // slot-and-member mux locally. That crosses FOUR copies of a ~376-bit entry
-  // between two ADJACENT modules to compute the identical function at the
-  // identical logic depth on the far side, where the 16-to-1 entry mux already is.
-  // The resolve is emitted ONCE, in VecCiiTagTable; this module consumes `{prn,
-  // read_vrf, scalar_data, killed, rob_idx}` and owns everything downstream of it.
-  // Do not reintroduce a whole-entry port, and do not add a local class mux.
+  ===> THE NARROW RESPONSE, NOT THE WHOLE ENTRY. An earlier draft of this file
+  took `tag_entry: Vec(numSrcLanes, Input(new VecCiiTagEntry))` and did the
+  slot-and-member mux locally. That crosses FOUR copies of a ~376-bit entry
+  between two ADJACENT modules to compute the identical function at the
+  identical logic depth on the far side, where the 16-to-1 entry mux already is.
+  The resolve is emitted ONCE, in VecCiiTagTable; this module consumes `{prn,
+  read_vrf, scalar_data, killed, rob_idx}` and owns everything downstream of it.
+  Do not reintroduce a whole-entry port, and do not add a local class mux.
 
   `vrf_read_addr` / `vrf_read_data` — `Vec(numSrcLanes, Output(UInt(vecPregSz.W)))`
   and `Vec(numSrcLanes, Input(UInt(vLen.W)))`. Lane `i` drives VRF read port
@@ -294,10 +294,10 @@ from Tenstorrent Inc.
   the property structural rather than a coding convention a later edit could
   erode.
 
-  // The coprocessor decides what to pull. With four lanes it issues one request
-  // per slot it actually needs: ONE when pvs3 and stale_pvdest name the same
-  // group (vfmacc.vv vd,vs1,vs2), BOTH when they differ, spending another lane.
-  // Moving that choice to the side that decodes the instruction is the point.
+  The coprocessor decides what to pull. With four lanes it issues one request
+  per slot it actually needs: ONE when pvs3 and stale_pvdest name the same
+  group (vfmacc.vv vd,vs1,vs2), BOTH when they differ, spending another lane.
+  Moving that choice to the side that decodes the instruction is the point.
 
   ---- op_offset: the member index, unchecked on purpose ----
 
@@ -365,24 +365,24 @@ from Tenstorrent Inc.
   previous cycle, and reading them in ascending lane index reproduces the request
   order. Cycles stay ordered because all four lanes share one fixed latency.
 
-  // WHY A CONTROL REGISTER IS STILL NEEDED once the payload one is gone: the
-  // arriving VRF word is unqualified. Whether lane `i`'s beat at t+1 is real data,
-  // the low-`eLen` scalar value, or a defined don't-care depends on the REQUEST
-  // that was popped at t, which is no longer on the wire. One `Valid` bit plus a
-  // 2-bit select plus `xLen` bits of scalar payload per lane carries exactly that
-  // and nothing more. The scalar payload is registered rather than re-read because
-  // the side-table lookup for cycle t's request is gone by t+1.
+  WHY A CONTROL REGISTER IS STILL NEEDED once the payload one is gone: the
+  arriving VRF word is unqualified. Whether lane `i`'s beat at t+1 is real data,
+  the low-`eLen` scalar value, or a defined don't-care depends on the REQUEST
+  that was popped at t, which is no longer on the wire. One `Valid` bit plus a
+  2-bit select plus `xLen` bits of scalar payload per lane carries exactly that
+  and nothing more. The scalar payload is registered rather than re-read because
+  the side-table lookup for cycle t's request is gone by t+1.
 
-  // ===> DO NOT COMPACT THE BEATS ONTO THE LOW LANES. THE LANE MAPPING IS
-  // STRAIGHT-THROUGH. A sparse request set — lanes 0 and 2 active, lanes 1 and 3
-  // carrying `NONE` — is answered on DATA LANES 0 AND 2, with lanes 1 and 3
-  // carrying the defined don't-care; nothing shifts down to lanes 0 and 1. With
-  // one `valid` per beat and no per-lane count on the wire, compaction is not even
-  // representable, and mixing the two conventions between host and VPU would
-  // offset the whole positional channel by one beat for every sparse cycle — a
-  // corruption with no error signal anywhere.
-  // If `srcReadLatency` is ever raised to 2, the per-lane FIFO deepens to 2 with
-  // it; the depth is derived from the parameter and never written as a literal.
+  ===> DO NOT COMPACT THE BEATS ONTO THE LOW LANES. THE LANE MAPPING IS
+  STRAIGHT-THROUGH. A sparse request set — lanes 0 and 2 active, lanes 1 and 3
+  carrying `NONE` — is answered on DATA LANES 0 AND 2, with lanes 1 and 3
+  carrying the defined don't-care; nothing shifts down to lanes 0 and 1. With
+  one `valid` per beat and no per-lane count on the wire, compaction is not even
+  representable, and mixing the two conventions between host and VPU would
+  offset the whole positional channel by one beat for every sparse cycle — a
+  corruption with no error signal anywhere.
+  If `srcReadLatency` is ever raised to 2, the per-lane FIFO deepens to 2 with
+  it; the depth is derived from the parameter and never written as a literal.
 
   ---- Duplicate members are read twice, deliberately ----
 
@@ -412,11 +412,11 @@ from Tenstorrent Inc.
   same select serves `NONE`, the unassigned `op_id` 7, and every lane of an
   all-idle beat, for the same reason and with the same value.
 
-  // The beat is MANDATORY. On Src-Data the HOST is the sender, so it holds no
-  // credit to return in lieu of a beat; the VPU has no kill line, would wait
-  // forever for the missing beat, never emit `last`, never free its tag, and
-  // every surviving instruction behind it would hang. Never "ignore the request
-  // and hand back a credit" on this channel. See VecCiiFlush.
+  The beat is MANDATORY. On Src-Data the HOST is the sender, so it holds no
+  credit to return in lieu of a beat; the VPU has no kill line, would wait
+  forever for the missing beat, never emit `last`, never free its tag, and
+  every surviving instruction behind it would hang. Never "ignore the request
+  and hand back a credit" on this channel. See VecCiiFlush.
 
   Correctness does not depend on WHEN the kill becomes visible here. `killed` is a
   registered per-tag bit, so a request arriving in the same cycle as the flush

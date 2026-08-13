@@ -16,68 +16,68 @@ from Tenstorrent Inc.
 */
 
 /*
-  VecLsu — the vector load/store unit container: the vector LS AGEN stage, the six
-  element queues, the drain side, the memory-ordering mechanisms, and the wiring
-  that binds them to BOOM's Unified LSU. It contains all vector memory datapath
-  and owns no datapath of its own.
-
-  hierarchy.yaml: kind: module, mode: new,
-  output src/main/scala/v4/vec/generated/lsu/VecLsu.scala,
-  package boom.v4.vec.generated.lsu, group vec_lsu.
-  depends_on MicroOp, VecBundles, VectorParams, VecTrace.
-  Instantiated ONCE, as `vlsu`, inside VecPipeline — which exists only when
-  `usingRVV` is true, so in a vectors-off build this whole subtree is ABSENT, not
-  tied off, and the emitted RTL is bit-identical to pre-Caracal BOOM v4.
-  `usingRVV` is a Scala `Boolean` of `BoomCoreParams`, never a hardware `Bool`,
-  and it is not rocket's `usingVector`.
-
-  Seventeen children: `resv`; `ld_opnd`/`st_opnd`; `ld_msk`/`st_msk`;
-  `ld_elem_agen`/`st_elem_agen`; `ld_range_agen`/`st_range_agen`; the six
-  `VecElemQueue` instances; `ld_beat`/`st_beat`; `dgen`; `lcb`; `gcopy`; `arb`;
-  `snoop`; `fwd`; `hold`; `squash`.
-
-  ===> THE MODULE EXISTS TO UPHOLD ONE INVARIANT, AND EVERY STRUCTURAL CHOICE
-       BELOW IS DOWNSTREAM OF IT. Address generation is cut BY PIPELINE POSITION,
-       not by the inherited Packer/Skipper/Walker x load/store cross-product
-       (six modules, 2110 lines, whose duplication had already produced divergent
-       mask support between the load and store Packers). FILL side: `VecElemAgen`
-       (SSI, one address per active element) and `VecRangeAgen` (unit-stride, ONE
-       range entry). DRAIN side: `VecBeatExpander`, which coalesces just in time.
-       DIRECTION IS A PARAMETER, NEVER A SEPARATE MODULE — each agen, each operand
-       read, each mask streamer and each beat expander is instantiated twice so the
-       two directions never arbitrate. The load-priority mux over a single shared
-       unit is what silently dropped store grants in `addvector`.
-
-  ===> NO MODULE IN THIS SUBTREE MAY HOLD STATE SCOPED TO "THE CURRENT
-       INSTRUCTION", AND NONE MAY EXPORT A `busy` THAT GATES ISSUE. In-flight
-       state lives in exactly THREE places, and plan GROUND RULE 6 WAS AMENDED to
-       say three rather than two: (a) the six element queues — whose capacity is
-       reserved at dispatch, in program order — (b) the LCB's per-PRN assembly
-       entries, and (c) THIS MODULE'S PER-LDQ/STQ-ENTRY DESCRIPTOR PENDING TABLE
-       (section 3b). (c) is the same KIND of state as (a) and that is why the rule
-       admits it rather than being bent around it: one row per LDQ/STQ entry, the
-       row indexed by a placeholder the dispatch-time reservation already
-       guaranteed, so it is structurally un-overflowable; it is not scoped to "the
-       current instruction" (a row belongs to a queue entry, and rows for several
-       ops coexist); and it exports no `busy`. The rule is amended IN THE TEXT
-       because gate H4 reviews against that text — a table appearing under a rule
-       that enumerated two homes would be right to reject.
-       This module therefore exports no `busy`, no `active`, no `fu_ready` and no
-       credit toward any issue unit. Issue eligibility for a vector memory OP.v is
-       "a reservation exists", decided at dispatch by `resv` and nowhere else.
-       Gate H4 greps this whole subtree for a `busy` reaching an issue unit; a hit
-       is a failed review regardless of measured performance. `vec_lsu_empty`, the
-       LCB's `free_count`, `hold_ldq` and `dis_ok` are each explained below in the
-       terms that distinguish them from a `busy`.
-
-  Governing spec anchors: execution.rst `vector-ls-agen` and `vector-agen`;
-  loadstore.rst `lsu-unified`, `ssi-queues`, `us-queue`, `store-data-queue`,
-  `vec-load-algo`, `vec-store-algo`, `mem-order`, `vec-squash`, `elem-progress`,
-  `dcache-arbiter`, `vector-bw-ceiling`; midcore.rst `group-done-wb`, `vrf-ports`,
-  `midcore-segmented-load`; issue.rst `shared-store-chain`,
-  `vec-queue-reservation`; case_study.rst `case-segmented-ls`, `case-vl-zero`;
-  glossary.rst `glossary-terms`.
+VecLsu — the vector load/store unit container: the vector LS AGEN stage, the six
+element queues, the drain side, the memory-ordering mechanisms, and the wiring
+that binds them to BOOM's Unified LSU. It contains all vector memory datapath
+and owns no datapath of its own.
 */
+
+hierarchy.yaml: kind: module, mode: new,
+output src/main/scala/v4/vec/generated/lsu/VecLsu.scala,
+package boom.v4.vec.generated.lsu, group vec_lsu.
+depends_on MicroOp, VecBundles, VectorParams, VecTrace.
+Instantiated ONCE, as `vlsu`, inside VecPipeline — which exists only when
+`usingRVV` is true, so in a vectors-off build this whole subtree is ABSENT, not
+tied off, and the emitted RTL is bit-identical to pre-Caracal BOOM v4.
+`usingRVV` is a Scala `Boolean` of `BoomCoreParams`, never a hardware `Bool`,
+and it is not rocket's `usingVector`.
+
+Seventeen children: `resv`; `ld_opnd`/`st_opnd`; `ld_msk`/`st_msk`;
+`ld_elem_agen`/`st_elem_agen`; `ld_range_agen`/`st_range_agen`; the six
+`VecElemQueue` instances; `ld_beat`/`st_beat`; `dgen`; `lcb`; `gcopy`; `arb`;
+`snoop`; `fwd`; `hold`; `squash`.
+
+===> THE MODULE EXISTS TO UPHOLD ONE INVARIANT, AND EVERY STRUCTURAL CHOICE
+     BELOW IS DOWNSTREAM OF IT. Address generation is cut BY PIPELINE POSITION,
+     not by the inherited Packer/Skipper/Walker x load/store cross-product
+     (six modules, 2110 lines, whose duplication had already produced divergent
+     mask support between the load and store Packers). FILL side: `VecElemAgen`
+     (SSI, one address per active element) and `VecRangeAgen` (unit-stride, ONE
+     range entry). DRAIN side: `VecBeatExpander`, which coalesces just in time.
+     DIRECTION IS A PARAMETER, NEVER A SEPARATE MODULE — each agen, each operand
+     read, each mask streamer and each beat expander is instantiated twice so the
+     two directions never arbitrate. The load-priority mux over a single shared
+     unit is what silently dropped store grants in `addvector`.
+
+===> NO MODULE IN THIS SUBTREE MAY HOLD STATE SCOPED TO "THE CURRENT
+     INSTRUCTION", AND NONE MAY EXPORT A `busy` THAT GATES ISSUE. In-flight
+     state lives in exactly THREE places, and plan GROUND RULE 6 WAS AMENDED to
+     say three rather than two: (a) the six element queues — whose capacity is
+     reserved at dispatch, in program order — (b) the LCB's per-PRN assembly
+     entries, and (c) THIS MODULE'S PER-LDQ/STQ-ENTRY DESCRIPTOR PENDING TABLE
+     (section 3b). (c) is the same KIND of state as (a) and that is why the rule
+     admits it rather than being bent around it: one row per LDQ/STQ entry, the
+     row indexed by a placeholder the dispatch-time reservation already
+     guaranteed, so it is structurally un-overflowable; it is not scoped to "the
+     current instruction" (a row belongs to a queue entry, and rows for several
+     ops coexist); and it exports no `busy`. The rule is amended IN THE TEXT
+     because gate H4 reviews against that text — a table appearing under a rule
+     that enumerated two homes would be right to reject.
+     This module therefore exports no `busy`, no `active`, no `fu_ready` and no
+     credit toward any issue unit. Issue eligibility for a vector memory OP.v is
+     "a reservation exists", decided at dispatch by `resv` and nowhere else.
+     Gate H4 greps this whole subtree for a `busy` reaching an issue unit; a hit
+     is a failed review regardless of measured performance. `vec_lsu_empty`, the
+     LCB's `free_count`, `hold_ldq` and `dis_ok` are each explained below in the
+     terms that distinguish them from a `busy`.
+
+Governing spec anchors: execution.rst `vector-ls-agen` and `vector-agen`;
+loadstore.rst `lsu-unified`, `ssi-queues`, `us-queue`, `store-data-queue`,
+`vec-load-algo`, `vec-store-algo`, `mem-order`, `vec-squash`, `elem-progress`,
+`dcache-arbiter`, `vector-bw-ceiling`; midcore.rst `group-done-wb`, `vrf-ports`,
+`midcore-segmented-load`; issue.rst `shared-store-chain`,
+`vec-queue-reservation`; case_study.rst `case-segmented-ls`, `case-vl-zero`;
+glossary.rst `glossary-terms`.
 
 <|begin_module|>
 
@@ -134,16 +134,16 @@ from Tenstorrent Inc.
   `br_mask`s and one pre-resolved Bool can only ever be right for one of them —
   and `idx` (VecIdxGen) is killed by its parent agen, never by this unit.
 
-  // ===> `VecSquashUnit`'s OWN PARAMETER COMMENT IS STALE AND THIS SITE IS
-  //      AUTHORITATIVE. It still enumerates eight clients — "the four fill-side
-  //      agens, `idx_gen`, `mask_stream` and the two `VecBeatExpander`s" — which
-  //      predates the mask-streamer hoist to this level and predates the four
-  //      agens taking `brupdate` directly. Corrected client set: the two mask
-  //      streamers (now this module's instances, so they DO need a resolved kill
-  //      from here), the two beat expanders, and `gcopy`. Five. When
-  //      VecSquashUnit's text is next regenerated its comment must be brought to
-  //      this list; until then, do not read a default of 8 as an instruction to
-  //      wire three dangling clients.
+  ===> `VecSquashUnit`'s OWN PARAMETER COMMENT IS STALE AND THIS SITE IS
+       AUTHORITATIVE. It still enumerates eight clients — "the four fill-side
+       agens, `idx_gen`, `mask_stream` and the two `VecBeatExpander`s" — which
+       predates the mask-streamer hoist to this level and predates the four
+       agens taking `brupdate` directly. Corrected client set: the two mask
+       streamers (now this module's instances, so they DO need a resolved kill
+       from here), the two beat expanders, and `gcopy`. Five. When
+       VecSquashUnit's text is next regenerated its comment must be brought to
+       this list; until then, do not read a default of 8 as an instruction to
+       wire three dangling clients.
 
   `isStore` is forwarded on both `VecScalarOperandRead`, both `VecElemAgen`, both
   `VecRangeAgen`, both `VecMaskStream` and both `VecBeatExpander` instances. It is
@@ -239,8 +239,15 @@ from Tenstorrent Inc.
   producer can be back-pressured.
   `vec_rob_flags` accompanies those lanes and carries nothing from the LSU today.
   `vec_clr_unsafe` — `Output(Valid(robAddrSz))`, the single group-safe event.
-  `vec_xcpt` — `Output(VecException)` {valid, rob_idx, cause, badvaddr}. No
-  element index: a faulting vector memory op traps with `vstart = 0`.
+  `vec_xcpt` — `Output(Valid(VecException))` {uop, cause, badvaddr}. No element
+  index: a faulting vector memory op traps with `vstart = 0`. `uop` is the FAULTING
+  `OP.v`'s own uop, taken from the queue entry that faulted — NOT rebuilt from a
+  `rob_idx`, and NOT the uop currently at some cursor. The ROB latches it and reads
+  `uop.br_mask` for `GetNewBrMask`, so a wrong or empty `br_mask` here drops the
+  fault or attributes it to another instruction. (Re-declared at E-prep; the bundle
+  previously carried a bare `rob_idx` and could not drive `rob.io.lxcpt` at all —
+  see `VecBundles`, `---- VecException ----`.) `cause` is rocket's cause space,
+  `log2Ceil(Causes.all.max + 2)` bits, not `xLen`.
   `lsu_fencei_rdy_vec` — `Output(Bool)`, the `vec_lsu_empty` term.
 
   ===> AND THAT IS THE WHOLE INTERFACE. There is deliberately no `busy`, no
@@ -252,6 +259,194 @@ from Tenstorrent Inc.
   <|end_ports|>
 
   <|begin_logic|>
+
+  ---- 0. INTEGRATION CONTRACT: what the sub-modules already built require ----
+
+  Written at E7 from the thirteen sub-module generation reports. Every item below is a
+  seam where a sub-module made a choice this container must match, or left an obligation
+  this container must discharge. None of them are optional and none are visible from
+  this file's own prose alone.
+
+  (a) MASK GRANULARITY IS CONVERTED HERE, AND NOWHERE ELSE. `VecRangeEntry.mask` is
+  ELEMENT-granular (`vLen` bits, one bit per element, produced by `VecMaskStream` as the
+  tail-cleared `us_mask`). `VecSnoopCandidate.active_mask` is BYTE-granular
+  (`maxVecMembers * vLen / 8` bits). When this module builds a snoop candidate from a
+  queue entry it MUST expand each mask bit into `1 << eew` byte bits. The expansion used
+  to be the forwarder's, and moved here when `VecSnoopCandidate` was given a byte-granular
+  field — so `VecStoreForward` no longer does it and will read the mask verbatim. Two
+  fields of the same width are not the same quantity: at the defaults both are 256 bits,
+  which is exactly why getting this wrong is invisible.
+
+  (b) `io.op` TO EACH AGEN MUST BE ONE CYCLE PER GRANT, AND THIS MODULE IS WHAT MAKES IT
+  SO. `VecScalarOperandRead.io.out.valid` has NO self-clear: it holds the same resolved
+  op until the issue queue grants a different one. `VecElemAgen`'s accept is level-
+  triggered against the ports section's "one cycle per granted OP.v" promise, so the
+  per-LDQ/STQ-entry descriptor table here must convert the persistent valid into a
+  single-cycle presentation. `VecElemAgen` carries `assert(!(accept && w_valid))` as the
+  canary; if that fires, this is why.
+
+  (c) `nKillClients` — RECONCILE THE TWO ROSTERS. `VecSquashUnit` defaults to 8 and
+  enumerates {4 fill-side agens, idx_gen, mask_stream, 2 beat expanders}; this file's own
+  text says 5 and names {ld_msk, st_msk, ld_beat, st_beat, gcopy}. They disagree on both
+  count and membership. THE CRITERION: a kill client is a module THIS FILE INSTANTIATES
+  DIRECTLY that exposes a `kill` input. `VecIdxGen` is therefore NOT one — it is
+  instantiated inside `VecElemAgen`, which owns forwarding kill to it. Settle the roster
+  against the generated interfaces, not against either prose list, and fix whichever
+  prose is wrong.
+
+  (d) QUEUE-POINTER NARROWING IS THIS MODULE'S JOB. `VecQueueReservation.rollback_tail`
+  and `VecSquashUnit.q_squash` are `resvPtrSz` (= `log2Ceil(ssiQueueEntries) + 1`) —
+  one uniform width for all six queues. Each `VecElemQueue` takes its OWN `ptrW`
+  (`log2Ceil(entries) + 1`), which is narrower for the three US queues. Narrow by
+  truncation when connecting. This is exact, not a cast, and only because `VectorParams`
+  now requires both depths to be powers of two with `2*ssiQueueEntries` a multiple of
+  `2*usQueueEntries` — do not remove those requires.
+
+  (e) THE DRAIN-READ `xlated` ASSERTION IS THIS MODULE'S. `VecElemQueue` cannot make it:
+  its `io.rd` is one anonymous indexed-read array and nothing on it distinguishes an
+  execute-time translate read (which expects `xlated = 0`) from a post-commit drain read
+  (which requires 1). Assert it where the drain read is issued, which is here. Do NOT
+  "fix" this by adding an `is_drain` flag to the shared read port.
+
+  (f) CONSTRUCTOR SIGNATURES AS BUILT, which differ from this file's prose:
+  `VecElemQueue`'s FIRST parameter is `queueName: String` — pass the six normative names
+  (`ld_SSI_ADDR_Q` etc.) exactly as the enumeration spells them, because all six share
+  every trace tag and assertion message and the name is the only thing that tells them
+  apart. Its `readPorts` is DERIVED (`ports + 1`), not a parameter.
+  `VecBeatExpander` takes `(isStore, nLanes, dmemBeatBytes)` — pass `lsuWidth` and
+  `coreDataBytes`; neither has a default, deliberately.
+  `VecLoadCoalescingBuffer`'s `lcb_alloc_rdy` toward the beat expanders is
+  `Vec(nLanes, Bool())`, not one bit: at `lsuWidth = 2` two beats in one cycle can target
+  two different destination members, which are two independent allocations.
+
+  (g) HOISTED INSTANCES AND THEIR ROUTING. `VecMaskStream` is instantiated HERE, once per
+  direction, not inside the agens. Route its `us_mask` to `VecRangeAgen.io.mask` (the range
+  agen has no mask reader and must not grow one), and its `staged`/`ahead`/`skip_*` cursor
+  to `VecElemAgen`. A unit-stride OP.v retires the streamer's cursor in the cycle the latch
+  loads, so `us_mask` is available immediately — the range agen is combinational and
+  one-shot and samples it right away.
+  IMMEDIATELY MEANS THE LAUNCH CYCLE ITSELF WHEN THE OP.v IS UNMASKED, and that case is
+  the one a registered "now awaiting the mask" bit gets wrong. An unmasked op elides the
+  mask read, so the streamer's latch loads combinationally from `op` and drives both
+  `us_mask.valid` and `done` in the SAME cycle the start pulse is asserted; a masked op
+  reads the VRF first and presents them one cycle later. Qualify the range agen's accept
+  with `us_mask.valid` ORed against the start pulse, never with a register set BY that
+  pulse — the latter samples one cycle late, `us_mask` has already cleared, and the range
+  is silently never pushed. The failure is worse than a dropped op because the await bit
+  stays set: the NEXT OP.v's `us_mask` fires it instead, so a range is pushed carrying the
+  wrong uOP's base and length while the first OP.v never completes and wedges the ROB head.
+
+  (h) THE ORDERING TRIANGLE, RESTATED BECAUSE THREE MODULES DEPEND ON IT. Route
+  `fwd.known_overlap` into `hold.known_overlap`; `hold` computes no overlap test of its
+  own, so this routing IS the "exact complements" guarantee. Route `hold.hold_ldq` into
+  `arb.hold_ldq` — the hold decides who, the arbiter owns suppression. Give `snoop` strict
+  priority over `fwd` on each store queue's shared read port; `fwd` is the correct loser
+  because it has a declared replay path, while `snoop`'s read is tied to an LCAM grant the
+  arbiter cannot retract.
+
+  (i) PORTS THE SUB-MODULES NEED FROM `lsu.scala`, VIA `VecLsuCoreIO`, THAT THE LSU DELTA
+  MUST THEREFORE EXPOSE: `VecQueueReservation` needs `ldq_head` and `stq_head` (for
+  `IsOlderLSU`); `VecOrderHold` needs `stq_head` and `ldq_next_stq_idx`; `VecSquashUnit`
+  needs `ldq_head`/`ldq_tail`/`stq_commit_head`/`stq_tail`. None of these modules may
+  track LDQ/STQ pointers locally — a second copy drifts on precisely the mispredict cycle
+  it is needed.
+
+  (k) ONE GRANT PER DIRECTION PER CYCLE, AND `vecIssueGrantWidth` DOES NOT APPLY TO THE
+  MEMORY QUEUES AS BUILT. Found at E7 on the wide tier. `iss_ld`/`iss_st` are each a
+  single `Valid(MicroOp)`, `VecScalarOperandRead` states "at most one grant per cycle
+  arrives on it", and the descriptor table accepts one row per direction per cycle. But
+  `VecPipeline` was constructing `iq_v_load`/`iq_v_store` with `issueWidth =
+  vecIssueGrantWidth`, which is 2 on Mega — so the queue could grant two loads in one
+  cycle and the container would consume only lane 0. The second grant is DROPPED: the
+  issue slot believes it issued and frees itself, the LSU never sees the op, and the
+  load never completes. A hang, not a slowdown, and only on a tier with
+  `vecIssueGrantWidth > 1`.
+  Both memory queues are therefore constructed with `issueWidth = 1` until the container
+  accepts a vector of grants. THIS IS A THROUGHPUT LIMIT, NOT A CORRECTNESS CHOICE, and
+  it is deliberately NOT hidden by widening the port and dropping the extra grant.
+  Note what is still wide on Mega, because the limit is narrower than it sounds: ONE
+  `OP.v` starts per direction per cycle, but its elements drain at `lsuWidth` beats per
+  cycle. P1/P2 live on the drain side, which is unaffected. What is capped is
+  instruction-level overlap between two loads, not element bandwidth within one.
+  Lifting it means widening `iss_ld`/`iss_st` to `Vec(vecIssueGrantWidth, ...)` AND
+  giving the descriptor table, both operand readers and both mask streamers a second
+  accept path — a real change, not a port widening. Re-check this at H1 against the
+  measured P-targets before deciding it is worth it.
+
+  (k4) THE TRANSLATE PASS REWRITES THE RANGE ENTRY'S `base`, SO EXACTLY ONE BEAT MAY
+  DO IT — THE FIRST. Every beat of a US store carries `uses_tlb`, so a translation
+  comes back for each, and each is `base + offset`. Writing every response back into
+  the entry leaves `base` holding whichever beat translated LAST; the write pass then
+  reads that entry and starts there. Symptom on a 4-beat store: the translate pass
+  covers base..base+24 correctly, the write pass covers base+8..base+32 — the first
+  element is never stored and one dword PAST THE RANGE is, which is memory corruption
+  outside the instruction's own footprint. Qualify the write-back with the beat's
+  `first` marker. Note this records only the FIRST beat's translation, so a range
+  spanning a page boundary would need per-beat physical addresses that a single `base`
+  field cannot hold — out of scope here, but the reason this field is not a general
+  physical-address cache.
+
+  (k3) `st_beat.is_write_pass` IS ONE PORT SHARED BY THE US AND SSI HEADS, SO IT HAS
+  EXACTLY ONE DRIVER. The US store's pass state (`stUsWritePass`) and the SSI store's
+  (`stSsiDoPass2Prev`) are separate registers, and assigning the port from each in turn
+  is not two drivers in Chisel — it is one, the LAST. Written that way the SSI value
+  wins unconditionally and a unit-stride store is stranded in its translate pass: the
+  expander gates `us_pop` on `is_write_pass` for a store, so the range never pops,
+  `st_drain_done` never fires, the STQ placeholder never succeeds, and the first
+  `fence` after the store hangs — AFTER the store has already committed and matched
+  the reference, which is what makes it look like a scalar-fence bug. Select on which
+  head is staged (`stUsStagedValid`), matching the expander's own US-first priority.
+  ===> A SINGLE PASS BIT FOR BOTH CLASSES IS A LATENT SEAM DEFECT, not just an
+  assignment order to get right: a US store draining pass 1 while an SSI store drains
+  pass 2 needs two different values on the same wire in the same cycle. The Mux is
+  correct whenever one class is in flight, which is every case the LS suite reaches;
+  making it correct in general means giving VecBeatExpander a pass bit per head.
+
+  (k2b) ...AND THE DGEN GRANT IS WHAT STARTS `dgen`. The two grants are not
+  bookkeeping noise to be filtered away: `VecStoreDgenPath` withholds the DGEN offer
+  until `!dgen_operand_busy && dgen_operand_ready`, so the grant IS the statement
+  "this store's data register has been written." Driving `dgen.io.req` from the AGEN
+  pulse instead reads `pvs3` out of the VRF at address-generation time — for
+  `vle v3 / vse v3` that is before the load has written it, and the store silently
+  writes whatever the register file happened to hold. It corrupts nothing structural,
+  commits, drains, and matches the reference AT COMMIT, because the checker compares
+  the store's own architectural effect and not the bytes that reached memory.
+  `data_base` is still sampled at the AGEN pulse, where its `resv_lookup` lane is
+  live, and held for the later grant.
+
+  ===> "ONLY ONE STORE IS IN FLIGHT PER DIRECTION" IS FALSE, AND `uop`/`vl` MAY NOT
+       COME FROM `xx_opnd.out`. A younger store's AGEN pulse can land BEFORE an older
+       store's DGEN grant, so at the grant `st_opnd.out` names the younger store while
+       `iss_st` names the older one — bits and valid drawn from two different
+       instructions. Measured on `ms14_stripmine`, whose third iteration overlaps the
+       second: `VecDgen accept` fired twice for the same rob_idx, the older store's
+       data stream was built from the younger store's `vl` and base, and the older
+       store never completed. `vec_lsu_dgen_request_matches_granted_store`
+       (spec-lsu.d7) is exactly this property and it fires on the counterexample.
+       Take `uop` from `iss_st.bits`, and hold `vl` and `data_base` in tables INDEXED
+       BY `stq_idx`, written at each store's own AGEN pulse — a single held register
+       has the same defect, one cycle later.
+
+  (k2) A STORE ARRIVES ON `iss_st` TWICE, AND ONLY THE AGEN PASS STARTS AN OP.v HERE.
+  `VecStoreDgenPath` offers the address pass and then the data pass as two separate
+  issue grants, exclusive on `fu_code`: the AGEN grant carries `FC_AGEN` alone, the
+  DGEN grant `FC_DGEN` alone. This container drives `dgen.io.req` off the AGEN pulse
+  (it gates `stPresent` on `dgen.io.req.ready`, so dgen is provably free by then), so
+  the DGEN grant is bookkeeping for the ISSUE SLOT and carries no work for this
+  module. Qualify the descriptor-table write, the branch-kill exclusion and the
+  fresh-candidate term with `FC_AGEN`; an unqualified `iss_st.valid` treats the data
+  pass as a second OP.v and re-runs the whole address chain — a second operand read, a
+  second mask stream, and a second range push for an op whose region already holds one,
+  which the element queue then refuses and `VecRangeAgen` reports as a `range.ready`
+  violation. That assertion is correct and names the wrong module: the duplicate
+  originates here. Invisible until `VecDecode` set `FC_AGEN`/`FC_DGEN`, because before
+  that a store never issued at all.
+
+  (j) `st_drained` IS A LEVEL, ONE BIT PER STQ ENTRY, AND THIS MODULE DRIVES IT. Never a
+  pulse: a pulse never arrives for a predicted event naming a store that already drained,
+  hanging that load forever. Key it on the post-commit WRITE cursor, not the TRANSLATE
+  cursor — translate-keyed releases the hold before any byte reaches the cache and the
+  released load reads the stale line.
 
   ---- 1. What this stage is, and where it sits ----
 
@@ -441,42 +636,42 @@ from Tenstorrent Inc.
       fired", which is NOT the same as "all granted in one cycle" — see the
       accumulation rule immediately below.
 
-      // ===> A PARTIAL GRANT ACCUMULATES; IT IS NOT RETRIED IN FULL (decision
-      //      D5, retry model (a)). Lane 0 (`prs1`, the base) sits ahead of lane 1
-      //      (`prs2`, the stride) in `PartiallyPortedRF`'s index priority, so
-      //      "base granted, stride denied" is an ordinary cycle. `prs1` fires and
-      //      STAYS fired; only the lanes still outstanding re-request. The
-      //      per-lane hold lives in `VecScalarOperandRead` (`rr_need` per lane,
-      //      `rr_data` per lane, the address held from `rr_uop`), which is the
-      //      idiom every scalar EU already uses — hold the address until `fire`.
-      //
-      // ===> AND THIS TABLE MUST THEREFORE DROP `valid` TOWARD THE OPERAND READ
-      //      ONCE A ROW IS ACCEPTED, rather than leaving it presented. An earlier
-      //      revision said a denied row "simply stays presented and re-requests
-      //      next cycle"; combined with the accumulating hold that is not merely
-      //      redundant, it BREAKS the consumer's own check — it keeps `iss.valid`
-      //      high on a descriptor already latched in `rr_uop`, and
-      //      `VecScalarOperandRead` asserts `!(iss.valid && rr_valid &&
-      //      rr_need.orR)` precisely to catch a second descriptor arriving while
-      //      one is still outstanding. Presentation is a HAND-OFF, not a
-      //      continuous request: present until accepted, then go quiet and let
-      //      the consumer finish its lanes.
-      //
-      // WHY ACCUMULATE RATHER THAN RETRY, since retry is the simpler state. The
-      // vector lanes are appended LAST in the RF's index priority and there are
-      // ~7-9 existing logical readers against 5 physical ports on Medium, so
-      // denial is routine, not exceptional. Retry-in-full requires base AND
-      // stride to win in the SAME cycle against all of that; under sustained
-      // scalar pressure that is a livelock, not a slow path, and it also
-      // re-serializes the very read the 3 -> 5 seam widening existed to
-      // parallelize. Accumulation makes progress MONOTONIC: each lane fires once
-      // and stays fired, so the worst case is bounded by the unluckiest single
-      // lane instead of by the coincidence of all of them.
-      // The "half-read descriptor" objection is real but is a KILL question, not
-      // a correctness-of-read question, and it is answered where the state lives:
-      // `VecScalarOperandRead`'s kill clears `rr_need` so a squashed uop stops
-      // consuming arbitration, and a read has no side effect, so a lane that
-      // fired for a killed descriptor has simply wasted a port cycle.
+      ===> A PARTIAL GRANT ACCUMULATES; IT IS NOT RETRIED IN FULL (decision
+           D5, retry model (a)). Lane 0 (`prs1`, the base) sits ahead of lane 1
+           (`prs2`, the stride) in `PartiallyPortedRF`'s index priority, so
+           "base granted, stride denied" is an ordinary cycle. `prs1` fires and
+           STAYS fired; only the lanes still outstanding re-request. The
+           per-lane hold lives in `VecScalarOperandRead` (`rr_need` per lane,
+           `rr_data` per lane, the address held from `rr_uop`), which is the
+           idiom every scalar EU already uses — hold the address until `fire`.
+      
+      ===> AND THIS TABLE MUST THEREFORE DROP `valid` TOWARD THE OPERAND READ
+           ONCE A ROW IS ACCEPTED, rather than leaving it presented. An earlier
+           revision said a denied row "simply stays presented and re-requests
+           next cycle"; combined with the accumulating hold that is not merely
+           redundant, it BREAKS the consumer's own check — it keeps `iss.valid`
+           high on a descriptor already latched in `rr_uop`, and
+           `VecScalarOperandRead` asserts `!(iss.valid && rr_valid &&
+           rr_need.orR)` precisely to catch a second descriptor arriving while
+           one is still outstanding. Presentation is a HAND-OFF, not a
+           continuous request: present until accepted, then go quiet and let
+           the consumer finish its lanes.
+      
+      WHY ACCUMULATE RATHER THAN RETRY, since retry is the simpler state. The
+      vector lanes are appended LAST in the RF's index priority and there are
+      ~7-9 existing logical readers against 5 physical ports on Medium, so
+      denial is routine, not exceptional. Retry-in-full requires base AND
+      stride to win in the SAME cycle against all of that; under sustained
+      scalar pressure that is a livelock, not a slow path, and it also
+      re-serializes the very read the 3 -> 5 seam widening existed to
+      parallelize. Accumulation makes progress MONOTONIC: each lane fires once
+      and stays fired, so the worst case is bounded by the unluckiest single
+      lane instead of by the coincidence of all of them.
+      The "half-read descriptor" objection is real but is a KILL question, not
+      a correctness-of-read question, and it is answered where the state lives:
+      `VecScalarOperandRead`'s kill clears `rr_need` so a squashed uop stops
+      consuming arbitration, and a read has no side effect, so a lane that
+      fired for a killed descriptor has simply wasted a port cycle.
 
   THE GRANT CYCLE IS BYPASSED SO THE TABLE COSTS NO LATENCY IN THE COMMON CASE. A
   grant whose row is being written this cycle is ALSO eligible for presentation
@@ -497,6 +692,121 @@ from Tenstorrent Inc.
   So the link UPSTREAM of `VecScalarOperandRead` — this table to `xx_opnd` — is
   the one that becomes `Decoupled`: the table presents, `xx_opnd` accepts, the row
   clears on the fire. THE DOWNSTREAM CONTRACT IS UNCHANGED AND MUST STAY SO:
+  THE LOAD RESPONSE ALIGNMENT TABLE IS THE ONE PLACE A BEAT MUST BE HELD BACK.
+  A response carries its request's uop back unchanged, so the DESTINATION —
+  `v_split_dst_prn`, `v_split_dst_byte_off`, `ldq_idx` — is read off the response
+  itself and needs no side structure. Its `vaddr`/`byte_en`/`eew` are not carried,
+  so each in-flight beat reserves one of `ldRespTags` tags, stamps it into the
+  request's `uop.v_mem_tag`, and parks that alignment in a table indexed by the tag;
+  the response reads the table at the tag it returns with.
+
+  ===> KEY IT BY TAG, NOT BY LANE, AND NOT BY ARRIVAL ORDER. `ll_resp` — the miss
+       return — always arrives on lane `lsuWidth-1` whatever lane issued the
+       request. A per-lane FIFO replayed in request order therefore aligns a miss
+       against a DIFFERENT lane's request the moment `lsuWidth > 1`: on MegaBoom
+       each 16-byte beat placed only its upper 8 bytes, at `dst_byte` +8, so every
+       group stalled half-filled, `ld_msk.done` never fired, `ldStreamerBusy`
+       latched, and every later vector memory op hung behind it. Order-based
+       recovery also cannot survive a nack, which returns on a different port
+       entirely and would desync the queue permanently.
+
+  Nothing else bounds how many beats are outstanding, so the beat request MUST be
+  qualified by tag availability, exactly as it already is by `lcb_alloc_rdy`: same
+  rule, same reason, a second response-tracking resource that cannot back-pressure
+  once the beat has fired. PICK EVERY LANE'S TAG FROM THE BUSY REGISTER ALONE,
+  never from another lane's fire in the same cycle, and require `lsuWidth` free
+  tags before any lane proceeds: the arbiter's round-robin makes lane 0's grant
+  depend on lane 1's request, so a `valid` gated on a same-cycle allocation closes
+  a combinational loop.
+
+  ===> PARK THE WHOLE REQUEST, NOT ONLY THE ALIGNMENT, AND REPLAY A NACKED BEAT
+       FROM IT. A nack frees nothing: it marks the tag REPLAY-PENDING and keeps
+       both the tag and its parked request alive, because the beat expander has
+       already advanced its cursor past that beat and will never re-emit it. On
+       MegaBoom a nack is STRUCTURAL, not an edge case — the MSHR accepts one
+       request per cycle, so two lanes issuing beats of the same line guarantee
+       one, and measured on `ms11a2_pure_vle` exactly half the beats (4 of 8) were
+       nacked. Drop them and every group stalls half-filled forever.
+       A replay OUTRANKS a fresh beat on its lane: it is older, its tag is already
+       spent, and its group cannot complete until it lands. Pick replay candidates
+       from the pending register alone, for the same loop reason as the tag pick.
+       Clear replay-pending when the replayed beat re-fires, and free the tag only
+       on a response. Replay the request BIT-IDENTICALLY, `uses_tlb`/`uses_lcam`
+       included, rather than suppressing its side channels: re-running them repeats
+       work already done, but suppressing them would make a replayed beat and a
+       first-issue beat two different requests, and only one of the two paths would
+       ever be exercised by a test that does not nack.
+
+  ===> `lcb_alloc_rdy` IS NOT `free_count =/= 0`. VecDcacheArbiter's spec calls this
+       "the exact per-PRN test", and as built it was not: driving it from the LCB's
+       coarse `free_count` deadlocks at `EMUL = lcbEntries`, where ONE group owns
+       every entry, `free_count` is 0 for the op's whole lifetime, and the beat
+       expander therefore stops emitting the very beats that would fill those
+       entries. Measured on `ms14_vls_e64_m8`: 8 entries allocated, 7 of 32
+       placements, one VRF write, `group_done` never fired. A free entry is needed
+       only while the allocation WALK is still running; once it has finished, this
+       op's entries exist and its beats need no new one. Gate on
+       `free_count =/= 0 || !lcbWalkActive`, and note this assignment must sit
+       BESIDE the walk it reads — placing it earlier in the file is a Scala forward
+       reference that elaborates as a null and fails at FIRRTL time, not at compile.
+
+  ===> THE WALK'S TERMINATION TEST MUST USE THE WIDTH-EXPANDING `+&`. The walk index
+       is `log2Ceil(maxVecMembers)` bits and the member count is one bit wider, so at
+       `EMUL = maxVecMembers` a truncating `(idx + 1.U) === members` wraps 7 -> 0,
+       compares against 8, and NEVER completes. That leaves `lcbWalkActive` high with
+       `free_count = 0` forever, which defeats the `|| !lcbWalkActive` escape above
+       and reinstates the very deadlock it exists to prevent — every `_m8` test in
+       `vset_loadstore_noarith.txt` hung on exactly this, at all four EEWs, while
+       `_m1`/`_m2`/`_m4` passed because they never reach the wrap. Write
+       `(idx +& 1.U) === members`, and assert the walk never revisits member 0: the
+       failure has no signature of its own downstream, it only looks like a hang.
+
+  ===> `active_bytes` IS THE COMPLETION CONTRACT, NOT A CONVENIENCE. The LCB holds an
+       entry until every bit of `active_bytes` is covered, so a byte marked active
+       that no beat will ever deliver is a HANG, not a wrong value. Allocating it as
+       all-ones — "every byte of every member is active" — is therefore only correct
+       for an access that fills whole registers; it hung `ms11a4_vle_tail` (vl=2 of
+       4: 16 bytes delivered against 32 claimed), `ms11d_vlm` (2 bytes of 32) and
+       `ms14_stripmine` (its vl=2 remainder iteration). Compute it per member from
+       the SAME three quantities the range length comes from: all bytes for a
+       whole-register access; `ceil(vl/8)` bytes in member 0 alone for a mask access,
+       whose vtype elements do not describe the transfer at all; otherwise the bytes
+       of the elements that are both below `vl` and set in the staged mask, which
+       is the per-EEW expansion of that member's slice of the mask. `inactive_bytes`
+       is the complement, and `undisturbed` says whether those bytes are preloaded
+       from `stale_pvdest` or written as ones — `vta`/`vma` are the only inputs that
+       answer it, and neither is visible here unless decode carries them on the uop.
+
+  ===> STORE BEATS NEED THE SAME POOL AND THE SAME REPLAY, IN A SEPARATE INSTANCE.
+       A store returns no data, so its tag holds no alignment and exists only to
+       name a nacked beat for replay; it is freed by `store_ack` rather than by a
+       response. Only a WRITE-pass beat reaches the D$, so the translate pass
+       allocates nothing — gate allocation on `uses_dcache`, or a two-pass store
+       burns two tags per beat and the pool halves. Measured on `ms11a2_vse` at
+       `lsuWidth = 2`: 2 store acks on lane 0 and 2 store NACKS on lane 1, so
+       without store replay a 4-element store writes only the dwords lane 0 owned
+       and the rest of the range keeps its old contents. Loads hang when a beat is
+       dropped, because the group never completes; stores instead COMMIT SILENTLY
+       WRONG, because nothing downstream is waiting for the missing write.
+
+  ===> A WRITE-PASS BEAT MAY ONLY FIRE ON LANE 0, AND A STORE REPLAY LIKEWISE.
+       `dcache.scala` gates the store acknowledgement with `&& (w == 0).B`
+       (`io.lsu.store_ack(w).valid := s2_valid(w) && s2_send_store_ack(w) && (w ==
+       0).B`), so a beat that SUCCEEDS on any other lane is never acknowledged: the
+       per-lane result is computed inside the D$ and then discarded. Its tag is
+       therefore never freed, and after `ldRespTags` such beats the pool starves and
+       the write pass spins forever — measured on `ms14_vls_e64_m4` as `busy=247`
+       (7 of 8 tags held), `rpy_mask=0`, and 16369 blocked cycles. This mirrors
+       `ll_resp` always returning on lane `lsuWidth-1`, and matches BOOM's own
+       scalar store path, which commits on pipe 0 only; it is a property of the
+       baseline D$ interface, not of this module. Lanes above 0 may still carry
+       TRANSLATE-pass beats, which need no acknowledgement. Do not "fix" this by
+       ungating `store_ack` in `dcache.scala` without deciding what per-lane store
+       acknowledgement means for the scalar STQ, which shares that port.
+  Assert a response's tag is allocated: with the gate in place that is an
+  invariant, and it is the check that catches any later path which drops or
+  duplicates a response before the stale alignment it hands the LCB turns into
+  silently misplaced load data.
   `xx_opnd.out` to the agens, to the mask streamer's start and to the range agen
   remains a `Valid` that its consumer LATCHES UNCONDITIONALLY. Every agen was
   written against exactly that, and adding a ready there would rebuild the
@@ -554,13 +864,13 @@ from Tenstorrent Inc.
   no younger reservation can block it. That is `spec-lsu.b11`'s streaming
   precondition, and it is live only because loads under-reserve.
 
-  // ===> SO DO NOT ADD AN ASSERTION THAT A LOAD'S `resv_count` COVERS ITS
-  //      ELEMENT COUNT. It was the natural check while both directions reserved
-  //      the worst case, and it now fires on every long load. The equal-count /
-  //      one-shared-base assertion of the SSI pair is a STORE-SIDE assertion and
-  //      is stated as such below. Squashability is untouched: a load's region is
-  //      still contiguous and program-ordered, just smaller, so section 9's
-  //      rollback arithmetic is unchanged.
+  ===> SO DO NOT ADD AN ASSERTION THAT A LOAD'S `resv_count` COVERS ITS
+       ELEMENT COUNT. It was the natural check while both directions reserved
+       the worst case, and it now fires on every long load. The equal-count /
+       one-shared-base assertion of the SSI pair is a STORE-SIDE assertion and
+       is stated as such below. Squashability is untouched: a load's region is
+       still contiguous and program-ordered, just smaller, so section 9's
+       rollback arithmetic is unchanged.
 
   THE ADDRESS AND DATA REGIONS OF A US STORE ARE NOT IN IDENTITY CORRESPONDENCE,
   and this is the seam most likely to be mis-generated. `st_US_ADDR_Q` holds ONE
@@ -598,11 +908,11 @@ from Tenstorrent Inc.
   member sequence is how they come to disagree, and the disagreement corrupts store
   data rather than hanging.
 
-  // The port is declared `DecoupledIO` with a permanently-high `ready`, which is
-  // the same shape A57 condemned on `io.req`. It is left as declared because this
-  // file is the side that states the tie-off and the two must agree; narrowing it
-  // to a `Valid` is a joint VecLsu/VecRangeAgen/VecDgen change, flagged in the
-  // report, not taken unilaterally here.
+  The port is declared `DecoupledIO` with a permanently-high `ready`, which is
+  the same shape A57 condemned on `io.req`. It is left as declared because this
+  file is the side that states the tie-off and the two must agree; narrowing it
+  to a `Valid` is a joint VecLsu/VecRangeAgen/VecDgen change, flagged in the
+  report, not taken unilaterally here.
 
   Head-side reclamation is driven from here: on the deallocation of a vector LDQ
   or STQ placeholder, this module presents that index to `resv`, which invalidates
@@ -611,6 +921,16 @@ from Tenstorrent Inc.
   keeps reclamation in program order at the queue head with no new state here —
   the retiring index is the LSU delta's `ldq_head`/`stq_head`, not a counter of
   ours.
+  ON THE DEALLOCATION OF A **VECTOR** PLACEHOLDER, AND ONLY THOSE. The LDQ and STQ
+  are shared with scalar memory, so most of what `ldq_head`/`stq_head` walk past
+  never reserved anything — the bootrom's first `sw` is one, and it deallocates
+  before any vector op has dispatched. The index being presented is therefore
+  qualified by `resv`'s `retire_row_valid`, which reports whether the row that
+  index addresses holds a live reservation; the walk still advances past a scalar
+  entry in the cycle it deallocates, it just does not pulse `retire`. Reading the
+  bit off `resv` rather than tracking vector-ness here is deliberate: a local copy
+  of which LSQ indices hold reservations is a second source of truth, and it drifts
+  on exactly the mispredict cycle where `resv`'s own rollback clears a row.
 
   ---- 5. Drain, and the store's TWO passes ----
 
@@ -744,13 +1064,13 @@ from Tenstorrent Inc.
   - `ld_range_agen.io.ff_trim` (output) — an element-`i > 0` fault. Goes to
     `lcb.io.trim`, and NOWHERE ELSE.
 
-  // ===> AND THE ELEMENT AGENS ARE NOT ON THIS PATH. `VecElemAgen` asserts
-  //      `!v_is_ff` on accept and keeps its own `ff_trim` port for symmetry with
-  //      an assertion that it never fires; DO NOT ROUTE IT. Earlier text here
-  //      accepted `fault_trap`/`ff_trim` from EITHER agen "so neither path is a
-  //      special case" — that predates the re-allocation, and it left the
-  //      unit-stride path (the only path a `vleff` can take) with no fault route
-  //      at all while wiring one for a form that cannot be encoded.
+  ===> AND THE ELEMENT AGENS ARE NOT ON THIS PATH. `VecElemAgen` asserts
+       `!v_is_ff` on accept and keeps its own `ff_trim` port for symmetry with
+       an assertion that it never fires; DO NOT ROUTE IT. Earlier text here
+       accepted `fault_trap`/`ff_trim` from EITHER agen "so neither path is a
+       special case" — that predates the re-allocation, and it left the
+       unit-stride path (the only path a `vleff` can take) with no fault route
+       at all while wiring one for a form that cannot be encoded.
 
   THE `vleff` VL WRITE STILL HAS EXACTLY ONE DRIVER, and settling that is this
   module's call because it is the only place both candidate producers are visible.
@@ -774,14 +1094,29 @@ from Tenstorrent Inc.
   ---- 7. VecGroupCopy's launch, and the R2/W0 mux ----
 
   A launch is presented to `gcopy` when, and only when, the granted `OP.v` is on
-  the LOAD side, has a vector destination, and is NOT `v_is_whole_reg`, with
-  `vl_zero` taken from `ld_opnd.out` and `all_inactive` from `ld_msk`. Neither
-  value is re-derived here. The whole-register exclusion is a correctness term,
-  not a filter: a `vl1re*` with `vl = 0` still transfers its full length from
-  memory, so it is not a no-execution op at all, and a copy launched for it would
-  race a real load for the same PRNs. A store never launches — it has no VRF
-  destination — and for a shared load the group completed is `pvtmp`, which needs
-  no data copy.
+  the LOAD side, has a vector destination, is NOT `v_is_whole_reg`, AND WILL
+  GENERATE NO MEMORY ACCESS AT ALL — `vl_zero` (taken from `ld_opnd.out`) or
+  `all_inactive` (from `ld_msk`). Neither value is re-derived here.
+  ===> THOSE TWO ARE LAUNCH TERMS, NOT MERELY PAYLOAD FIELDS. This paragraph used
+  to name them only as values to pass through, and the RTL implemented exactly
+  that: every non-whole-register load launched a copy. `VecGroupCopy` is the
+  completion producer for the no-execution case ONLY — it is the one writer that
+  can finish a group without a D$ request — so launching it for an ordinary load
+  makes it a SECOND completion producer racing the LCB. With `ta`/`ma` its
+  `must_preserve` is false, so it fires `group_done` immediately at launch, clears
+  the ROB busy bit, and the load COMMITS BEFORE ITS OWN D$ ACCESS ISSUES; the
+  scalar LSU catches it one instruction later as "trying to commit an un-executed
+  load entry", which reads as an LSU bug and is not one. With `tu`/`mu` it is worse
+  and silent: `must_preserve` is true, so a real copy of the stale group is written
+  over the destination the in-flight load is also writing.
+  The launch condition is therefore the EXACT COMPLEMENT of the LCB trigger under
+  `ldMaskFire`, and the two must be read as a pair — every granted load reaches
+  exactly one completion producer, never both and never neither.
+  The whole-register exclusion is a correctness term, not a filter: a `vl1re*` with
+  `vl = 0` still transfers its full length from memory, so it is not a
+  no-execution op at all, and a copy launched for it would race a real load for the
+  same PRNs. A store never launches — it has no VRF destination — and for a shared
+  load the group completed is `pvtmp`, which needs no data copy.
 
   THE STRICT-PRIORITY MUX OVER `R2` AND `W0` LIVES INSIDE `gcopy`. Both
   `VecGroupCopy` and `VecRegFile` declared it, and it is settled by REQUIREMENT

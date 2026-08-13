@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecIssueSlot — one entry of a vector issue queue: a SUPERSET of BOOM v4's
   `IssueSlot` that tracks BOTH operand classes, scalar feeders and vector source
   groups, and asserts `request` only when every one of them is ready.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/issue/VecIssueSlot.scala,
@@ -57,7 +58,6 @@ from Tenstorrent Inc.
   `cii-shared-sched`, midcore.rst `spec-wakeups`, `vl-vtype-rename`,
   `group-done-wb`, `midcore-segmented-load`, overview.rst `caracal-pipeline`,
   glossary.rst `glossary-terms`, frontend.rst `vl-delivery`.
-*/
 
 <|begin_module|>
 
@@ -86,13 +86,13 @@ from Tenstorrent Inc.
   verbatim to every VecGroupReady instance. It is the width of the vector wakeup
   network (the LCB, the CII writeback completion, VecGroupCopy).
 
-  // ===> SETTLED: `VectorParams` NOW DECLARES IT, so nothing re-defaults it here.
-  // The same declaration site also owns `numVecClrPorts` (3, the ROB busy-clear
-  // lane count) and `numVlWakeupPorts` (`aluWidth + 1`, which sizes this slot's VL
-  // comparator set — see the `vl_wakeup` port). Three files used to carry an
-  // independent literal 3; they are one field now, and a disagreement would make a
-  // matcher examine fewer group-done ports than the network drives, miss a
-  // single-shot completion, and hang the consumer forever.
+  ===> SETTLED: `VectorParams` NOW DECLARES IT, so nothing re-defaults it here.
+  The same declaration site also owns `numVecClrPorts` (3, the ROB busy-clear
+  lane count) and `numVlWakeupPorts` (`aluWidth + 1`, which sizes this slot's VL
+  comparator set — see the `vl_wakeup` port). Three files used to carry an
+  independent literal 3; they are one field now, and a disagreement would make a
+  matcher examine fewer group-done ports than the network drives, miss a
+  single-shot completion, and hang the consumer forever.
 
   `usingRVV` is a Scala `Boolean` of `BoomCoreParams`, not a hardware `Bool`.
   This module is elaborated only inside the three IQ_V_* units of a `usingRVV`
@@ -140,12 +140,12 @@ from Tenstorrent Inc.
   also a `Valid(index)` matched against one uop field, because that is exactly the
   pattern needed — a readiness event with no payload.
 
-  // It was ONE lane before decision D8. The vset writeback is REPLICATED per
-  // integer ALU rather than arbitrated (`aluWidth` lanes) plus one lane for
-  // `vleff`'s trimmed VL, because a single-shot VL wakeup lost to arbitration is a
-  // permanent hang. So the slot's VL match is `numVlWakeupPorts` comparators OR-ed
-  // together — 3 at Medium, 5 at Mega — not one. Do not size it from a literal and
-  // do not re-derive the count here.
+  It was ONE lane before decision D8. The vset writeback is REPLICATED per
+  integer ALU rather than arbitrated (`aluWidth` lanes) plus one lane for
+  `vleff`'s trimmed VL, because a single-shot VL wakeup lost to arbitration is a
+  permanent hang. So the slot's VL match is `numVlWakeupPorts` comparators OR-ed
+  together — 3 at Medium, 5 at Mega — not one. Do not size it from a literal and
+  do not re-derive the count here.
 
   `vec_group_done` — `Flipped(Vec(numVecWbPorts, Valid(new VecGroupDone)))` from
   VecBundles, broadcast to every VecGroupReady instance and read nowhere else in
@@ -158,24 +158,24 @@ from Tenstorrent Inc.
   `in_uop.valid`; `out_member_rdy` is an Output carrying the instances'
   NEXT-STATE vectors.
 
-  // ===> THE BUNDLE IS `VecMemberRdy`, ONE DECLARATION, AND IT GAINED `vold_rdy`
-  // WITH DECISION D6. Three shapes have existed: VecIssueSlot's original four
-  // groups (vs1/vs2/vs3 + vm), VecRenameSpace's five (adding `vtmp_rdy`, which
-  // wins because the third-source matcher tracks `pvtmp` whenever the
-  // direction-qualified select of part 7 fires and the aggregate cannot supply
-  // that group's per-member state), and now the D6 shape with `vold_rdy` for
-  // `stale_pvdest`. GROUPS CARRIED AND MATCHER INSTANCES ARE NOT THE SAME COUNT:
-  // six fields feed five matchers, because `rdy_vs3` selects between `vs3_rdy` and
-  // `vtmp_rdy`. `VecSlotMemberRdy` is the same bundle under a second name and is a
-  // defect, not a synonym — bind to the single `VecMemberRdy` in `VecBundles`.
-  // On the OUTPUT side each matcher writes its next state into the FIELD IT
-  // SELECTED (`vtmp_rdy` when the part-7 select took `pvtmp`, `vs3_rdy` otherwise),
-  // so the receiving slot's identical select reads it back after a collapse move.
-  // `vold_rdy` is never part of a select — `rdy_vold` always points at
-  // `stale_pvdest` — so it passes through unmuxed. A STORE slot still receives the
-  // whole bundle (one declaration, no per-queue variant) and simply leaves
-  // `vold_rdy` unread, driving it through to `out_member_rdy` unchanged so the
-  // collapse move stays one mux over one wire.
+  ===> THE BUNDLE IS `VecMemberRdy`, ONE DECLARATION, AND IT GAINED `vold_rdy`
+  WITH DECISION D6. Three shapes have existed: VecIssueSlot's original four
+  groups (vs1/vs2/vs3 + vm), VecRenameSpace's five (adding `vtmp_rdy`, which
+  wins because the third-source matcher tracks `pvtmp` whenever the
+  direction-qualified select of part 7 fires and the aggregate cannot supply
+  that group's per-member state), and now the D6 shape with `vold_rdy` for
+  `stale_pvdest`. GROUPS CARRIED AND MATCHER INSTANCES ARE NOT THE SAME COUNT:
+  six fields feed five matchers, because `rdy_vs3` selects between `vs3_rdy` and
+  `vtmp_rdy`. `VecSlotMemberRdy` is the same bundle under a second name and is a
+  defect, not a synonym — bind to the single `VecMemberRdy` in `VecBundles`.
+  On the OUTPUT side each matcher writes its next state into the FIELD IT
+  SELECTED (`vtmp_rdy` when the part-7 select took `pvtmp`, `vs3_rdy` otherwise),
+  so the receiving slot's identical select reads it back after a collapse move.
+  `vold_rdy` is never part of a select — `rdy_vold` always points at
+  `stale_pvdest` — so it passes through unmuxed. A STORE slot still receives the
+  whole bundle (one declaration, no per-queue variant) and simply leaves
+  `vold_rdy` unread, driving it through to `out_member_rdy` unchanged so the
+  collapse move stays one mux over one wire.
 
   ===> THIS CHANNEL MAY NOT BE FOLDED INTO `out_uop.pvs*_busy`. The uop carries
        one AGGREGATED busy bit per operand by MicroOp's design, and a group whose
@@ -271,12 +271,12 @@ from Tenstorrent Inc.
   baseline's `lrs*_rtype === RT_FIX` qualification, so the FP-sourced case is not
   re-busied by an integer retraction.
 
-  // Readiness on the scalar half reads the REGISTERED `slot_uop.prs*_busy`, as
-  // baseline does, so an INT wakeup at cycle N produces a request at N+1. The
-  // vector half is same-cycle (part 3). The asymmetry is deliberate: reading the
-  // registered bit is what makes the speculative-wakeup/re-busy race safe in
-  // baseline, and "improving" the scalar half to be combinational would change
-  // the timing of machinery this design promised to reuse unchanged.
+  Readiness on the scalar half reads the REGISTERED `slot_uop.prs*_busy`, as
+  baseline does, so an INT wakeup at cycle N produces a request at N+1. The
+  vector half is same-cycle (part 3). The asymmetry is deliberate: reading the
+  registered bit is what makes the speculative-wakeup/re-busy race safe in
+  baseline, and "improving" the scalar half to be combinational would change
+  the timing of machinery this design promised to reuse unchanged.
 
   ---- 3. Vector operands: five matchers, one bit each ----
 
@@ -304,16 +304,16 @@ from Tenstorrent Inc.
   `vec_group_done` port itself and holds no per-member state; both live in the
   child.
 
-  // The slot also mirrors each matcher's result into the outgoing uop's
-  // aggregate bit (`next_uop.pvs1_busy := !rdy_vs1.io.ready`, and so on) so that
-  // a downstream reader of `iss_uop`/`out_uop` never sees a stale busy bit. That
-  // mirror is NOT the readiness path — readiness is the matcher output — and it
-  // must not be read back into any request term in this file.
-  //
-  // `rdy_vold` HAS NO MIRROR, and that is deliberate: MicroOp declares no
-  // `stale_pvdest_busy` field and must not gain one (part 11 — an aggregate stale
-  // busy bit is unsafe, not merely redundant). The stale group's readiness exists
-  // only as this matcher's output and as `vold_rdy` on the side channel.
+  The slot also mirrors each matcher's result into the outgoing uop's
+  aggregate bit (`next_uop.pvs1_busy := !rdy_vs1.io.ready`, and so on) so that
+  a downstream reader of `iss_uop`/`out_uop` never sees a stale busy bit. That
+  mirror is NOT the readiness path — readiness is the matcher output — and it
+  must not be read back into any request term in this file.
+
+  `rdy_vold` HAS NO MIRROR, and that is deliberate: MicroOp declares no
+  `stale_pvdest_busy` field and must not gain one (part 11 — an aggregate stale
+  busy bit is unsafe, not merely redundant). The stale group's readiness exists
+  only as this matcher's output and as `vold_rdy` on the side channel.
 
   ---- 4. Which operands participate: `used`, driven per queue ----
 
@@ -407,41 +407,41 @@ from Tenstorrent Inc.
   and when `is_shared` the mux has re-pointed the matcher at `pvtmp`, which is also
   used.
 
-  /* ===> THE ALU SLOT'S `(is_shared && uses_ldq) ||` TERM IS LOAD-BEARING AND MUST
-     NOT BE SIMPLIFIED AWAY TO `v_uses_vs3`. For a segmented LOAD both halves carry
-     the SAME uop, decoded by VLSDecode, so `v_uses_vs3` is false — yet part 7's
-     select has re-pointed the ALU slot's `rdy_vs3` at `pvtmp`, which the
-     coprocessor half genuinely must wait on. `v_uses_vs3` describes the ENCODED
-     `lvs3` field and says nothing about `pvtmp`, so the OR term is what keeps the
-     matcher live for the re-pointed group. Dropping it silently deletes the
-     coprocessor half's only rendezvous with the LSU half — the milestone-1 DGEN bug
-     class, in the load direction. */
+  ===> THE ALU SLOT'S `(is_shared && uses_ldq) ||` TERM IS LOAD-BEARING AND MUST
+  NOT BE SIMPLIFIED AWAY TO `v_uses_vs3`. For a segmented LOAD both halves carry
+  the SAME uop, decoded by VLSDecode, so `v_uses_vs3` is false — yet part 7's
+  select has re-pointed the ALU slot's `rdy_vs3` at `pvtmp`, which the
+  coprocessor half genuinely must wait on. `v_uses_vs3` describes the ENCODED
+  `lvs3` field and says nothing about `pvtmp`, so the OR term is what keeps the
+  matcher live for the re-pointed group. Dropping it silently deletes the
+  coprocessor half's only rendezvous with the LSU half — the milestone-1 DGEN bug
+  class, in the load direction.
 
-  // The previous `!(is_shared && uses_ldq)` exclusions on `rdy_vs1`/`rdy_vs2` are
-  // DROPPED as unnecessary: for a segmented load's coprocessor half `v_uses_vs1` is
-  // already false (VLSDecode), and `v_uses_vs2` is true only for an indexed form,
-  // where `pvs2` is a genuinely encoded source whose producer will complete. Waiting
-  // on it is correct, if marginally conservative; gating it off would be a second
-  // place where a real source can be dropped from the cone.
+  The previous `!(is_shared && uses_ldq)` exclusions on `rdy_vs1`/`rdy_vs2` are
+  DROPPED as unnecessary: for a segmented load's coprocessor half `v_uses_vs1` is
+  already false (VLSDecode), and `v_uses_vs2` is true only for an indexed form,
+  where `pvs2` is a genuinely encoded source whose producer will complete. Waiting
+  on it is correct, if marginally conservative; gating it off would be a second
+  place where a real source can be dropped from the cone.
 
-  // ===> `v_uses_vs1`/`v_uses_vs2`/`v_uses_vs3` ARE MicroOp FIELDS (decision D11),
-  // set by `VDecode`/`VLSDecode`, and the mechanism is ONE mechanism on both sides
-  // of the rename/issue seam: the vector MAPPER skips renaming an unencoded source
-  // and leaves its busy clear, and this SLOT additionally gates that operand out of
-  // the readiness cone with `used`. Read together, an unencoded source is neither
-  // renamed nor waited on.
-  //
-  // This REPLACES the sentence this file used to carry — "rename delivers an
-  // operand the instruction does not encode with all member-rdy bits SET", stated as
-  // a contract on VecRenameSpace. That contract could not be discharged, and
-  // VecRenameSpace said so: it has no `lvs*_rtype` to test, and only decode knows
-  // the instruction format. The hang it left open is the `vadd.vx` case (`vd, vs2,
-  // rs1`, `lvs1` unencoded, `pvs1` resolving to v0's mapping) and the `vle64.v` case
-  // above. Do NOT re-derive these bits from `inst`: the instruction word does not
-  // reach issue.
-  //
-  // `rdy_vm.used := v_is_masked` is UNCHANGED by D11 — it gates on a different
-  // question (does this op read the mask) and stays exactly as part 4 states it.
+  ===> `v_uses_vs1`/`v_uses_vs2`/`v_uses_vs3` ARE MicroOp FIELDS (decision D11),
+  set by `VDecode`/`VLSDecode`, and the mechanism is ONE mechanism on both sides
+  of the rename/issue seam: the vector MAPPER skips renaming an unencoded source
+  and leaves its busy clear, and this SLOT additionally gates that operand out of
+  the readiness cone with `used`. Read together, an unencoded source is neither
+  renamed nor waited on.
+
+  This REPLACES the sentence this file used to carry — "rename delivers an
+  operand the instruction does not encode with all member-rdy bits SET", stated as
+  a contract on VecRenameSpace. That contract could not be discharged, and
+  VecRenameSpace said so: it has no `lvs*_rtype` to test, and only decode knows
+  the instruction format. The hang it left open is the `vadd.vx` case (`vd, vs2,
+  rs1`, `lvs1` unencoded, `pvs1` resolving to v0's mapping) and the `vle64.v` case
+  above. Do NOT re-derive these bits from `inst`: the instruction word does not
+  reach issue.
+
+  `rdy_vm.used := v_is_masked` is UNCHANGED by D11 — it gates on a different
+  question (does this op read the mask) and stays exactly as part 4 states it.
 
   `rdy_vold.used` is the single coarse term `dst_rtype === RT_VEC`: any OP.v with a
   vector destination waits on its `stale_pvdest` group, in both the load and the
@@ -510,9 +510,9 @@ from Tenstorrent Inc.
     request := slot_valid && !slot_uop.iw_issued &&
                scalar_operands_ready && vector_operands_ready
 
-  // The `rdy_vold` term is elaborated away in a store slot rather than tied true,
-  // so a store slot's readiness cone is literally baseline's four terms and the
-  // fifth instance's area is not paid where nothing reads the stale group.
+  The `rdy_vold` term is elaborated away in a store slot rather than tied true,
+  so a store slot's readiness cone is literally baseline's four terms and the
+  fifth instance's area is not paid where nothing reads the stale group.
 
   In a STORE slot `request` is instead `dgen_path.agen_request ||
   dgen_path.dgen_request`, which is the SAME expression specialized per path: the
@@ -533,14 +533,14 @@ from Tenstorrent Inc.
   implementation, whose cost is a segmented store's coprocessor half blocking
   every younger vector arithmetic op.
 
-  // ===> THE TEST IS STRICT `IsOlder`, AND BASELINE'S EXTRA EQUALITY TERM MUST NOT
-  // BE COPIED. BOOM's SNI block writes `issue_slot_past_pnr` with
-  // `| (rob_idx === rob_pnr_idx)`, but `rob_pnr_idx` names the OLDEST UNSAFE entry
-  // (`rob.scala:531`), so admitting equality admits exactly the entry whose
-  // speculation is UNRESOLVED. That is intended in the scalar SNI context, which is
-  // permissive by construction and off by default; here it would hand a
-  // still-speculative op to the coprocessor and defeat the entire reason `pnrGate`
-  // exists. `IsOlder(rob_idx, rob_pnr_idx, rob_head_idx)` and nothing OR-ed onto it.
+  ===> THE TEST IS STRICT `IsOlder`, AND BASELINE'S EXTRA EQUALITY TERM MUST NOT
+  BE COPIED. BOOM's SNI block writes `issue_slot_past_pnr` with
+  `| (rob_idx === rob_pnr_idx)`, but `rob_pnr_idx` names the OLDEST UNSAFE entry
+  (`rob.scala:531`), so admitting equality admits exactly the entry whose
+  speculation is UNRESOLVED. That is intended in the scalar SNI context, which is
+  permissive by construction and off by default; here it would hand a
+  still-speculative op to the coprocessor and defeat the entire reason `pnrGate`
+  exists. `IsOlder(rob_idx, rob_pnr_idx, rob_head_idx)` and nothing OR-ed onto it.
 
   `io.iss_uop := slot_uop`, plus, in a store slot, the `fu_code(FC_AGEN)` /
   `fu_code(FC_DGEN)` overrides `dgen_path` supplies. Baseline's grant bookkeeping
@@ -549,13 +549,13 @@ from Tenstorrent Inc.
   and `next_valid := rebusied` when `slot_valid && slot_uop.iw_issued`, ORed with
   `dgen_path.keep_valid` so a DGEN-pending store survives its AGEN grant.
 
-  // ===> TWO PIECES OF BASELINE'S `isMem` BLOCK MUST NOT BE COPIED.
-  // (a) `io.iss_uop.prs1 := slot_uop.prs2` — the scalar DGEN operand rewrite.
-  //     Vector store data is a VRF group read on port R3, not a scalar operand.
-  // (b) `io.iss_uop.lrs2_rtype := RT_X; io.iss_uop.prs2 := io.iss_uop.prs1` —
-  //     baseline's DCE helper. In a vector slot `prs2` carries the STRIDE and
-  //     must reach the AGEN intact; clobbering it silently turns every strided
-  //     access into a wrong-address access.
+  ===> TWO PIECES OF BASELINE'S `isMem` BLOCK MUST NOT BE COPIED.
+  (a) `io.iss_uop.prs1 := slot_uop.prs2` — the scalar DGEN operand rewrite.
+      Vector store data is a VRF group read on port R3, not a scalar operand.
+  (b) `io.iss_uop.lrs2_rtype := RT_X; io.iss_uop.prs2 := io.iss_uop.prs1` —
+      baseline's DCE helper. In a vector slot `prs2` carries the STRIDE and
+      must reach the AGEN intact; clobbering it silently turns every strided
+      access into a wrong-address access.
 
   ---- 7. `pvtmp`: how the consumer half of a shared op wakes ----
 
@@ -575,14 +575,14 @@ from Tenstorrent Inc.
     in an ALU slot — `rdy_vs3.prns := Mux(is_shared && uses_ldq, pvtmp, pvs3)`,
     with the companion `members` taken from the same select.
 
-  /* WARNING — THE SELECT IN AN ALU SLOT IS QUALIFIED BY DIRECTION, and dropping
-     that qualification is the mirror image of the milestone-1 DGEN bug. For a
-     segmented STORE the coprocessor half WRITES pvtmp and READS pvs3; a bare
-     `Mux(is_shared, pvtmp, pvs3)` would make that half wait for the group-done
-     of the group it is itself about to produce — an immediate self-deadlock, and
-     one that only a segmented store exercises. `uses_ldq`/`uses_stq` are the
-     baseline MicroOp fields that carry the direction; they are already set on a
-     vector load/store OP.v because it reserves an LDQ or STQ slot at dispatch. */
+  WARNING — THE SELECT IN AN ALU SLOT IS QUALIFIED BY DIRECTION, and dropping
+  that qualification is the mirror image of the milestone-1 DGEN bug. For a
+  segmented STORE the coprocessor half WRITES pvtmp and READS pvs3; a bare
+  `Mux(is_shared, pvtmp, pvs3)` would make that half wait for the group-done
+  of the group it is itself about to produce — an immediate self-deadlock, and
+  one that only a segmented store exercises. `uses_ldq`/`uses_stq` are the
+  baseline MicroOp fields that carry the direction; they are already set on a
+  vector load/store OP.v because it reserves an LDQ or STQ slot at dispatch.
 
   When `is_shared && uses_ldq` in an ALU slot the transpose reads `pvtmp` and, when
   masked, `pvm`; `rdy_vs1` is gated off by `v_uses_vs1` (false for any LS-decoded
@@ -631,10 +631,10 @@ from Tenstorrent Inc.
 
   ---- 11. Stale-destination readiness: RESOLVED as a fifth matcher (D6) ----
 
-  // The corpus gap that used to sit here is CLOSED: `issue.rst` "The Vector Issue
-  // Slot" now states the obligation, and it was extracted as spec-issue.g35-g39.
-  // The prose below is the same behaviour; it is now traceable rather than merely
-  // binding.
+  The corpus gap that used to sit here is CLOSED: `issue.rst` "The Vector Issue
+  Slot" now states the obligation, and it was extracted as spec-issue.g35-g39.
+  The prose below is the same behaviour; it is now traceable rather than merely
+  binding.
 
   //@req-spec-issue.g35
   //@req-spec-issue.g36
@@ -679,32 +679,32 @@ from Tenstorrent Inc.
   fifth group `vold_rdy` on the per-member side channel. `VecBusyTable` is amended
   in parallel to export that group's per-member read.
 
-  // ===> AN AGGREGATE `stale_pvdest_busy` BIT IS UNSAFE, AND IT IS THE TEMPTING
-  // WRONG ANSWER — one bit in MicroOp instead of 192 comparators x 32 slots.
-  // `stale_pvdest` can span UP TO EIGHT PRODUCERS: an `LMUL=1` op writes `v0`, then
-  // an `LMUL=8` op renames `v0..v7`, so the younger op's stale mapping is the
-  // current mappings of EIGHT arch vregs, installed by up to eight different
-  // instructions. One bit cannot express "waiting on producer 3 of 8", and no
-  // single group-done can clear it correctly — clear on the first arrival and the
-  // consumer wakes EARLY on a register a later producer has not written; require
-  // all eight and the bit has no encoding for the intermediate states. This is the
-  // same argument that forces per-member matching for `pvs*` (rename.g20), and it
-  // applies unchanged here. MicroOp must therefore NOT gain a `stale_pvdest_busy`
-  // field, and part 3's busy mirror deliberately has no `rdy_vold` counterpart.
+  ===> AN AGGREGATE `stale_pvdest_busy` BIT IS UNSAFE, AND IT IS THE TEMPTING
+  WRONG ANSWER — one bit in MicroOp instead of 192 comparators x 32 slots.
+  `stale_pvdest` can span UP TO EIGHT PRODUCERS: an `LMUL=1` op writes `v0`, then
+  an `LMUL=8` op renames `v0..v7`, so the younger op's stale mapping is the
+  current mappings of EIGHT arch vregs, installed by up to eight different
+  instructions. One bit cannot express "waiting on producer 3 of 8", and no
+  single group-done can clear it correctly — clear on the first arrival and the
+  consumer wakes EARLY on a register a later producer has not written; require
+  all eight and the bit has no encoding for the intermediate states. This is the
+  same argument that forces per-member matching for `pvs*` (rename.g20), and it
+  applies unchanged here. MicroOp must therefore NOT gain a `stale_pvdest_busy`
+  field, and part 3's busy mirror deliberately has no `rdy_vold` counterpart.
 
-  // ACCEPTED CONSERVATISM, recorded so it is not "optimized" later: on the CII
-  // side the host cannot know whether the VPU will actually pull `STALE_VD` — the
-  // coprocessor decides and NO VPU-SIDE SIGNAL EXISTS — so any CII op with a vector
-  // destination waits on `stale_pvdest`. On the load side VL is not known at issue,
-  // so the VL=0 group-copy reader cannot be predicted either (part 4).
+  ACCEPTED CONSERVATISM, recorded so it is not "optimized" later: on the CII
+  side the host cannot know whether the VPU will actually pull `STALE_VD` — the
+  coprocessor decides and NO VPU-SIDE SIGNAL EXISTS — so any CII op with a vector
+  destination waits on `stale_pvdest`. On the load side VL is not known at issue,
+  so the VL=0 group-copy reader cannot be predicted either (part 4).
 
-  // COST: +1 matcher x (16 IQ_V_LOAD + 16 IQ_V_ALU) slots = 32 instances, +192
-  // comparators and +8 flops each, IN THE STAGE THAT IS ALREADY THIS DESIGN'S #1
-  // TIMING RISK. Accepted against a silent wrong-data alternative. If the stage
-  // fails timing, the mitigation is the shared one-hot completing-PRN decode
-  // described in VecGroupReady — which the fifth instance shares with the other
-  // four at no extra decode cost — never a pipeline register here and never
-  // dropping this matcher.
+  COST: +1 matcher x (16 IQ_V_LOAD + 16 IQ_V_ALU) slots = 32 instances, +192
+  comparators and +8 flops each, IN THE STAGE THAT IS ALREADY THIS DESIGN'S #1
+  TIMING RISK. Accepted against a silent wrong-data alternative. If the stage
+  fails timing, the mitigation is the shared one-hot completing-PRN decode
+  described in VecGroupReady — which the fifth instance shares with the other
+  four at no extra decode cost — never a pipeline register here and never
+  dropping this matcher.
   <|end_logic|>
 
 <|end_module|>
@@ -767,15 +767,15 @@ come from `chiselTypeOf` on those fields. This module adds no field to MicroOp; 
 particular it needs no per-member busy vector there (which is exactly why the side
 channel exists) and no `stale_pvdest_busy` aggregate (logic part 11).
 
-// `v_uses_vs1`/`v_uses_vs2`/`v_uses_vs3` are MicroOp's D11 addition, three Bools
-// written by `VDecode`/`VLSDecode`. They are the `used` inputs for
-// `rdy_vs1`/`rdy_vs2`/`rdy_vs3` (logic part 4), and they are the SAME bits the
-// vector mapper uses to skip renaming an unencoded source — one mechanism read from
-// two sides, not two. They DISCHARGE the obligation this file previously placed on
-// VecRenameSpace, which could not meet it (no `lvs*_rtype` exists), and they mirror
-// `v_is_masked`, which exists for the identical reason. The slot reads them and does
-// not re-derive them; `v_is_indexed` is no longer read here at all, because for an
-// LS-decoded uop `v_uses_vs2` IS the indexed predicate.
+`v_uses_vs1`/`v_uses_vs2`/`v_uses_vs3` are MicroOp's D11 addition, three Bools
+written by `VDecode`/`VLSDecode`. They are the `used` inputs for
+`rdy_vs1`/`rdy_vs2`/`rdy_vs3` (logic part 4), and they are the SAME bits the
+vector mapper uses to skip renaming an unencoded source — one mechanism read from
+two sides, not two. They DISCHARGE the obligation this file previously placed on
+VecRenameSpace, which could not meet it (no `lvs*_rtype` exists), and they mirror
+`v_is_masked`, which exists for the identical reason. The slot reads them and does
+not re-derive them; `v_is_indexed` is no longer read here at all, because for an
+LS-decoded uop `v_uses_vs2` IS the indexed predicate.
 
 VecBundles — `VecGroupDone` on the wakeup ports (passed through to the children
 only), and `VecMemberRdy`, the per-member side-channel bundle, which now belongs

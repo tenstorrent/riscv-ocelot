@@ -20,6 +20,7 @@ from Tenstorrent Inc.
   WHEN in-flight coprocessor work is doomed, broadcasts that as one `kill_all`
   bit, and holds the assertions that make the whole no-branch-kill argument
   checkable rather than merely asserted in prose.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/cii/VecCiiFlush.scala,
@@ -68,7 +69,6 @@ from Tenstorrent Inc.
   idempotence), cii.rst `cii-issue` (the side-table membership list, in which
   `killed` is the field that "routes the drain-on-flush"), execution.rst
   `vector-execution` (the VPU needs no branch-kill path), plan v2 §5.
-*/
 
 <|begin_module|>
 
@@ -188,18 +188,18 @@ from Tenstorrent Inc.
   module. A generated implementation in which it appears anywhere outside an
   `assert` has failed review regardless of simulation results.
 
-  // WHY THE WINDOW IS TWO CYCLES WIDE. The CII's issue grant and the core's
-  // flush plumbing are one cycle apart: IQ_V_ALU takes
-  // `flush_pipeline = RegNext(rob.io.flush.valid)`, so a grant can still fire in
-  // the cycle `rob.io.flush.valid` is high, and VecCiiIssue will allocate a tag
-  // for it — a tag that is wrong-path and whose `killed` bit allocation has just
-  // CLEARED. The second cycle of the window catches exactly that tag, because it
-  // is live by then. Widening the window is free precisely because the bit is
-  // idempotent and sticky (below), so this costs one OR gate and closes a
-  // one-cycle hole. VecCiiTagTable currently asserts that `kill_all` never
-  // coincides with `alloc.valid`; with this window that coincidence is BENIGN
-  // and that assertion needs relaxing to "a tag allocated during a kill window
-  // carries `killed` by the following cycle". Flagged, not resolved here.
+  WHY THE WINDOW IS TWO CYCLES WIDE. The CII's issue grant and the core's
+  flush plumbing are one cycle apart: IQ_V_ALU takes
+  `flush_pipeline = RegNext(rob.io.flush.valid)`, so a grant can still fire in
+  the cycle `rob.io.flush.valid` is high, and VecCiiIssue will allocate a tag
+  for it — a tag that is wrong-path and whose `killed` bit allocation has just
+  CLEARED. The second cycle of the window catches exactly that tag, because it
+  is live by then. Widening the window is free precisely because the bit is
+  idempotent and sticky (below), so this costs one OR gate and closes a
+  one-cycle hole. VecCiiTagTable currently asserts that `kill_all` never
+  coincides with `alloc.valid`; with this window that coincidence is BENIGN
+  and that assertion needs relaxing to "a tag allocated during a kill window
+  carries `killed` by the following cycle". Flagged, not resolved here.
 
   //@req-spec-cii.e2
   No flush cause is decoded and `flush_typ` is not read. That is what makes the
@@ -285,12 +285,12 @@ from Tenstorrent Inc.
   instruction queued behind it is stuck too. The suppression must therefore be at
   the EFFECT, never at the beat.
 
-  // Neither the drain nor the suppression may be registered relative to the beat
-  // it applies to. VecCiiOperandServer's drained beat is due in the cycle the
-  // request is serviced, and VecCiiWriteback takes `kill_all` combinationally
-  // precisely to cover the cycle in which `killed` is not yet readable from the
-  // entry. A pipelined kill decision reintroduces exactly the one-cycle hole the
-  // two-cycle window and the direct `kill_all` term exist to close.
+  Neither the drain nor the suppression may be registered relative to the beat
+  it applies to. VecCiiOperandServer's drained beat is due in the cycle the
+  request is serviced, and VecCiiWriteback takes `kill_all` combinationally
+  precisely to cover the cycle in which `killed` is not yet readable from the
+  entry. A pipelined kill decision reintroduces exactly the one-cycle hole the
+  two-cycle window and the direct `kill_all` term exist to close.
 
   Tag lifetime is IDENTICAL for a killed tag: it is freed on its dropped `last`
   beat, exactly as a live one is. Only the effects differ. Freeing it earlier —
@@ -375,15 +375,15 @@ from Tenstorrent Inc.
   one line when `tag_killed & tag_valid` goes empty (the drain is complete and
   the machine is clean again); and one line if the watchdog trips.
 
-  // ===> TRACE-KEY DEVIATION, DELIBERATE. VecTrace's `trace` helper mandates a
-  // `rob_idx` on every line, and this module has none: it holds no `MicroOp` and
-  // no side-table entry, and a kill-all is a SET event with no single owning
-  // instruction. These lines are keyed on the `tag_valid` mask instead. The
-  // rob_idx-keyed line for each killed instruction is emitted by VecCiiComplete
-  // when it drops that tag's `last` beat, and by VecCiiOperandServer on each
-  // drained lane, both of which have the side-table entry and so the rob_idx.
-  // Do NOT add nTags x robAddrSz debug wires here to satisfy the convention
-  // literally — the correlatable line already exists downstream.
+  ===> TRACE-KEY DEVIATION, DELIBERATE. VecTrace's `trace` helper mandates a
+  `rob_idx` on every line, and this module has none: it holds no `MicroOp` and
+  no side-table entry, and a kill-all is a SET event with no single owning
+  instruction. These lines are keyed on the `tag_valid` mask instead. The
+  rob_idx-keyed line for each killed instruction is emitted by VecCiiComplete
+  when it drops that tag's `last` beat, and by VecCiiOperandServer on each
+  drained lane, both of which have the side-table entry and so the rob_idx.
+  Do NOT add nTags x robAddrSz debug wires here to satisfy the convention
+  literally — the correlatable line already exists downstream.
   <|end_logic|>
 
 <|end_module|>

@@ -19,36 +19,36 @@ from Tenstorrent Inc.
   VecCrossLsuSnoop — cross-queue disambiguation SEARCH: it presents vector memory
   addresses to the scalar LCAM, and it searches load addresses against the vector
   store address queues, at the granularity each access class demands.
-
-  hierarchy.yaml: kind: module, mode: new,
-  output src/main/scala/v4/vec/generated/lsu/VecCrossLsuSnoop.scala,
-  package boom.v4.vec.generated.lsu.
-  depends_on MicroOp, VecBundles, VectorParams, VecTrace. Instantiates nothing.
-  Instantiated ONCE by VecLsu as `snoop`. Plan step G1.
-
-  ===> IT SEARCHES. IT DOES NOT FORWARD AND IT DOES NOT WAIT. Two siblings own the
-       other two mechanisms and this file must not re-specify either.
-       VecStoreForward owns LD->ST forwarding — selecting the winning store,
-       mask-qualifying the bytes, and returning DATA out of `st_*_DATA_Q` — and it
-       alone drives VecOrderHold's `known_overlap`. VecOrderHold owns the
-       predicted-overlap hold: which younger vector load waits behind which older
-       draining vector store. What this node owes them is a MATCH, correctly aged,
-       at the right granularity, plus the identity of the entry that matched. The
-       ST->LD direction, the one that raises `order_fail`, is this node's own.
-
-  ===> IT IS BIDIRECTIONAL, AND THAT IS THE POINT OF THE NODE. Vector element
-       addresses live in the SSI/US address queues, NOT in the scalar STQ, so
-       BOOM's LCAM cannot see them and a vector store would silently fail to order
-       against a scalar load. Addresses are therefore routed through the
-       disambiguation machinery in BOTH directions: a vector store address drives
-       the LCAM exactly as a scalar store addr-gen does, and a load address is
-       searched against the vector store address queues exactly as a scalar load
-       drives the LCAM today.
-
-  Governing spec anchors: loadstore.rst `mem-order`, `order-fail-replay`,
-  `dcache-arbiter`, `us-queue`, `store-data-queue`;
-  caracal-milestone-plan-v2.md Phase G step G1, section 5 rules 6, 10 and 11.
 */
+
+hierarchy.yaml: kind: module, mode: new,
+output src/main/scala/v4/vec/generated/lsu/VecCrossLsuSnoop.scala,
+package boom.v4.vec.generated.lsu.
+depends_on MicroOp, VecBundles, VectorParams, VecTrace. Instantiates nothing.
+Instantiated ONCE by VecLsu as `snoop`. Plan step G1.
+
+===> IT SEARCHES. IT DOES NOT FORWARD AND IT DOES NOT WAIT. Two siblings own the
+     other two mechanisms and this file must not re-specify either.
+     VecStoreForward owns LD->ST forwarding — selecting the winning store,
+     mask-qualifying the bytes, and returning DATA out of `st_*_DATA_Q` — and it
+     alone drives VecOrderHold's `known_overlap`. VecOrderHold owns the
+     predicted-overlap hold: which younger vector load waits behind which older
+     draining vector store. What this node owes them is a MATCH, correctly aged,
+     at the right granularity, plus the identity of the entry that matched. The
+     ST->LD direction, the one that raises `order_fail`, is this node's own.
+
+===> IT IS BIDIRECTIONAL, AND THAT IS THE POINT OF THE NODE. Vector element
+     addresses live in the SSI/US address queues, NOT in the scalar STQ, so
+     BOOM's LCAM cannot see them and a vector store would silently fail to order
+     against a scalar load. Addresses are therefore routed through the
+     disambiguation machinery in BOTH directions: a vector store address drives
+     the LCAM exactly as a scalar store addr-gen does, and a load address is
+     searched against the vector store address queues exactly as a scalar load
+     drives the LCAM today.
+
+Governing spec anchors: loadstore.rst `mem-order`, `order-fail-replay`,
+`dcache-arbiter`, `us-queue`, `store-data-queue`;
+caracal-milestone-plan-v2.md Phase G step G1, section 5 rules 6, 10 and 11.
 
 <|begin_module|>
 
@@ -197,8 +197,8 @@ from Tenstorrent Inc.
   stale memory from a D$ that does not yet hold the store, and nothing would ever
   replay it.
 
-  // Scalar-vs-scalar disambiguation is UNCHANGED. The vector terms are additive,
-  // and a vectors-off build has none of them.
+  Scalar-vs-scalar disambiguation is UNCHANGED. The vector terms are additive,
+  and a vectors-off build has none of them.
 
   //@req-spec-memord.a22
   ---- 2. The presentation gate: no address without its data ----
@@ -216,14 +216,14 @@ from Tenstorrent Inc.
   match is data-backed by construction, so VecStoreForward never has to represent
   a data-pending store and paragraph 5's summary can never name one.
 
-  // LIVENESS, and ORDER_FAIL STILL IN TIME — the two objections to the gate. It
-  // cannot deadlock: the data half is written by VecDgen out of VRF port R3/R4
-  // into the data queue, a path needing neither LCAM, TLB nor D$, so it completes
-  // independently of every grant this module competes for. And the delay cannot
-  // lose an order_fail: a vector store's address pass is PRE-COMMIT (its fault
-  // must be reported precisely before the store) and the store is older than any
-  // load it can fail, so it presents before it commits, and it commits before
-  // that younger load can reach the ROB head where the flush fires.
+  LIVENESS, and ORDER_FAIL STILL IN TIME — the two objections to the gate. It
+  cannot deadlock: the data half is written by VecDgen out of VRF port R3/R4
+  into the data queue, a path needing neither LCAM, TLB nor D$, so it completes
+  independently of every grant this module competes for. And the delay cannot
+  lose an order_fail: a vector store's address pass is PRE-COMMIT (its fault
+  must be reported precisely before the store) and the store is older than any
+  load it can fail, so it presents before it commits, and it commits before
+  that younger load can reach the ROB head where the flush fires.
 
   //@req-spec-memord.b1
   //@req-spec-memord.b2
@@ -284,14 +284,14 @@ from Tenstorrent Inc.
   consulted, not even to trim the last active element. It over-approximates on
   purpose — a masked-off lane inside the range still produces a match.
 
-  // ===> DO NOT "FIX" THIS BY AND-ING IN THE MASK. Note the asymmetry with
-  // VecStoreForward, which IS byte-mask qualified (memord.b21): the two paths fail
-  // differently. A conservative ordering match costs a replay or a hold, i.e.
-  // cycles; a wrongly forwarded byte is silent data corruption. So the ordering
-  // path rounds outward and the forwarding path rounds inward, and the same range
-  // entry is read both ways by design. The entry's `active_mask` is still carried
-  // through to `io.snoop_cand.entry_active_mask` — unused for ordering, and the
-  // only consumer that may qualify with it is the forwarding path.
+  ===> DO NOT "FIX" THIS BY AND-ING IN THE MASK. Note the asymmetry with
+  VecStoreForward, which IS byte-mask qualified (memord.b21): the two paths fail
+  differently. A conservative ordering match costs a replay or a hold, i.e.
+  cycles; a wrongly forwarded byte is silent data corruption. So the ordering
+  path rounds outward and the forwarding path rounds inward, and the same range
+  entry is read both ways by design. The entry's `active_mask` is still carried
+  through to `io.snoop_cand.entry_active_mask` — unused for ordering, and the
+  only consumer that may qualify with it is the forwarding path.
 
   //@req-spec-memord.b8
   ---- 4. Strided / indexed / segmented: per element, through the arbiter ----
@@ -310,10 +310,10 @@ from Tenstorrent Inc.
   disambiguation, and it is why "as they drain" is the right description — the
   search rate IS the grant rate. VecDcacheArbiter owns the policy.
 
-  // For a STORE, "as they drain" means as elements drain through the shared
-  // LCAM/TLB port on the PRE-COMMIT translate pass, not on the post-commit write
-  // pass: the physical address exists only after translation, and order_fail must
-  // be discovered long before the store's data reaches memory.
+  For a STORE, "as they drain" means as elements drain through the shared
+  LCAM/TLB port on the PRE-COMMIT translate pass, not on the post-commit write
+  pass: the physical address exists only after translation, and order_fail must
+  be discovered long before the store's data reaches memory.
 
   //@req-spec-memord.a19
   ---- 5. The load-initiated search against the vector store queues ----
@@ -340,15 +340,15 @@ from Tenstorrent Inc.
   aliasing load is ever missed; a false positive costs a sleep-and-retry, never
   data, exactly as in paragraph 3b.
 
-  // ===> WHY A SUMMARY AND NOT A CAM OVER THE QUEUE. `st_SSI_ADDR_Q` is 512
-  // entries in a `SyncReadMem` — VecElemQueue's decision, because a flop array
-  // plus a 512:1 mux is the wrong structure — and it carries no per-entry age. A
-  // broadcast compare against it is therefore not possible, not merely expensive,
-  // so SOME bound is forced. This summary is also the one piece of state in this
-  // file and it does NOT break the vector-LSU invariant: it is scoped to an STQ
-  // ENTRY, not to "the current instruction", with no FSM, no cursor, nothing to
-  // retire and no `busy` export. It is the same shape as the per-entry address
-  // state the STQ already keeps for scalar stores.
+  ===> WHY A SUMMARY AND NOT A CAM OVER THE QUEUE. `st_SSI_ADDR_Q` is 512
+  entries in a `SyncReadMem` — VecElemQueue's decision, because a flop array
+  plus a 512:1 mux is the wrong structure — and it carries no per-entry age. A
+  broadcast compare against it is therefore not possible, not merely expensive,
+  so SOME bound is forced. This summary is also the one piece of state in this
+  file and it does NOT break the vector-LSU invariant: it is scoped to an STQ
+  ENTRY, not to "the current instruction", with no FSM, no cursor, nothing to
+  retire and no `busy` export. It is the same shape as the per-entry address
+  state the STQ already keeps for scalar stores.
 
   ---- 5b. Tier 2: the exact comparator arrays ----
 
@@ -372,14 +372,14 @@ from Tenstorrent Inc.
   ordinal". That reduction happens here, not in VecStoreForward, and the rule it
   implements is that module's requirement, not this file's.
 
-  // The window is a PERFORMANCE structure with a correctness-free failure mode,
-  // and `ssiSnoopWindow = 0` is a legal configuration. A load that tier-1 matches
-  // but tier-2 misses simply gets `io.vst_addr_match` set with no
-  // `io.snoop_cand`, and joins BOOM's EXISTING "matched a store I cannot forward
-  // from" path: not marked executed, sleeps, retries — the same treatment a
-  // scalar load already gets against an unforwardable STQ entry, and no new
-  // mechanism (plan section 5 rule 10). Sizing it is a measurement question for
-  // Phase H, not a correctness one.
+  The window is a PERFORMANCE structure with a correctness-free failure mode,
+  and `ssiSnoopWindow = 0` is a legal configuration. A load that tier-1 matches
+  but tier-2 misses simply gets `io.vst_addr_match` set with no
+  `io.snoop_cand`, and joins BOOM's EXISTING "matched a store I cannot forward
+  from" path: not marked executed, sleeps, retries — the same treatment a
+  scalar load already gets against an unforwardable STQ entry, and no new
+  mechanism (plan section 5 rule 10). Sizing it is a measurement question for
+  Phase H, not a correctness one.
 
   //@req-spec-memord.a15
   ---- 6. What a candidate hands to the forwarding path ----
@@ -408,14 +408,14 @@ from Tenstorrent Inc.
   path: the cross-queue matches above. No new predictor, no new replay mechanism,
   no selective replay.
 
-  // ===> AND THAT MAKES A CII HOLE REACHABLE — a dependency, not a side note. An
-  // order-fail replay raises MINI_EXCEPTION_MEM_ORDERING at the ROB HEAD and
-  // flushes with flush_typ = refetch. A load's `rob_unsafe` is cleared on its
-  // first address translation while `order_fail` is discovered later, so the PNR
-  // sweeps past it, vector arithmetic issues to the coprocessor, and the flush
-  // then squashes that past-PNR work. Extending order_fail to cross-queue matches
-  // makes this MORE frequent than in baseline BOOM, not less. VecCiiFlush closes
-  // the hole; this node is not a correctness story on its own.
+  ===> AND THAT MAKES A CII HOLE REACHABLE — a dependency, not a side note. An
+  order-fail replay raises MINI_EXCEPTION_MEM_ORDERING at the ROB HEAD and
+  flushes with flush_typ = refetch. A load's `rob_unsafe` is cleared on its
+  first address translation while `order_fail` is discovered later, so the PNR
+  sweeps past it, vector arithmetic issues to the coprocessor, and the flush
+  then squashes that past-PNR work. Extending order_fail to cross-queue matches
+  makes this MORE frequent than in baseline BOOM, not less. VecCiiFlush closes
+  the hole; this node is not a correctness story on its own.
 
   ---- 8. Tracing and assertions ----
 

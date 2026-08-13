@@ -112,14 +112,11 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   fp_pipeline.io.ll_wports := DontCare
 
 
-  // Caracal (D2): vector writeback port + its 5 INT read lanes; 0 when !usingRVV.
-  val numVecIrfWritePorts = if (usingRVV) 1 else 0
-  val numVecIrfReadPorts  = if (usingRVV) 5 else 0
-
   require(!usingRVV || usingVector, "BoomCore: usingRVV requires rocket's usingVector")
   require(!usingRVV || boomParams.vector.isDefined, "BoomCore: usingRVV requires boomParams.vector")
 
-  val numIrfWritePorts        = aluWidth + lsuWidth + 1 + numVecIrfWritePorts
+  // numVecIrfWritePorts / numVecIrfReadPorts / numIrfWritePorts come from
+  // HasBoomCoreParameters -- the vec/lsu modules that need them get no constructor arg.
   val numIrfLogicalReadPorts  = all_exe_units.map(_.nReaders).reduce(_+_) + numVecIrfReadPorts
 
   val numIntWakeups           = coreWidth + lsuWidth + 1 + numVecIrfWritePorts
@@ -198,7 +195,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
 
   // Caracal (D2): the one added instance, Option-wrapped -- ABSENT (gate f)
   // when !usingRVV. All later connections reach it only via this Option.
-  val vec = if (usingRVV) Some(Module(new VecPipeline(int_wakeups.length, numFpWakeupPorts, numIrfWritePorts))) else None
+  val vec = if (usingRVV) Some(Module(new VecPipeline(int_wakeups.length, numFpWakeupPorts))) else None
 
   //***********************************
   // Pipeline State Registers and Wires
@@ -875,7 +872,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   // Get uops from rename2
   for (w <- 0 until coreWidth) {
     dispatcher.io.ren_uops(w).valid := dis_fire(w)
-    dispatcher.io.ren_uops(w).bits  := dis_uops(w)
+    // The vector-renamed stream when usingRVV: it is dis_uops plus the vector fields, and
+    // the vector queues need the pvdest/pvs* the rename assigned. Feeding the scalar stream
+    // here forces the consumer to re-pair a compacted valid with an uncompacted uop.
+    dispatcher.io.ren_uops(w).bits  := (if (usingRVV) vec.get.io.dis_uops_out(w) else dis_uops(w))
   }
 
   // Caracal (D2): payload does NOT cross this seam; sound only if dispatchWidth == coreWidth.
@@ -907,16 +907,19 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
       //@req-spec-issue.c2
       for (w <- 0 until coreWidth) {
         vec.get.io.dis_vec_valids(0)(w)    := dispatcher.io.dis_uops(i)(w).valid
+        vec.get.io.dis_vec_uops(0)(w)      := dispatcher.io.dis_uops(i)(w).bits
         dispatcher.io.dis_uops(i)(w).ready := vec.get.io.dis_vec_ready(0)(w)
       }
     } else if (issueParams(i).iqType == IQ_V_STORE) {
       for (w <- 0 until coreWidth) {
         vec.get.io.dis_vec_valids(1)(w)    := dispatcher.io.dis_uops(i)(w).valid
+        vec.get.io.dis_vec_uops(1)(w)      := dispatcher.io.dis_uops(i)(w).bits
         dispatcher.io.dis_uops(i)(w).ready := vec.get.io.dis_vec_ready(1)(w)
       }
     } else if (issueParams(i).iqType == IQ_V_ALU) {
       for (w <- 0 until coreWidth) {
         vec.get.io.dis_vec_valids(2)(w)    := dispatcher.io.dis_uops(i)(w).valid
+        vec.get.io.dis_vec_uops(2)(w)      := dispatcher.io.dis_uops(i)(w).bits
         dispatcher.io.dis_uops(i)(w).ready := vec.get.io.dis_vec_ready(2)(w)
       }
     } else {
@@ -1383,24 +1386,20 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     rob.io.vec_rob_flags.get  := v.io.vec_rob_flags
 
     // rob.io.lxcpt merge: io.lsu.lxcpt vs. v.io.vec_xcpt, oldest wins (same
-    // 3-arg IsOlder form rob.scala's lxcpt/csr_replay merge uses), loser dropped.
-    // SPEC DEFECT: VecException has no `uop: MicroOp` (only rob_idx/cause/
-    // badvaddr), but rob.scala's exception latch needs uop.br_mask -- only
-    // rob_idx is populated below, rest DontCare. Inert today (vec_xcpt tied
-    // invalid under D2 staging); VecException must gain a real uop before E7.
+    // 3-arg IsOlder form rob.scala's lxcpt/csr_replay merge uses). Dropping the
+    // younger is safe: it is squashed by the taken exception and re-faults.
     val vecXcptAsExc = Wire(new Exception)
-    vecXcptAsExc.uop         := DontCare
-    vecXcptAsExc.uop.rob_idx := v.io.vec_xcpt.bits.rob_idx
-    vecXcptAsExc.cause       := v.io.vec_xcpt.bits.cause
-    vecXcptAsExc.badvaddr    := v.io.vec_xcpt.bits.badvaddr
+    vecXcptAsExc.uop      := v.io.vec_xcpt.bits.uop
+    vecXcptAsExc.cause    := v.io.vec_xcpt.bits.cause
+    vecXcptAsExc.badvaddr := v.io.vec_xcpt.bits.badvaddr
     val lxcptScalarOlder = !v.io.vec_xcpt.valid ||
-      (io.lsu.lxcpt.valid && IsOlder(io.lsu.lxcpt.bits.uop.rob_idx, v.io.vec_xcpt.bits.rob_idx, rob.io.rob_head_idx))
+      (io.lsu.lxcpt.valid && IsOlder(io.lsu.lxcpt.bits.uop.rob_idx, v.io.vec_xcpt.bits.uop.rob_idx, rob.io.rob_head_idx))
     rob.io.lxcpt.valid := io.lsu.lxcpt.valid || v.io.vec_xcpt.valid
     rob.io.lxcpt.bits  := Mux(lxcptScalarOlder, io.lsu.lxcpt.bits, vecXcptAsExc)
     assert(!(io.lsu.lxcpt.valid && v.io.vec_xcpt.valid) ||
       rob.io.lxcpt.bits.uop.rob_idx === Mux(
-        IsOlder(io.lsu.lxcpt.bits.uop.rob_idx, v.io.vec_xcpt.bits.rob_idx, rob.io.rob_head_idx),
-        io.lsu.lxcpt.bits.uop.rob_idx, v.io.vec_xcpt.bits.rob_idx),
+        IsOlder(io.lsu.lxcpt.bits.uop.rob_idx, v.io.vec_xcpt.bits.uop.rob_idx, rob.io.rob_head_idx),
+        io.lsu.lxcpt.bits.uop.rob_idx, v.io.vec_xcpt.bits.uop.rob_idx),
       "BoomCore: rob.io.lxcpt age merge (part 6) did not keep the older of io.lsu.lxcpt/vec_xcpt")
 
     // PART 7: the wakeup taps. The nlhdl's "IntWakeupBus" is an AGGREGATE of
@@ -1470,9 +1469,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     assert(v.io.commit_vl.valid === commitVlProducerAny,
       "BoomCore: commit_vl.valid disagrees with the local youngest-VL-producer select (part 10)")
 
-    // PART 11 SKIPPED. SPEC DEFECT: io.lsu.lsu_vec/vec_lsu_empty don't exist
-    // on the current LSUCoreIO (sibling LSU delta not landed); v.io.lsu_fencei_rdy_vec
-    // left unconnected. lsu_vec also has no vec_pipeline_io member (deferred to E7).
+    // PART 11: the LSU tap. One bundle connect -- VecLsu owns its contents and this
+    // file inspects no member of it. fencei_rdy is folded INSIDE the LSU.
+    io.lsu.lsu_vec.get       <> v.io.lsu_vec
+    io.lsu.vec_lsu_empty.get := v.io.lsu_fencei_rdy_vec
 
     v.io.vec_trace_en := VecTrace.traceEnabled
     dontTouch(v.io.debug_vrf_read)

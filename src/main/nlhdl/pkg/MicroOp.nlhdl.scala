@@ -17,7 +17,10 @@ from Tenstorrent Inc.
 
 /*
   MicroOp — DELTA SPEC. This file is NOT a description of BOOM's MicroOp
-  bundle. It describes only the vector fields Caracal ADDS to the existing
+  bundle.
+*/
+
+  It describes only the vector fields Caracal ADDS to the existing
   `class MicroOp` in src/main/scala/v4/common/micro-op.scala, which is
   hand-written baseline BOOM v4 and stays in place.
 
@@ -43,7 +46,6 @@ from Tenstorrent Inc.
   Governing spec anchors: overview.rst and glossary.rst (the uOP model),
   midcore.rst `old-vd` and `vl-vtype-rename`, frontend.rst `vset-dual-dest`,
   loadstore.rst `elem-progress`.
-*/
 
 <|begin_module|>
 
@@ -141,12 +143,12 @@ from Tenstorrent Inc.
        They COINCIDE for read-modify-write arithmetic, where the third source
        *is* the old destination. They DIVERGE for a masked non-RMW op under
        `vma = 0`, for `vslideup`'s untouched prefix, and for `vcompress`'s tail.
-       // Merging them into one field makes the diverging case unrepresentable:
-       // there would be no way to obtain both pvs3 and old-vd for the same
-       // instruction. Both are exposed to the coprocessor as distinct CII source
-       // slots (VS3 and STALE_VD) and the VPU chooses which to pull, so a merge
-       // here would also break the operand server, which performs no
-       // instruction-dependent reinterpretation.
+       Merging them into one field makes the diverging case unrepresentable:
+       there would be no way to obtain both pvs3 and old-vd for the same
+       instruction. Both are exposed to the coprocessor as distinct CII source
+       slots (VS3 and STALE_VD) and the VPU chooses which to pull, so a merge
+       here would also break the operand server, which performs no
+       instruction-dependent reinterpretation.
 
   //@req-spec-rename.h18
   Add `pvl`, a single `UInt(vlPregSz.W)`: the renamed VL this uop reads.
@@ -188,11 +190,11 @@ from Tenstorrent Inc.
        vector mapper only renames `lvm` for a masked op, so `pvm` alone cannot
        distinguish "unmasked" from "masked by whatever v0 last held".
 
-  // Two element widths, not one, and conflating them is a silent corruption
-  // rather than a compile error: for `vluxei32.v` with SEW=8 the index elements
-  // are 32b while the data elements are 8b, so the index group size and the data
-  // group size differ. VLSDecode resolves the instruction's raw `width` field
-  // into these two fields; no consumer re-derives them.
+  Two element widths, not one, and conflating them is a silent corruption
+  rather than a compile error: for `vluxei32.v` with SEW=8 the index elements
+  are 32b while the data elements are 8b, so the index group size and the data
+  group size differ. VLSDecode resolves the instruction's raw `width` field
+  into these two fields; no consumer re-derives them.
 
   Add `v_uses_vs1`, `v_uses_vs2` and `v_uses_vs3`, each a `Bool`: "this
   instruction's FORMAT actually encodes that vector source". `VDecode` sets them
@@ -222,26 +224,26 @@ from Tenstorrent Inc.
   Both, deliberately: the mapper makes the operand ready and the slot removes it
   from the cone, so neither is singly load-bearing.
 
-  // This MIRRORS `v_is_masked` earlier in this section, which exists for the
-  // identical reason — an unmasked op whose `pvm` names whatever `v0` last mapped
-  // to. The same failure, one field short of being covered for the three source
-  // groups; `pvtmp` is covered by `is_shared` for the same reason again.
+  This MIRRORS `v_is_masked` earlier in this section, which exists for the
+  identical reason — an unmasked op whose `pvm` names whatever `v0` last mapped
+  to. The same failure, one field short of being covered for the three source
+  groups; `pvtmp` is covered by `is_shared` for the same reason again.
 
-  // REJECTED: a reserved SENTINEL value in `lvs1`/`lvs2`/`lvs3` meaning
-  // "unencoded". Encodings 32..63 are free at `lregSz = 6`, so it costs zero new
-  // bits — which is exactly why it is tempting. It makes correctness depend on
-  // every future reader of those fields remembering an implicit convention that
-  // no type expresses, and the failure mode of a reader that forgets is the
-  // silent hang above rather than a compile error.
-  // ALSO REJECTED: full `lvs1_rtype`/`lvs2_rtype`/`lvs3_rtype` fields. Three
-  // times the bits for no additional information: the only question any consumer
-  // asks is "is this source encoded", never "which rename space is it in",
-  // because a vector source is always in the vector space.
-  //
-  // COST, stated plainly because this bundle's fan-in IS the review list: 3 bits
-  // replicated across every pipeline register, queue entry and ROB row, in a
-  // bundle with 49 transitive dependents. That is the price, and it is paid
-  // because the alternative is a hang rather than a slowdown.
+  REJECTED: a reserved SENTINEL value in `lvs1`/`lvs2`/`lvs3` meaning
+  "unencoded". Encodings 32..63 are free at `lregSz = 6`, so it costs zero new
+  bits — which is exactly why it is tempting. It makes correctness depend on
+  every future reader of those fields remembering an implicit convention that
+  no type expresses, and the failure mode of a reader that forgets is the
+  silent hang above rather than a compile error.
+  ALSO REJECTED: full `lvs1_rtype`/`lvs2_rtype`/`lvs3_rtype` fields. Three
+  times the bits for no additional information: the only question any consumer
+  asks is "is this source encoded", never "which rename space is it in",
+  because a vector source is always in the vector space.
+
+  COST, stated plainly because this bundle's fan-in IS the review list: 3 bits
+  replicated across every pipeline register, queue entry and ROB row, in a
+  bundle with 49 transitive dependents. That is the price, and it is paid
+  because the alternative is a hang rather than a slowdown.
 
   ---- 4b. The access CLASS — which agen this op goes to ----
 
@@ -262,11 +264,11 @@ from Tenstorrent Inc.
        agen, and unit-stride arriving at the element agen is precisely the
        one-beat-per-element behaviour v2 exists to delete.
 
-  // Class is decoded from `mop` and `umop` ALONE — never from the direction.
-  // Direction reaches the agens as the `isStore` module PARAMETER, which is why
-  // each agen is instantiated twice and the two directions never arbitrate.
-  // The flags are mutually exclusive by construction; assert one-hot rather than
-  // relying on it.
+  Class is decoded from `mop` and `umop` ALONE — never from the direction.
+  Direction reaches the agens as the `isStore` module PARAMETER, which is why
+  each agen is instantiated twice and the two directions never arbitrate.
+  The flags are mutually exclusive by construction; assert one-hot rather than
+  relying on it.
 
   ---- 5. The vtype snapshot ----
 
@@ -300,11 +302,11 @@ from Tenstorrent Inc.
   destinations in TWO independent rename spaces: `pdst` in the integer file and
   `pvl` in the VL file. `dst_rtype` is single-valued and cannot express both.
 
-  // The x0 case is exactly why this cannot be folded into dst_rtype: for
-  // `vsetvli x0, rs1, vtype` the integer destination is discarded, so dst_rtype
-  // reads RT_ZERO — and the VL register file must STILL be written. A consumer
-  // that inferred "writes VL" from dst_rtype would drop that write and every
-  // dependent would read a stale VL.
+  The x0 case is exactly why this cannot be folded into dst_rtype: for
+  `vsetvli x0, rs1, vtype` the integer destination is discarded, so dst_rtype
+  reads RT_ZERO — and the VL register file must STILL be written. A consumer
+  that inferred "writes VL" from dst_rtype would drop that write and every
+  dependent would read a stale VL.
 
   ---- 7. nOP.v-scoped element cursor fields ----
 
@@ -320,6 +322,13 @@ from Tenstorrent Inc.
   those two fields alone and cannot recover them from the element index without
   re-deriving EMUL and the mask.
 
+  Add one more field beside them, `v_mem_tag`, `UInt(ldRespTagSz.W)`: which of the
+  outstanding load beats a D$ response belongs to. The D$ hands the request's uop
+  back unchanged, so carrying the tag here is what lets `VecLsu` key its
+  response-alignment table by REQUEST rather than by lane — necessary because
+  `ll_resp` always returns on lane `lsuWidth-1` no matter which lane issued the
+  request. It is meaningful only on a vector load beat in flight.
+
   //@req-spec-lsu.f1
   //@req-spec-lsu.f2
   //@req-spec-lsu.f3
@@ -333,11 +342,11 @@ from Tenstorrent Inc.
     - `fault_elem` — the index of the OLDEST faulting element, latched on the
                      first fault.
 
-  // fault_elem is retained ONLY as the element cursor's stop signal and as a
-  // debug/performance counter. It is never carried to the ROB and never written
-  // to vstart: a faulting vector op traps with vstart = 0 and restarts whole,
-  // because its fresh pvdest group is reclaimed and elements 0..k-1 were never
-  // architecturally visible. See the Rob delta.
+  fault_elem is retained ONLY as the element cursor's stop signal and as a
+  debug/performance counter. It is never carried to the ROB and never written
+  to vstart: a faulting vector op traps with vstart = 0 and restarts whole,
+  because its fresh pvdest group is reclaimed and elements 0..k-1 were never
+  architecturally visible. See the Rob delta.
 
   //@req-spec-core.c12
   ===> ALL OF THESE FIELDS ARE INERT ON THE OP.v ITSELF. They are populated only
@@ -449,6 +458,7 @@ MicroOp`. Before adding a field, take that fan-in as the review list.
       v_split_first, v_split_last                                         : Bool
       v_split_idx, v_split_total                             : UInt(vecVLSz.W)
       the nOP.v target PRN and byte-offset-within-PRN fields
+      v_mem_tag                                        : UInt(ldRespTagSz.W)
       the element cursor sub-bundle {elem_next, elem_done, fault_elem}
 
     WIDENED fields:
@@ -480,11 +490,11 @@ MicroOp`. Before adding a field, take that fan-in as the review list.
     from a frontend bundle set `:= DontCare`, so all of them need an explicit
     default on the scalar path. A don't-care CLASS flag is worse than a don't-care
     routing bit: it would send a scalar uop into an agen.
-    // The list above was previously incomplete — it omitted v_is_masked,
-    // v_idx_eew, v_mop and the seven class flags even though the logic section
-    // adds them. Since a reviewer is instructed to REJECT any field absent from
-    // this list, an incomplete list is a live trap in both directions: it invites
-    // rejecting a field the design needs, and it hides a field nobody audited.
+    The list above was previously incomplete — it omitted v_is_masked,
+    v_idx_eew, v_mop and the seven class flags even though the logic section
+    adds them. Since a reviewer is instructed to REJECT any field absent from
+    this list, an incomplete list is a live trap in both directions: it invites
+    rejecting a field the design needs, and it hides a field nobody audited.
 
     ===> A PASSING GATE (f) DOES NOT PROVE THE DEFAULTS EXIST. A don't-care bit
          can elaborate BIT-IDENTICALLY to the baseline — the compiler is free to

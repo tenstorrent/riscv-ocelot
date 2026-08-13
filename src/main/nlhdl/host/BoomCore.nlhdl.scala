@@ -19,7 +19,8 @@ from Tenstorrent Inc.
   BoomCore — DELTA SPEC. This file is NOT a description of BOOM's core. It
   describes only the change applied to `class BoomCore` in
   src/main/scala/v4/exu/core.scala, which is hand-written baseline BOOM v4 and
-  stays in place. Everything the file already does — the frontend redirect
+  stays in place. */
+  Everything the file already does — the frontend redirect
   logic, the branch-resolution reduction, `dec_hazards`/`dis_hazards`, the FTQ
   arbiter, `ll_arb`, the four scalar issue units, the register-read arbitration,
   the CSR/PTW/RoCC/trace plumbing — is unchanged and is NOT restated below.
@@ -55,7 +56,6 @@ from Tenstorrent Inc.
   `dispatch-stage`, `cii-shared-sched`; frontend.rst `vector-csr-ownership`,
   `vcfg-recovery`; midcore.rst `rename-stage`, `spec-wakeups`; loadstore.rst
   `fences`.
-*/
 
 <|begin_module|>
 
@@ -212,18 +212,18 @@ from Tenstorrent Inc.
   the connection is unconditional over lanes: no `is_vec` predicate, no
   `Mux(v_legal, ...)`. That is what puts `vconfig` on every lane's uop.
 
-  // ===> TWO COMBINATIONAL LOOPS ARE ONE CARELESS LINE AWAY HERE, AND NEITHER IS
-  // OBVIOUS FROM EITHER SIDE ALONE.
-  // (a) `dec_fire` MUST reach only registers inside `VecPipeline` (the vtype
-  //     mirror and the `vl_imm` shadow). BOOM's `dec_stalls` is a prefix scan
-  //     over `dec_hazards`, which reads `dec_xcpts` <- `dec_uops(w).exception`
-  //     and `branch_mask_full` <- `dec_uops(w).allocate_brtag`. So a
-  //     combinational path from `dec_fire` to `dec_uops_out` or
-  //     `dec_vec_illegal` closes dec_fire -> vec -> dec_uops -> dec_stalls ->
-  //     dec_fire.
-  // (b) No vector decoder may READ `uop.exception` / `uop.exc_cause` off
-  //     `uop_to_vdec` (A27): `uop_to_vdec.exception` already depends on
-  //     `io.vec.illegal` through `id_illegal_insn`.
+  ===> TWO COMBINATIONAL LOOPS ARE ONE CARELESS LINE AWAY HERE, AND NEITHER IS
+  OBVIOUS FROM EITHER SIDE ALONE.
+  (a) `dec_fire` MUST reach only registers inside `VecPipeline` (the vtype
+      mirror and the `vl_imm` shadow). BOOM's `dec_stalls` is a prefix scan
+      over `dec_hazards`, which reads `dec_xcpts` <- `dec_uops(w).exception`
+      and `branch_mask_full` <- `dec_uops(w).allocate_brtag`. So a
+      combinational path from `dec_fire` to `dec_uops_out` or
+      `dec_vec_illegal` closes dec_fire -> vec -> dec_uops -> dec_stalls ->
+      dec_fire.
+  (b) No vector decoder may READ `uop.exception` / `uop.exc_cause` off
+      `uop_to_vdec` (A27): `uop_to_vdec.exception` already depends on
+      `io.vec.illegal` through `id_illegal_insn`.
 
   //@req-spec-decode.g2
   Vector architectural CSR state is reached only through `csr.io.vector`, and it
@@ -254,12 +254,12 @@ from Tenstorrent Inc.
   vector RMT snapshots and the speculative VCFG mirror snapshot all happen on the
   SAME event in the SAME cycle, by construction rather than by agreement.
 
-  // ===> WIRING `dec_uops`/`dec_fire` TO THESE THREE PORTS IS THE M1 FREE-LIST
-  // DOUBLE-FREE. Vector rename then runs one cycle AHEAD of the scalar
-  // RenameStage's ren1-to-ren2 register, so at dispatch the vector fields
-  // describe the NEXT cycle's (bubble) uop and two ops free the same PRN. The
-  // ports are named `ren2_*`/`dis_*` precisely so that this line is visibly
-  // wrong where it is written.
+  ===> WIRING `dec_uops`/`dec_fire` TO THESE THREE PORTS IS THE M1 FREE-LIST
+  DOUBLE-FREE. Vector rename then runs one cycle AHEAD of the scalar
+  RenameStage's ren1-to-ren2 register, so at dispatch the vector fields
+  describe the NEXT cycle's (bubble) uop and two ops free the same PRN. The
+  ports are named `ren2_*`/`dis_*` precisely so that this line is visibly
+  wrong where it is written.
 
   `rob.io.enq_uops := v.io.dis_uops_out` replaces `rob.io.enq_uops := dis_uops`
   (core.scala:790) when `usingRVV`. `rob.io.enq_valids := dis_fire` is unchanged.
@@ -290,14 +290,14 @@ from Tenstorrent Inc.
        direction — allocation is genuinely whole-bundle and genuinely cannot be
        per-lane, capacity is the reverse.
 
-  // ===> DO NOT CONNECT ANYTHING TO core.scala's OWN `dis_ready` OR `dec_ready`
-  // WIRES. They are `!dis_stalls.last` and `dec_fire.last` and keep those
-  // definitions exactly; the seam member of the same name is the VECTOR
-  // subsystem's answer and reaches the pipeline only through `ren_stalls(w)`.
-  // The name collision is real and a generator will fall into it.
-  // The reverse obligation is `VecPipeline`'s: `dis_ready` must be computed
-  // FIRE-INDEPENDENTLY from `ren2_uops`, or dis_ready -> ren_stalls ->
-  // dis_hazards -> dis_fire -> dis_ready closes a loop.
+  ===> DO NOT CONNECT ANYTHING TO core.scala's OWN `dis_ready` OR `dec_ready`
+  WIRES. They are `!dis_stalls.last` and `dec_fire.last` and keep those
+  definitions exactly; the seam member of the same name is the VECTOR
+  subsystem's answer and reaches the pipeline only through `ren_stalls(w)`.
+  The name collision is real and a generator will fall into it.
+  The reverse obligation is `VecPipeline`'s: `dis_ready` must be computed
+  FIRE-INDEPENDENTLY from `ren2_uops`, or dis_ready -> ren_stalls ->
+  dis_hazards -> dis_fire -> dis_ready closes a loop.
 
   ---- PART 4. Dispatch: the dispatcher is CONFIG-SELECTED and the three vector
        queues are wired NATIVELY ----
@@ -342,64 +342,64 @@ from Tenstorrent Inc.
   `true.B`; each entry's `ready` is a real per-lane back-pressure line out of
   `VecPipeline`.
 
-  // ===> WHY `ready := true.B` UNDER `BasicDispatcher` WAS REJECTED (D2), AND IT
-  // IS THE WHOLE REASON THE DISPATCHER CLASS CHANGES AT ALL. `BasicDispatcher`
-  // computes
-  // `ren_readys = io.dis_uops.map(d => VecInit(d.map(_.ready)).asUInt).reduce(_&_)`
-  // — the ready is NOT masked by `iq_type`, so EVERY queue's ready ANDs into
-  // EVERY lane. Wiring the vector queues in under it would let a full
-  // `IQ_V_LOAD` stall PURE-SCALAR LANES CARRYING NO VECTOR UOP AT ALL, directly
-  // threatening gate (d) and target P6. Tying those lanes ready avoids that stall
-  // but throws the back-pressure away, so queue capacity would then have to ride
-  // the seam's single broadcast `dis_ready` bit — the same scalar stall by a
-  // longer route, plus a hack left in place. `CompactingDispatcher` already
-  // implements the masking correctly:
-  // `rdy := ren zip uses_iq map {case (u,q) => u.ready || !q}` — "the queue is
-  // considered ready if the uop doesn't use it."
-  // THE COST, RECORDED HONESTLY BECAUSE IT IS NOT FREE: a `Compactor` per queue,
-  // SEVEN of them in a vector build, and THE SCALAR DISPATCH PATH DIFFERS IN A
-  // VECTOR BUILD. A scalar-only regression that appears only on a vector config
-  // must be attributed HERE and not to vector logic. What bounds that: at
-  // `dispatchWidth == coreWidth` (true on every tier — see the `require` below)
-  // each `Compactor` degenerates to `io.out <> io.in` (util.scala:458), so every
-  // scalar queue's per-lane `valid`/`bits` are bit-identical to
-  // `BasicDispatcher`'s and the ONLY behavioural difference is the `iq_type`
-  // masking of `ren_uops(w).ready` — strictly FEWER stalls, never more.
+  ===> WHY `ready := true.B` UNDER `BasicDispatcher` WAS REJECTED (D2), AND IT
+  IS THE WHOLE REASON THE DISPATCHER CLASS CHANGES AT ALL. `BasicDispatcher`
+  computes
+  `ren_readys = io.dis_uops.map(d => VecInit(d.map(_.ready)).asUInt).reduce(_&_)`
+  — the ready is NOT masked by `iq_type`, so EVERY queue's ready ANDs into
+  EVERY lane. Wiring the vector queues in under it would let a full
+  `IQ_V_LOAD` stall PURE-SCALAR LANES CARRYING NO VECTOR UOP AT ALL, directly
+  threatening gate (d) and target P6. Tying those lanes ready avoids that stall
+  but throws the back-pressure away, so queue capacity would then have to ride
+  the seam's single broadcast `dis_ready` bit — the same scalar stall by a
+  longer route, plus a hack left in place. `CompactingDispatcher` already
+  implements the masking correctly:
+  `rdy := ren zip uses_iq map {case (u,q) => u.ready || !q}` — "the queue is
+  considered ready if the uop doesn't use it."
+  THE COST, RECORDED HONESTLY BECAUSE IT IS NOT FREE: a `Compactor` per queue,
+  SEVEN of them in a vector build, and THE SCALAR DISPATCH PATH DIFFERS IN A
+  VECTOR BUILD. A scalar-only regression that appears only on a vector config
+  must be attributed HERE and not to vector logic. What bounds that: at
+  `dispatchWidth == coreWidth` (true on every tier — see the `require` below)
+  each `Compactor` degenerates to `io.out <> io.in` (util.scala:458), so every
+  scalar queue's per-lane `valid`/`bits` are bit-identical to
+  `BasicDispatcher`'s and the ONLY behavioural difference is the `iq_type`
+  masking of `ren_uops(w).ready` — strictly FEWER stalls, never more.
 
-  // ===> THE PAYLOAD DOES NOT CROSS THE SEAM, AND ONE `require` IS WHAT MAKES
-  // THAT SOUND. The uop a vector queue latches is `VecPipeline`'s own lane-`w`
-  // CHAINED-RENAME uop (the bundle with `pvdest`/`pvs*`/`pvl`/`stale_pvdest`
-  // written), not `dispatcher.io.dis_uops(i)(w).bits`, so only `valid` and
-  // `ready` cross. That is correct ONLY because dispatch lane `w` IS rename lane
-  // `w`: every tier sets `dispatchWidth = coreWidth` on every queue
-  // (config-mixins.scala:160/211/260) and `Compactor` with `n == k` is a straight
-  // `io.out <> io.in`, so NO PERMUTATION EXISTS. Add
-  // `require(ip.dispatchWidth == coreWidth)` for the three vector entries. If a
-  // future tier narrows one, the compaction permutes and either the compacted
-  // PAYLOAD or the permutation itself must cross the seam (`VecPipeline` part 5's
-  // trap); the `require` turns that into a build failure instead of a queue
-  // quietly latching a uop with unwritten vector PRNs and no width error.
-  // The reverse obligation on `VecPipeline`: `dis_vec_ready` must be computed
-  // FIRE-INDEPENDENTLY from registered queue occupancy, exactly as `dis_ready`
-  // must be. `n == k` also makes `ren_uops(w).ready` independent of any `valid`,
-  // so nothing closes dis_vec_ready -> ren_uops.ready -> dis_hazards -> dis_fire
-  // -> ren_uops.valid; a fire-dependent `dis_vec_ready` would close it.
+  ===> THE PAYLOAD DOES NOT CROSS THE SEAM, AND ONE `require` IS WHAT MAKES
+  THAT SOUND. The uop a vector queue latches is `VecPipeline`'s own lane-`w`
+  CHAINED-RENAME uop (the bundle with `pvdest`/`pvs*`/`pvl`/`stale_pvdest`
+  written), not `dispatcher.io.dis_uops(i)(w).bits`, so only `valid` and
+  `ready` cross. That is correct ONLY because dispatch lane `w` IS rename lane
+  `w`: every tier sets `dispatchWidth = coreWidth` on every queue
+  (config-mixins.scala:160/211/260) and `Compactor` with `n == k` is a straight
+  `io.out <> io.in`, so NO PERMUTATION EXISTS. Add
+  `require(ip.dispatchWidth == coreWidth)` for the three vector entries. If a
+  future tier narrows one, the compaction permutes and either the compacted
+  PAYLOAD or the permutation itself must cross the seam (`VecPipeline` part 5's
+  trap); the `require` turns that into a build failure instead of a queue
+  quietly latching a uop with unwritten vector PRNs and no width error.
+  The reverse obligation on `VecPipeline`: `dis_vec_ready` must be computed
+  FIRE-INDEPENDENTLY from registered queue occupancy, exactly as `dis_ready`
+  must be. `n == k` also makes `ren_uops(w).ready` independent of any `valid`,
+  so nothing closes dis_vec_ready -> ren_uops.ready -> dis_hazards -> dis_fire
+  -> ren_uops.valid; a fire-dependent `dis_vec_ready` would close it.
 
-  // ===> AND THIS IS WHY SmallBoom IS NOT IN THE VECTOR MATRIX (D3).
-  // `CompactingDispatcher` carries a constraint `BasicDispatcher` does not:
-  // `issueParams.map(ip => require(ip.dispatchWidth >= ip.issueWidth))`. At
-  // `coreWidth = 1` the `IQ_MEM` entry is forced to `issueWidth >= 2` by
-  // `require(memWidth >= 2)` (parameters.scala:272) while
-  // `dispatchWidth = coreWidth = 1`, so it becomes `require(1 >= 2)` — and
-  // widening `dispatchWidth` is blocked by `require(dispatchWidth <= coreWidth)`
-  // (parameters.scala:275). Small+vector therefore cannot elaborate at all. THE
-  // VECTOR MATRIX IS MEDIUM/LARGE/MEGA and `WithNSmallBoomsVector` DOES NOT
-  // EXIST. Medium(2)/Large(3)/Mega(4) all satisfy the constraint as written
-  // (`IQ_MEM` issueWidth 2/2/3, `IQ_ALU` 2/3/4). Independent second reason Small
-  // is out: `allocWidth = coreWidth*8 = 8`, but a shared `OP.v` needs
-  // `2*maxGroupSize = 16` PRNs all-or-nothing — a DEADLOCK, not a stall.
-  // The other alternative — drop the three `issueParams` entries in `WithVector`
-  // — was rejected because `VecIssueUnit` is parameterised from them.
+  ===> AND THIS IS WHY SmallBoom IS NOT IN THE VECTOR MATRIX (D3).
+  `CompactingDispatcher` carries a constraint `BasicDispatcher` does not:
+  `issueParams.map(ip => require(ip.dispatchWidth >= ip.issueWidth))`. At
+  `coreWidth = 1` the `IQ_MEM` entry is forced to `issueWidth >= 2` by
+  `require(memWidth >= 2)` (parameters.scala:272) while
+  `dispatchWidth = coreWidth = 1`, so it becomes `require(1 >= 2)` — and
+  widening `dispatchWidth` is blocked by `require(dispatchWidth <= coreWidth)`
+  (parameters.scala:275). Small+vector therefore cannot elaborate at all. THE
+  VECTOR MATRIX IS MEDIUM/LARGE/MEGA and `WithNSmallBoomsVector` DOES NOT
+  EXIST. Medium(2)/Large(3)/Mega(4) all satisfy the constraint as written
+  (`IQ_MEM` issueWidth 2/2/3, `IQ_ALU` 2/3/4). Independent second reason Small
+  is out: `allocWidth = coreWidth*8 = 8`, but a shared `OP.v` needs
+  `2*maxGroupSize = 16` PRNs all-or-nothing — a DEADLOCK, not a stall.
+  The other alternative — drop the three `issueParams` entries in `WithVector`
+  — was rejected because `VecIssueUnit` is parameterised from them.
 
   //@req-spec-issue.a1
   //@req-spec-issue.a2
@@ -448,11 +448,11 @@ from Tenstorrent Inc.
   computable from `rob_idx` and `rob_pnr_idx` alone and would INVERT across a ROB
   wrap, handing a still-speculative op to the coprocessor.
 
-  // `rob_flush_kill` is `RegNext(rob.io.flush.valid)`, the SAME expression the
-  // scalar issue units, `fp_pipeline` and every `eu.io_kill` use. Compute it
-  // once at the connection and do not let `VecPipeline` build a second
-  // `RegNext` of `rob_flush`: a divergent copy kills vector slots a cycle away
-  // from the LSQ pointer rollback and from the CII kill window.
+  `rob_flush_kill` is `RegNext(rob.io.flush.valid)`, the SAME expression the
+  scalar issue units, `fp_pipeline` and every `eu.io_kill` use. Compute it
+  once at the connection and do not let `VecPipeline` build a second
+  `RegNext` of `rob_flush`: a divergent copy kills vector slots a cycle away
+  from the LSQ pointer rollback and from the CII kill window.
 
   ---- PART 6. Completion into the ROB, and the one merge this file owns ----
 
@@ -501,29 +501,29 @@ from Tenstorrent Inc.
   both integer. `VecCiiIssue`'s `.vf` read is the only FP reader on this seam, so
   no tier needs an extra physical FP read port for it.
 
-  // ===> DECIDED (D5), AND THIS FILE COULD NEVER HAVE PAPERED OVER IT: THE INT
-  // READ SEAM NEEDS A `ready` AND HAD NONE. `arb_read_reqs` is `Flipped(Decoupled(...))` and
-  // `PartiallyPortedRF` sets `ready(i) := PopCount(earlier valids) <
-  // numPhysicalReadPorts` — the INT file is DELIBERATELY partially ported
-  // (`numIrfReadPorts` is 3 on Medium, 4-6 elsewhere, against roughly ten
-  // logical readers), so a read IS denied whenever enough earlier ports are
-  // active. There is no placement that fixes it: putting the vector lanes first
-  // both steals ports from the scalar pipeline and still fails, since 5 > 3.
-  // Raising `numIrfReadPorts` to the logical count is the most expensive change
-  // available in this core. The only sound answer is to expose the existing
-  // BOOM mechanism: make the seam per-lane `Decoupled` and let
-  // `VecScalarOperandRead` / `VecCiiIssue` hold the address until `fire`,
-  // exactly as every scalar exe unit holds in its arb stage. That is ground
-  // rule 10 (reuse BOOM's machinery) and it is NOT a `busy` reaching an issue
-  // unit — the grant has already happened. That is exactly what D5 ADOPTED:
-  // `int_rf_read_req` is per-lane `Decoupled`, the holding is in
-  // `VecScalarOperandRead` / `VecCiiIssue`, and the absorbing structure is
-  // `VecLsu`'s per-LDQ/STQ-entry descriptor pending table, written AT THE GRANT
-  // so the `FC_AGEN`/`FC_DGEN` grant itself stays unqualified. So the amendment
-  // to `vec_pipeline_io` and to those two child specs is DECIDED, not merely
-  // reported. Its FP counterpart A32 is MOOT (D4/D3): the FP read-port shortfall
-  // only ever arose from needing two FP lanes on a Giga tier that is not in the
-  // vector matrix.
+  ===> DECIDED (D5), AND THIS FILE COULD NEVER HAVE PAPERED OVER IT: THE INT
+  READ SEAM NEEDS A `ready` AND HAD NONE. `arb_read_reqs` is `Flipped(Decoupled(...))` and
+  `PartiallyPortedRF` sets `ready(i) := PopCount(earlier valids) <
+  numPhysicalReadPorts` — the INT file is DELIBERATELY partially ported
+  (`numIrfReadPorts` is 3 on Medium, 4-6 elsewhere, against roughly ten
+  logical readers), so a read IS denied whenever enough earlier ports are
+  active. There is no placement that fixes it: putting the vector lanes first
+  both steals ports from the scalar pipeline and still fails, since 5 > 3.
+  Raising `numIrfReadPorts` to the logical count is the most expensive change
+  available in this core. The only sound answer is to expose the existing
+  BOOM mechanism: make the seam per-lane `Decoupled` and let
+  `VecScalarOperandRead` / `VecCiiIssue` hold the address until `fire`,
+  exactly as every scalar exe unit holds in its arb stage. That is ground
+  rule 10 (reuse BOOM's machinery) and it is NOT a `busy` reaching an issue
+  unit — the grant has already happened. That is exactly what D5 ADOPTED:
+  `int_rf_read_req` is per-lane `Decoupled`, the holding is in
+  `VecScalarOperandRead` / `VecCiiIssue`, and the absorbing structure is
+  `VecLsu`'s per-LDQ/STQ-entry descriptor pending table, written AT THE GRANT
+  so the `FC_AGEN`/`FC_DGEN` grant itself stays unqualified. So the amendment
+  to `vec_pipeline_io` and to those two child specs is DECIDED, not merely
+  reported. Its FP counterpart A32 is MOOT (D4/D3): the FP read-port shortfall
+  only ever arose from needing two FP lanes on a Giga tier that is not in the
+  vector matrix.
 
   `int_wb_snoop` is tapped from the write ports themselves, one lane per INT
   write port including the vector one added in part 8:
@@ -582,40 +582,40 @@ from Tenstorrent Inc.
   base address produced by `vmv.x.s` is otherwise invisible to the stale-base
   forward of part 7.
 
-  // ===> `fp_wb` NOW HAS A LANDING SITE, AND A31 IS CLOSED (decision D7).
-  // `vfmv.f.s` needs an FP register-file write port plus an FP wakeup slot, both
-  // of which live inside `fp-pipeline.scala`. D7 gives it exactly that: a
-  // DEDICATED FP write port plus a dedicated wakeup slot, added in `FpPipeline`
-  // under `usingRVV`, and `FpPipeline`'s reject list — which previously refused
-  // this port — was FORMALLY AMENDED to permit it. So `fp_wb` is a connected
-  // member of this seam like any other, and this file neither ties it off nor
-  // waits on an owner.
-  // THE `ll_wports` ROUTE WAS REJECTED, and the reason is the same one that made
-  // `int_wb` a dedicated port two paragraphs up: `ll_wbarb` is an `Arbiter`
-  // (in(0) = mem, in(1) = ifpu, in(2) = fdiv) into `write_ports(0)`, so a fourth
-  // input CAN BE DENIED, the CII channel has NO back-pressure, and no bound on
-  // the denial is constructible — the arbiter can lose to mem AND ifpu AND fdiv
-  // while consecutive scalar-FP CII ops produce back-to-back beats. `vfmv.f.s`
-  // being RARE is what makes that dangerous rather than acceptable: the failure
-  // is a once-in-a-blue-moon wrong FP register value with no assertion anywhere.
-  // Second, independent reason: everything joining `ll_wbarb` is hardfloat-
-  // `recode`d, while `VecCiiWriteback` emits IEEE.
-  // ===> THE WIRING OBLIGATION THIS PUTS ON THIS FILE, and it is two connections,
-  // not one. (1) Drive `FpPipeline`'s new dedicated vector FP writeback input
-  // from `vec.get.io.fp_wb`. (2) The extra `fp_pipeline.io.wakeups` / `io.wb`
-  // entry must REACH THE ROB: `numFpWakeupPorts` is `fp_pipeline.io.wakeups.
-  // length` (core.scala:116), so it follows D7's added slot automatically, the
-  // `Rob` constructor argument of the parameters section keeps its
-  // `+ numFpWakeupPorts` term unchanged, and the existing FP loop over
-  // `fp_pipeline.io.wb` at core.scala:1227-1231 carries the new entry into
-  // `rob.io.wb_resps` with `require(cnt == rob.numWakeupPorts)` still holding.
-  // That loop is NOT special-cased: it applies `ieee(wb.bits.data)` uniformly, so
-  // the new entry must be presented recoded like every other FP wb entry, and the
-  // IEEE-to-recode conversion of the CII payload belongs on `FpPipeline`'s input
-  // side. This is the ONE place a `wb_resps` entry is added — the INT vector
-  // writeback still reaches the ROB only through `vec_clr_bsy` lane 1 and
-  // `vec_rob_flags`, and the `Rob` argument still must NOT follow the widened
-  // `numIrfWritePorts`.
+  ===> `fp_wb` NOW HAS A LANDING SITE, AND A31 IS CLOSED (decision D7).
+  `vfmv.f.s` needs an FP register-file write port plus an FP wakeup slot, both
+  of which live inside `fp-pipeline.scala`. D7 gives it exactly that: a
+  DEDICATED FP write port plus a dedicated wakeup slot, added in `FpPipeline`
+  under `usingRVV`, and `FpPipeline`'s reject list — which previously refused
+  this port — was FORMALLY AMENDED to permit it. So `fp_wb` is a connected
+  member of this seam like any other, and this file neither ties it off nor
+  waits on an owner.
+  THE `ll_wports` ROUTE WAS REJECTED, and the reason is the same one that made
+  `int_wb` a dedicated port two paragraphs up: `ll_wbarb` is an `Arbiter`
+  (in(0) = mem, in(1) = ifpu, in(2) = fdiv) into `write_ports(0)`, so a fourth
+  input CAN BE DENIED, the CII channel has NO back-pressure, and no bound on
+  the denial is constructible — the arbiter can lose to mem AND ifpu AND fdiv
+  while consecutive scalar-FP CII ops produce back-to-back beats. `vfmv.f.s`
+  being RARE is what makes that dangerous rather than acceptable: the failure
+  is a once-in-a-blue-moon wrong FP register value with no assertion anywhere.
+  Second, independent reason: everything joining `ll_wbarb` is hardfloat-
+  `recode`d, while `VecCiiWriteback` emits IEEE.
+  ===> THE WIRING OBLIGATION THIS PUTS ON THIS FILE, and it is two connections,
+  not one. (1) Drive `FpPipeline`'s new dedicated vector FP writeback input
+  from `vec.get.io.fp_wb`. (2) The extra `fp_pipeline.io.wakeups` / `io.wb`
+  entry must REACH THE ROB: `numFpWakeupPorts` is `fp_pipeline.io.wakeups.
+  length` (core.scala:116), so it follows D7's added slot automatically, the
+  `Rob` constructor argument of the parameters section keeps its
+  `+ numFpWakeupPorts` term unchanged, and the existing FP loop over
+  `fp_pipeline.io.wb` at core.scala:1227-1231 carries the new entry into
+  `rob.io.wb_resps` with `require(cnt == rob.numWakeupPorts)` still holding.
+  That loop is NOT special-cased: it applies `ieee(wb.bits.data)` uniformly, so
+  the new entry must be presented recoded like every other FP wb entry, and the
+  IEEE-to-recode conversion of the CII payload belongs on `FpPipeline`'s input
+  side. This is the ONE place a `wb_resps` entry is added — the INT vector
+  writeback still reaches the ROB only through `vec_clr_bsy` lane 1 and
+  `vec_rob_flags`, and the `Rob` argument still must NOT follow the widened
+  `numIrfWritePorts`.
 
   ---- PART 9. `vset_resp` and the multi-ALU ruling ----
 
@@ -623,32 +623,32 @@ from Tenstorrent Inc.
   `v.io.vset_resp(i).valid := unit.io_alu_resp.valid` and
   `v.io.vset_resp(i).bits := unit.io_alu_resp.bits`.
 
-  // ===> TAP `io_alu_resp` RAW. The two existing uses at core.scala:965 and :975
-  // qualify it with `dst_rtype === RT_FIX`; reusing that qualifier here DROPS
-  // the VL write of `vsetvli x0, rs1`, which discards its integer destination
-  // and is the common idiom. The write enable on the VL side is
-  // `bits.uop.is_vl_producer` and never a register type — that is `ALUUnit`'s
-  // ruling and it is only visible from this end. The tap is also unqualified by
-  // `IsKilledByBranch`, matching the integer write port it accompanies: the VL
-  // write lands in a renamed `pvl` that rollback reclaims, and killing one of
-  // the two writes but not the other is the inconsistency to avoid.
+  ===> TAP `io_alu_resp` RAW. The two existing uses at core.scala:965 and :975
+  qualify it with `dst_rtype === RT_FIX`; reusing that qualifier here DROPS
+  the VL write of `vsetvli x0, rs1`, which discards its integer destination
+  and is the common idiom. The write enable on the VL side is
+  `bits.uop.is_vl_producer` and never a register type — that is `ALUUnit`'s
+  ruling and it is only visible from this end. The tap is also unqualified by
+  `IsKilledByBranch`, matching the integer write port it accompanies: the VL
+  write lands in a renamed `pvl` that rollback reclaims, and killing one of
+  the two writes but not the other is the inconsistency to avoid.
 
-  // ===> RESOLVED HERE: THE PORT IS REPLICATED, NEVER ARBITRATED (A32/the
-  // aluWidth question). `ALUExeUnit` advertises the vset functional unit on
-  // EVERY ALU EU and its reject list forbids an `id`-conditional advertisement,
-  // so at `aluWidth >= 2` two `vsetvli`s CAN write back in the same cycle
-  // (`vsetvli`/`vsetivli` are not `is_unique`; only `vsetvl` is). A single
-  // `vset_resp` would therefore have to arbitrate, and the losing VL wakeup is
-  // single-shot in BOOM's slot model — a lost wakeup is a permanent hang, the
-  // same argument that made `vec_clr_bsy` and `vl_wakeup` per-producer lanes.
-  // Settled: `vset_resp` becomes `Vec(aluWidth, Valid(ExeUnitResp))`,
-  // `VlRegFile.numAluWritePorts` becomes `aluWidth` (its own file already says
-  // "replicate the port, never arbitrate" for exactly this case), and
-  // `numVlWakeupPorts` becomes `aluWidth + 1`. At `aluWidth = 1` this is
-  // bit-identical to the single-port shape, so Small/Medium/Large are unaffected
-  // and only Mega/Giga pay for it. Restricting vset to one ALU column is the
-  // rejected alternative: it is a change to `ALUExeUnit`'s advertisement, which
-  // that node forbids, and it would serialize a common scalar instruction.
+  ===> RESOLVED HERE: THE PORT IS REPLICATED, NEVER ARBITRATED (A32/the
+  aluWidth question). `ALUExeUnit` advertises the vset functional unit on
+  EVERY ALU EU and its reject list forbids an `id`-conditional advertisement,
+  so at `aluWidth >= 2` two `vsetvli`s CAN write back in the same cycle
+  (`vsetvli`/`vsetivli` are not `is_unique`; only `vsetvl` is). A single
+  `vset_resp` would therefore have to arbitrate, and the losing VL wakeup is
+  single-shot in BOOM's slot model — a lost wakeup is a permanent hang, the
+  same argument that made `vec_clr_bsy` and `vl_wakeup` per-producer lanes.
+  Settled: `vset_resp` becomes `Vec(aluWidth, Valid(ExeUnitResp))`,
+  `VlRegFile.numAluWritePorts` becomes `aluWidth` (its own file already says
+  "replicate the port, never arbitrate" for exactly this case), and
+  `numVlWakeupPorts` becomes `aluWidth + 1`. At `aluWidth = 1` this is
+  bit-identical to the single-port shape, so Small/Medium/Large are unaffected
+  and only Mega/Giga pay for it. Restricting vset to one ALU column is the
+  rejected alternative: it is a change to `ALUExeUnit`'s advertisement, which
+  that node forbids, and it would serialize a common scalar instruction.
 
   ---- PART 10. The CSR seam ----
 
@@ -923,37 +923,37 @@ slot that lands `fp_wb` — decision D7, its reject list amended to permit them)
       literally what it is today, since each added quantity is
       `if (usingRVV) ... else 0` and the instance is `None`.
 
-    // ===> AND THE ONE HONEST QUALIFICATION ON THAT LAST LINE. This
-    // must-not-regress list is the artifact that carries plan gate (f) for
-    // core.scala, so it must say plainly what gate (f) now means.
-    //
-    // RESOLVED by decision D1: gate (f) is NO LONGER "bit-identical to
-    // pre-Caracal BOOM v4". It is "identical to the RE-BASELINED REFERENCE,
-    // except for the enumerated encoding widths", and the diff target is
-    // `docs_caracal/v2-rebaseline/` rather than pre-Caracal RTL. The exception
-    // is exactly four items, enumerated in plan section 6a: the `RT_*` group
-    // 2b -> 3b, `IQ_SZ` 4 -> 7 (hence `MicroOp.iq_type`), `MicroOp`'s three
-    // `*_rtype` fields, and `Rob`'s compact `dst_rtype` tracking `MicroOp`.
-    // The cause is that `ScalarOpConstants` is a bare Scala trait with no
-    // `Parameters` in scope, so it cannot gate those widths on `usingRVV`; the
-    // alternative of parameterizing them was rejected because that trait is
-    // consumed during `issueParams` construction before `Parameters` exists.
-    //
-    // WHAT THAT MEANS FOR THIS FILE, unchanged by the ruling: every quantity
-    // here is gated on `usingRVV` and the instance is absent, so a vectors-off
-    // build contributes ZERO to the diff from this delta. The widened encodings
-    // a reviewer will see in `MicroOp` and `Rob` are NOT caused by this file
-    // and cannot be fixed here.
-    // ===> SO DO NOT ATTRIBUTE A GATE (f) FAILURE HERE, and do not check this
-    //      list against pre-Caracal RTL — that comparison will show the four
-    //      enumerated width differences and they are expected. The check is
-    //      against the re-baselined reference, which is a checked-in artifact
-    //      that must EXIST before gate (f) means anything at all (plan section
-    //      6a makes generating it a step, analogous to A0).
-    // Note separately that a PASSING gate (f) does not prove the `IQ_V_*`
-    // defaulting obligation is met: a don't-care bit can elaborate
-    // bit-identically and still mis-route. That check is a read of the
-    // `DecodeUnit` delta plus an assertion, never a clean diff.
+    ===> AND THE ONE HONEST QUALIFICATION ON THAT LAST LINE. This
+    must-not-regress list is the artifact that carries plan gate (f) for
+    core.scala, so it must say plainly what gate (f) now means.
+    
+    RESOLVED by decision D1: gate (f) is NO LONGER "bit-identical to
+    pre-Caracal BOOM v4". It is "identical to the RE-BASELINED REFERENCE,
+    except for the enumerated encoding widths", and the diff target is
+    `docs_caracal/v2-rebaseline/` rather than pre-Caracal RTL. The exception
+    is exactly four items, enumerated in plan section 6a: the `RT_*` group
+    2b -> 3b, `IQ_SZ` 4 -> 7 (hence `MicroOp.iq_type`), `MicroOp`'s three
+    `*_rtype` fields, and `Rob`'s compact `dst_rtype` tracking `MicroOp`.
+    The cause is that `ScalarOpConstants` is a bare Scala trait with no
+    `Parameters` in scope, so it cannot gate those widths on `usingRVV`; the
+    alternative of parameterizing them was rejected because that trait is
+    consumed during `issueParams` construction before `Parameters` exists.
+    
+    WHAT THAT MEANS FOR THIS FILE, unchanged by the ruling: every quantity
+    here is gated on `usingRVV` and the instance is absent, so a vectors-off
+    build contributes ZERO to the diff from this delta. The widened encodings
+    a reviewer will see in `MicroOp` and `Rob` are NOT caused by this file
+    and cannot be fixed here.
+    ===> SO DO NOT ATTRIBUTE A GATE (f) FAILURE HERE, and do not check this
+         list against pre-Caracal RTL — that comparison will show the four
+         enumerated width differences and they are expected. The check is
+         against the re-baselined reference, which is a checked-in artifact
+         that must EXIST before gate (f) means anything at all (plan section
+         6a makes generating it a step, analogous to A0).
+    Note separately that a PASSING gate (f) does not prove the `IQ_V_*`
+    defaulting obligation is met: a don't-care bit can elaborate
+    bit-identically and still mis-route. That check is a read of the
+    `DecodeUnit` delta plus an assertion, never a clean diff.
 
   Interface delta:
     NEW ports on `class BoomCore`'s `io`: NONE. WIDENED: NONE.

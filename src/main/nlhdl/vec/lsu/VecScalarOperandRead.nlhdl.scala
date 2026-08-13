@@ -20,6 +20,7 @@ from Tenstorrent Inc.
   it reads the scalar feeders (base GPR and stride GPR) out of the INT register
   file and resolves VL out of the VL register file, then hands the result to that
   direction's address generators.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecScalarOperandRead.scala,
@@ -94,7 +95,6 @@ from Tenstorrent Inc.
   `issue-vl-delivery`, execution.rst `vector-dgen` (as amended by D4),
   case_study.rst `case-vl-zero`, and plan §2 bug (3) "stale scalar base (`prs1`
   RAW race)".
-*/
 
 <|begin_module|>
 
@@ -145,7 +145,7 @@ from Tenstorrent Inc.
 
   ---- scalar feeders: the INT register file ----
 
-  `int_rf_read_req` — `Output(Vec(2, Decoupled(UInt(maxPregSz.W))))`: index 0 the
+  `int_rf_read_req` — `Output(Vec(2, Decoupled(UInt(ipregSz.W))))`: index 0 the
   base register `uop.prs1`, index 1 the stride register `uop.prs2`. PER-LANE
   `Decoupled` (D5), connected by the BoomCore delta to
   `iregfile.io.arb_read_reqs(numScalarLogicalReadPorts + n)`, which is
@@ -157,17 +157,28 @@ from Tenstorrent Inc.
   grant lane 0 and deny lane 1 in the same cycle, so each carries its own held
   address and its own fired bit. Serializing them onto one port is what forced
   the predecessor's FSM to exist.
+
+  ON THE ADDRESS WIDTH, corrected at E-prep: `ipregSz`, not `maxPregSz`, and the
+  distinction is not cosmetic. `maxPregSz` is `ipregSz max fpregSz` and is the width
+  of the uop FIELD (`MicroOp.prs1` holds an INT, FP or vector PRN in one field);
+  `ipregSz` is the width of the INT register file's actual `arb_read_reqs` port,
+  which is what this output BINDS to with `<>`. They are equal only while
+  `numIntPhysRegs >= numFpPhysRegs`, so writing `maxPregSz` here builds today and
+  fails to connect on the first config that renames more FP registers than INT.
+  Take `uop.prs1`/`uop.prs2` and narrow at this port. `int_wb_snoop.addr` below
+  legitimately stays `maxPregSz`: it is compared against the uop field, not bound to
+  a register-file port.
   `int_rf_read_rsp` — `Input(Vec(2, UInt(xLen.W)))`. `PartiallyPortedRF` reads
   `regfile(RegNext(arb_read_reqs.bits))`, so a lane's data is valid in the cycle
   AFTER THAT LANE FIRED, off the GRANTED address — never off an address that was
   presented and denied. It is registered here in that cycle, per lane.
 
-  // The `ready` on these lanes is NOT back-pressure toward the issue unit and
-  // must never be turned into any. The grant has already happened; this is a
-  // read port losing an arbitration inside the register file, and nothing about
-  // it reaches `iq_v_load`/`iq_v_store`. Ground rule 6 and gate H4 are about a
-  // `busy`/credit/ready presented to an ISSUE UNIT, which this module still does
-  // not have in any form.
+  The `ready` on these lanes is NOT back-pressure toward the issue unit and
+  must never be turned into any. The grant has already happened; this is a
+  read port losing an arbitration inside the register file, and nothing about
+  it reaches `iq_v_load`/`iq_v_store`. Ground rule 6 and gate H4 are about a
+  `busy`/credit/ready presented to an ISSUE UNIT, which this module still does
+  not have in any form.
 
   `int_wb_snoop` — `Input(Vec(numIrfWritePorts, Valid(new Bundle { addr:
   UInt(maxPregSz.W); data: UInt(xLen.W) })))`. THE SAME SIGNALS THAT WRITE
@@ -212,16 +223,16 @@ from Tenstorrent Inc.
   fired, so a descriptor can never leave this module carrying an un-granted read —
   the handshake is absorbed entirely upstream of `out`.
 
-  // WHERE THE DESCRIPTOR THEN WAITS, AND WHY IT IS NOT HERE. `VecLsu` owns a
-  // PER-LDQ/STQ-ENTRY DESCRIPTOR PENDING TABLE (its section 3b) which presents a
-  // descriptor to an agen only when that direction's mask streamer is free and
-  // the INT/VL reads have been granted. D5 amends GROUND RULE 6 to permit that
-  // table as the THIRD legal home for in-flight vector-LSU state — (a) the six
-  // `VecElemQueue`s, (b) the LCB's per-PRN assembly entries, (c) that table —
-  // because it is the same kind of state as (a): per-queue-entry, capacity
-  // reserved at dispatch, no `busy` exported, structurally un-overflowable. That
-  // structure is REFERENCED here and duplicated nowhere: this module keeps no
-  // queue, no second copy of the descriptor and no per-instruction row.
+  WHERE THE DESCRIPTOR THEN WAITS, AND WHY IT IS NOT HERE. `VecLsu` owns a
+  PER-LDQ/STQ-ENTRY DESCRIPTOR PENDING TABLE (its section 3b) which presents a
+  descriptor to an agen only when that direction's mask streamer is free and
+  the INT/VL reads have been granted. D5 amends GROUND RULE 6 to permit that
+  table as the THIRD legal home for in-flight vector-LSU state — (a) the six
+  `VecElemQueue`s, (b) the LCB's per-PRN assembly entries, (c) that table —
+  because it is the same kind of state as (a): per-queue-entry, capacity
+  reserved at dispatch, no `busy` exported, structurally un-overflowable. That
+  structure is REFERENCED here and duplicated nowhere: this module keeps no
+  queue, no second copy of the descriptor and no per-instruction row.
 
   `out.bits` carries no mask, index-group, EEW or EMUL field — those ride the
   wrapped `MicroOp` as `pvm`, `pvs2`, `v_eew` and `v_emul`, and restating them
@@ -229,10 +240,10 @@ from Tenstorrent Inc.
   would go stale (the rule VecBundles applies to `VecElemAccess`). No `vstart`
   field either: per plan §5 rule 8 a vector memory access begins at element 0.
 
-  // BUNDLE-LOCATION NOTE. `VecScalarOperands` crosses a node boundary (into
-  // VecElemAgen, VecRangeAgen, VecDgen and VecGroupCopy), so by the convention
-  // VecBundles states it belongs in VecBundles. VecBundles as written does not
-  // declare it. Declared here for now; Phase R should move it, unchanged.
+  BUNDLE-LOCATION NOTE. `VecScalarOperands` crosses a node boundary (into
+  VecElemAgen, VecRangeAgen, VecDgen and VecGroupCopy), so by the convention
+  VecBundles states it belongs in VecBundles. VecBundles as written does not
+  declare it. Declared here for now; Phase R should move it, unchanged.
   <|end_ports|>
 
   <|begin_logic|>
@@ -277,40 +288,40 @@ from Tenstorrent Inc.
   instances exist, one per direction, and neither can see the other, so there is no
   priority mux between directions and no grant lost to one.
 
-  // ===> CLOSED ON THE OTHER SIDE OF THE SEAM, AND RECORDED BECAUSE THE CHECK
-  // STAYS HERE: A GRANT LANDING ON A
-  // STILL-UNFIRED HOLD. The hold above is ONE grant deep, and this module exports
-  // no readiness, so `iq_v_load`/`iq_v_store` may grant again in the very next
-  // cycle while a lane is still denied. D5 states the grant is "accepted
-  // unconditionally (no `busy`, no dropped grant — the row is indexed by an
-  // LDQ/STQ entry the reservation already guaranteed, so overflow is
-  // unrepresentable)", which is only true if the absorbing row EXISTS FROM THE
-  // GRANT CYCLE. `VecLsu`'s section 3b now does exactly that: the row is written
-  // AT THE GRANT, unconditionally, with clear-on-fire behind it, and the held read
-  // address is driven from the PRESENTED ROW — so the window is covered where the
-  // state legitimately lives. It was never closable here, without either a second
-  // copy of the descriptor table (which ground rule 6(c) puts in `VecLsu`,
-  // singular) or a readiness output (which gate H4 rejects). What stays here is
-  // the CHECK: this module ASSERTS `!(iss.valid && rr_valid && rr_need.orR)`, and
-  // it firing means a fresh descriptor reached this module while its one-deep hold
-  // was still unfired — i.e. the grant-cycle row write upstream did not do its
-  // job. Checked, not assumed away.
-  //
-  // ===> SETTLED, decision D5 retry model (a): THE PER-LANE HOLD LIVES HERE, AND
-  //      THE TABLE GOES QUIET ONCE IT HAS HANDED A ROW OVER. A partial grant
-  //      ACCUMULATES — `prs1` fires and stays fired while only the still-
-  //      outstanding lanes re-request — because the vector lanes are appended LAST
-  //      in `PartiallyPortedRF`'s index priority and denial is routine, so
-  //      requiring base AND stride to win in one cycle would be a livelock under
-  //      sustained scalar pressure rather than a slow path, and would re-serialize
-  //      the read the 3 -> 5 seam widening existed to parallelize. Accumulation
-  //      makes progress MONOTONIC: the worst case is the unluckiest single lane,
-  //      not the coincidence of all of them.
-  //      The reciprocal obligation on `VecLsu`, which its file now states: a
-  //      presented row is a HAND-OFF, so the table drops `valid` toward this
-  //      module once the row is accepted and must NOT leave it presented and
-  //      re-requesting. Leaving it high is exactly what the assertion above
-  //      catches, and under the accumulating model it would fire on every denial.
+  ===> CLOSED ON THE OTHER SIDE OF THE SEAM, AND RECORDED BECAUSE THE CHECK
+  STAYS HERE: A GRANT LANDING ON A
+  STILL-UNFIRED HOLD. The hold above is ONE grant deep, and this module exports
+  no readiness, so `iq_v_load`/`iq_v_store` may grant again in the very next
+  cycle while a lane is still denied. D5 states the grant is "accepted
+  unconditionally (no `busy`, no dropped grant — the row is indexed by an
+  LDQ/STQ entry the reservation already guaranteed, so overflow is
+  unrepresentable)", which is only true if the absorbing row EXISTS FROM THE
+  GRANT CYCLE. `VecLsu`'s section 3b now does exactly that: the row is written
+  AT THE GRANT, unconditionally, with clear-on-fire behind it, and the held read
+  address is driven from the PRESENTED ROW — so the window is covered where the
+  state legitimately lives. It was never closable here, without either a second
+  copy of the descriptor table (which ground rule 6(c) puts in `VecLsu`,
+  singular) or a readiness output (which gate H4 rejects). What stays here is
+  the CHECK: this module ASSERTS `!(iss.valid && rr_valid && rr_need.orR)`, and
+  it firing means a fresh descriptor reached this module while its one-deep hold
+  was still unfired — i.e. the grant-cycle row write upstream did not do its
+  job. Checked, not assumed away.
+
+  ===> SETTLED, decision D5 retry model (a): THE PER-LANE HOLD LIVES HERE, AND
+       THE TABLE GOES QUIET ONCE IT HAS HANDED A ROW OVER. A partial grant
+       ACCUMULATES — `prs1` fires and stays fired while only the still-
+       outstanding lanes re-request — because the vector lanes are appended LAST
+       in `PartiallyPortedRF`'s index priority and denial is routine, so
+       requiring base AND stride to win in one cycle would be a livelock under
+       sustained scalar pressure rather than a slow path, and would re-serialize
+       the read the 3 -> 5 seam widening existed to parallelize. Accumulation
+       makes progress MONOTONIC: the worst case is the unluckiest single lane,
+       not the coincidence of all of them.
+       The reciprocal obligation on `VecLsu`, which its file now states: a
+       presented row is a HAND-OFF, so the table drops `valid` toward this
+       module once the row is accepted and must NOT leave it presented and
+       re-requesting. Leaving it high is exactly what the assertion above
+       catches, and under the accumulating model it would fire on every denial.
 
   ---- VL is resolved HERE, at execute ----
 
@@ -330,20 +341,20 @@ from Tenstorrent Inc.
   claimed at dispatch. `out.bits.vl` is the single source for both, so the
   release and the walk cannot disagree about how many elements exist.
 
-  // CORRECTED (VecPipeline part 9, canonical): the VL RF is COMBINATIONAL and
-  // has NO read-during-write forward, and this module must not expect one. An
-  // earlier revision of this file asked for both a registered address with
-  // next-cycle data AND a same-cycle write forward; neither is what `vlrf`
-  // provides. The no-forward rule is sound because every VL wakeup-to-execute
-  // distance is at least one cycle (VecPipeline part 6), so a `pvl` this module
-  // reads was written no later than the previous cycle. If a fast or speculative
-  // VL wakeup is ever added, `VlRegFile` needs a write forward and VecPipeline
-  // part 9 is the paragraph that has to change — not this one.
-  //
-  // This module registers `vl_read_data` on ITS OWN side (`rr_vl`) purely to line
-  // VL up with the INT responses on `out`. That is a local convenience, permitted
-  // explicitly by part 9, and it is the reason an INT denial cannot leave `vl`
-  // and `base`/`stride` describing different instructions.
+  CORRECTED (VecPipeline part 9, canonical): the VL RF is COMBINATIONAL and
+  has NO read-during-write forward, and this module must not expect one. An
+  earlier revision of this file asked for both a registered address with
+  next-cycle data AND a same-cycle write forward; neither is what `vlrf`
+  provides. The no-forward rule is sound because every VL wakeup-to-execute
+  distance is at least one cycle (VecPipeline part 6), so a `pvl` this module
+  reads was written no later than the previous cycle. If a fast or speculative
+  VL wakeup is ever added, `VlRegFile` needs a write forward and VecPipeline
+  part 9 is the paragraph that has to change — not this one.
+
+  This module registers `vl_read_data` on ITS OWN side (`rr_vl`) purely to line
+  VL up with the INT responses on `out`. That is a local convenience, permitted
+  explicitly by part 9, and it is the reason an INT denial cannot leave `vl`
+  and `base`/`stride` describing different instructions.
 
   ---- ⇒ THE STALE SCALAR BASE FORWARD. NOT AN OPTIMIZATION. ----
 
@@ -367,27 +378,27 @@ from Tenstorrent Inc.
   exactly that lane's response cycle: a cycle earlier is redundant, a cycle later
   is too late.
 
-  // THE WINDOW IS PER LANE, NOT PER GRANT, AND D5 IS WHY. With `Decoupled` reads
-  // the two lanes may fire in different cycles, so "the response cycle" is no
-  // longer one cycle for the whole grant: lane `n`'s forward window is the cycle
-  // after `int_rf_read_req(n).fire`, and it must be evaluated then and only then.
-  // A single grant-relative window — the natural way to write this before D5 —
-  // would miss the forward on any lane that was denied even once, which is the
-  // stale-base bug reappearing exactly where it is hardest to see. Held cycles
-  // need NO forward: the read has not happened yet, so there is nothing stale to
-  // repair, and the address being held is a physical register number that cannot
-  // change under the hold.
+  THE WINDOW IS PER LANE, NOT PER GRANT, AND D5 IS WHY. With `Decoupled` reads
+  the two lanes may fire in different cycles, so "the response cycle" is no
+  longer one cycle for the whole grant: lane `n`'s forward window is the cycle
+  after `int_rf_read_req(n).fire`, and it must be evaluated then and only then.
+  A single grant-relative window — the natural way to write this before D5 —
+  would miss the forward on any lane that was denied even once, which is the
+  stale-base bug reappearing exactly where it is hardest to see. Held cycles
+  need NO forward: the read has not happened yet, so there is nothing stale to
+  repair, and the address being held is a physical register number that cannot
+  change under the hold.
 
-  // BUG (3) FROM THE M1 BRING-UP LOG — DO NOT RE-INTRODUCE. A CORRECTNESS
-  // REQUIREMENT, not a performance feature: without it a vector load or store
-  // whose base GPR was produced one instruction earlier computes every address
-  // from a stale base. It is masked in almost every test by the two or more
-  // instructions of `la`->use slack that compilers and hand-written tests
-  // naturally emit, so it will NOT surface casually — its absence must be
-  // positively demonstrated (the forward-hit trace line below, in a directed
-  // back-to-back test), never assumed.
-  // If BoomCore's read port ever becomes a fully registered SyncReadMem read,
-  // or gains a stage between request and response, THIS WINDOW MOVES WITH IT.
+  BUG (3) FROM THE M1 BRING-UP LOG — DO NOT RE-INTRODUCE. A CORRECTNESS
+  REQUIREMENT, not a performance feature: without it a vector load or store
+  whose base GPR was produced one instruction earlier computes every address
+  from a stale base. It is masked in almost every test by the two or more
+  instructions of `la`->use slack that compilers and hand-written tests
+  naturally emit, so it will NOT surface casually — its absence must be
+  positively demonstrated (the forward-hit trace line below, in a directed
+  back-to-back test), never assumed.
+  If BoomCore's read port ever becomes a fully registered SyncReadMem read,
+  or gains a stage between request and response, THIS WINDOW MOVES WITH IT.
 
   Two writeback ports never target the same physical register in one cycle, so
   the substitution is a `Mux1H` over the hit vector, not a priority mux; assert
@@ -409,27 +420,27 @@ from Tenstorrent Inc.
   1's response, which is idle on a DGEN grant because a DGEN grant reads no stride.
   That result is presented on `out.bits.scalar_data`.
 
-  // `scalar_data` IS A RETAINED FIELD, NOT A RETAINED CLAIM. `execution.rst` as
-  // amended says the DGEN reads its store data from the VECTOR register file only,
-  // because RVV store data is always `vs3` — so on every store form defined today
-  // the `RT_FIX` mux above never selects and `scalar_data` is don't-care. It is kept
-  // because `VecLsu`'s descriptor row lists it and because the mux is a select on a
-  // value lane 1 already read (no port, no read, no cost), NOT because a store with
-  // an integer data operand is expected to appear. If one never does, the field and
-  // the mux are the right thing to delete together, in `VecBundles` and here.
+  `scalar_data` IS A RETAINED FIELD, NOT A RETAINED CLAIM. `execution.rst` as
+  amended says the DGEN reads its store data from the VECTOR register file only,
+  because RVV store data is always `vs3` — so on every store form defined today
+  the `RT_FIX` mux above never selects and `scalar_data` is don't-care. It is kept
+  because `VecLsu`'s descriptor row lists it and because the mux is a select on a
+  value lane 1 already read (no port, no read, no cost), NOT because a store with
+  an integer data operand is expected to appear. If one never does, the field and
+  the mux are the right thing to delete together, in `VecBundles` and here.
 
-  // ===> THE FP LEG OF `spec-agen.d3` IS UNREACHABLE AND IS DELETED (D4). The
-  // requirement was extracted from `execution.rst`'s "reads the FP/INT register
-  // file for scalar source operands, for instance `vfmul.vf`", and the example is
-  // simply the wrong instruction class: `vfmul.vf` is vector-scalar FP
-  // ARITHMETIC, dispatched to the CII and served by `VecCiiIssue`, not a store.
-  // Enumerating the RVV store forms settles it — `vse<eew>.v`, `vsse<eew>.v`,
-  // `vsuxei`/`vsoxei`, `vs<nf>r.v` and their segmented variants — store data is
-  // always the vector register `vs3`, and the only scalar operands are `rs1`
-  // (base) and `rs2` (stride), both integer. There is no encoding in which a
-  // store names an FP scalar register, so an FP reader on this module could never
-  // fire. `spec-agen.d3` keeps its ID and its INT content (D12 case 1 amends the
-  // `.rst` text); `execution.rst`'s FP clause is the falsehood, not this file.
+  ===> THE FP LEG OF `spec-agen.d3` IS UNREACHABLE AND IS DELETED (D4). The
+  requirement was extracted from `execution.rst`'s "reads the FP/INT register
+  file for scalar source operands, for instance `vfmul.vf`", and the example is
+  simply the wrong instruction class: `vfmul.vf` is vector-scalar FP
+  ARITHMETIC, dispatched to the CII and served by `VecCiiIssue`, not a store.
+  Enumerating the RVV store forms settles it — `vse<eew>.v`, `vsse<eew>.v`,
+  `vsuxei`/`vsoxei`, `vs<nf>r.v` and their segmented variants — store data is
+  always the vector register `vs3`, and the only scalar operands are `rs1`
+  (base) and `rs2` (stride), both integer. There is no encoding in which a
+  store names an FP scalar register, so an FP reader on this module could never
+  fire. `spec-agen.d3` keeps its ID and its INT content (D12 case 1 amends the
+  `.rst` text); `execution.rst`'s FP clause is the falsehood, not this file.
 
   ---- Why the segmented-store chain cannot deadlock through this module ----
 
@@ -446,12 +457,12 @@ from Tenstorrent Inc.
   the coprocessor half becomes eligible and writes `pvtmp`, and only then does
   step 6 — VecDgen reading `pvtmp` on a separate, later `FC_DGEN` grant — run.
 
-  // The mask and index VRF reads are NOT performed here, though both are AGEN
-  // operands. `vrf-ports` partitions those ports statically (R0/R1 load, R4
-  // store) and never arbitrates them, so each must have exactly ONE reader, and
-  // that reader is the agen's VecMaskStream/VecIdxGen, which needs them at
-  // element cadence rather than once per instruction. This module passes their
-  // PRNs on the wrapped uop and reads neither.
+  The mask and index VRF reads are NOT performed here, though both are AGEN
+  operands. `vrf-ports` partitions those ports statically (R0/R1 load, R4
+  store) and never arbitrates them, so each must have exactly ONE reader, and
+  that reader is the agen's VecMaskStream/VecIdxGen, which needs them at
+  element cadence rather than once per instruction. This module passes their
+  PRNs on the wrapped uop and reads neither.
 
   ---- VL = 0 is a normal result, not an error ----
 

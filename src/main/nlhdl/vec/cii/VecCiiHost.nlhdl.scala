@@ -20,6 +20,7 @@ from Tenstorrent Inc.
   joins six Chisel per-direction nodes to the SystemVerilog TT-CII stack through
   one flat BlackBox, owns the four channels' credit accounting, and is the whole
   of the machine's ARN->PRN translation for vector arithmetic.
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/cii/VecCiiHost.scala,
@@ -65,7 +66,6 @@ from Tenstorrent Inc.
   execution.rst `vector-execution` (channel overview, what each side provides),
   `cii-prn-arn`, `cii-issue-packet`; overview.rst `caracal-pipeline`;
   midcore.rst `vrf-ports`. Plan v2 section 5 rules 1, 4, 6 and 11.
-*/
 
 <|begin_module|>
 
@@ -158,17 +158,17 @@ from Tenstorrent Inc.
   `io.int_wb_snoop` — `Input(Vec(numIrfWritePorts, Valid({addr, data})))`, the
   existing INT writeback tap, needed for `iss`'s response-cycle forward.
 
-  // ===> SEAM GAP, NOW CLOSED BY AMENDMENT. `vec_pipeline_io` used to size
-  // `int_rf_read_req/rsp` at 4 (two per VecScalarOperandRead instance) and
-  // `fp_rf_read_req/rsp` at 1, and its comment said this node needs none because
-  // it captures scalars "from the bypass". A bypass carries only values in
-  // flight, and a past-PNR CII op's scalar producer has usually retired, so the
-  // value exists only in the register file — execution.rst `cii-prn-arn` says so
-  // directly. The seam is now 5 INT read ports, the fifth being this node's, and
-  // 1 FP read port, which is ALSO this node's and the only one on the seam:
-  // decision D4 deleted the store-side FP reader, so 2 FP ports are not needed.
-  // Do not "fix" this by deleting the read: that delivers an undefined `.vx`
-  // operand, silently.
+  ===> SEAM GAP, NOW CLOSED BY AMENDMENT. `vec_pipeline_io` used to size
+  `int_rf_read_req/rsp` at 4 (two per VecScalarOperandRead instance) and
+  `fp_rf_read_req/rsp` at 1, and its comment said this node needs none because
+  it captures scalars "from the bypass". A bypass carries only values in
+  flight, and a past-PNR CII op's scalar producer has usually retired, so the
+  value exists only in the register file — execution.rst `cii-prn-arn` says so
+  directly. The seam is now 5 INT read ports, the fifth being this node's, and
+  1 FP read port, which is ALSO this node's and the only one on the seam:
+  decision D4 deleted the store-side FP reader, so 2 FP ports are not needed.
+  Do not "fix" this by deleting the read: that delivers an undefined `.vx`
+  operand, silently.
 
   ---- Architectural CSR state (rocket's, read at issue) ----
 
@@ -198,12 +198,12 @@ from Tenstorrent Inc.
   the dedicated scalar-dest write port and wakeup slot `enableVectorArith` adds,
   never on an arbitrated share of `ll_arb`.
 
-  // `vec_pipeline_io` declares ONE `vec_clr_bsy`, and there are two independent
-  // producers of it (the LSU-side group-done and this node's `done`), NEITHER of
-  // which can be back-pressured — `done` frees its tag in the same cycle, so a
-  // clear it could not present would be lost with no way to regenerate it.
-  // VecPipeline must present one lane PER PRODUCER; this node drives its lane
-  // unconditionally and is never told it lost.
+  `vec_pipeline_io` declares ONE `vec_clr_bsy`, and there are two independent
+  producers of it (the LSU-side group-done and this node's `done`), NEITHER of
+  which can be back-pressured — `done` frees its tag in the same cycle, so a
+  clear it could not present would be lost with no way to regenerate it.
+  VecPipeline must present one lane PER PRODUCER; this node drives its lane
+  unconditionally and is never told it lost.
 
   ---- Flush ----
 
@@ -286,16 +286,16 @@ from Tenstorrent Inc.
   path; it is reached through the gen-collateral incdir, as the rest of the stack
   already is.
 
-  // ===> NOTHING IS COPIED INTO src/main/resources/vsrc/, EVER. `addvector`
-  // copied seven files there, one of them submodule content, and the copies then
-  // drifted. That does not merely duplicate a file: it falsifies v2's central
-  // premise, because the artifact that was verified and the artifact that is
-  // simulated become different files with nothing to report the difference. A
-  // build check must confirm the tt-cii submodule is checked out and fail with a
-  // named message if it is not. If `addPath` fights the Chipyard flow, the ONLY
-  // permitted fallback is a sync step guarded by a checksum that FAILS THE BUILD
-  // ON DRIFT — never a silent copy, and never a copy that is refreshed
-  // best-effort.
+  ===> NOTHING IS COPIED INTO src/main/resources/vsrc/, EVER. `addvector`
+  copied seven files there, one of them submodule content, and the copies then
+  drifted. That does not merely duplicate a file: it falsifies v2's central
+  premise, because the artifact that was verified and the artifact that is
+  simulated become different files with nothing to report the difference. A
+  build check must confirm the tt-cii submodule is checked out and fail with a
+  named message if it is not. If `addPath` fights the Chipyard flow, the ONLY
+  permitted fallback is a sync step guarded by a checksum that FAILS THE BUILD
+  ON DRIFT — never a silent copy, and never a copy that is refreshed
+  best-effort.
 
   The paths are added in the BlackBox's own constructor body, which is what makes
   the vectors-off promise hold as a build property too: with `usingRVV` or
@@ -333,16 +333,16 @@ from Tenstorrent Inc.
   the receiver returns credits only on pops, so a zero-initialised counter never
   recovers and the machine looks like a vector hang with no assertion anywhere.
 
-  // ===> THE SRC-DATA STALL IS AN ASSERTION, NOT A GATE, AND THAT IS DELIBERATE.
-  // `opnd` has no stall condition and can have none: its beat is due exactly one
-  // cycle after the request it answers, and the positional channel would
-  // desynchronise for every surviving instruction if a beat were held back or
-  // dropped. So `dat_valid` is NEVER gated on `dat_credits`. The counter exists
-  // to make exhaustion VISIBLE — assert `dat_credits =/= 0` whenever a beat is
-  // presented, and trace the zero — because exhaustion is unreachable unless the
-  // coprocessor has 16 requests outstanding whose data it has not popped, which
-  // is a VPU-side protocol violation. Gating would convert a detectable
-  // violation into a silent, permanent hang.
+  ===> THE SRC-DATA STALL IS AN ASSERTION, NOT A GATE, AND THAT IS DELIBERATE.
+  `opnd` has no stall condition and can have none: its beat is due exactly one
+  cycle after the request it answers, and the positional channel would
+  desynchronise for every surviving instruction if a beat were held back or
+  dropped. So `dat_valid` is NEVER gated on `dat_credits`. The counter exists
+  to make exhaustion VISIBLE — assert `dat_credits =/= 0` whenever a beat is
+  presented, and trace the zero — because exhaustion is unreachable unless the
+  coprocessor has 16 requests outstanding whose data it has not popped, which
+  is a VPU-side protocol violation. Gating would convert a detectable
+  violation into a silent, permanent hang.
 
   //@req-spec-cii.b9
   ON THE TWO CHANNELS WHERE THE HOST IS THE RECEIVER IT OWNS THE FIFO AND RETURNS
@@ -369,12 +369,12 @@ from Tenstorrent Inc.
   `CII_N_WB_CREDITS` is the SENDER's allowance — how many beats may be in flight
   across the relay before a credit comes back — not a depth the host must build.
 
-  // The parameter is the guard rail. If a later edit ever makes either consumer
-  // stallable — an arbitrated VRF port, a pipelined placement, anything — then
-  // `ciiRxDepth` becomes non-zero, the credit MOVES to the pop of the real
-  // buffer, and the beat presented to the consumer is the buffer's head rather
-  // than the wire. Leaving the credit on `valid` while adding a stall is the
-  // overflow bug this parameter exists to make impossible to write by accident.
+  The parameter is the guard rail. If a later edit ever makes either consumer
+  stallable — an arbitrated VRF port, a pipelined placement, anything — then
+  `ciiRxDepth` becomes non-zero, the credit MOVES to the pop of the real
+  buffer, and the beat presented to the consumer is the buffer's head rather
+  than the wire. Leaving the credit on `valid` while adding a stall is the
+  overflow bug this parameter exists to make impossible to write by accident.
 
   BEAT GRAIN, and it settles a mismatch between two children. The SV carries ONE
   `req_valid` and ONE `req_credit` for a beat of four lanes, and one `dat_valid`
@@ -422,13 +422,13 @@ from Tenstorrent Inc.
     `iss_vl` and `iss_vstart`, 9 bits each (`CII_VL_W`), matching the corrected
       `vecVLSz`.
 
-  // NAMING TRAP INSIDE THE SHIM, recorded here so nobody re-derives it from the
-  // package: `tt_cii_interface`'s own `cii_result_t` calls the appended-status
-  // field `wb_fp_flags`, while the package's `cii_caracal_result_t` calls the same
-  // bits `wb_status`. Reached through an interface instance it is
-  // `ifh.wb_data[k].wb_fp_flags`. The Chisel side sees only the flat `wb_status`
-  // port and is unaffected — but a reader chasing the bits into the SV will meet
-  // both names for one field.
+  NAMING TRAP INSIDE THE SHIM, recorded here so nobody re-derives it from the
+  package: `tt_cii_interface`'s own `cii_result_t` calls the appended-status
+  field `wb_fp_flags`, while the package's `cii_caracal_result_t` calls the same
+  bits `wb_status`. Reached through an interface instance it is
+  `ifh.wb_data[k].wb_fp_flags`. The Chisel side sees only the flat `wb_status`
+  port and is unaffected — but a reader chasing the bits into the SV will meet
+  both names for one field.
 
   ---- 6. The tag: one transaction, threaded end to end ----
 
@@ -536,11 +536,11 @@ from Tenstorrent Inc.
   pre-computed decision so it needs no flush port, no `killed` vector and no age
   comparator.
 
-  // ===> CONSEQUENCE FOR `wb`'s SELF-CHECK: the assertion relating its
-  // suppression input to the `killed` bit of its lookup response must be the
-  // IMPLICATION `killed -> wb_suppress`, never an equality. In the flush cycle
-  // `wb_suppress` is set while `killed` is still clear, and an equality assertion
-  // fires on that entirely correct case.
+  ===> CONSEQUENCE FOR `wb`'s SELF-CHECK: the assertion relating its
+  suppression input to the `killed` bit of its lookup response must be the
+  IMPLICATION `killed -> wb_suppress`, never an equality. In the flush cycle
+  `wb_suppress` is set while `killed` is still clear, and an equality assertion
+  fires on that entirely correct case.
 
   THE FLUSH-CYCLE ALLOCATION RACE is covered twice, and both covers are kept.
   `IQ_V_ALU` gates on `flush_pipeline = RegNext(rob.io.flush.valid)`, so a grant
@@ -552,15 +552,15 @@ from Tenstorrent Inc.
   sufficient; both are cheap and the bit is idempotent, so a doubled set changes
   nothing.
 
-  // The alternative — gating `iss`'s grant ACCEPTANCE on `!rob_flush` — is
-  // REJECTED. It would be correct, but it adds a second recovery shape (drop at
-  // accept) beside the one that must exist and be exercised anyway (accept, kill,
-  // drain), and two shapes means two sets of states to verify for a case that
-  // already costs one OR gate. The corollary for `tags`: its assertion that
-  // `kill_all` never coincides with `alloc.valid` WILL fire on a real and benign
-  // case and must be relaxed to "a tag allocated during a kill window carries
-  // `killed` by the following cycle". Relaxed, not deleted — deleting it turns
-  // the hole into a wrong-path VRF write plus a `clr_rob` for a dead ROB entry.
+  The alternative — gating `iss`'s grant ACCEPTANCE on `!rob_flush` — is
+  REJECTED. It would be correct, but it adds a second recovery shape (drop at
+  accept) beside the one that must exist and be exercised anyway (accept, kill,
+  drain), and two shapes means two sets of states to verify for a case that
+  already costs one OR gate. The corollary for `tags`: its assertion that
+  `kill_all` never coincides with `alloc.valid` WILL fire on a real and benign
+  case and must be relaxed to "a tag allocated during a kill window carries
+  `killed` by the following cycle". Relaxed, not deleted — deleting it turns
+  the hole into a wrong-path VRF write plus a `clr_rob` for a dead ROB entry.
 
   ---- 9. Where the slot-to-PRN mux lives, and where the tag is chosen ----
 
@@ -592,17 +592,17 @@ from Tenstorrent Inc.
   never sees the accept cycle. The requirement split already reads this way:
   allocating the tag is `iss`'s (cii.d6), recording the entry is `tags`' (cii.d8).
 
-  // ===> REQUIRED EDITS THAT FOLLOW, small and mechanical: `tags` drops its
-  // `alloc.tag` OUTPUT and its registered `tag_avail` output, and exports
-  // `tag_free_mask` instead; `opnd` replaces its `tag_entry: VecCiiTagEntry`
-  // input with the narrow `src_lookup` response. The registered advertise bit is
-  // `iss`'s single `advertise` flop, computed from the NEXT-state values of BOTH
-  // resources — the credit AND the free-tag mask. `tags`' own registered
-  // `tag_avail` would be computed from CURRENT state and is exactly the
-  // off-by-one that over-advertises `fu_types` by one cycle; with no `ready` line
-  // on the Issue channel that is a DROPPED INSTRUCTION, not a stall. `iss` as
-  // written already ANDs both terms and already computes them from next state, so
-  // nothing about the gate changes — only where the mask comes from.
+  ===> REQUIRED EDITS THAT FOLLOW, small and mechanical: `tags` drops its
+  `alloc.tag` OUTPUT and its registered `tag_avail` output, and exports
+  `tag_free_mask` instead; `opnd` replaces its `tag_entry: VecCiiTagEntry`
+  input with the narrow `src_lookup` response. The registered advertise bit is
+  `iss`'s single `advertise` flop, computed from the NEXT-state values of BOTH
+  resources — the credit AND the free-tag mask. `tags`' own registered
+  `tag_avail` would be computed from CURRENT state and is exactly the
+  off-by-one that over-advertises `fu_types` by one cycle; with no `ready` line
+  on the Issue channel that is a DROPPED INSTRUCTION, not a stall. `iss` as
+  written already ANDs both terms and already computes them from next state, so
+  nothing about the gate changes — only where the mask comes from.
 
   ---- 10. Group completion and the one-cycle rule ----
 
@@ -645,12 +645,12 @@ from Tenstorrent Inc.
   entry point — a real `rob_idx` out of the side table, never a fabricated uop and
   never `rob=?`.
 
-  // OPEN, INHERITED, AND NOT INVENTED AWAY HERE: `IQ_V_ALU` must gate issue on
-  // `stale_pvdest` READINESS, because the coprocessor pulls `STALE_VD` and this
-  // node serves it straight from the entry with no busy check of its own. No
-  // corpus requirement covers stale-dest readiness; the prior M2 implementation
-  // needed exactly this (`pvold_busy`) to avoid a hang. It is VecIssueSlot's port
-  // to add, not this node's, and it is reported rather than silently added.
+  OPEN, INHERITED, AND NOT INVENTED AWAY HERE: `IQ_V_ALU` must gate issue on
+  `stale_pvdest` READINESS, because the coprocessor pulls `STALE_VD` and this
+  node serves it straight from the entry with no busy check of its own. No
+  corpus requirement covers stale-dest readiness; the prior M2 implementation
+  needed exactly this (`pvold_busy`) to avoid a hang. It is VecIssueSlot's port
+  to add, not this node's, and it is reported rather than silently added.
   <|end_logic|>
 
 <|end_module|>

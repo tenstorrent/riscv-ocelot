@@ -77,7 +77,18 @@ Typical calls:
   report those separately.
 - **Ambiguity → ask, then assume.** Prefer clarifying over guessing. When you
   must assume (missing default, reset polarity, width), choose the conservative
-  option and document it inline.
+  option and record it in the nlhdl source and your report — not as a comment in
+  the RTL.
+- **Comments are rationed; the nlhdl file holds the intent.** The nlhdl source
+  is where behavior, context, and rationale are written; generated RTL is the
+  mechanical projection of it and should carry almost no prose. In an nlhdl file
+  the only comments are `//@req-<id>` tags (mandatory) and a 1–2 line file
+  description; never a comment that describes, labels, or restates logic — that
+  text goes in the body prose. `gen-rtl` copies the source's comments through
+  verbatim and **adds none of its own**. Later bug fixes to RTL add no comments
+  either, unless a critical issue would otherwise be re-broken by the next
+  reader — and then two lines maximum. Full policy: "Comment policy" in
+  `references/format.md`.
 - **Synthesizability is non-negotiable.** If a behavior cannot be expressed
   synthesizably in the target HDL, say so instead of emitting simulation-only code.
 - **Traceability.** A reader must be able to map generated artifacts back to the

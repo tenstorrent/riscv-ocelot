@@ -19,6 +19,7 @@ from Tenstorrent Inc.
   VecRangeAgen — the FILL-side address generator for UNIT-STRIDE vector
   accesses: it encodes one whole vector load or store as EXACTLY ONE range
   entry describing the contiguous byte range [base, base + VL*EEW).
+*/
 
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/lsu/VecRangeAgen.scala,
@@ -65,7 +66,6 @@ from Tenstorrent Inc.
   and R4 have exactly one reader each) and `precise-vec-exc`,
   caracal-milestone-plan-v2.md section 2 (the five structural changes) and
   section 5 rules 6 and 11.
-*/
 
 <|begin_module|>
 
@@ -77,9 +77,9 @@ from Tenstorrent Inc.
   mask was read on (`R1` on the load path, `R4` on the store path — see the
   ports section).
 
-  // Two instances are why the load-priority mux is gone: in `addvector` one
-  // shared generator dropped store grants, worked around by not advertising
-  // FC_AGEN on the store path whenever the load was granting.
+  Two instances are why the load-priority mux is gone: in `addvector` one
+  shared generator dropped store grants, worked around by not advertising
+  FC_AGEN on the store path whenever the load was granting.
 
   Elaborated only when `usingRVV` is true — a Scala `Boolean` from
   `BoomCoreParams`, not a hardware `Bool` and not rocket's `usingVector`. With
@@ -111,19 +111,19 @@ from Tenstorrent Inc.
   selects this module over VecElemAgen, and `is_ff` is what the fault-only-first
   policy of logic section 9 keys on. `is_ff` implies `is_unit_stride`; assert it.
 
-  // ===> THERE IS NO `ready` ON THIS PORT, AND ADDING ONE BACK IS A REVIEW
-  // FAILURE. The producer cannot consume a ready: `VecScalarOperandRead.out` has
-  // none, it overwrites its stage register every cycle and publishes no readiness,
-  // so a ready declared here would be a wire nobody reads — or worse, a wire a
-  // generator decides to honour by inventing back-pressure that must not exist.
-  // The accept can never need one: a unit-stride instruction takes EXACTLY ONE
-  // entry in a region reserved at dispatch, in program order, and that region is
-  // never pre-filled by anyone else, so the push cannot be refused for lack of
-  // room. `Valid` states that fact in the type instead of leaving an
-  // always-true `ready` for a later reader to mistake for a real handshake. The
-  // mid-walk descriptor hazard that motivates back-pressure at the ELEMENT agen
-  // does not exist here either, because this module has no walk: the instruction
-  // is finished with it in the cycle it fires (logic section 10).
+  ===> THERE IS NO `ready` ON THIS PORT, AND ADDING ONE BACK IS A REVIEW
+  FAILURE. The producer cannot consume a ready: `VecScalarOperandRead.out` has
+  none, it overwrites its stage register every cycle and publishes no readiness,
+  so a ready declared here would be a wire nobody reads — or worse, a wire a
+  generator decides to honour by inventing back-pressure that must not exist.
+  The accept can never need one: a unit-stride instruction takes EXACTLY ONE
+  entry in a region reserved at dispatch, in program order, and that region is
+  never pre-filled by anyone else, so the push cannot be refused for lack of
+  room. `Valid` states that fact in the type instead of leaving an
+  always-true `ready` for a later reader to mistake for a real handshake. The
+  mid-walk descriptor hazard that motivates back-pressure at the ELEMENT agen
+  does not exist here either, because this module has no walk: the instruction
+  is finished with it in the cycle it fires (logic section 10).
 
   ---- `io.scalar` — from this direction's VecScalarOperandRead (input) ----
 
@@ -133,23 +133,23 @@ from Tenstorrent Inc.
   unmasked; and `mask`, the LATCHED single `vLen`-wide read of `v0` reduced to
   VLMAX element-granular bits.
 
-  // ===> THIS MODULE ADDS NO VRF PORT AND NOWHERE READS THE VRF. The mask
-  // arrives already read, because midcore.rst `vrf-ports` requires R1 and R4 to
-  // have EXACTLY ONE READER each and that reader is the stage-1 operand read for
-  // the direction. A US OP.v reading v0 here while an SSI OP.v read it in
-  // VecElemAgen would be two concurrent readers of a statically partitioned,
-  // never-arbitrated port. The port by number: R1 (load) / R4 (store), add none.
+  ===> THIS MODULE ADDS NO VRF PORT AND NOWHERE READS THE VRF. The mask
+  arrives already read, because midcore.rst `vrf-ports` requires R1 and R4 to
+  have EXACTLY ONE READER each and that reader is the stage-1 operand read for
+  the direction. A US OP.v reading v0 here while an SSI OP.v read it in
+  VecElemAgen would be two concurrent readers of a statically partitioned,
+  never-arbitrated port. The port by number: R1 (load) / R4 (store), add none.
 
-  // ===> VLMAX IS `maxMembers * vLen / 8` ELEMENTS — 256 at the defaults, not
-  // 32 — the worst case being SEW=8 with LMUL=8, one element per BYTE of the
-  // group. Size the `vl` input and the mask vector from that, and take the width
-  // from VectorParams rather than open-coding it: `maxVecVL` IS THAT FIGURE
-  // (`maxVecVL = vLen` = 256 at the defaults, the two coinciding numerically
-  // because `maxMembers = 8` and `vLen` is in bits), and `vecVLSz` is its 9-bit
-  // width. An earlier revision of this file complained that `maxVecVL` was
-  // `vLen / 8` and 8x too small to hold a VL; THAT COMPLAINT IS STALE and has been
-  // deleted — VectorParams was corrected long ago, so `maxVecVL`/`vecVLSz` are the
-  // right things to use and there is nothing to work around.
+  ===> VLMAX IS `maxMembers * vLen / 8` ELEMENTS — 256 at the defaults, not
+  32 — the worst case being SEW=8 with LMUL=8, one element per BYTE of the
+  group. Size the `vl` input and the mask vector from that, and take the width
+  from VectorParams rather than open-coding it: `maxVecVL` IS THAT FIGURE
+  (`maxVecVL = vLen` = 256 at the defaults, the two coinciding numerically
+  because `maxMembers = 8` and `vLen` is in bits), and `vecVLSz` is its 9-bit
+  width. An earlier revision of this file complained that `maxVecVL` was
+  `vLen / 8` and 8x too small to hold a VL; THAT COMPLAINT IS STALE and has been
+  deleted — VectorParams was corrected long ago, so `maxVecVL`/`vecVLSz` are the
+  right things to use and there is nothing to work around.
 
   ---- Reservation lanes, to `resv` (VecQueueReservation) — LANES 2 AND 3 ----
 
@@ -175,30 +175,30 @@ from Tenstorrent Inc.
   SLOT. Slot 0 is the ADDRESS queue (`ld_US_ADDR_Q` / `st_US_ADDR_Q`), slot 1 the
   DATA queue (`st_US_DATA_Q`, valid on the store instance only).
 
-  // ===> AND THE TWO SLOTS DO NOT AGREE ON THIS PATH. THAT IS THE WHOLE POINT.
-  // `st_US_ADDR_Q` holds ONE range entry per store while `st_US_DATA_Q` holds one
-  // full `vLen` entry PER GROUP MEMBER, so a US store claims 1 address entry and
-  // `v_emul * v_seg_nf` data entries: DIFFERENT COUNTS, DIFFERENT BASES,
-  // DIFFERENT POINTERS. The equal-slot assertion that is correct in `VecElemAgen`
-  // (the SSI queues have equal depth and one claim event) MUST NOT be written
-  // here, and `us_data_base` on the range entry is SLOT 1's BASE — never slot 0's
-  // plus an offset, which is the tempting derivation and is simply not a fact
-  // about these two queues.
+  ===> AND THE TWO SLOTS DO NOT AGREE ON THIS PATH. THAT IS THE WHOLE POINT.
+  `st_US_ADDR_Q` holds ONE range entry per store while `st_US_DATA_Q` holds one
+  full `vLen` entry PER GROUP MEMBER, so a US store claims 1 address entry and
+  `v_emul * v_seg_nf` data entries: DIFFERENT COUNTS, DIFFERENT BASES,
+  DIFFERENT POINTERS. The equal-slot assertion that is correct in `VecElemAgen`
+  (the SSI queues have equal depth and one claim event) MUST NOT be written
+  here, and `us_data_base` on the range entry is SLOT 1's BASE — never slot 0's
+  plus an offset, which is the tempting derivation and is simply not a fact
+  about these two queues.
 
   `release` — Output(Valid({ `is_store`, `q_idx`, `used_count`: `Vec(2, UInt)` }))
   with `release_ok` — Input(Bool): the surplus return, PER QUEUE SLOT, fired once
   per OP.v. A denied release is NEVER retried.
 
-  // ===> ONLY THIS MODULE CAN RELEASE A US STORE'S DATA-SIDE SURPLUS, which is why
-  // these lanes are load-bearing rather than symmetric filler. The reservation
-  // claimed `v_emul * v_seg_nf` data entries from EMUL at dispatch, and the number
-  // of members ACTUALLY written depends on VL — read from the VL register file at
-  // execute, in this module, and nowhere earlier. Nothing else on the unit-stride
-  // path has that information: the reservation is a dispatch-time structure, the
-  // queues count entries and not members, and VecDgen learns `members_used` only
-  // from the same VL this module already has. Omitting the release does not
-  // under-perform, it LEAKS the difference between the EMUL worst case and the
-  // real member count on every short-VL unit-stride store until reclamation.
+  ===> ONLY THIS MODULE CAN RELEASE A US STORE'S DATA-SIDE SURPLUS, which is why
+  these lanes are load-bearing rather than symmetric filler. The reservation
+  claimed `v_emul * v_seg_nf` data entries from EMUL at dispatch, and the number
+  of members ACTUALLY written depends on VL — read from the VL register file at
+  execute, in this module, and nowhere earlier. Nothing else on the unit-stride
+  path has that information: the reservation is a dispatch-time structure, the
+  queues count entries and not members, and VecDgen learns `members_used` only
+  from the same VL this module already has. Omitting the release does not
+  under-perform, it LEAKS the difference between the EMUL worst case and the
+  real member count on every short-VL unit-stride store until reclamation.
 
   ---- `io.range` — the range entry (output, ready/valid) ----
 
@@ -206,26 +206,26 @@ from Tenstorrent Inc.
   `ld_US_ADDR_Q` or `st_US_ADDR_Q` per `isStore`. AT MOST ONE FIRE PER
   INSTRUCTION, ever.
 
-  // ===> VecRangeEntry MUST CARRY THREE FIELDS ITS VecBundles SUMMARY DOES NOT
-  // YET ENUMERATE, and they are requirements, not conveniences: the effective
-  // `stride`, the `is_unit_stride` flag, and the element-granular `mask`
-  // (spec-agen.b7, spec-agen.e13). Its `len` field must additionally be sized
-  // for a whole LMUL=8 group of BYTES — `maxMembers * vLen / 8` = 256, i.e. 9
-  // bits — and never from `vecVLSz`, which is the same WIDTH but a different
-  // QUANTITY: `len` counts bytes, `vecVLSz` sizes an element count, and the two
-  // coincide only because the narrowest SEW is one byte. TWO MORE FIELDS join them:
-  // `is_ff`, now that the fault-only-first policy lives here — the entry is what
-  // the drain side raises a fault against, and `is_ff` is how that report knows to
-  // come back as a trim question rather than as a trap — and `us_data_base`, the
-  // store side's DATA-QUEUE base, taken from reservation SLOT 1 (see the
-  // reservation lanes above). Reported as a seam item for cross-file review; this
-  // module drives all of them.
-  // On `us_data_base` there is one open redundancy to settle rather than to
-  // duplicate: `VecQueueReservation` and `VecLsu` both say the range ENTRY carries
-  // it, while `VecDgen`'s own file still says it takes the data-queue base from
-  // `VecQueueReservation` directly. Either is workable; BOTH is two sources of
-  // truth for one pointer. This module drives the field as the two amended files
-  // require, and the duplicate read is flagged for VecDgen's side to drop.
+  ===> VecRangeEntry MUST CARRY THREE FIELDS ITS VecBundles SUMMARY DOES NOT
+  YET ENUMERATE, and they are requirements, not conveniences: the effective
+  `stride`, the `is_unit_stride` flag, and the element-granular `mask`
+  (spec-agen.b7, spec-agen.e13). Its `len` field must additionally be sized
+  for a whole LMUL=8 group of BYTES — `maxMembers * vLen / 8` = 256, i.e. 9
+  bits — and never from `vecVLSz`, which is the same WIDTH but a different
+  QUANTITY: `len` counts bytes, `vecVLSz` sizes an element count, and the two
+  coincide only because the narrowest SEW is one byte. TWO MORE FIELDS join them:
+  `is_ff`, now that the fault-only-first policy lives here — the entry is what
+  the drain side raises a fault against, and `is_ff` is how that report knows to
+  come back as a trim question rather than as a trap — and `us_data_base`, the
+  store side's DATA-QUEUE base, taken from reservation SLOT 1 (see the
+  reservation lanes above). Reported as a seam item for cross-file review; this
+  module drives all of them.
+  On `us_data_base` there is one open redundancy to settle rather than to
+  duplicate: `VecQueueReservation` and `VecLsu` both say the range ENTRY carries
+  it, while `VecDgen`'s own file still says it takes the data-queue base from
+  `VecQueueReservation` directly. Either is workable; BOTH is two sources of
+  truth for one pointer. This module drives the field as the two amended files
+  require, and the duplicate read is flagged for VecDgen's side to drop.
 
   ---- `io.st_data` — the whole-register store-data command, KEPT AS AN
        ASSERTION-ONLY CROSS-CHECK (output) ----
@@ -234,31 +234,31 @@ from Tenstorrent Inc.
   member, the member index, that member's source PRN, `rob_idx`, `stq_idx` and a
   `last` marker. Absent on the load path — a load has no source group to read.
 
-  // ===> RECONCILED, AND THE DECISION IS "KEEP IT, BUT ONLY AS A CHECK". This port
-  // is REDUNDANT as a mechanism: VecDgen derives the whole US member sequence
-  // ITSELF, from its own `io.req` and its own `members_used = ceil(total_bytes /
-  // vLenBytes)` bound, in ascending member order with the partial final member
-  // carrying its valid-byte count — and it must, because that total-byte
-  // derivation is the fix for the M1 phantom-member store-data corruption and
-  // cannot be delegated to a command stream from here. VecDgen owns VRF port `R3`
-  // and the push into `st_US_DATA_Q`; nothing about the data path depends on this
-  // port.
-  // So the two candidate mechanisms are settled down to ONE, VecDgen's, and this
-  // port survives as the AGREEMENT ASSERTION between the address side and the data
-  // side: VecLsu ties its `ready` HIGH — permanently, so it is not a handshake and
-  // cannot back-pressure anything — and compares the member index and `last` this
-  // module publishes against the member VecDgen is streaming for the same
-  // `stq_idx`, failing loudly on a disagreement. That check is worth its wires
-  // precisely because the 1:N address-to-data shape below is easy to mis-review
-  // and its failure mode is a neighbour store's data corrupted rather than a hang.
-  // It is a CHECK AND NOT A COMMAND, and a reader who wires it into VecDgen's data
-  // path has reintroduced the second mechanism this note exists to remove.
-  // ONE UNRESOLVED SHAPE ITEM, RECORDED RATHER THAN QUIETLY FIXED: by the same
-  // argument that makes `io.req` a `Valid`, a port whose `ready` is permanently
-  // tied high should not be a `DecoupledIO` either. It is left as declared here
-  // because VecLsu's spec is the side that states the tie-off, and the two files
-  // must agree; narrowing it to a `Valid` is a seam item for VecLsu and VecDgen to
-  // settle together, not a unilateral change from this file.
+  ===> RECONCILED, AND THE DECISION IS "KEEP IT, BUT ONLY AS A CHECK". This port
+  is REDUNDANT as a mechanism: VecDgen derives the whole US member sequence
+  ITSELF, from its own `io.req` and its own `members_used = ceil(total_bytes /
+  vLenBytes)` bound, in ascending member order with the partial final member
+  carrying its valid-byte count — and it must, because that total-byte
+  derivation is the fix for the M1 phantom-member store-data corruption and
+  cannot be delegated to a command stream from here. VecDgen owns VRF port `R3`
+  and the push into `st_US_DATA_Q`; nothing about the data path depends on this
+  port.
+  So the two candidate mechanisms are settled down to ONE, VecDgen's, and this
+  port survives as the AGREEMENT ASSERTION between the address side and the data
+  side: VecLsu ties its `ready` HIGH — permanently, so it is not a handshake and
+  cannot back-pressure anything — and compares the member index and `last` this
+  module publishes against the member VecDgen is streaming for the same
+  `stq_idx`, failing loudly on a disagreement. That check is worth its wires
+  precisely because the 1:N address-to-data shape below is easy to mis-review
+  and its failure mode is a neighbour store's data corrupted rather than a hang.
+  It is a CHECK AND NOT A COMMAND, and a reader who wires it into VecDgen's data
+  path has reintroduced the second mechanism this note exists to remove.
+  ONE UNRESOLVED SHAPE ITEM, RECORDED RATHER THAN QUIETLY FIXED: by the same
+  argument that makes `io.req` a `Valid`, a port whose `ready` is permanently
+  tied high should not be a `DecoupledIO` either. It is left as declared here
+  because VecLsu's spec is the side that states the tie-off, and the two files
+  must agree; narrowing it to a `Valid` is a seam item for VecLsu and VecDgen to
+  settle together, not a unilateral change from this file.
 
   ---- The fault-only-first interface (three signals, no state) ----
 
@@ -275,16 +275,16 @@ from Tenstorrent Inc.
   count. Both are COMBINATIONAL FUNCTIONS OF `io.fault` — one comparison against
   zero, per logic section 9 — with no register between input and output.
 
-  // ===> `io.ff_trim` GOES TO `lcb.io.trim`, NOT TO VlRegFile's `W_lsu`. VecLsu
-  // converts the trim element index into the LCB's {member, `keep_bytes`} form
-  // using `v_eew`, and the VL register file's `W_lsu` port keeps EXACTLY ONE
-  // producer — `lcb.io.vl_wb`, driven on the group-done. This module therefore
-  // REPORTS the trim and never writes the VL RF itself. Two reasons, both
-  // load-bearing: `W_lsu` is a statically partitioned, never-arbitrated write
-  // port, so a second producer is a structural error rather than a contention
-  // problem; and publishing a trimmed VL before the group it describes has been
-  // assembled would wake every `pvl` dependent early, handing them a VL whose
-  // data is not yet in the VRF.
+  ===> `io.ff_trim` GOES TO `lcb.io.trim`, NOT TO VlRegFile's `W_lsu`. VecLsu
+  converts the trim element index into the LCB's {member, `keep_bytes`} form
+  using `v_eew`, and the VL register file's `W_lsu` port keeps EXACTLY ONE
+  producer — `lcb.io.vl_wb`, driven on the group-done. This module therefore
+  REPORTS the trim and never writes the VL RF itself. Two reasons, both
+  load-bearing: `W_lsu` is a statically partitioned, never-arbitrated write
+  port, so a second producer is a structural error rather than a contention
+  problem; and publishing a trimmed VL before the group it describes has been
+  assembled would wake every `pvl` dependent early, handing them a VL whose
+  data is not yet in the VRF.
 
   ---- `io.brupdate`, `io.rob_flush` (inputs) ----
 
@@ -423,17 +423,30 @@ from Tenstorrent Inc.
   unit-stride, and it TRAVELS WITH THE RANGE ENTRY to the drain side rather than
   being re-read there. Mask handling is NOT skipped for unit-stride: this module
   copies the latched element-granular mask (all-ones when `vm` is set) into the
-  entry, and VecBeatExpander applies it when forming each beat's byte enable. The
+  entry, and VecBeatExpander applies it when forming each beat's byte enable.
+
+  ===> WHOLE-REGISTER AND MASK ACCESSES MUST CARRY AN ALL-ONES MASK, not the latched
+       one. Both are unmasked by definition, and both describe their transfer in
+       BYTES (`eew` = 0, `len` = `emul * vLenBytes` or `ceil(vl/8)`), while the
+       latched mask is indexed by vtype ELEMENTS. The drain side scales mask bits by
+       the entry's `eew`, so at `eew` = 0 a vl-shaped mask gates byte b on element
+       bit b and silently truncates the access to `vl` bytes. Measured on
+       `ms11d_vl1r`: `vs1r.v` with `vl` = 4 emitted a single 4-byte beat against a
+       32-byte range and then mask-skipped to the end, leaving 28 bytes of the
+       destination unwritten. `vlm.v` escapes only by arithmetic accident, since
+       `ceil(vl/8)` never exceeds `vl`.
+
+  The
   cost the spec accepts is up to VLMAX mask bits on one bundle per OP.v — wide,
   but one bundle. The alternative, a drain-side `v0` read, would give `R1` a
   second concurrent reader (see the ports section): a port-table consequence, not
   a stylistic choice.
 
-  // The mask is NOT applied to the address here: a unit-stride range is
-  // contiguous whether or not lanes are masked off, and narrowing the range to
-  // the active lanes would break the range-overlap check below, which must be
-  // mask-OBLIVIOUS to stay conservative (memord.b20, VecCrossLsuSnoop).
-  // Suppression of masked-off BYTES happens where the access is formed.
+  The mask is NOT applied to the address here: a unit-stride range is
+  contiguous whether or not lanes are masked off, and narrowing the range to
+  the active lanes would break the range-overlap check below, which must be
+  mask-OBLIVIOUS to stay conservative (memord.b20, VecCrossLsuSnoop).
+  Suppression of masked-off BYTES happens where the access is formed.
 
   ---- 5. The store reads its entire source vPRN in one access ----
 
@@ -488,19 +501,19 @@ from Tenstorrent Inc.
   differently would release entries VecDgen is still about to write. Derive it from
   total bytes, never from `v_emul`.
 
-  // ===> A SINGLE `used_count` HERE WOULD BE A SILENT DATA CORRUPTION, not a
-  // performance loss, and it is the reason the port is a `Vec(2, UInt)`. Trimming
-  // the DATA queue by the ADDRESS queue's count means releasing all but ONE entry
-  // of a region whose `v_emul` members are live store data — the freed entries are
-  // handed to the next store's reservation and overwritten, and the corruption
-  // surfaces on a LATER store than the one that caused it. That is the identical
-  // failure signature as the M1 phantom-member bug, reached from the opposite
-  // direction, and neither shows up in a test that stores and loads back one
-  // vector.
-  // A denied release is NOT retried: the surplus frees in order with the region at
-  // reclamation. `release_ok` is false whenever a younger OP.v has already reserved
-  // past this region, since the reservation permits tail-only trimming, and under a
-  // stream of vector stores that is the common case rather than the exception.
+  ===> A SINGLE `used_count` HERE WOULD BE A SILENT DATA CORRUPTION, not a
+  performance loss, and it is the reason the port is a `Vec(2, UInt)`. Trimming
+  the DATA queue by the ADDRESS queue's count means releasing all but ONE entry
+  of a region whose `v_emul` members are live store data — the freed entries are
+  handed to the next store's reservation and overwritten, and the corruption
+  surfaces on a LATER store than the one that caused it. That is the identical
+  failure signature as the M1 phantom-member bug, reached from the opposite
+  direction, and neither shows up in a test that stores and loads back one
+  vector.
+  A denied release is NOT retried: the surplus frees in order with the region at
+  reclamation. `release_ok` is false whenever a younger OP.v has already reserved
+  past this region, since the reservation permits tail-only trimming, and under a
+  stream of vector stores that is the common case rather than the exception.
 
   ---- 7. Zero-length accesses push nothing ----
 
@@ -584,11 +597,11 @@ from Tenstorrent Inc.
   form exists — so serializing it would tax the one loop the feature was added to
   make fast. Accept nothing here that behaves like a fence.
 
-  // On a non-`vleff` unit-stride op (`is_ff` low) `io.ff_trim` is NEVER valid and
-  // `io.fault_trap` follows `io.fault.valid` unconditionally, with no element-index
-  // split — the plain precise trap of section 8. Assert that: a trim escaping onto
-  // a non-`vleff` load would silently shorten an architecturally full-length
-  // vector load, which no test that does not check VL would catch.
+  On a non-`vleff` unit-stride op (`is_ff` low) `io.ff_trim` is NEVER valid and
+  `io.fault_trap` follows `io.fault.valid` unconditionally, with no element-index
+  split — the plain precise trap of section 8. Assert that: a trim escaping onto
+  a non-`vleff` load would silently shorten an architecturally full-length
+  vector load, which no test that does not check VL would catch.
 
   ---- 10. Retirement, and why there is nothing to retire ----
 

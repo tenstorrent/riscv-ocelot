@@ -17,6 +17,7 @@ from Tenstorrent Inc.
 
 /*
   VecTrace — the shared guarded-printf tracing convention for every vec module.
+*/
 
   hierarchy.yaml: kind: package, mode: new,
   output src/main/scala/v4/vec/generated/VecTrace.scala,
@@ -39,7 +40,6 @@ from Tenstorrent Inc.
   the whole vector subsystem, and a convention that every module reinvented
   would be useless for exactly the thing it exists for: correlating stages with
   each other and with the Whisper trace. One declaration, bound by all of them.
-*/
 
 <|begin_module|>
 
@@ -99,16 +99,16 @@ from Tenstorrent Inc.
   keyed on `ftq_idx`/`pc_lob` instead of `rob_idx`, and it emits `rob=?` in that
   position so a line is still recognisable by the same grep.
 
-  // ===> THIS EXISTS BECAUSE rob_idx DOES NOT YET EXIST AT DECODE. The ROB entry
-  // is allocated at DISPATCH, so VDecode, VLSDecode, VsetDecode and VConfigUnit
-  // have no rob_idx to tag a line with. Without this variant a decode-stage
-  // caller would either be unable to trace at all or would invent a zero
-  // rob_idx, and a line claiming rob=0 is worse than a line admitting it does
-  // not know — it would silently alias with the real rob entry 0 in every grep.
-  // `ftq_idx`/`pc_lob` is the identifier those stages DO have, and it is enough
-  // to correlate a decode line with the Whisper trace by PC. Correlating a
-  // decode line with a later pipeline line is then a two-step join through the
-  // dispatch line, which is the honest cost of the ROB entry not existing yet.
+  ===> THIS EXISTS BECAUSE rob_idx DOES NOT YET EXIST AT DECODE. The ROB entry
+  is allocated at DISPATCH, so VDecode, VLSDecode, VsetDecode and VConfigUnit
+  have no rob_idx to tag a line with. Without this variant a decode-stage
+  caller would either be unable to trace at all or would invent a zero
+  rob_idx, and a line claiming rob=0 is worse than a line admitting it does
+  not know — it would silently alias with the real rob entry 0 in every grep.
+  `ftq_idx`/`pc_lob` is the identifier those stages DO have, and it is enough
+  to correlate a decode line with the Whisper trace by PC. Correlating a
+  decode line with a later pipeline line is then a two-step join through the
+  dispatch line, which is the honest cost of the ROB entry not existing yet.
 
   ---- The two uOP-less variants, and which to reach for ----
 
@@ -127,10 +127,10 @@ from Tenstorrent Inc.
   answer exists — and an unnecessary `rob=?` throws away the cross-stage and
   Whisper correlation this package exists to provide.
 
-  // ===> A GROUP-DONE WAKEUP IS THE MOTIVATING CASE FOR `traceId`. It carries a
-  // bare `rob_idx` and a member-PRN vector, and no `MicroOp` — so `VecBusyTable`
-  // could not trace its clear event at all, while having the very identifier the
-  // line format wants. That is a missing entry point, not a caller problem.
+  ===> A GROUP-DONE WAKEUP IS THE MOTIVATING CASE FOR `traceId`. It carries a
+  bare `rob_idx` and a member-PRN vector, and no `MicroOp` — so `VecBusyTable`
+  could not trace its clear event at all, while having the very identifier the
+  line format wants. That is a missing entry point, not a caller problem.
 
   Provide `traceStruct(module, event, extra)` for callers whose event is scoped
   to a PHYSICAL RESOURCE rather than to an instruction. It
@@ -140,41 +140,41 @@ from Tenstorrent Inc.
   `extra` must therefore be non-empty (check it at elaboration; a structural
   line with no key identifies nothing).
 
-  // ===> THESE EXIST BECAUSE SOME MODULES HAVE NO uOP AT THEIR BOUNDARY AT ALL,
-  // and the original text did not account for them. `trace`/`tracePrn`/
-  // `traceVl`/`traceElem`/`traceTag` all take a `MicroOp` to extract `rob_idx`;
-  // `traceDecode` covers the decode stage. But `VecMapTable`, `VecFreeList`,
-  // `VecBusyTable`, `VecRegFile`, `VecRegFileBank`, `VlRegFile` and
-  // `VecGroupReady` are LOOKUP AND STORAGE STRUCTURES, not pipeline stages:
-  // their `depends_on` deliberately excludes MicroOp, their ports carry bare
-  // addresses and data, and their events are genuinely about a resource, not an
-  // instruction — "PRN 37 freed at commit", "bank 2 forwarded a write to read
-  // port 5". There is no uOP in scope to extract a `rob_idx` from, and inventing
-  // a port to carry one would add a wire that only tracing reads, which the next
-  // section forbids.
-  //
-  // Ground rule 11 of plan v2 requires EVERY vec module to trace, so with only
-  // the two entry points above, ground rule 11 was unsatisfiable for most of the
-  // Phase C module set. Observed across Phases B and C: `VConfigUnit`,
-  // `VlRegFile`, `VecFreeList` and `VecBusyTable` omitted trace calls and
-  // reported the gap (`VecFreeList` could tag zero of its three lines), while
-  // `VecRegFileBank` hand-rolled a raw `printf` behind the public
-  // `traceEnabled`. Five nodes, two incompatible workarounds, one missing pair of
-  // entry points — which is why these are named helpers and not a convention.
-  //
-  // ===> IT DOES NOT RELAX THE rob_idx RULE FOR INSTRUCTION-SCOPED EVENTS. If a
-  // module HAS a uOP at its boundary, its instruction events MUST use `trace` or
-  // one of its wrappers; reaching for `traceStruct` to avoid threading a uop is
-  // a review failure. The test is what the event is ABOUT, not what is
-  // convenient to wire: `VecStoreDgenPath` and `VecIssueSlot` hold uOPs and owe
-  // real `rob_idx` lines, while a free-list pop owes a `prn` and could not
-  // honestly name a `rob_idx` even if one were available, because a group is
-  // allocated for one uOP and freed on behalf of another.
-  //
-  // `emitLine` STAYS PRIVATE and a caller must not hand-roll a `printf` behind
-  // `traceEnabled` — the whole point of this package is that the line format is
-  // in one place. `traceEnabled` remains public only for gating a caller's own
-  // non-emitting debug logic.
+  ===> THESE EXIST BECAUSE SOME MODULES HAVE NO uOP AT THEIR BOUNDARY AT ALL,
+  and the original text did not account for them. `trace`/`tracePrn`/
+  `traceVl`/`traceElem`/`traceTag` all take a `MicroOp` to extract `rob_idx`;
+  `traceDecode` covers the decode stage. But `VecMapTable`, `VecFreeList`,
+  `VecBusyTable`, `VecRegFile`, `VecRegFileBank`, `VlRegFile` and
+  `VecGroupReady` are LOOKUP AND STORAGE STRUCTURES, not pipeline stages:
+  their `depends_on` deliberately excludes MicroOp, their ports carry bare
+  addresses and data, and their events are genuinely about a resource, not an
+  instruction — "PRN 37 freed at commit", "bank 2 forwarded a write to read
+  port 5". There is no uOP in scope to extract a `rob_idx` from, and inventing
+  a port to carry one would add a wire that only tracing reads, which the next
+  section forbids.
+  
+  Ground rule 11 of plan v2 requires EVERY vec module to trace, so with only
+  the two entry points above, ground rule 11 was unsatisfiable for most of the
+  Phase C module set. Observed across Phases B and C: `VConfigUnit`,
+  `VlRegFile`, `VecFreeList` and `VecBusyTable` omitted trace calls and
+  reported the gap (`VecFreeList` could tag zero of its three lines), while
+  `VecRegFileBank` hand-rolled a raw `printf` behind the public
+  `traceEnabled`. Five nodes, two incompatible workarounds, one missing pair of
+  entry points — which is why these are named helpers and not a convention.
+  
+  ===> IT DOES NOT RELAX THE rob_idx RULE FOR INSTRUCTION-SCOPED EVENTS. If a
+  module HAS a uOP at its boundary, its instruction events MUST use `trace` or
+  one of its wrappers; reaching for `traceStruct` to avoid threading a uop is
+  a review failure. The test is what the event is ABOUT, not what is
+  convenient to wire: `VecStoreDgenPath` and `VecIssueSlot` hold uOPs and owe
+  real `rob_idx` lines, while a free-list pop owes a `prn` and could not
+  honestly name a `rob_idx` even if one were available, because a group is
+  allocated for one uOP and freed on behalf of another.
+  
+  `emitLine` STAYS PRIVATE and a caller must not hand-roll a `printf` behind
+  `traceEnabled` — the whole point of this package is that the line format is
+  in one place. `traceEnabled` remains public only for gating a caller's own
+  non-emitting debug logic.
 
   ---- What it must not become ----
 

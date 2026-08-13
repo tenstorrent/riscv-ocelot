@@ -18,7 +18,7 @@ from Tenstorrent Inc.
 /*
   VecFreeList — the group-granular rename free list for the vector and VL
   physical register spaces.
-
+*/
   hierarchy.yaml: kind: module, mode: new,
   output src/main/scala/v4/vec/generated/rename/VecFreeList.scala,
   package boom.v4.vec.generated.rename.
@@ -62,7 +62,6 @@ from Tenstorrent Inc.
 
   Governing spec anchors: midcore.rst `free-list`, `cii-shared-mapping`,
   `vl-vtype-rename`, `regfiles-bypass`; issue.rst `cii-shared-sched`.
-*/
 
 <|begin_module|>
 
@@ -100,13 +99,43 @@ from Tenstorrent Inc.
 
   //@req-spec-rename.f4
   //@req-spec-rename.f5
-  `allocWidth` is DERIVED, not passed: `coreWidth * maxGroupSize`, i.e.
-  `coreWidth * 8` for the vector instance. It is the number of prioritized
+  `allocWidth` is DERIVED, not passed: `coreWidth * 2 * maxGroupSize`, i.e.
+  `coreWidth * 16` for the vector instance. It is the number of prioritized
   outputs taken from BOOM's existing `SelectFirstN` selector
   (`boom.v4.util.SelectFirstN`, reused as-is, not reimplemented) and hence the
   number of distinct free PRNs this list can hand out per cycle. That formula,
   because every lane of a dispatch group may be an LMUL=8 OP.v taking a whole
-  group at once.
+  group at once — AND a SHARED OP.v takes TWO whole groups (`pvdest` + `pvtmp`),
+  so the worst-case lane demand is `2 * maxGroupSize`, not `maxGroupSize`.
+
+  ===> CORRECTED AT E-PREP. This read `coreWidth * maxGroupSize`, which is the
+  worst case for an UNSHARED group and exactly HALF the real worst case. It was not
+  a sizing preference; it silently defeated the all-or-nothing check below and
+  DOUBLE-ALLOCATED PRNs. Once `total_demand` exceeds `allocWidth`, the `alloc_ok`
+  condition `forall i < allocWidth: r_valid(i) || i >= total_demand` degenerates to
+  `forall i: r_valid(i)` — the `i >= total_demand` escape can never fire, so the
+  check cannot represent "demand exceeds what one cycle's selection can supply" and
+  reports OK anyway. The trailing lane's window then starts at or past `allocWidth`,
+  its `r_sel` index truncates to the low bits, and it is handed a PRN ALREADY
+  GRANTED to an older lane in the same cycle. Two live vector groups then share
+  physical registers, and the first free returns a PRN the other still owns.
+
+  Reachable on 2 shared LMUL=8 ops plus any third requesting lane at
+  `coreWidth = 4`. Segment load/stores are exactly the shared-op producer, so this
+  is reachable from the E regression rather than theoretical — but it needs a
+  specific co-dispatch, which is why no test found it and only the index-width
+  warning pointed at it.
+
+  Note the corroborating evidence that this was a slip rather than a decision:
+  `baseW` below is already `log2Ceil(coreWidth * 2 * maxGroupSize + 1)`, i.e. the
+  prefix sum was sized for the TRUE worst case by the same author in the same file.
+
+  Rejected: adding `total_demand <= allocWidth` to `alloc_ok` instead. It converts
+  corruption into a LIVELOCK — `alloc_ok` is one bit for the whole bundle and
+  dispatch re-presents the identical group next cycle, so an over-demanding group
+  never makes progress. Fixing that would need the per-lane stall mask this spec
+  forbids two paragraphs down. Widening the selector keeps the grant
+  all-or-nothing, which is the property the deadlock argument rests on.
 
   //@req-spec-rename.f12
   `deallocWidth` is likewise derived: `commitWidth * maxGroupSize` (BOOM's
@@ -122,12 +151,31 @@ from Tenstorrent Inc.
   quantity, two inherited names, not two parameters.
 
   Two elaboration-time requires:
-  `numPhysRegs >= numArchRegs + 2 * maxGroupSize`, so at least one shared OP.v
-  can always be renamed; and `allocWidth >= 2 * maxGroupSize`, so a shared OP.v
-  can always draw BOTH of its groups from one cycle's selector output. The
-  second bites only at `coreWidth == 1`, where `coreWidth * maxGroupSize` is 8
-  and a shared LMUL-limited op needs up to 16 — such a configuration would
-  deadlock rather than stall, so it must fail the build instead.
+  `numPhysRegs >= numArchRegs + allocWidth + 2 * maxGroupSize`, so at least one shared
+  OP.v can always be renamed; and `allocWidth >= 2 * maxGroupSize`, so a shared OP.v
+  can always draw BOTH of its groups from one cycle's selector output. KEEP THE
+  SECOND even though the corrected `allocWidth` formula now satisfies it for every
+  `coreWidth >= 1`: it is the assertion that states the property the deadlock
+  argument depends on, and it is the check that fires if the formula is ever
+  narrowed back. A require that is currently trivially true is not a dead require.
+
+  ===> THE `allocWidth` TERM IN THE FIRST REQUIRE IS NOT SLACK, AND OMITTING IT
+  DEADLOCKS THE IDLE MACHINE. Found at E7 on MegaBoom. The pre-selection stage
+  below parks one PRN per port in a holding register and refills a port ONLY from
+  `free_list`, so `allocWidth` PRNs are permanently out of the list — the reachable
+  pool at rest is `numPhysRegs - numArchRegs - allocWidth`, not
+  `numPhysRegs - numArchRegs`. At `numVecPhysRegisters = 96`, `coreWidth = 4`,
+  `maxGroupSize = 8` that reachable pool was EXACTLY ZERO: the 64 free PRNs all sat
+  in the 64 ports, `free_list` was 0 with the machine idle, and the first OP.v to
+  consume port 0 left it unrefillable. Because lane windows start at `base(0) = 0`,
+  every later request needs port 0, so `alloc_ok` was false forever with 63 free PRNs
+  stranded in ports 1..63 — a hang, at the first vector load, with no assertion.
+  Note what the old arithmetic was really claiming: that `numArchRegs + 2*maxGroupSize`
+  PRNs let "one shared OP.v always be renamed". That is true only of a list whose
+  free bits are all reachable, which this one's are not. The prefix invariant stated
+  two paragraphs down — `r_valid(i)` implies `r_valid(j)` for `j < i` — holds only
+  while refills succeed; sizing the file is what keeps it true, since the scalar
+  pipeline this file keeps verbatim does not re-compact the ports to restore it.
   <|end_parameters|>
 
   <|begin_ports|>
@@ -143,26 +191,26 @@ from Tenstorrent Inc.
   where a lane and an allocation port are the same thing:
 
   - `reqs` — Input `Vec(coreWidth, Bool())`: lane `w` needs a destination group.
-    // ===> `reqs` IS FIRE-INDEPENDENT. VecRenameSpace drives it from
-    // `ren2_alloc_reqs`, NEVER from `ren2_alloc_fire`: `alloc_ok -> dis_ready ->
-    // dis_fire -> reqs` would be a combinational loop. Consumption is qualified
-    // by `alloc_fire` instead, which is exactly baseline's split — there
-    // `can_allocate` comes from the pre-selection REGISTER and never from `reqs`.
+    ===> `reqs` IS FIRE-INDEPENDENT. VecRenameSpace drives it from
+    `ren2_alloc_reqs`, NEVER from `ren2_alloc_fire`: `alloc_ok -> dis_ready ->
+    dis_fire -> reqs` would be a combinational loop. Consumption is qualified
+    by `alloc_fire` instead, which is exactly baseline's split — there
+    `can_allocate` comes from the pre-selection REGISTER and never from `reqs`.
   - `req_members` — Input `Vec(coreWidth, UInt((log2Ceil(maxGroupSize)+1).W))`,
     the group's member count, i.e. the uop's `v_emul`. Legal 1..`maxGroupSize`
     when `reqs(w)`; always 1 in the VL instance.
   - `req_shared` — Input `Vec(coreWidth, Bool())`: lane `w` needs TWO groups of
     `req_members(w)` members this cycle rather than one. Tied false in the VL
     instance.
-    // ===> `req_shared` DOES NOT MEAN `uop.is_shared`, and the parent must not
-    // connect `is_shared` to it. It means "needs two groups". A segmented STORE
-    // is `is_shared` and does need a `pvtmp` group, but it has NO vector
-    // destination — its `dst_rtype` is not `RT_VEC` — so it needs exactly ONE
-    // group. Requesting two and using one LEAKS A GROUP FOREVER: commit frees
-    // only `stale_pvdest` and `pvtmp`, and neither would ever name the unused
-    // one. VecRenameSpace therefore raises `req_shared(w)` only when the lane
-    // needs BOTH groups (`needs_pvdest && needs_pvtmp`) and, in the tmp-only
-    // case, routes the single granted group into `uop.pvtmp` — see the grant side.
+    ===> `req_shared` DOES NOT MEAN `uop.is_shared`, and the parent must not
+    connect `is_shared` to it. It means "needs two groups". A segmented STORE
+    is `is_shared` and does need a `pvtmp` group, but it has NO vector
+    destination — its `dst_rtype` is not `RT_VEC` — so it needs exactly ONE
+    group. Requesting two and using one LEAKS A GROUP FOREVER: commit frees
+    only `stale_pvdest` and `pvtmp`, and neither would ever name the unused
+    one. VecRenameSpace therefore raises `req_shared(w)` only when the lane
+    needs BOTH groups (`needs_pvdest && needs_pvtmp`) and, in the tmp-only
+    case, routes the single granted group into `uop.pvtmp` — see the grant side.
 
   Grant side:
 
@@ -170,12 +218,12 @@ from Tenstorrent Inc.
     lane `w`'s FIRST granted group, member by member. `alloc_pvtmp` is the same
     shape and carries the SECOND granted group, meaningful only where
     `req_shared(w)`.
-    // The names describe the two-group case. This module does not know, and must
-    // not try to infer, which architectural role a granted group plays: in the
-    // tmp-only case (a segmented store) the parent takes the single group off
-    // `alloc_pvdest` and writes it into `uop.pvtmp`, leaving `pvdest` unwritten.
-    // Do NOT add an `is_shared` or `tmp_only` input to re-derive that here — one
-    // decision, one place, and that place is VecRenameSpace.
+    The names describe the two-group case. This module does not know, and must
+    not try to infer, which architectural role a granted group plays: in the
+    tmp-only case (a segmented store) the parent takes the single group off
+    `alloc_pvdest` and writes it into `uop.pvtmp`, leaving `pvdest` unwritten.
+    Do NOT add an `is_shared` or `tmp_only` input to re-derive that here — one
+    decision, one place, and that place is VecRenameSpace.
   - `alloc_ok` — Output `Bool()`, ONE bit for the WHOLE bundle: every requesting
     lane's full demand is available. VecRenameSpace consumes it as the vector
     half of `dis_ready`. It is the GRANT, and a grant cannot be partial.
@@ -237,10 +285,10 @@ from Tenstorrent Inc.
   refilling when it is empty or its held PRN was consumed. Two consequences are
   load-bearing.
 
-  // The PRN leaves free_list at PRE-SELECT time (sel_mask), not at grant time.
-  // debug_freelist therefore adds the held-but-ungranted PRNs back before the
-  // "returning a free physical register" assertion, as the scalar file does. Do
-  // not "fix" this by moving the removal to grant time.
+  The PRN leaves free_list at PRE-SELECT time (sel_mask), not at grant time.
+  debug_freelist therefore adds the held-but-ungranted PRNs back before the
+  "returning a free physical register" assertion, as the scalar file does. Do
+  not "fix" this by moving the removal to grant time.
 
   Second, capacity is judged from the `r_valid` REGISTER outputs, so the stall
   decision is available at the start of the cycle rather than after the
@@ -263,6 +311,24 @@ from Tenstorrent Inc.
   `alloc_pvdest` members are its window's first `req_members(w)` ports and,
   when shared, `alloc_pvtmp` is the remainder. This port-window assignment, not
   a static port-per-lane binding, is what lets one lane draw two groups.
+
+  TWO INDEX BASES ARE FORCED TO ZERO RATHER THAN LEFT TO WRAP, and both are about
+  the port index being WIDER than `r_sel` is deep — `base` is sized for
+  `total_demand`, which reaches `allocWidth` inclusive, so an index one past the end
+  wraps onto port 0 instead of faulting, and a wrap is indistinguishable from the
+  double-allocation the corrected `allocWidth` exists to prevent. First: a lane with
+  `reqs(w)` LOW has demand 0, so its base equals the running total and can be
+  `allocWidth` exactly; its grants are unconsumed, but the index must still be legal,
+  so read the base as 0 when the lane is not requesting. Second: `pvtmp`'s base is
+  `base(w) + members`, which for an UNSHARED lane is the NEXT lane's base — and for
+  the youngest unshared lane, one past the end. `alloc_pvtmp` is already masked to 0
+  when `!req_shared(w)`, so zero that base too and the value is unchanged.
+
+  Assert per lane, on the worst-case index of each window, that it lies within
+  `allocWidth`; do NOT clamp. A clamp silently reproduces the wrap it is hiding,
+  whereas the assertion is what fires if the demand arithmetic above is ever
+  changed. The assertion is not redundant with `alloc_ok`: `alloc_ok` is about
+  whether enough PRNs are FREE, this is about whether the windows FIT.
 
   //@req-spec-rename.e14
   //@req-spec-issue.c3
@@ -292,10 +358,10 @@ from Tenstorrent Inc.
   lane's `rob_idx`, `total_demand`, free count) so a dispatch stall is
   attributable to PRN exhaustion rather than guessed at.
 
-  // Capacity, visible where it bites: 32 of 96 vector PRNs are permanently held
-  // by the committed map table, so (96-32)/8 = 8 LMUL=8 groups may be in flight
-  // and at most 4 of those segmented. Read VectorParams' maxRenamableGroups /
-  // maxRenamableSegGroups; do not recompute them here.
+  Capacity, visible where it bites: 32 of 96 vector PRNs are permanently held
+  by the committed map table, so (96-32)/8 = 8 LMUL=8 groups may be in flight
+  and at most 4 of those segmented. Read VectorParams' maxRenamableGroups /
+  maxRenamableSegGroups; do not recompute them here.
 
   ---- Partial-prefix fire and per-lane consumption ----
 
@@ -313,11 +379,11 @@ from Tenstorrent Inc.
       registers, so its retry next cycle gets PRNs from the same pool and
       allocates ONE group, not a second one.
 
-  // A single fire bit is the M1 leak/double-allocate. With one bit, lane 2's
-  // window PRNs leave `free_list` in a cycle lane 2 did not dispatch; lane 2
-  // retries and is granted a SECOND group; the first is named by no uop, so no
-  // stale_pvdest and no pvtmp ever frees it and it is gone until reset. Nothing
-  // vector-specific is needed to reach it.
+  A single fire bit is the M1 leak/double-allocate. With one bit, lane 2's
+  window PRNs leave `free_list` in a cycle lane 2 did not dispatch; lane 2
+  retries and is granted a SECOND group; the first is named by no uop, so no
+  stale_pvdest and no pvtmp ever frees it and it is gone until reset. Nothing
+  vector-specific is needed to reach it.
 
   Two properties make per-lane consumption safe and both are worth asserting.
   First, a fire implies the grant: `alloc_ok` gates `dis_ready`, which gates every
@@ -351,10 +417,10 @@ from Tenstorrent Inc.
   so the assertion is cheap relative to the bug.
 
   For members beyond `req_members(w)`, pad the output group with member 0's PRN.
-  // NEVER pad with 0.U. PRN 0 is a live register belonging to someone else, and a
-  // consumer that iterated all maxGroupSize slots without masking by v_emul would
-  // free it — exactly the M1 double-free of PRN 0. Padding with the group's own
-  // member 0 makes that same mistake harmless.
+  NEVER pad with 0.U. PRN 0 is a live register belonging to someone else, and a
+  consumer that iterated all maxGroupSize slots without masking by v_emul would
+  free it — exactly the M1 double-free of PRN 0. Padding with the group's own
+  member 0 makes that same mistake harmless.
 
   ---- Free-list update: bit-vector ORs only ----
 
