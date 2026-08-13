@@ -240,10 +240,20 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val pvl_busy             = if (usingRVV) Some(Bool()) else None
 
   //@req-spec-rename.h18
-  // Renamed VL this uop reads. Deliberately no stale_pvl (VL has a single
+  // Renamed VL. On a VL PRODUCER this is the FRESH PRN the uop WRITES; on every
+  // other uop it is the PRN it reads, which is the same thing seen from the
+  // consumer side. Deliberately no stale_pvl (VL has a single
   // committed-map-table pointer released at commit, not a per-uop stale
   // value) and no pvtype (vtype is not renamed).
   val pvl                  = if (usingRVV) Some(UInt(vlPregSz.W)) else None
+
+  // The VL PRN this uop READS, always -- for a producer that also reads VL it
+  // differs from `pvl`. Only `vle*ff.v` is both: it needs the incoming VL to
+  // size the access and writes a possibly-trimmed VL back. Every vset form
+  // computes VL from AVL instead, so for those and for all consumers this
+  // equals `pvl`. Read-side consumers (VL-RF read address, source busy bit,
+  // issue-slot VL wakeup match) must use THIS field, never `pvl`.
+  val pvl_src              = if (usingRVV) Some(UInt(vlPregSz.W)) else None
 
   // -- the static access descriptor ------------------------------------------
   val v_eew                = if (usingRVV) Some(UInt(2.W)) else None // data element width

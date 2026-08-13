@@ -468,12 +468,16 @@ from Tenstorrent Inc.
 
   //@req-spec-decode.i6
   //@req-spec-issue.h2
-  Every vector uOP carries `pvl` as an implicit operand and is woken on the VL
+  Every vector uOP carries `pvl_src` as an implicit operand and is woken on the VL
   network: one comparator PER VL LANE, OR-ed —
-  `io.vl_wakeup.map(w => w.valid && w.bits === slot_uop.pvl).reduce(_ || _)` over
-  `numVlWakeupPorts` lanes — clearing `next_uop.pvl_busy`. That is the whole of it.
+  `io.vl_wakeup.map(w => w.valid && w.bits === slot_uop.pvl_src).reduce(_ || _)`
+  over `numVlWakeupPorts` lanes — clearing `next_uop.pvl_busy`. That is the whole
+  of it. MATCH ON `pvl_src`, NOT `pvl`: on a VL producer that also reads VL — only
+  `vle*ff.v` — `pvl` is the uOP's OWN destination, so matching it makes the slot
+  wait for a wakeup only that uOP can produce and only after it issues. A
+  permanent hang; see the `pvl_src` entry in VecRenameSpace's part 3.
   A per-lane match with no priority is correct because the lanes are one network
-  and `pvl` matches at most one of them: the VL RF's write ports are statically
+  and `pvl_src` matches at most one of them: the VL RF's write ports are statically
   partitioned per producer class and never arbitrated (D8), so two lanes cannot
   carry the same `pvl` in one cycle. NO VALUE
   IS CAPTURED — the slot holds no VL register, no `vl` field and no width for

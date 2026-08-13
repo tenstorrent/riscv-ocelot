@@ -197,7 +197,7 @@ from Tenstorrent Inc.
   FpPipeline's delta adds is ITS port, not this module's. This module reads the
   INT register file and the VL register file, and nothing else.
 
-  `vl_read_addr` — `Output(UInt(vlPregSz.W))`, driven with `uop.pvl` — and
+  `vl_read_addr` — `Output(UInt(vlPregSz.W))`, driven with `uop.pvl_src` — and
   `vl_read_data` — `Input(UInt(vecVLSz.W))`, the VL RF's COMBINATIONAL read
   result, valid in the SAME CYCLE as the address (VecPipeline part 9: no valid,
   no ready, no enable). Connected to `vlrf` inside VecPipeline. There is no
@@ -251,7 +251,7 @@ from Tenstorrent Inc.
 
   Cycle 0 (grant): `int_rf_read_req(0).bits` := `iss.bits.prs1`,
   `int_rf_read_req(1).bits` := `iss.bits.prs2` with both `valid`s asserted, and
-  `vl_read_addr` := `iss.bits.pvl` — all driven COMBINATIONALLY from `iss.bits`,
+  `vl_read_addr` := `iss.bits.pvl_src` — all driven COMBINATIONALLY from `iss.bits`,
   so no cycle is spent deciding to read. The grant is captured into the stage
   register set: `rr_uop` (a `MicroOp`), `rr_valid` (a `Bool`, reset to 0),
   `rr_need` (2 bits, one per INT lane, set for the lanes that have not yet
@@ -327,10 +327,12 @@ from Tenstorrent Inc.
 
   //@req-spec-issue.h3
   VL is a source operand in its own rename space and there is no decode-time VL
-  value. `pvl` is a PLAIN READINESS WAKEUP on the VL network — the issue slot
+  value. `pvl_src` is a PLAIN READINESS WAKEUP on the VL network — the issue slot
   captures no VL value, only the ready bit — and the VALUE is read from the VL
   register file AT EXECUTE, here, at the point where the granted `OP.v` is about
-  to be cracked into element accesses. Hence `vl_read_addr` from `iss.bits.pvl`
+  to be cracked into element accesses. Hence `vl_read_addr` from the READ PRN
+  `iss.bits.pvl_src` and NOT `pvl`, which on a `vle*ff.v` is that uOP's own
+  as-yet-unwritten VL destination (see VecRenameSpace part 3),
   in the grant cycle, `rr_vl` from the SAME-CYCLE `vl_read_data`, and
   `out.bits.vl` from `rr_vl`; hence also `MicroOp` carrying no `vl` field and no
   `vl_is_known` flag.

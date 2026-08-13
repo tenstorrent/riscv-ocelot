@@ -68,6 +68,11 @@ from Tenstorrent Inc.
   MediumBoom sizing; legal range 2..32. It sets the depth of the snapshot array,
   and `brTagSz = log2Ceil(maxBrCount)` the width of a `br_tag`.
 
+  `enableSuperscalarSnapshots` — BOOM's existing knob for whether rename may
+  allocate more than one `br_tag` per cycle. True at LargeBoom and MegaBoom
+  sizing, false at MediumBoom and the tapeout configs. It selects the snapshot
+  write path in part 6; no other part of this module reads it.
+
   `vLen` / `eLen` / `xLen` — used only indirectly. `vLen` and `eLen` reach this
   module through VtypeTable (hence through rocket's `VType.max_vsew` / `vlMax`);
   `xLen` fixes the width of the `reserved` field of rocket's `VType`. Nothing
@@ -442,10 +447,29 @@ from Tenstorrent Inc.
   and no decode-to-rename shadow pipeline is needed. Do not add one.
 
   Capture on the SAME `ren_br_tags` allocation event that snapshots the scalar
-  and vector RMTs, using the same one-hot reduction the scalar MapTable uses:
-  assert `PopCount(ren_br_tags.map(_.valid)) <= 1`, then `Mux1H` the tag and the
-  value and perform ONE write into `vcfg_snapshots`. One write port, not
+  and vector RMTs, and split on the SAME `enableSuperscalarSnapshots` parameter
+  the scalar MapTable and VecMapTable split on — one structure cannot assume a
+  narrower event than the RMTs it must stay in lockstep with.
+
+  When `enableSuperscalarSnapshots` is false a cycle allocates at most one tag,
+  so use the scalar MapTable's one-hot reduction: assert
+  `PopCount(ren_br_tags.map(_.valid)) <= 1`, then `Mux1H` the tag and the value
+  and perform ONE write into `vcfg_snapshots`. One write port, not
   `coreWidth + 1`.
+
+  When it is true — LargeBoom and MegaBoom set it — rename allocates a tag per
+  branch in the group, so up to `coreWidth + 1` tags are valid in the same
+  cycle. Then write per entry, `when (ren_br_tags(i).valid) { vcfg_snapshots(
+  ren_br_tags(i).bits) := compress(ren_br_vconfig(i)) }`, exactly as
+  VecMapTable writes `br_snapshots`. The array is registers, not a RAM, so the
+  `coreWidth + 1` write ports cost muxing per entry and no arbitration. Neither
+  the `PopCount` assertion nor a `Mux1H` may appear on this path: with two tags
+  valid the assertion is a false failure and the `Mux1H` would OR the two tags
+  into a third, writing one nonexistent snapshot and leaving both branches with
+  a stale mirror to recover from.
+
+  The trace line is per write, so under the multi-snapshot path emit one per
+  valid entry rather than one per cycle.
 
   //@req-spec-decode.h8
   //@req-spec-decode.h9

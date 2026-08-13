@@ -349,7 +349,8 @@ glossary.rst `glossary-terms`.
   `IsOlderLSU`); `VecOrderHold` needs `stq_head` and `ldq_next_stq_idx`; `VecSquashUnit`
   needs `ldq_head`/`ldq_tail`/`stq_commit_head`/`stq_tail`. None of these modules may
   track LDQ/STQ pointers locally — a second copy drifts on precisely the mispredict cycle
-  it is needed.
+  it is needed. The store tag pool additionally needs `store_failed`, the D$'s
+  `s2_store_failed` forwarded unfiltered — see the store-squash entry in section (j).
 
   (k) ONE GRANT PER DIRECTION PER CYCLE, AND `vecIssueGrantWidth` DOES NOT APPLY TO THE
   MEMORY QUEUES AS BUILT. Found at E7 on the wide tier. `iss_ld`/`iss_st` are each a
@@ -803,6 +804,33 @@ glossary.rst `glossary-terms`.
        TRANSLATE-pass beats, which need no acknowledgement. Do not "fix" this by
        ungating `store_ack` in `dcache.scala` without deciding what per-lane store
        acknowledgement means for the scalar STQ, which shares that port.
+
+  ===> A NACKED STORE ALSO SQUASHES THE TWO STORE BEATS BEHIND IT, SILENTLY, AND
+       THOSE MUST BE REPLAYED TOO. `dcache.scala` computes `s2_store_failed` from a
+       nacked store at s2 and feeds it into BOTH `s1_valid` and `s2_valid` as
+       `!(s2_store_failed && ... && uop.uses_stq)`, so the store beats then in s0 and
+       s1 are dropped with NEITHER `store_ack` NOR `nack`. The scalar LSU needs no
+       notification because its recovery is coarser — a nack rewinds
+       `stq_execute_head` to the nacked store and everything behind it re-executes —
+       but this module tracks beats individually by tag and learns of a beat's fate
+       ONLY from ack or nack. A squashed beat therefore holds its tag forever and its
+       bytes never reach memory: the silently-wrong-store class again, and the one the
+       `store_ack` lane gate above does not cover. Measured on `ms14_vls_e8_m8`
+       (LMUL=8, 32 write beats): 26 acks, 9 nacks, and 6 beats with no response at
+       all, `stTagBusy` stuck at 126 — exactly those 6 tags — and `dst` correct for
+       144 of 256 bytes.
+       So `dcache.scala` must EXPORT `s2_store_failed` (as `io.lsu.store_failed`) and
+       the LSU must forward it here. Do NOT infer it from `vec.nack`: the squash is
+       not `is_vec`-filtered, so a SCALAR store's nack kills vector beats while this
+       module sees no nack of its own. `vec_fire` drives `dmem_req` combinationally,
+       which makes the two victims the beat firing in the `store_failed` cycle and the
+       beat that fired the cycle before, so register one cycle of fired-tag one-hots
+       and mark both for replay. OR that kill set in AFTER the replay-clear terms: a
+       victim that was itself a replay already has its bit in `stRpyClr` from firing,
+       and the squash has to win or the beat is lost exactly as before. A victim can
+       never be acked in the same cycle — an ack lands at s2, two cycles after its
+       fire, and both victims are younger than that — so assert the kill set and the
+       ack-clear set are disjoint rather than defining a priority between them.
   Assert a response's tag is allocated: with the gate in place that is an
   invariant, and it is the check that catches any later path which drops or
   duplicates a response before the stale alignment it hands the LCB turns into

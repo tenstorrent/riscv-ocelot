@@ -266,7 +266,7 @@ class VecBusyTable(
       //@req-spec-rename.h14
       //@req-spec-rename.g12
       //@req-spec-rename.g26
-      resp.pvl_busy.get := busy_table_clr(uop.pvl.get)
+      resp.pvl_busy.get := busy_table_clr(uop.pvl_src.get)
 
       VecTrace.trace("VecBusyTable", "read", uop, Seq(("pvl_busy", resp.pvl_busy.get)))
     }

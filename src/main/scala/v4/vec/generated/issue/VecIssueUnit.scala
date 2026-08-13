@@ -176,7 +176,7 @@ class VecIssueUnit(
       }
     }
 
-    val vl_hit = io.vl_wakeup.map(l => l.valid && l.bits === io.dis_uops(w).bits.pvl.get).reduce(_ || _)
+    val vl_hit = io.vl_wakeup.map(l => l.valid && l.bits === io.dis_uops(w).bits.pvl_src.get).reduce(_ || _)
     when (vl_hit) {
       dis_uops(w).pvl_busy.get := false.B
     }

@@ -270,7 +270,7 @@ from Tenstorrent Inc.
   network when `isAluQueue` and `lrs1_rtype === RT_FLT`. The VL comparators are
   added in the same shape as baseline's `pred_wakeup_port` handling: clear
   `dis_uops(w).pvl_busy` when ANY VL lane matches, i.e.
-  `io.vl_wakeup.map(l => l.valid && l.bits === pvl).reduce(_ || _)` over all
+  `io.vl_wakeup.map(l => l.valid && l.bits === pvl_src).reduce(_ || _)` over all
   `numVlWakeupPorts` lanes — not lane 0 alone.
   `iw_issued`, `iw_issued_partial_agen`, `iw_issued_partial_dgen` and the three
   bypass hints are cleared, as baseline clears them.

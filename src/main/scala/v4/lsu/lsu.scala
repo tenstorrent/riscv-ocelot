@@ -88,6 +88,9 @@ class LSUDMemIO(implicit p: Parameters, edge: TLEdgeOut) extends BoomBundle()(p)
   val store_ack   = Flipped(Vec(lsuWidth, new ValidIO(new BoomDCacheReq)))
   // In our response stage, if we get a nack, we need to reexecute
   val nack        = Flipped(Vec(lsuWidth, new ValidIO(new BoomDCacheReq)))
+  // A nacked store also squashes the stores in s0 and s1 with neither ack nor
+  // nack, so a requestor that tracks stores individually must replay them.
+  val store_failed = Input(Bool())
 
   val ll_resp     = Flipped(new DecoupledIO(new BoomDCacheResp))
 
@@ -225,6 +228,7 @@ class VecLsuCoreIO(implicit p: Parameters) extends BoomBundle()(p)
   val resp                = Output(Vec(lsuWidth, Valid(new BoomDCacheResp)))
   val nack                = Output(Vec(lsuWidth, Valid(new BoomDCacheReq)))
   val store_ack           = Output(Vec(lsuWidth, Valid(new BoomDCacheReq)))
+  val store_failed        = Output(Bool())
 
   // ---- Inputs: the drain side (VecLsu -> LSU) ----
   val vec_claim      = Input(Vec(lsuWidth, new LsuResourceClaim))
@@ -2259,6 +2263,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       vec.store_ack(w).valid := io.dmem.store_ack(w).valid && io.dmem.store_ack(w).bits.uop.is_vec.get
       vec.store_ack(w).bits  := io.dmem.store_ack(w).bits
     }
+    // NOT is_vec-filtered: the squash is indiscriminate, so a SCALAR store's nack
+    // kills vector beats too, and VecLsu sees no nack of its own in that case.
+    vec.store_failed := io.dmem.store_failed
   }
 
   //-------------------------------------------------------------

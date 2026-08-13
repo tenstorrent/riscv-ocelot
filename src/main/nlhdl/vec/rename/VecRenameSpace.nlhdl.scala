@@ -339,6 +339,34 @@ from Tenstorrent Inc.
   for it, so the surviving `pvl` is preserved rather than replaced by a VLMAX
   recomputation.
 
+  ===> ONE `pvl` FIELD IS NOT ENOUGH: A PRODUCER THAT ALSO READS VL NEEDS BOTH,
+       so ALSO drive `uop.pvl_src := map_resps(w).stale_pvdest(0)`
+       UNCONDITIONALLY — the displaced mapping is by definition the VL the uOP
+       reads. The mux above is correct only under the assumption that a VL
+       producer never reads VL, which holds for every `vset` form (they compute
+       VL from AVL) and is FALSE for `vle*ff.v`: fault-only-first needs the
+       incoming VL to size the access and writes a possibly-trimmed VL back, and
+       `VecDecode` sets `is_vl_producer := is_ff`. With one field the producer arm
+       overwrites the read PRN with the uOP's own freshly allocated destination,
+       and the read is gone.
+       The failure is a HANG, not bad data, and it is worth recognising by shape:
+       `VecIssueSlot`'s `vl_hit` compares the VL wakeup against the uOP's read PRN,
+       so a `vle64ff.v` waits for a wakeup on its OWN destination — which only it
+       can produce, and only after issuing. Measured on `ms11d_vleff`: the vset at
+       `rob=32` takes `pvl=1`, the `vle64ff.v` at `rob=33` takes `pvl=2`,
+       `vl_wakeup pvl=1` is broadcast and matches nothing, and the op never issues
+       — no `range_push`, no `ld_fire`, `boom_timeout`. Second-order, the LSU's
+       `vl_read_addr` would read the VL RF at that same unwritten destination, so
+       even a forced issue would size the access off garbage.
+       READ-SIDE consumers take `pvl_src`: the VL-RF read address
+       (`VecScalarOperandRead`), the source busy bit (`VecBusyTable`'s
+       `resp.pvl_busy`), and the VL wakeup match in `VecIssueSlot` and
+       `VecIssueUnit`. WRITE-SIDE consumers keep `pvl`: the busy-table SET
+       (`bt_uops.pvdest(0)`), the born-ready `vsetivli` VL-RF write, the LCB's
+       `alloc.pvl` write target, the ALU/LSU VL-RF write addresses, the wakeup
+       BROADCAST tag, and the commit install. For a non-producer the two fields
+       are equal, so nothing else changes.
+
   ---- 4. Free list wiring, and the shared instruction ----
 
   `freelist.io.initial_allocation := Cat(~0.U((numPhysRegs-numArchRegs).W),
@@ -543,6 +571,18 @@ from Tenstorrent Inc.
       re-mux `pvs*`/`stale_pvdest`/`pvl` here; a second bypass can only mask a
       bug in the first. Assert agreement instead: on a hit, the map response's
       member must equal the older lane's `pvdest(row - lvd)`.
+      That agreement assertion must mirror VecMapTable's fold EXACTLY, and in two
+      respects it is NOT the readiness bypass it sits next to. First, more than one
+      older lane can cover the same row — two writers of v0 in one bundle is the
+      everyday case named in trap (4) — and the fold keeps the YOUNGEST, so the
+      assertion may compare against the youngest hitting lane only. Comparing
+      against every hit demands one response equal two different PRNs and fails on
+      legal traffic. Second, its hit predicate is `remap_reqs(k).valid`, the
+      predicate VecMapTable itself folds over, NOT the `!ren2_vl_imm_valid(k)`
+      qualification of trap (3): a born-ready `vsetivli` sets no busy bit but does
+      remap the row, so it wins the PRN fold while contributing nothing to
+      readiness. Qualifying the assertion the readiness way makes it compare
+      against a lane the map table already overwrote.
   (2) THE COMPARE IS PER MEMBER AND AGAINST A RANGE, NEVER BASE-TO-BASE. An
       older LMUL=8 write to v0..v7 must bypass into a younger LMUL=2 read at
       v4. Baseline's `r.ldst === uop.lrs1` is correct only because a scalar

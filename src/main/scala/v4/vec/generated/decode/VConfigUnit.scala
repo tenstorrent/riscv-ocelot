@@ -220,18 +220,30 @@ class VConfigUnit(implicit p: Parameters) extends BoomModule
   // =========================================================================
   //@req-spec-decode.h12
   //@req-spec-decode.h13
-  assert(PopCount(io.ren_br_tags.map(_.valid)) <= 1.U,
-    "VConfigUnit: more than one ren_br_tags entry valid in the same cycle")
-  val do_br_snapshot   = io.ren_br_tags.map(_.valid).reduce(_ || _)
-  val br_snapshot_tag  = Mux1H(io.ren_br_tags.map(_.valid), io.ren_br_tags.map(_.bits))
-  val br_snapshot_val  = Mux1H(io.ren_br_tags.map(_.valid), io.ren_br_vconfig.map(compress))
-  when (do_br_snapshot) {
-    vcfg_snapshots(br_snapshot_tag) := br_snapshot_val
-  }
-  when (do_br_snapshot) {
-    VecTrace.traceStruct("VConfigUnit", "snapshot_write", Seq(
-      ("br_tag", br_snapshot_tag),
-      ("vtype",  br_snapshot_val.asUInt)))
+  if (enableSuperscalarSnapshots) {
+    for (i <- 0 until coreWidth + 1) {
+      val snapshot_val = compress(io.ren_br_vconfig(i))
+      when (io.ren_br_tags(i).valid) {
+        vcfg_snapshots(io.ren_br_tags(i).bits) := snapshot_val
+        VecTrace.traceStruct("VConfigUnit", "snapshot_write", Seq(
+          ("br_tag", io.ren_br_tags(i).bits),
+          ("vtype",  snapshot_val.asUInt)))
+      }
+    }
+  } else {
+    assert(PopCount(io.ren_br_tags.map(_.valid)) <= 1.U,
+      "VConfigUnit: more than one ren_br_tags entry valid in the same cycle")
+    val do_br_snapshot   = io.ren_br_tags.map(_.valid).reduce(_ || _)
+    val br_snapshot_tag  = Mux1H(io.ren_br_tags.map(_.valid), io.ren_br_tags.map(_.bits))
+    val br_snapshot_val  = Mux1H(io.ren_br_tags.map(_.valid), io.ren_br_vconfig.map(compress))
+    when (do_br_snapshot) {
+      vcfg_snapshots(br_snapshot_tag) := br_snapshot_val
+    }
+    when (do_br_snapshot) {
+      VecTrace.traceStruct("VConfigUnit", "snapshot_write", Seq(
+        ("br_tag", br_snapshot_tag),
+        ("vtype",  br_snapshot_val.asUInt)))
+    }
   }
   //@req-spec-decode.e2
   val shadow_next = WireInit(vcfg_shadow)

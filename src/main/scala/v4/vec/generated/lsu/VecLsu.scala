@@ -1245,6 +1245,7 @@ class VecLsu(implicit p: Parameters) extends BoomModule
   val stTagClr = Wire(Vec(lsuWidth, UInt(nLdTags.W)))
   val stRpySet = Wire(Vec(lsuWidth, UInt(nLdTags.W)))
   val stRpyClr = Wire(Vec(lsuWidth, UInt(nLdTags.W)))
+  val stFiredOH = Wire(Vec(lsuWidth, UInt(nLdTags.W)))
   for (w <- 0 until lsuWidth) {
     val isStFire  = arb.io.vec_fire(w).valid && arb.io.vec_fire(w).bits.uop.uses_stq &&
       arb.io.vec_fire(w).bits.uses_dcache
@@ -1253,14 +1254,34 @@ class VecLsu(implicit p: Parameters) extends BoomModule
     when (isFreshSt) { stTagTable(stLaneTag(w)) := arb.io.vec_fire(w).bits }
     stRpyClr(w) := Mux(isStFire && stRpyValid(w), UIntToOH(stRpyPick(w), nLdTags), 0.U)
 
+    stFiredOH(w) := Mux(isStFire,
+      UIntToOH(Mux(stRpyValid(w), stRpyPick(w), stLaneTag(w)), nLdTags), 0.U)
+
     val ackIsSt  = vec.store_ack(w).valid && vec.store_ack(w).bits.uop.uses_stq
     val nackIsSt = vec.nack(w).valid && vec.nack(w).bits.uop.uses_stq
     stTagClr(w) := Mux(ackIsSt, UIntToOH(vec.store_ack(w).bits.uop.v_mem_tag.get, nLdTags), 0.U)
     stRpySet(w) := Mux(nackIsSt, UIntToOH(vec.nack(w).bits.uop.v_mem_tag.get, nLdTags), 0.U)
   }
+
+  // A nacked store makes the D$ squash the beats in its s0 and s1 too, with neither
+  // store_ack nor nack (dcache.scala's s2_store_failed feeds s1_valid and s2_valid).
+  // vec_fire drives dmem_req combinationally, so those two are the beat firing this
+  // cycle and the beat that fired last cycle. Without replaying them their tags stay
+  // busy forever and their bytes never reach memory.
+  val stFiredThisOH = stFiredOH.reduce(_ | _)
+  val stFiredPrevOH = RegNext(stFiredThisOH, 0.U(nLdTags.W))
+  val stKillSet = Mux(vec.store_failed, stFiredThisOH | stFiredPrevOH, 0.U(nLdTags.W))
+
   stTagBusy   := (stTagBusy | stTagSet.reduce(_ | _)) & (~stTagClr.reduce(_ | _)).asUInt
-  stTagReplay := (stTagReplay | stRpySet.reduce(_ | _)) &
-                 (~(stRpyClr.reduce(_ | _) | stTagClr.reduce(_ | _))).asUInt
+  // stKillSet is OR-ed AFTER the clears: a squashed beat that was itself a replay has
+  // its bit in stRpyClr from firing, and the squash must win or the beat is lost.
+  stTagReplay := ((stTagReplay | stRpySet.reduce(_ | _)) &
+                 (~(stRpyClr.reduce(_ | _) | stTagClr.reduce(_ | _))).asUInt) | stKillSet
+
+  // A squashed beat cannot also be acked this cycle: an ack arrives at s2, two cycles
+  // after its fire, and both victims are younger than that.
+  assert((stKillSet & stTagClr.reduce(_ | _)) === 0.U,
+    "VecLsu: a store beat was acked and squashed in the same cycle")
 
   for (w <- 0 until lsuWidth) {
     // Lanes above 0 carry translate-pass beats only; the expander leaves the cursor

@@ -133,7 +133,7 @@ class VecScalarOperandRead(val isStore: Boolean = false)(implicit p: Parameters)
   }
 
   //@req-spec-issue.h3
-  io.vl_read_addr := io.iss.bits.pvl.get
+  io.vl_read_addr := io.iss.bits.pvl_src.get
   when (io.iss.valid) { rr_vl := io.vl_read_data }
 
   io.out.bits.uop         := rr_uop

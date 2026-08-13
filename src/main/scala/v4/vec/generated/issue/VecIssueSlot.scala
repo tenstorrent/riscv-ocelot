@@ -285,7 +285,7 @@ class VecIssueSlot(
   // ---- 5. pvl and vtype ----
   //@req-spec-decode.i6
   //@req-spec-issue.h2
-  val vl_hit = io.vl_wakeup.map(w => w.valid && w.bits === slot_uop.pvl.get).reduce(_ || _)
+  val vl_hit = io.vl_wakeup.map(w => w.valid && w.bits === slot_uop.pvl_src.get).reduce(_ || _)
   when (vl_hit) {
     next_uop.pvl_busy.get := false.B
   }

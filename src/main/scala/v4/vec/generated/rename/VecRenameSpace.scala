@@ -287,6 +287,9 @@ class VecRenameSpace(
         vl_producer(w) && ren2_alloc_fire(w),
         freelist.io.alloc_pvdest(w)(0),
         maptable.io.map_resps(w).stale_pvdest(0))
+      // The displaced mapping is what a producer READS, and a `vle*ff.v` is a
+      // producer that reads VL, so the read PRN cannot come off `pvl`.
+      uops_renamed(w).pvl_src.get := maptable.io.map_resps(w).stale_pvdest(0)
     }
   }
 
@@ -407,13 +410,18 @@ class VecRenameSpace(
     }
   }
 
-  private def assertRowAgreement(i: Int, respMembers: Vec[UInt], specBase: UInt): Unit = {
+  // VecMapTable folds its PRN bypass over `remap_reqs`, youngest older lane
+  // last, so only the YOUNGEST hitting lane may be compared against -- and over
+  // `remap_valid`, not the readiness qualification, which drops `vsetivli`.
+  private def assertRowAgreement(i: Int, respMembers: Vec[UInt], specBase: UInt, what: String): Unit = {
     for (m <- 0 until maxGroupSize) {
-      val row = groupRow(specBase, m)
+      val row  = groupRow(specBase, m)
+      val hits = (0 until i).map(k => remap_valid(k) && row >= lo(k) && row < hi(k))
       for (k <- 0 until i) {
-        when (readiness_bypass_qual(k) && row >= lo(k) && row < hi(k)) {
+        val youngest_hit = hits(k) && (k + 1 until i).map(!hits(_)).foldLeft(true.B)(_ && _)
+        when (youngest_hit) {
           assert(respMembers(m) === freelist.io.alloc_pvdest(k)(row - lo(k)),
-            "VecRenameSpace: readiness bypass disagrees with VecMapTable's PRN bypass")
+            s"VecRenameSpace: $what disagrees with VecMapTable's PRN bypass")
         }
       }
     }
@@ -421,20 +429,15 @@ class VecRenameSpace(
   if (vectorInstance) {
     for (i <- 0 until plWidth) {
       val resp = maptable.io.map_resps(i)
-      assertRowAgreement(i, resp.pvs1, ren2_uops(i).lvs1.get)
-      assertRowAgreement(i, resp.pvs2, ren2_uops(i).lvs2.get)
-      assertRowAgreement(i, resp.pvs3, ren2_uops(i).lvs3.get)
-      assertRowAgreement(i, resp.stale_pvdest, ren2_uops(i).lvd.get)
+      assertRowAgreement(i, resp.pvs1, ren2_uops(i).lvs1.get, "readiness bypass")
+      assertRowAgreement(i, resp.pvs2, ren2_uops(i).lvs2.get, "readiness bypass")
+      assertRowAgreement(i, resp.pvs3, ren2_uops(i).lvs3.get, "readiness bypass")
+      assertRowAgreement(i, resp.stale_pvdest, ren2_uops(i).lvd.get, "readiness bypass")
     }
   } else {
     for (i <- 0 until plWidth) {
-      val row = 0.U(lvregSz.W)
-      for (k <- 0 until i) {
-        when (readiness_bypass_qual(k) && row >= lo(k) && row < hi(k)) {
-          assert(maptable.io.map_resps(i).stale_pvdest(0) === freelist.io.alloc_pvdest(k)(0),
-            "VecRenameSpace: VL readiness bypass disagrees with VecMapTable's PRN bypass")
-        }
-      }
+      assertRowAgreement(i, maptable.io.map_resps(i).stale_pvdest, 0.U(lvregSz.W),
+        "VL readiness bypass")
     }
   }
 

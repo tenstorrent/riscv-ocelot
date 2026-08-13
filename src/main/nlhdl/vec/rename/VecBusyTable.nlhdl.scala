@@ -397,7 +397,8 @@ from Tenstorrent Inc.
   register space, so `pvl` indexes `VL_RF` and has exactly one busy bit, in that
   table. Concretely: the vector instance has no `pvl` read port and its
   `VecBusyResp` has no `pvl_busy` field; the VL instance answers
-  `io.ren_uops(i).pvl` from its own state and drives `pvl_busy`; VecRenameSpace
+  `io.ren_uops(i).pvl_src` -- the READ PRN, never `pvl`, which on a `vle*ff.v` is
+  that uOP's own destination -- from its own state and drives `pvl_busy`; VecRenameSpace
   joins the two responses when it writes the uop's busy fields.
 
   The M1 pvl busy-bit bugs came from reading pvl out of the wrong table. Two
