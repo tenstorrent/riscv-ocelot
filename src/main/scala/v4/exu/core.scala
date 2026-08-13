@@ -1518,6 +1518,20 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
         reset.asBool) {
     idle_cycles := 0.U
   }
+  // TEMP PROBE -- remove
+  val hang_probe_fired = RegInit(false.B)
+  when (idle_cycles.value(11) && !hang_probe_fired) {
+    hang_probe_fired := true.B
+    printf("HANGPROBE rob_empty=%d rob_rdy=%d rollback=%d dis_ready=%d dec_ready=%d " +
+      "fetch_v=%d fetch_pc=%x redirect_flush=%d dec_valids=%x dis_valids=%x " +
+      "fencei_rdy=%d ldq_full=%d stq_full=%d bmask_full=%x b2_mispred=%d\n",
+      rob.io.empty, rob.io.ready, rob.io.rollback, dis_ready, dec_ready,
+      io.ifu.fetchpacket.valid, dec_fbundle.uops(0).bits.debug_pc, io.ifu.redirect_flush,
+      dec_valids.asUInt, dis_valids.asUInt,
+      io.lsu.fencei_rdy, io.lsu.ldq_full(0), io.lsu.stq_full(0),
+      branch_mask_full.asUInt, brupdate.b2.mispredict)
+  }
+
   assert (!(idle_cycles.value(PlusArg("boom_timeout", 13, width=5))), "Pipeline has hung.")
 
   fp_pipeline.io.debug_tsc_reg := debug_tsc_reg

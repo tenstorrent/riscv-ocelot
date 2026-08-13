@@ -357,6 +357,16 @@ class VecPipeline(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
   //@req-spec-core.i5
   io.dis_ready := vec_rename.io.alloc_ok && vl_rename.io.alloc_ok && vlsuDisOk
 
+  // TEMP PROBE -- remove
+  when (!io.dis_ready) {
+    VecTrace.traceStruct("DisProbe", "dis_stall", Seq(
+      ("vec_alloc_ok", vec_rename.io.alloc_ok.asUInt),
+      ("vl_alloc_ok",  vl_rename.io.alloc_ok.asUInt),
+      ("vlsu_dis_ok",  vlsuDisOk.asUInt),
+      ("dis_ok_bits",  vlsu.io.dis_ok.asUInt),
+      ("q_rdy",        VecInit((0 until vecQueues.length).map(q => io.dis_vec_ready(q)(0))).asUInt)))
+  }
+
   // ===========================================================================
   // ---- PART 5. Dispatch: routing, and the single-cycle IQ slot write ----
   // ===========================================================================
