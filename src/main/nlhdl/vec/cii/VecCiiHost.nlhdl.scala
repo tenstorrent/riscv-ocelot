@@ -54,6 +54,59 @@ from Tenstorrent Inc.
        that here gives either two inversions (the SV stack held in reset forever)
        or the crossing in the wrong file. `coproc.io.core_reset := reset.asBool`.
 
+  ===> CALLOUT 2b — THE INT SCALAR READ CAN BE DENIED, AND `iss` CANNOT RETRY.
+       `iss` exports `int_scalar_read_req` as a bare `Output(UInt)` — its own port
+       section forbids a `Decoupled`, a queue or an FSM there — but the seam
+       bundle is `int_rf_read_req : Vec(5, Decoupled(...))` and `iregfile` is a
+       `BankedRF`, whose `arb_read_reqs(i).ready` drops on a BANK CONFLICT
+       independently of full-versus-partial porting. A denied read is silent: the
+       address is dropped, the response cycle still arrives, and the `.vx`/`.vf`
+       scalar captured into the side-table is whatever the port happened to
+       return — a wrong operand with no hang and no error bit, visible only as a
+       cosim data mismatch.
+       UNTIL THE HANDSHAKE IS DESIGNED, MAKE IT LOUD: ASSERT `ready` on any cycle
+       the container raises `valid`, exactly as `fp-pipeline.scala` already does
+       for the vector FP read port
+       (`assert(fregfile.io.arb_read_reqs(numFrfExeReadPorts).ready)`). That
+       converts an undetectable operand corruption into an immediate simulation
+       failure naming the port. It is NOT a fix — the real resolution is either a
+       dedicated conflict-free read port for the CII or a grant-side stall, which
+       is an issue-handshake change and therefore an owner decision. Do not
+       "fix" it by ignoring `ready`.
+
+  ===> AND `valid` IS NOT `true.B`. IT IS THE ACCEPT CYCLE OF A GRANT THAT
+       ACTUALLY READS A SCALAR:
+
+           io.int_scalar_read_req.valid :=
+             io.iss.valid && io.iss.bits.lrs1_rtype === RT_FIX
+           io.fp_scalar_read_req.valid  :=
+             io.iss.valid && io.iss.bits.lrs1_rtype === RT_FLT
+
+       `iss` exports the ADDRESS as a bare `UInt` with no valid of its own, so
+       the qualifying term must be formed HERE, from `io.iss` — the same cycle
+       `iss` drives the address combinationally off `io.iss.bits`.
+       A hardwired `true.B` makes the CII contend for an `iregfile` bank on EVERY
+       cycle, including every cycle no vector arithmetic exists at all, and makes
+       the `ready` assertion above liable to fire on contention the design never
+       actually needed.
+
+       ===> WHO LOSES THAT CONTENTION IS SETTLED, AND IT IS ALWAYS THE CII.
+            `PartiallyPortedRF` allocates physical ports in ASCENDING LOGICAL
+            INDEX ORDER (`regfile.scala:157`), and `core.scala` appends the five
+            vector INT lanes after every scalar port, with the CII's lane LAST of
+            the five. So the CII can never take a port from an ExeUnit, nor from
+            `VecScalarOperandRead`'s lanes 0-3 (the vector LS base-address read).
+            It is the only possible loser. **This is the same contract the
+            vector FP read port already ships under** — `fp-pipeline.scala`
+            appends it last for precisely this reason and guards it with a bare
+            `assert(...ready)` — so the risk here is not novel and needs no new
+            mechanism. Qualifying `valid` shrinks the window to the accept cycles
+            that genuinely read a scalar; the assertion covers the remainder.
+            Do NOT reason from this that a starved LSU is a possible symptom: the
+            priority order forbids it.
+       Exactly one of the two `valid`s can be high in a cycle: the register type
+       selects the file and a uop has one scalar source.
+
   ===> CALLOUT 3 — CREDIT OWNERSHIP IS ASYMMETRIC AND THE CHANNELS HAVE NO
        `ready`. The host is the RECEIVER on Src-Request and Writeback, so it owns
        those two channels' buffering and returns one credit per pop; it is the
@@ -119,10 +172,20 @@ from Tenstorrent Inc.
   surface of that split.
 
   //@req-spec-cii.a1
-  ELABORATION GATE. The whole node, all six children and the BlackBox exist only
-  when `usingRVV && enableVectorArith`, both Scala `Boolean`s of `BoomCoreParams`
-  — never hardware `Bool`s, and never rocket's `usingVector`, which is a different
-  gate. Vector arithmetic executing on an in-order vector unit attached through
+  ELABORATION GATE. The whole node, all six children and the BlackBox exist
+  whenever `usingRVV` is set — a Scala `Boolean` of `BoomCoreParams`, never a
+  hardware `Bool`, and never rocket's `usingVector`, which is a different gate.
+
+  ===> THERE IS NO `enableVectorArith` SUB-GATE. An earlier revision of this spec
+       required `usingRVV && enableVectorArith`. That sub-flag is REMOVED from the
+       attach condition by owner decision: a `usingRVV` machine has the
+       coprocessor, full stop. The rest of the tree already agreed — the seam
+       ports this node drives are sized `if (usingRVV)` and not by the sub-flag
+       (`numVecIrfWritePorts`, `numVecIrfReadPorts`, `numVecWbPorts`,
+       `numVecClrPorts`), so the sub-gate would have left those ports elaborated
+       and permanently stubbed, which is the "tied off rather than absent" shape
+       plan §5 rule 1 forbids. `enableVectorArith` remains a declared parameter
+       with no consumer; do not reintroduce it here to give it one. Vector arithmetic executing on an in-order vector unit attached through
   the TT-CII is therefore a structural property of the elaborated machine: with
   either flag false there is no attach, no coprocessor and no vector ALU of any
   kind, and the emitted RTL is bit-identical to pre-Caracal BOOM v4. Absent, not
@@ -276,15 +339,103 @@ from Tenstorrent Inc.
 
   ---- 2. Binding the SystemVerilog: single source of truth ----
 
-  The `TTCii` BlackBox extends `HasBlackBoxPath` and calls `addPath` on the SV
-  files it needs, by their real paths under `src/main/sv/v4/`:
-  `generated/tt_cii_host_wrap.sv` (this flow's output), `tt-cii/src/tt_cii.sv`,
-  `tt_cii_channel.sv`, `tt_cii_fifo.sv`, `tt_cii_interface.sv`,
-  `rv_async_rst_dff.sv`, `rv_async_rst_dff_Tdat.sv`, and the VPU subtree rooted
-  at `vpu/tt_vpu_cii_wrapper_top.sv`. `tt_cii_caracal_pkg.svh` is INCLUDED rather
-  than compiled, so the build must put `src/main/sv/v4/tt-cii/src` on the include
-  path; it is reached through the gen-collateral incdir, as the rest of the stack
-  already is.
+  ===> THE BLACKBOX MUST OVERRIDE `desiredName`, AND THE PORT LIST IS NOT THE
+       ONLY CONTRACT. A Chisel `BlackBox` emits an instance of a module named
+       after its CLASS unless told otherwise, so `class TTCii` emits
+       `TTCii coproc(...)` while the SystemVerilog module is called
+       `tt_cii_host_wrap`. Elaboration is perfectly happy — a BlackBox is
+       type-checked against nothing — and the whole build completes; VCS then
+       fails at the very end with
+       `Cell 'TTCii' cannot be found in liblist`. Therefore:
+
+           override def desiredName = "tt_cii_host_wrap"
+
+       Every port name, direction and width matching is necessary and NOT
+       sufficient: the module NAME is the first thing the linker resolves, and it
+       is the one part of the contract the port table does not carry.
+
+  The `TTCii` BlackBox extends BOTH `HasBlackBoxPath` AND `HasBlackBoxResource`
+  — `class TTCii extends BlackBox with HasBlackBoxPath with HasBlackBoxResource`
+  — and calls `addPath` on the SV files it needs by their real paths, plus
+  `addResource` on the HardFloat sources. BOTH traits are required and each brings
+  exactly one of the two methods: `HasBlackBoxPath` gives `addPath` and
+  `HasBlackBoxResource` gives `addResource`. Mixing in only the first is a
+  `not found: value addResource` compile error, which is how this was found.
+
+  ===> `addPath` BINDS ONE FILE AND DOES NOT RECURSE A DIRECTORY. An earlier
+       revision of this paragraph said "the VPU subtree ROOTED AT
+       `vpu/tt_vpu_cii_wrapper_top.sv`", which is not a thing `addPath` can
+       express: every module instantiated below that file lives in its own file
+       and must be named. Naming only the root elaborates fine and then fails at
+       SV compile with unresolved modules. THE LIST BELOW IS EXHAUSTIVE AND IS THE
+       SET THAT ACTUALLY ELABORATES — it was validated by building
+       `tt_cii_host_wrap` under VCS against the real relay and the real VPU, not
+       derived by reading instantiations. Order is compile order.
+
+  Roots (`B` = `src/main/sv/v4/`, `R` = `src/main/resources/`):
+
+    1. HardFloat, 14 files: `R HardFloat/source/*.v` (13) and
+       `R HardFloat/source/RISCV/*.v` (1). These are `addResource` rather than
+       `addPath` because they already sit on the resource classpath; the `.vi`
+       macro headers beside them are INCLUDE-ONLY, found via the gen-collateral
+       incdir, and must NOT be compiled — `common.mk`'s sim-filelist exclusion
+       carries a local patch for exactly that.
+    2. `B common/utility/*.sv` EXCEPT `*_assert.sv` (9: tt_cam_buffer, tt_compare,
+       tt_ffs, tt_fifo, tt_pipe_stage, tt_popcnt, tt_reshape,
+       tt_rts_rtr_pipe_stage, tt_skid_buffer). The `*_assert.sv` files are
+       bind-style helpers and do not compile standalone.
+    3. `B common/arithmetic/*.sv` (8: tt_fp16_div, tt_fp32_div, tt_int_div_r2,
+       tt_int_div_simple, VecFP16rec7, VecFP16rsqrt7, VecFP32rec7, VecFP32rsqrt7).
+    4. `B tt-cii/src/`: rv_async_rst_dff.sv, rv_async_rst_dff_Tdat.sv,
+       tt_cii_fifo.sv, tt_cii_channel.sv, tt_cii_interface.sv, tt_cii.sv.
+    5. `B vpu/decoder/`: autogen_riscv_imabfv.v, tt_ascii_instrn_decode.sv,
+       tt_decoded_mux.sv, tt_decoder.sv, tt_id.sv.
+    6. `B vpu/execution/int_datapath_unit/*.sv` (5) and
+       `B vpu/execution/fp_datapath_unit/*.sv` (7).
+    7. `B vpu/reg/tt_vec_regfile.sv`, `B vpu/tt_vec_top.sv`,
+       `B vpu/tt_vpu_cii_wrapper_top.sv`.
+    8. `B generated/tt_cii_host_wrap.sv` — this flow's own output.
+
+  NOT bound, and deliberately: `B vpu/tb/**` (the standalone testbench),
+  `B vpu/depreceated/**`, and `B lrm/**`.
+
+  ===> THE INCLUDE-ONLY FILES MUST STILL BE BOUND. "Include-only" means EXCLUDED
+       FROM COMPILATION, NOT ABSENT FROM THE LIST, and an earlier revision of this
+       paragraph said they "appear on NO addPath list" — which builds a filelist
+       whose `.v` files `\`include` headers that were never copied anywhere, and
+       VCS dies with `Source file "HardFloat_consts.vi" cannot be opened`.
+       Binding is what COPIES a file into `gen-collateral`, which is the directory
+       the incdir points at; nothing else puts it there. The separation of
+       "copied" from "compiled" is already done for us downstream:
+       `common.mk` builds the compile filelist through
+       `grep -v '.*\.\(svh\|h\|conf\|vi\)$'`, so a bound `.svh`/`.vi` lands in
+       `gen-collateral` for inclusion and never reaches the compiler. That filter
+       is the mechanism; do not try to reproduce it by omitting the file.
+
+  So these are bound like any other, and are the ONLY ones whose extension keeps
+  them out of the compile step (`common.mk` filters `.svh`, `.h`, `.conf`, `.vi`):
+    - `R HardFloat/source/HardFloat_consts.vi`
+    - `R HardFloat/source/HardFloat_localFuncs.vi`
+    - `R HardFloat/source/RISCV/HardFloat_specialize.vi`
+    - `B tt-cii/src/tt_cii_caracal_pkg.svh`
+    - `B vpu/packages/tt_briscv_pkg.svh`
+    - `B vpu/decoder/briscv_defines.h`
+    - `B vpu/decoder/autogen_defines.h`
+  Adding any of them as a COMPILED source would be a duplicate-declaration error,
+  which is exactly what the `common.mk` filter prevents.
+
+  THE LIST IS DERIVED, NOT GUESSED, and it is re-derivable in one command — the
+  complete set of headers the bound sources need is exactly the output of
+  grepping every bound `.sv`/`.v` for its `\`include` directives:
+
+      find B/common B/tt-cii/src B/vpu -maxdepth 3 \( -name '*.sv' -o -name '*.v' \) \
+        -not -path '*/tb/*' -not -path '*depreceated*' -print0 \
+        | xargs -0 grep -ohE '`include *"[^"]+"'
+
+  Run that after ANY change to the bound set. Two of these seven were found the
+  expensive way — one VCS `cannot be opened` failure each, at the end of a full
+  build — because the list was written from the module hierarchy instead of from
+  the include graph. Those are different graphs.
 
   ===> NOTHING IS COPIED INTO src/main/resources/vsrc/, EVER. `addvector`
   copied seven files there, one of them submodule content, and the copies then
@@ -298,8 +449,8 @@ from Tenstorrent Inc.
   best-effort.
 
   The paths are added in the BlackBox's own constructor body, which is what makes
-  the vectors-off promise hold as a build property too: with `usingRVV` or
-  `enableVectorArith` false the BlackBox is never constructed, so no `addPath`
+  the vectors-off promise hold as a build property too: with `usingRVV`
+  false the BlackBox is never constructed, so no `addPath`
   runs, no SV file enters the filelist, nothing references the SV package, and the
   build does not even require the submodule to be present. An `addPath` hoisted
   into a Scala `object` initializer would break that silently.
@@ -580,6 +731,33 @@ from Tenstorrent Inc.
   same way, through `wb_lookup`, whose response `wb` and `done` read in the same
   cycle from one port rather than two.
 
+  ===> WHICH READER DRIVES THE SHARED `wb_lookup` REQUEST — get this backwards and
+       it is silent corruption, not an elaboration error. `tags` implements ONE
+       `wb_lookup` lane and BOTH children present a request port for it, so the
+       parent must choose:
+
+           tags.wb_lookup(0).req  := wb.io.wb_lookup.req     // the ONLY driver
+           wb.io.wb_lookup.resp   := tags.wb_lookup(0).resp
+           done.io.wb_lookup.resp := tags.wb_lookup(0).resp
+           // done.io.wb_lookup.req is deliberately left unread.
+
+       `wb` DRIVES because it is the reader that needs a real `wb_dst_offset` —
+       the offset selects `resp.prn` and `resp.wr_en`, which are the destination
+       member PRN and its enable. `done` reads only tag-indexed fields
+       (`pvdest_grp`, `members`, `rob_idx`, `is_shared`, `killed`), so it needs no
+       address and ties its own offset to zero. Wiring `done` as the driver
+       instead would present offset 0 for every beat and place EVERY member of
+       every group into member 0's PRN — a wrong-PRN VRF write with no assertion
+       anywhere to catch it, because offset 0 is a perfectly legal address.
+
+       The two readers see the same beat in the same cycle by construction
+       (`done`'s beat comes combinationally from `wb`, neither side registering
+       it), so one request serves both. Assert that agreement rather than assume
+       it: `done.io.wb_lookup.req.tag === wb.io.wb_lookup.req.tag` whenever the
+       beat is valid. That assertion is the whole reason `done` keeps a request
+       port it does not otherwise use — do not delete the port to tidy the wiring,
+       and do not add a second lane to `tags` to avoid the question.
+
   SECOND, THE FREE-TAG SELECT LIVES IN `iss`, NOT IN `tags`. `tags` exports
   `tag_free_mask` = `~tag_valid`, `nTags` bits and functional; `iss` picks the
   lowest set bit of `tag_free_mask & ~s1_pending_mask` and presents the chosen tag
@@ -692,7 +870,7 @@ gates.
 
 <|begin_dependencies|>
 Children, one instance each, all elaborated only inside this node's
-`usingRVV && enableVectorArith` gate:
+`usingRVV` gate:
   `tags`  VecCiiTagTable      — the 16-entry side-table; owns `tag_valid`,
                                 `tag_killed`, and the slot/member resolve behind
                                 the narrow `src_lookup`/`wb_lookup` ports.

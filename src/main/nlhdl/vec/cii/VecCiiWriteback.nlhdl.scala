@@ -80,9 +80,10 @@ from Tenstorrent Inc.
   would silently drop a beat per cycle, and the fix is NOT a second write port
   — the vrf-ports partition is canonical and adds none. Fail the build.
 
-  `usingRVV` and `enableVectorArith` are Scala `Boolean`s of `BoomCoreParams`,
-  not hardware signals. This module is elaborated only inside VecCiiHost, which
-  exists only when both are set; in any other build it is ABSENT rather than
+  `usingRVV` is a Scala `Boolean` of `BoomCoreParams`, not a hardware signal.
+  This module is elaborated only inside VecCiiHost, which exists whenever
+  `usingRVV` is set and carries no `enableVectorArith` sub-gate (see that file's
+  elaboration-gate callout); in a vectors-off build it is ABSENT rather than
   tied off, so the RTL stays bit-identical to pre-Caracal BOOM v4. There is no
   hardware enable input here, now or ever.
   <|end_parameters|>
@@ -177,8 +178,9 @@ from Tenstorrent Inc.
   `io.int_wb`, `io.fp_wb` — `Valid(new ExeUnitResp(xLen))`, the scalar-dest
   writeback paths of the `vec_pipeline_io` seam. Fire-and-forget with no `ready`,
   because the Writeback channel cannot be back-pressured: they must land on the
-  DEDICATED scalar-dest write port and wakeup slot `enableVectorArith` adds (the
-  port the `int_wb_snoop` width comment in hierarchy.yaml requires be counted),
+  DEDICATED scalar-dest write port and wakeup slot `usingRVV` adds (the
+  port the `int_wb_snoop` width comment in hierarchy.yaml requires be counted,
+  and which `numVecIrfWritePorts` already sizes off `usingRVV` alone),
   never on an arbitrated share of BOOM's `ll_arb`. `data` is in the register
   file's ARCHITECTURAL encoding — IEEE-754 for the FP case, whose recode into
   hardfloat is the consumer's (FpPipeline already recodes its long-latency write
@@ -313,6 +315,24 @@ from Tenstorrent Inc.
   Drive `predicated` low, and `fflags` from `wb_status.fflags` for the FP case
   only; the INT case reports no FP flags.
 
+  Base the carried `uop` on `NullMicroOp`, NOT on `DontCare`. This is a real
+  `ExeUnitResp` and its consumers read uop fields this module has no opinion
+  about, so an invalidated uop propagates X into live control: `core.scala`
+  feeds `uop.br_mask` to `IsKilledByBranch` on the ROB writeback response, and
+  `rob.scala` gates `rob_vconfig := uop.vconfig` on `uop.is_vl_producer`, where
+  an X latches a garbage vtype into the committing row. Zero is not merely a
+  safe default for `br_mask` but the CORRECT value — VecCiiFlush asserts
+  `alloc_br_mask === 0` because IQ_V_ALU only grants past the PNR — and a CII
+  arith op is never a vl producer.
+
+  On the FP leg additionally drive `uop.v_eew` from `wb_lookup.resp.v_eew`.
+  FpPipeline recodes this beat as `v_eew =/= 2` (single vs double) at its write
+  port, and a `vfmv.f.s` result is SEW wide. `v_eew` CANNOT be taken from the
+  issuing uop: VecDecode assigns it only on the memory lane, so an arith uop
+  carries its decode default. The tag table carries the issuing op's SEW for
+  exactly this purpose. Getting it wrong silently recodes an e32 result as a
+  double — no assertion, cosim mismatch only.
+
   ---- 6. Killed-tag suppression ----
 
   //@req-spec-cii.e17
@@ -440,8 +460,34 @@ rather than the `MicroOp` form — the analogue of the `traceDecode` variant tha
 exists because decode has no `rob_idx`. VecCiiComplete records the same need.
 
 Binds to the `CII_DST_VEC`/`CII_DST_INT`/`CII_DST_FP` and `CII_NUM_DST_WB`
-constants DERIVED from `tt_cii_caracal_pkg.svh` — never redeclared, since the SV
-package is the authoritative side of that contract.
+constants DERIVED from `tt_cii_caracal_pkg.svh` — the SV package is the
+authoritative side of that contract.
+
+===> THEIR CHISEL DECLARATION SITE IS NAMED HERE, because "derived, never
+     redeclared" without a site is what produces the failure it forbids. They are
+     declared ONCE, as a package-level `object VecCiiDstKind` in THIS file:
+
+         object VecCiiDstKind {
+           val VEC = 0.U(2.W)
+           val INT = 1.U(2.W)
+           val FP  = 2.U(2.W)
+           val NUM_DST_WB = 1
+         }
+
+     Package-level, NOT `val`s inside the module body — VecCiiComplete needs the
+     same encodings to tell a vector-destination completion from a scalar one,
+     and a module-local `val` is unreachable from there, so it would have to
+     mirror them a second time. Two independent mirrors of one SV enum drift
+     silently and misroute a writeback rather than failing a build. The 2-bit
+     width is `CiiWbStatus.dst_kind`'s, which VecBundles already derives from
+     `VecBundlesConsts.ciiWbStatusBits`; do not restate it as a literal.
+
+     Ideally these would sit in `VecBundlesConsts` beside `ciiWbStatusBits`,
+     which exists for exactly this purpose. They do not, and the reason is blast
+     radius, not principle: VecBundles is a dependency of every vector node in the
+     tree, so adding three constants there forces a regeneration Phases A through
+     E would have to be revalidated against. KNOWN GAP — migrate them at the next
+     VecBundles regeneration, and delete this object in the same change.
 
 VecRegFile — `io.vrf_write` binds to write port `W2` of the canonical `vrf-ports`
 partition. Nothing here adds a port.

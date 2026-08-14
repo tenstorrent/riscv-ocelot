@@ -97,10 +97,10 @@ from Tenstorrent Inc.
 
   Elaborated only when `usingRVV` is true — a Scala `Boolean` from
   `BoomCoreParams`, NOT a hardware `Bool` and NOT rocket's `usingVector`. The CII
-  attach carries the additional `enableVectorArith` sub-flag, applied by
-  VecCiiHost; this module is instantiated inside that gate and is ABSENT
-  otherwise, not tied off, so a vectors-off build stays bit-identical to
-  pre-Caracal BOOM v4.
+  attach carries NO `enableVectorArith` sub-flag (see VecCiiHost's
+  elaboration-gate callout); this module is instantiated inside VecCiiHost and is
+  ABSENT in a vectors-off build, not tied off, so that build stays bit-identical
+  to pre-Caracal BOOM v4.
   <|end_parameters|>
 
   <|begin_ports|>
@@ -112,18 +112,33 @@ from Tenstorrent Inc.
 
   ---- Allocation, from VecCiiIssue ----
 
-  `alloc.valid` — Input `Bool`, raised on the cycle `IQ_V_ALU` grants and the
-  Issue packet is emitted, so the entry exists from the first cycle the tag is on
-  the wire.
-  `alloc.uop` — Input `new MicroOp`. Only `rob_idx`, `is_shared`, `uses_stq`,
-  `pdst`, `v_emul`, `pvdest`, `pvtmp`, `stale_pvdest`, `pvs1`, `pvs2`, `pvs3`,
-  `pvm` are read.
-  `alloc.scalar_operands` — Input `UInt(eLen.W)`: the `.vx`/`.vf` operand captured
-  BY VALUE from the INT/FP bypass by VecCiiIssue. Stored verbatim; any hardfloat
-  unrecoding belongs to the capturing node, not to storage.
-  `alloc.tag` — INPUT `UInt(tagBits.W)`, the entry index this allocation occupies,
-  CHOSEN BY VecCiiIssue and handed here with the payload. This module performs no
-  free-tag select; see part 2.
+  `alloc` — `Input(Valid(new VecCiiTagEntry))`. Valid is raised on the cycle
+  `IQ_V_ALU` grants and the Issue packet is emitted, so the entry exists from the
+  first cycle the tag is on the wire. `bits` is the FULLY CONSTRUCTED entry,
+  including the `tag` field naming the index this allocation occupies. This
+  module performs no free-tag select and no field derivation; see part 2.
+
+  ===> THE ENTRY IS BUILT BY VecCiiIssue AND MERELY RECORDED HERE, and the
+       requirement split is the reason. `spec-cii.f40` — "at issue the host must
+       SNAPSHOT the renamed physical groups into the side-table" — is allocated to
+       VecCiiIssue, and `spec-cii.d8` — "the host adapter must RECORD a tag
+       side-table entry" — is allocated here. Snapshot and record are two
+       obligations on two nodes, not one obligation written twice.
+       An earlier revision of this file ALSO specified the construction (taking
+       `alloc.uop` as a `MicroOp` and deriving `pvdest_grp`, the member mask and
+       the `_grp` field mapping here) while VecCiiIssue specified the same
+       derivation on its side. Two nodes cannot both own one mux: the port TYPE
+       differed between the two files, so whichever was generated second would
+       not have connected. The derivation now lives ONCE, in VecCiiIssue, which
+       is where `s1_uop` and the captured scalar already are. Do not move it back
+       — and if a field mapping looks missing here, it is because it is not this
+       module's, not because it was dropped.
+
+  `VecCiiTagEntry` — and the four lookup request/response bundles below — are
+  DECLARED IN THIS FILE, following the `VecBusyResp`-in-`VecBusyTable` precedent.
+  `hierarchy.yaml`'s VecBundles comment lists the entry among that package's
+  declarations and the authored VecBundles spec does not declare it; declaring it
+  here resolves that gap without regenerating a package every phase depends on.
 
   `tag_free_mask` — Output `UInt(nTags.W)`, `~tag_valid`: bit `t` set when tag `t`
   is not live. Combinational and FUNCTIONAL (unlike `debug.*` below), consumed by
@@ -234,6 +249,14 @@ from Tenstorrent Inc.
       most one scalar source (`rs1` as `.vx` or `.vf`, never both); a custom
       instruction needing two widens this to a `Vec` indexed by the `op_offset` the
       slot already carries.
+    `v_eew` `UInt(2.W)` — the issuing op's SEW in `MicroOp.v_eew`'s encoding,
+      recorded at allocation as `vconfig.vsew(1,0)` and exported on the WRITEBACK
+      lookup response. Sole consumer is VecCiiWriteback's FP-scalar-dest leg,
+      which needs the recode width for `vfmv.f.s`. It lives here because the
+      coprocessor names no register and the issuing uop is long gone by
+      writeback, so the side-table is the only surviving source — the same
+      reason `pdst` is here. Do NOT source it from the uop's own `v_eew`:
+      VecDecode drives that field only on the memory lane.
 
   The plan's side-table sketch also lists a "dest-group size". It is PopCount
   of pvdest_grp_mask, derived where needed and NOT a second field: two fields
@@ -244,60 +267,20 @@ from Tenstorrent Inc.
 
   //@req-spec-cii.d8
   //@req-spec-cii.f11
-  On `alloc.valid`, write `entries(alloc.tag)`, set that bit of `tag_valid`, and
-  CLEAR that bit of `tag_killed`. `alloc.tag` ARRIVES AS AN INPUT — the free-tag
-  select is VecCiiIssue's (cii.d6), for the accept-cycle-shadow reason spelled out
-  in the ports section; this module contains no `PriorityEncoder` over `~tag_valid`
-  and exports `tag_free_mask` so that the select can be built where the shadow is.
+  On `alloc.valid`, write `entries(alloc.bits.tag) := alloc.bits`, set that bit of
+  `tag_valid`, and CLEAR that bit of `tag_killed`. The tag ARRIVES AS AN INPUT
+  inside the entry — the free-tag select is VecCiiIssue's (cii.d6), for the
+  accept-cycle-shadow reason spelled out in the ports section; this module
+  contains no `PriorityEncoder` over `~tag_valid` and exports `tag_free_mask` so
+  that the select can be built where the shadow is.
+
   The array write is the whole of "records a tag side-table entry, used later to
   service operand pulls and to place the result": every later beat for this tag
-  reads only what is written here. The mapping is stated explicitly because the
-  side-table spells its fields with a `_grp` suffix and `MicroOp` does not, so a
-  transposition would be silent corruption rather than a compile error — `rob_idx
-  := uop.rob_idx`, `is_shared := uop.is_shared`, `pdst := uop.pdst`, `pvs1_grp :=
-  uop.pvs1`, `pvs2_grp := uop.pvs2`, `pvs3_grp := uop.pvs3`, `pvm := uop.pvm`,
-  `stale_pvdest_grp := uop.stale_pvdest`, `scalar_operands :=
-  alloc.scalar_operands`, and `pvdest_grp_mask := (1.U << uop.v_emul) - 1.U` (the
-  low `v_emul` members enabled).
-
-  ===> THE ONE FIELD THAT IS A MUX, NOT A COPY, IS THE DESTINATION GROUP:
-
-           cop_writes_pvtmp = uop.is_shared && uop.uses_stq
-           pvdest_grp      := Mux(cop_writes_pvtmp, uop.pvtmp, uop.pvdest)
-
-       `pvdest_grp` NAMES THE GROUP THE COPROCESSOR HALF WRITES, which for a
-       SEGMENTED STORE is `pvtmp` and for everything else — including a segmented
-       LOAD's coprocessor half, which transposes `pvtmp` INTO `pvdest` — is
-       `pvdest`. The predicate is the "tmp-only" case VecRenameSpace already names:
-       a segmented store's `dst_rtype` is not `RT_VEC`, so rename granted it ONE
-       group and routed it into `uop.pvtmp`, and `uop.pvdest` holds nothing. Both
-       spellings of the predicate are the same set — `is_shared && uses_stq` uses
-       only baseline `MicroOp` fields and needs no `RT_*` encoding here, and
-       dispatch presents the SAME uop to `iq_v_alu` and `iq_v_store` (VecIssueUnit
-       part 8), so `uses_stq` is set on the granted coprocessor half.
-
-  ===> WHY THE MUX IS HERE AND NOWHERE ELSE. Without it, cii.i4/i8/i11 — the
-  coprocessor half writes the `pvtmp` group — are UNSATISFIABLE, because the
-  only destination field a beat can resolve against would hold a group rename
-  never allocated. It cannot be fixed downstream either: VecCiiWriteback writes
-  `wb_lookup.resp.prn` and holds no uop, VecCiiComplete announces
-  `wb_lookup.resp.pvdest_grp` and holds no uop, and BOTH of them explicitly
-  forbid re-deriving the choice from `is_shared`/`is_store` — two places
-  deciding which group a beat lands in is exactly how a segmented store
-  silently writes the load-side group. One mux, one cycle, one place.
-  The entry field keeps the name `pvdest_grp`: it describes the common case, and
-  renaming it would touch four sibling specs to say nothing new. What the name
-  is NOT is a licence to load it unconditionally from `uop.pvdest`.
-
-  ===> `pvs3_grp` AND `stale_pvdest_grp` ARE CAPTURED FROM TWO DIFFERENT `MicroOp`
-       FIELDS INTO TWO DIFFERENT ENTRY FIELDS, and this module cannot tell the
-       coinciding case from the diverging one — nor does it need to. Do not add a
-       comparator, do not fold them, do not add an "is RMW" bit.
-
-  Members at or beyond v_emul are captured verbatim rather than zeroed: PRN 0 is
-  a real allocatable vector PRN, so zeroing would make an out-of-range offset
-  read a legitimate register belonging to someone else — harder to spot in a
-  waveform than a stale member.
+  reads only what is written here. It is a WHOLE-BUNDLE COPY — no field is
+  renamed, muxed, masked or derived in this module. The `_grp` field mapping, the
+  `pvdest_grp` mux and the member mask are VecCiiIssue's (cii.f40); see that
+  file's "The side-table entry" section for all three and for why each is written
+  exactly once.
 
   `alloc.valid` on a tag whose `tag_valid` bit is already set must be impossible,
   because VecCiiIssue's registered `fu_types` gate consumes `tag_free_mask` minus
@@ -460,27 +443,43 @@ from Tenstorrent Inc.
 
   There are NO unit tests in this project, so guarded tracing is the debug surface.
   One `VecTrace` line per key event, gated on the `vecTrace` plusarg and `!reset`,
-  off by default: "alloc" with tag, `rob_idx`, `v_emul` and the `pvdest_grp` member
-  list; "src" per active lane with tag, `op_id`, `op_offset`, resolved `prn` and
-  `killed`; "wb" with tag, `wb_dst_offset`, resolved `prn`, `wr_en`; "kill" with
-  the live-tag bitmap; "free" with the tag. Emit-only: no register and no counter
-  that functional logic reads.
+  off by default: "alloc" with tag, `rob_idx`, the destination member count and
+  the `pvdest_grp` member list; "src" per lane with tag, `op_id`, `op_offset`,
+  resolved `prn` and `killed`; "wb" with tag, `wb_dst_offset`, resolved `prn`,
+  `wr_en`; "kill" with the live-tag bitmap; "free" with the tag. Emit-only: no
+  register and no counter that functional logic reads.
 
-  The alloc line has the granted MicroOp in hand and uses VecTrace.trace plus
-  the traceTag wrapper directly. Every later line has only the STORED rob_idx,
-  because a tag outlives the uop that created it — so those lines need a
-  rob_idx-keyed entry point, the same gap traceDecode fills at the other end of
-  the pipeline. Fabricating a uop to satisfy the helper's signature would put an
+  EVERY line here, the alloc line included, has only the STORED `rob_idx` to key
+  on, because no uop reaches this module at all — `alloc.bits` is a
+  `VecCiiTagEntry`, and a tag outlives the uop that created it. So all lines use
+  the rob_idx-keyed entry point, the same gap traceDecode fills at the other end
+  of the pipeline. Fabricating a uop to satisfy a helper's signature would put an
   invented rob_idx in the trace, which is worse than no line.
+  The member count is `PopCount(pvdest_grp_mask)`, not `v_emul`: same "how many
+  members" intent, and it is the only form of that number this module is given.
+
+  The "src" and "wb" lines are emitted unconditionally rather than "per ACTIVE
+  lane". The lookup ports carry no activity bit and no handshake — deliberately,
+  per the reject list — so there is no signal here that separates a live pull from
+  an idle port. Do not add one to make the trace tidier.
 
   Assertions, in the `usingRVV` build only: `alloc.valid` implies
-  `!tag_valid(alloc.tag)` — the index handed in is genuinely free, which is the
-  check that catches a broken select on the other side of the seam; every lookup,
-  source or writeback, hits a tag whose `tag_valid` bit is set (a beat for an
-  unallocated tag is a protocol break, and resolving it silently against stale
-  payload is how it reaches the VRF); `free.valid` implies `tag_valid(free.bits)`,
-  so no double free; `alloc.uop.v_emul` is within 1..maxMembers; and
-  `alloc.uop.is_vec` is set on every allocation.
+  `!tag_valid(alloc.bits.tag)` — the index handed in is genuinely free, which is
+  the check that catches a broken select on the other side of the seam; and
+  `free.valid` implies `tag_valid(free.bits)`, so no double free.
+
+  ===> TWO ASSERTIONS THIS FILE USED TO REQUIRE ARE DELIBERATELY ABSENT, and both
+       absences follow from the ports, not from laziness.
+       (1) "Every lookup hits a tag whose `tag_valid` bit is set." Unwritable
+       here: neither lookup port carries an activity bit or a handshake, so the
+       property has no cycle to be evaluated on — written unguarded it fires on
+       every idle cycle, and guarded on anything available it becomes
+       tautological. It belongs on the REQUESTING side, where the beat that
+       justifies the lookup is visible; VecCiiOperandServer and VecCiiWriteback
+       each see their own `valid`. Do not re-add it here by inventing a bit.
+       (2) `v_emul` in 1..maxMembers and `is_vec` set. Both read `alloc.uop`,
+       which no longer exists — the entry arrives pre-built. The `v_emul` range
+       obligation moved with the derivation, to VecCiiIssue.
 
   ===> THE KILL-WINDOW ASSERTION IS AN EVENTUAL PROPERTY, NOT AN EXCLUSION. The
        obligation is "A TAG ALLOCATED DURING A KILL WINDOW CARRIES `killed` BY THE
@@ -560,14 +559,15 @@ from NEXT state (see the ports section).
 <|end_perf|>
 
 <|begin_dependencies|>
-MicroOp — `alloc.uop` supplies `rob_idx`, `is_shared`, `uses_stq`, `pdst`,
-`v_emul` and the renamed groups `pvdest`, `pvtmp`, `stale_pvdest`, `pvs1`, `pvs2`,
-`pvs3`, `pvm`. The `pvs3`-versus-`stale_pvdest` separation this module depends on is
-that bundle's own invariant; merged there, this table could not serve two slots.
-`pvtmp` and `uses_stq` are read for ONE purpose — the destination-group mux of
-logic part 2 — and `uses_stq` is the baseline field deliberately chosen over
-`dst_rtype =/= RT_VEC`, which names the identical set but would drag a
-ScalarOpConstants edge into a node hierarchy.yaml grants none.
+MicroOp — NO LONGER READ BY THIS MODULE. `alloc.bits` is a fully constructed
+`VecCiiTagEntry`; the `MicroOp` fields that entry is built from (`rob_idx`,
+`is_shared`, `uses_stq`, `pdst`, `v_emul`, and the renamed groups `pvdest`,
+`pvtmp`, `stale_pvdest`, `pvs1`, `pvs2`, `pvs3`, `pvm`) are read in VecCiiIssue
+instead. The dependency is retained in hierarchy.yaml because the entry's field
+WIDTHS are still `MicroOp`'s — `pdst` is `maxPregSz`, the group members are
+`vecPregSz` — and a drift there is a silent truncation at this boundary.
+The `pvs3`-versus-`stale_pvdest` separation this table depends on is that bundle's
+own invariant; merged there, this table could not serve two slots.
 
 VecBundles — the CII channel payloads (`CiiSrcReq`, `CiiWriteback`) whose field
 widths the lookup request ports match beat for beat. The entry and lookup bundles
@@ -585,18 +585,24 @@ VectorParams — `ciiTagBits`, `maxMembers`, `vecPregSz`, and through them the
 mirrors of `CII_TAG_W`, `CII_MAX_MEMBERS` and `CII_N_TAGS` in
 `tt_cii_caracal_pkg.svh`, DERIVED from the SV contract and never redeclared here.
 
-VecCiiIssue (`iss`) — the allocating sibling, and the seam that changed. It owns
-the free-tag select (cii.d6) and hands this module `{alloc.valid, alloc.tag,
-alloc.uop, alloc.scalar_operands}`; this module owns the record (cii.d8) and hands
-back `tag_free_mask`. // REPORTED, NOT RESOLVED: VecCiiIssue's own file spells its
-side of that seam as `tag_alloc — Output(Valid(new VecCiiTagEntry))` "carrying the
-allocated tag and the whole entry content", i.e. with the ENTRY pre-built on its
-side. This file keeps the uop-shaped payload, because the destination-group mux
-(logic part 2) is required to be HERE — moving it into `iss` puts it back in the
-node whose reject list has no place for it and leaves this module's cii.d8 with
-nothing to do but copy. The two spellings must be reconciled in one direction or
-the other before generation; doing it by pre-building the entry means moving the
-mux, which is the thing A3 forbids.
+VecCiiIssue (`iss`) — the allocating sibling. It owns the free-tag select
+(cii.d6) and the entry construction (cii.f40), and hands this module one
+`Valid(VecCiiTagEntry)`; this module owns the record (cii.d8) and hands back
+`tag_free_mask`.
+
+===> RESOLVED AT PHASE F, in `iss`'s favour. Both files previously specified
+     building the entry, with DIFFERENT port types for the one seam, so whichever
+     was generated second would not have connected. The requirement texts decide
+     it and they are not ambiguous: cii.f40, allocated to VecCiiIssue, is "at
+     issue the host must SNAPSHOT the renamed physical groups into the
+     side-table"; cii.d8, allocated here, is "the host adapter must RECORD a tag
+     side-table entry". Snapshot and record are two obligations on two nodes.
+     The destination-group mux moved to `iss` with the rest of the derivation.
+     The earlier objection — that this leaves cii.d8 "nothing to do but copy" —
+     is answered by reading d8: recording IS the obligation, and the entry is the
+     single source every later beat resolves against. The alternative required
+     moving f40 to a node hierarchy.yaml does not allocate it to, which is a
+     larger edit for no gain.
 
 Instantiates nothing; its only parent is VecCiiHost, once, as `tags`. A change to
 the entry field list is a change to all five client siblings at once.

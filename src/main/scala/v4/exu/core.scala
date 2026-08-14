@@ -176,8 +176,14 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   ))
   // Caracal (D2): SCALAR count, not widened numIrfWritePorts (vec writeback
   // reaches the ROB via vec_clr_bsy/vec_rob_flags, not wb_resps).
+  // Caracal (F): +numVecIrfWritePorts for the CII scalar-destination INT
+  // writeback. It needs a wb_resps slot of its own: the wakeup frees dependent
+  // issue slots but ONLY wb_resps clears the ROB busy bit, and without it a
+  // vmv.x.s never commits and dispatch backs up behind it. 0 when !usingRVV, so
+  // a vectors-off build is unchanged. The FP side is already covered because
+  // numFpWakeupPorts counts the CII's FP port.
   val rob              = Module(new Rob(
-    (aluWidth + lsuWidth + 1) + numFpWakeupPorts,
+    (aluWidth + lsuWidth + 1 + numVecIrfWritePorts) + numFpWakeupPorts,
     trace
   ))
   // Used to wakeup registers in rename and issue. ROB needs to listen to something else.
@@ -1339,6 +1345,15 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
 
   // Caracal (D2): SCALAR count again (matches the Rob(...) arg); rob.io.wb_resps is sized off it.
   var cnt = aluWidth + lsuWidth + 1
+  // Caracal (F): the CII scalar-destination INT writeback clears its own ROB
+  // entry. Registered like the ll_arb block above, one cycle after the register
+  // write, which is the convention rob.io.wb_resps expects.
+  vec.foreach { v =>
+    rob.io.wb_resps(cnt).valid := RegNext(v.io.int_wb.valid &&
+      !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), v.io.int_wb.bits))
+    rob.io.wb_resps(cnt).bits  := RegNext(v.io.int_wb.bits)
+    cnt += 1
+  }
   for (wb <- fp_pipeline.io.wb) {
     rob.io.wb_resps(cnt) := wb
     rob.io.wb_resps(cnt).bits.data := ieee(wb.bits.data)

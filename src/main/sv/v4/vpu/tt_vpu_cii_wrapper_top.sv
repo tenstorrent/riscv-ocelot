@@ -520,8 +520,18 @@ module tt_vpu_cii_wrapper_top
                                       rsp_src_id    : (src_en_vs2 ? CII_SRC_VS2 : CII_SRC_NONE),
                                       rsp_src_offset: next_src_beat};
 
-  assign cii_intf.req_data[2]     = '{tag           : next_iss_tag, 
-                                      rsp_src_id    : (src_en_vs3 ? CII_SRC_VS3_VD : CII_SRC_NONE), 
+  // Slot 3 (VS3) and slot 6 (STALE_VD) name DIFFERENT groups on the host: VS3 is
+  // the explicitly encoded third source (pvs3), STALE_VD is the old vd
+  // (stale_pvdest). Only rf_rden2 means the datapath truly reads a third
+  // register operand -- and there pvs3 and stale_pvdest coincide, so VS3 is
+  // right. Every other need_old_dest case (vta=0, masked with vma=0,
+  // vec_single_reg) encodes NO third source and is a merge of the old dest, so
+  // it must ask for STALE_VD; asking for VS3 there returns pvs3, which for a
+  // non-RMW op is not the old dest and yields a garbage tail.
+  assign cii_intf.req_data[2]     = '{tag           : next_iss_tag,
+                                      rsp_src_id    : (~src_en_vs3                        ? CII_SRC_NONE     :
+                                                       id_vpu_uop_packet.rf_rden2         ? CII_SRC_VS3_VD   :
+                                                                                            CII_SRC_STALE_VD),
                                       rsp_src_offset: next_src_beat};
 
   assign cii_intf.req_data[3]     = '{tag           : next_iss_tag, 

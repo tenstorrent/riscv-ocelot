@@ -86,7 +86,12 @@ from Tenstorrent Inc.
 
   `numEntries` — slots per queue, default `vecIssueEntries` = 16.
   `dispatchWidth` — default `coreWidth` (3). `issueWidth` — grants per cycle,
-  default `vecIssueGrantWidth` = 1; the widest tier raises it to 2.
+  `vecIssueGrantWidth` = 1 ON EVERY TIER; no config fragment overrides it
+  (owner decision, Phase F). Both consumers independently cap at one grant per
+  cycle and neither can stall its producer, so a second grant is DROPPED rather
+  than deferred: the CII Issue channel has no ready line (see below), and the
+  memory queues' `iss_ld`/`iss_st` are each a single `Valid(MicroOp)` — the
+  wide-tier hang Phase E found and fixed by forcing those queues to 1.
   `VecCiiIssue` requires the ALU queue's grant width to be exactly 1 and fails
   elaboration otherwise: the CII Issue channel carries one beat per cycle and
   has no ready line, so a second grant would be dropped, not stalled. If a tier

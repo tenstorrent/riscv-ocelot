@@ -492,6 +492,21 @@ class VecRenameSpace(
   }
   maptable.io.com_remap_reqs := com_remap_reqs
 
+  // De-speculate the committing group's OWN pvdest members, paired 1:1 with the
+  // `dealloc` of its stale members below: same lane, same member predicate, but
+  // the new PRNs rather than the old.  This retires them out of the freelist's
+  // spec_alloc_list now that they are architectural, so a later rollback (which
+  // returns spec_alloc_list wholesale) cannot free a live architectural PRN.
+  // Same pairing the scalar RenameStage uses for pdst/stale_pdst.
+  for (w <- 0 until retireWidth) {
+    for (j <- 0 until maxGroupSize) {
+      val idx = w * maxGroupSize + j
+      freelist.io.despec(idx).valid := com_valids(w) && j.U < comMembers(w)
+      freelist.io.despec(idx).bits  :=
+        (if (vectorInstance) io.com_uops(w).pvdest.get(j) else io.com_uops(w).pvl.get)
+    }
+  }
+
   if (freeDiscipline == "stale_group") {
     for (w <- 0 until retireWidth) {
       for (j <- 0 until maxGroupSize) {

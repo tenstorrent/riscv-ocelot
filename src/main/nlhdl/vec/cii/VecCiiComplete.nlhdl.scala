@@ -437,8 +437,19 @@ VecTrace — the guarded trace helper; emit-only, declares no state.
 
 Binds to `freechips.rocketchip.tile.FPConstants.FLAGS_SZ` for the fflags width,
 and to the `CII_DST_VEC`/`CII_DST_INT`/`CII_DST_FP` and `CII_N_TAGS`/`CII_TAG_W`
-constants DERIVED from `tt_cii_caracal_pkg.svh` — never redeclared here, since
-the SV package is the authoritative side of that contract.
+constants DERIVED from `tt_cii_caracal_pkg.svh` — the SV package is the
+authoritative side of that contract.
+
+===> THE dst_kind ENCODINGS ARE IMPORTED, NOT REDECLARED. They are declared once
+     as the package-level `object VecCiiDstKind` in VecCiiWriteback (`VEC`, `INT`,
+     `FP`, `NUM_DST_WB`); use `VecCiiDstKind.VEC` and friends. Both files are in
+     `boom.v4.vec.generated.cii`, so no import statement is needed — but do NOT
+     declare a second copy of these values in this module under any name. Two
+     independent mirrors of one SV enum drift silently and, here specifically,
+     would make this module emit a group-done for a scalar-destination completion
+     — the exact bug the vector/scalar split of part 5 exists to prevent.
+     See VecCiiWriteback's dependency note for why they are not in
+     `VecBundlesConsts` yet, and the known gap to migrate them there.
 
 Instantiates NOTHING. It is instantiated once, as `done`, by VecCiiHost, which
 wires: `io.beat` from `wb` (VecCiiWriteback), in the cycle `wb` pops the beat and

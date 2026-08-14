@@ -30,6 +30,7 @@ import boom.v4.vec.generated.rename.VecRenameSpace
 import boom.v4.vec.generated.issue.VecIssueUnit
 import boom.v4.vec.generated.regfile.{VecRegFile, VlRegFile}
 import boom.v4.vec.generated.lsu.{VecLsu, VecLsuVrfWrite}
+import boom.v4.vec.generated.cii.VecCiiHost
 
 // GENERATED from src/main/nlhdl/vec/VecPipeline.nlhdl.scala. Do not hand-edit;
 // regenerate via the nlhdl gen-rtl flow instead.
@@ -123,9 +124,17 @@ class VecPipeline(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
   //@req-spec-cii.j1
   //@req-spec-cii.j2
   //@req-spec-cii.j3
+  val cii = Module(new VecCiiHost)
+  cii.io.rob_flush           := io.rob_flush
+  cii.io.rob_flush_kill      := io.rob_flush_kill
+  cii.io.brupdate_mispredict := io.brupdate.b2.mispredict
+  cii.io.int_wb_snoop        := io.int_wb_snoop
+  cii.io.csr_vstart          := io.csr_vector.vstart
+  cii.io.csr_vxrm            := io.csr_vector.vxrm
+  cii.io.csr_frm             := io.csr_frm
 
   // ===========================================================================
-  // ======== PART 1b. The vector LSU (E7), and the cii staging that remains ====
+  // ======== PART 1b. The vector LSU (E7) and CII (Phase F), both landed ========
   // ===========================================================================
 
   val vlsu = Module(new VecLsu)
@@ -143,23 +152,22 @@ class VecPipeline(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
   vlsu.io.rob_pnr_idx    := io.rob_pnr_idx
 
   // ---- 2. The vector (group-done) wakeup network: lanes 0 and 2 are VecLsu's
-  //         (lcb, gcopy); lane 1 is VecCiiHost's and stays staged (Phase F). ----
+  //         (lcb, gcopy); lane 1 is VecCiiHost's. ----
   val vecGroupDoneNetwork = Wire(Vec(vectorParams.numVecWbPorts, Valid(new VecGroupDone)))
   vecGroupDoneNetwork(0) := vlsu.io.vec_group_done(0)
   vecGroupDoneNetwork(2) := vlsu.io.vec_group_done(1)
-  vecGroupDoneNetwork(1).valid := false.B // cii.group_done, owned by VecCiiHost (Phase F)
-  vecGroupDoneNetwork(1).bits  := DontCare
+  vecGroupDoneNetwork(1) := cii.io.group_done
 
   // ---- 3. The VL wakeup network's LSU lane (the vleff trim). ----
   val vlWakeupNetwork = Wire(Vec(numVlWakeupPorts, Valid(UInt(vlPregSz.W))))
   vlWakeupNetwork(aluWidth).valid := vlsu.io.vl_wb.valid
   vlWakeupNetwork(aluWidth).bits  := vlsu.io.vl_wb.bits.pvl
 
-  // ---- 4. iq_v_alu's dynamic fu_types(0): VecCiiHost (Phase F). ----
-  iq_v_alu.io.fu_types(0) := VecInit(Seq.fill(FC_SZ)(false.B)) // cii.fu_types, owned by VecCiiHost (Phase F)
+  // ---- 4. iq_v_alu's dynamic fu_types(0): VecCiiHost. ----
+  iq_v_alu.io.fu_types(0) := VecInit(cii.io.fu_types.asBools)
 
-  // ---- 5. VecRegFile ("vrf"): R0-R4 and W0/W1 are VecLsu's; R5-R8 and W2 are
-  //         VecCiiHost's and stay staged (Phase F). ----
+  // ---- 5. VecRegFile ("vrf"): R0-R4 and W0/W1 are VecLsu's; R5-R8 and the W_CII
+  //         port (index lsuWidth) are VecCiiHost's. ----
   def vrfRead(port: Int, req: Valid[UInt]): Unit = {
     vrf.io.read(port).valid        := req.valid
     vrf.io.read(port).bits.addr    := req.bits
@@ -179,8 +187,11 @@ class VecPipeline(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
   vlsu.io.vrf_r3_resp.bits  := vrf.io.read_data(3)
   vlsu.io.vrf_r4_resp       := vrf.io.read_data(4)
   for (rp <- 5 until vrf.numReadPorts) {
-    vrf.io.read(rp).valid := false.B // R5-R8, owned by VecCiiHost (Phase F)
-    vrf.io.read(rp).bits  := DontCare
+    val ciiIdx = rp - 5
+    vrf.io.read(rp).valid        := true.B
+    vrf.io.read(rp).bits.addr    := cii.io.vrf_read_addr(ciiIdx)
+    vrf.io.read(rp).bits.rob_idx := DontCare
+    cii.io.vrf_read_data(ciiIdx) := vrf.io.read_data(rp)
   }
 
   def vrfWrite(port: Int, w: Valid[VecLsuVrfWrite]): Unit = {
@@ -191,14 +202,12 @@ class VecPipeline(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
     vrf.io.write(port).bits.rob_idx := DontCare
   }
   vrfWrite(0, vlsu.io.vrf_w0)
-  vlsu.io.vrf_w1 match {
-    case Some(w1) => vrfWrite(1, w1)
-    case None     => vrf.io.write(1).valid := false.B; vrf.io.write(1).bits := DontCare
-  }
-  for (wp <- 2 until vrf.numWritePorts) {
-    vrf.io.write(wp).valid := false.B // W2, owned by VecCiiHost (Phase F)
-    vrf.io.write(wp).bits  := DontCare
-  }
+  vlsu.io.vrf_w1.foreach(w1 => vrfWrite(1, w1))
+  vrf.io.write(lsuWidth).valid        := cii.io.vrf_write.valid
+  vrf.io.write(lsuWidth).bits.addr    := cii.io.vrf_write.bits.addr
+  vrf.io.write(lsuWidth).bits.data    := cii.io.vrf_write.bits.data
+  vrf.io.write(lsuWidth).bits.mask    := cii.io.vrf_write.bits.mask
+  vrf.io.write(lsuWidth).bits.rob_idx := DontCare
 
   // ---- 6. VlRegFile ("vlrf"): VecLsu's execute reads and the vleff write. ----
   for (i <- 0 until 2) {
@@ -206,7 +215,8 @@ class VecPipeline(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
     vlsu.io.vl_read_data(i) := vlrf.io.r_exe(i).data
   }
   for (i <- 2 until vlrf.numExeReadPorts) {
-    vlrf.io.r_exe(i).addr := 0.U // CII grant lanes (Phase F)
+    vlrf.io.r_exe(i).addr := cii.io.vl_read_addr
+    cii.io.vl_read_data   := vlrf.io.r_exe(i).data
   }
   vlrf.io.w_lsu(0).valid     := vlsu.io.vl_wb.valid
   vlrf.io.w_lsu(0).bits.addr := vlsu.io.vl_wb.bits.pvl
@@ -216,36 +226,37 @@ class VecPipeline(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
     vlrf.io.w_lsu(i).bits  := DontCare
   }
 
-  // ---- 7. int_rf_read_req: lanes 0-3 VecLsu, lane 4 VecCiiHost (Phase F). ----
+  // ---- 7. int_rf_read_req: lanes 0-3 VecLsu, lane 4 VecCiiHost. ----
   for (i <- 0 until 4) {
     io.int_rf_read_req(i) <> vlsu.io.int_rf_read_req(i)
     vlsu.io.int_rf_read_rsp(i) := io.int_rf_read_rsp(i)
   }
-  io.int_rf_read_req(4).valid := false.B // VecCiiIssue's FP/INT lane (Phase F)
-  io.int_rf_read_req(4).bits  := 0.U
+  io.int_rf_read_req(4) <> cii.io.int_scalar_read_req
+  cii.io.int_scalar_read_rsp := io.int_rf_read_rsp(4)
   vlsu.io.int_wb_snoop := io.int_wb_snoop
 
   // ---- 7b. The host LSU tap. VecLsu owns its contents. ----
   io.lsu_vec <> vlsu.io.lsu_vec
 
-  // ---- 8. fp_rf_read_req: VecCiiHost (Phase F). ----
-  io.fp_rf_read_req := 0.U
+  // ---- 8. fp_rf_read_req: VecCiiHost. ----
+  cii.io.fp_scalar_read_req.ready := true.B
+  io.fp_rf_read_req                := cii.io.fp_scalar_read_req.bits
+  cii.io.fp_scalar_read_rsp        := io.fp_rf_read_rsp
 
-  // ---- 9. Scalar-dest writeback: VecCiiHost (Phase F). ----
-  io.int_wb.valid := false.B
-  io.int_wb.bits  := DontCare
-  io.fp_wb.valid  := false.B
-  io.fp_wb.bits   := DontCare
+  // ---- 9. Scalar-dest writeback: VecCiiHost. ----
+  io.int_wb := cii.io.int_wb
+  io.fp_wb  := cii.io.fp_wb
 
   // ---- 10. Completion group-done -> ROB: lanes 0/2 from vecGroupDoneNetwork; lane 1 VecCiiHost. ----
-  io.vec_clr_bsy(1).valid := false.B // union of cii.group_done/cii.clr_rob, owned by VecCiiHost (Phase F)
-  io.vec_clr_bsy(1).bits  := DontCare
+  io.vec_clr_bsy(1).valid := cii.io.clr_rob.valid || vecGroupDoneNetwork(1).valid
+  io.vec_clr_bsy(1).bits  := Mux(cii.io.clr_rob.valid, cii.io.clr_rob.bits, vecGroupDoneNetwork(1).bits.rob_idx)
+  assert(!vecGroupDoneNetwork(1).valid || (cii.io.clr_rob.valid && cii.io.clr_rob.bits === vecGroupDoneNetwork(1).bits.rob_idx),
+    "VecPipeline: cii.group_done fired with no matching cii.clr_rob in the same cycle")
 
   // ---- 11. vec_rob_flags: lane 1 VecCiiHost, lanes 0/2 never produced by design. ----
   io.vec_rob_flags(0) := vlsu.io.vec_rob_flags(0)
   io.vec_rob_flags(2) := vlsu.io.vec_rob_flags(1)
-  io.vec_rob_flags(1).valid := false.B // VecCiiHost (Phase F)
-  io.vec_rob_flags(1).bits  := DontCare
+  io.vec_rob_flags(1) := cii.io.rob_flags
 
   // ---- 12. vec_clr_unsafe / vec_xcpt: VecLsu (E7). ----
   io.vec_clr_unsafe := vlsu.io.vec_clr_unsafe
@@ -254,7 +265,7 @@ class VecPipeline(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
   // ---- 13. lsu_fencei_rdy_vec: VecLsu (E7). ----
   io.lsu_fencei_rdy_vec := vlsu.io.lsu_fencei_rdy_vec
 
-  // ======== END: cii staging remains; vlsu landed at E7 ========
+  // ======== END: vlsu landed at E7, cii landed at Phase F ========
 
   // ===========================================================================
   // ---- PART 2. The decode arm ----
@@ -352,6 +363,7 @@ class VecPipeline(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
   // The two memory issue grants are fire-and-forget: no ready, no busy back.
   vlsu.io.iss_ld := iq_v_load.io.iss_uops(0)
   vlsu.io.iss_st := iq_v_store.io.iss_uops(0)
+  cii.io.iss     := iq_v_alu.io.iss_uops(0)
 
   //@req-spec-core.i4
   //@req-spec-core.i5

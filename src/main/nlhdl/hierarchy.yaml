@@ -281,8 +281,10 @@ interfaces:
       #      VecScalarOperandRead's INT-RF read can fire the same cycle the base
       #      GPR's writeback commits, and the INT RF is a registered Mem read with
       #      no read-during-write bypass — giving a stale base. The forward needs
-      #      the DATA. Width must include the `enableVectorArith` scalar-dest write
-      #      port, or a base produced by `vmv.x.s` is missed.
+      #      the DATA. Width must include the CII scalar-dest write port that
+      #      `usingRVV` adds (numVecIrfWritePorts), or a base produced by
+      #      `vmv.x.s` is missed. (The CII attach carries no enableVectorArith
+      #      sub-gate — owner decision at Phase F; see VecCiiHost.nlhdl.)
       - { name: int_wb_snoop,       dir: fwd, width: "IntWbSnoop * numIrfWritePorts" }
       # D4: back to ONE lane. An earlier revision had two, the second for
       # VecScalarOperandRead's store instance — but `spec-agen.d3`'s FP leg is
@@ -546,8 +548,15 @@ modules:
     group: pkg_boom
     reqs: [spec-core.a4, spec-rename.c1, spec-lsu.a12, spec-lsu.h2]
     depends_on: [VectorParams, BoomCoreParams]
-    # DELTA: WithVector; per-tier width overrides; Mega overrides
-    # (vecIssueGrantWidth=2, dcacheArbiterMode="dual-dynamic").
+    # DELTA: WithVector; per-tier width overrides; Large/Mega override
+    # (lsuWidth=2, dcacheArbiterMode="dual-dynamic").
+    # ===> `vecIssueGrantWidth` IS 1 ON EVERY TIER (owner decision, Phase F) and
+    #      no fragment may override it. The CII Issue channel carries
+    #      CII_NUM_INST_ISSUE=1 beat/cycle with NO ready line, so a second
+    #      same-cycle grant is a DROPPED INSTRUCTION, not a stall; VecCiiIssue
+    #      requires it and fails elaboration otherwise (which is how the Mega
+    #      override was caught). lsuWidth and the grant width are INDEPENDENT —
+    #      widening the memory path does not widen the coprocessor's.
     #
     # D3: there is NO WithNSmallBoomsVector. SmallBoom is OUT of the vector matrix,
     # which is now Medium/Large/Mega, for two independent reasons:
@@ -607,7 +616,11 @@ modules:
     # VecPipelineIO (realizes the vec_pipeline_io interface above); VecGroupDone
     # (member-PRN vector — ONE event drives ROB busy-clear + Busy-Table clear +
     # vector wakeup); VecElemAccess (the nOP.v: addr/member/byte-enable/elem-idx);
-    # VecReservation; VecCiiTagEntry; VecException.
+    # VecReservation; VecException.
+    # VecCiiTagEntry is NOT here: resolved at Phase F to live in VecCiiTagTable
+    # (the VecBusyResp-in-VecBusyTable precedent), because it crosses only
+    # sibling boundaries inside VecCiiHost and adding it to this package would
+    # force a regeneration every vector node depends on. See VecBundles.nlhdl.
 
   VecTrace:
     kind: package

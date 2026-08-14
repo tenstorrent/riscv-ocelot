@@ -768,19 +768,24 @@ class WithVector(
 //@req-spec-lsu.a12
 //@req-spec-lsu.h2
 // Large: WithNLargeBooms leaves lsuWidth at its default of 1, so raise it to
-// 2 HERE (not there) in step with dcacheArbiterMode="dual-dynamic" and
-// vecIssueGrantWidth=2. Legal: the Large tier's IQ_MEM issueWidth is already
-// 2 (require(memWidth >= lsuWidth) in HasBoomCoreParameters).
+// 2 HERE (not there) in step with dcacheArbiterMode="dual-dynamic". Legal: the
+// Large tier's IQ_MEM issueWidth is already 2 (require(memWidth >= lsuWidth) in
+// HasBoomCoreParameters).
+// vecIssueGrantWidth stays 1 on EVERY tier: the CII Issue channel carries
+// CII_NUM_INST_ISSUE=1 beat per cycle and has no ready line, so a second
+// same-cycle grant is a DROPPED INSTRUCTION, not a stall. VecCiiIssue requires
+// it and fails elaboration otherwise. lsuWidth and the grant width are
+// independent -- widening the memory path does not widen the coprocessor's.
 class WithLargeBoomsVector extends Config(
-  new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic", vecIssueGrantWidth = 2)
+  new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic")
 )
 
 //@req-spec-lsu.a12
 //@req-spec-lsu.h2
-// Mega: same triple as Large. Idempotent on lsuWidth -- WithNMegaBooms
-// already sets it to 2 on the scalar tier.
+// Mega: same pair as Large. Idempotent on lsuWidth -- WithNMegaBooms
+// already sets it to 2 on the scalar tier. vecIssueGrantWidth stays 1; see above.
 class WithMegaBoomsVector extends Config(
-  new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic", vecIssueGrantWidth = 2)
+  new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic")
 )
 
 // Sub-flags, so Track A (vector LSU) and Track B (CII arith / cross-LSU

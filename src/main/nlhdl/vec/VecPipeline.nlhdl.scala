@@ -251,8 +251,9 @@ glossary.rst `glossary-terms`; execution.rst `execution-pipelines`,
   carries `wakeups` ONLY — BOOM v4 drives `rebusy := false.B` on every FP wakeup
   port and has no FP speculative-load-hit wakeup at all, so an FP rebusy term
   would be dead wires (A33). `IntWbSnoop` is `{addr: UInt(pregSz.W), data:
-  UInt(xLen.W)}` per INT write port, and the array MUST include the write port
-  `enableVectorArith` adds, or a base address produced by `vmv.x.s` is missed.
+  UInt(xLen.W)}` per INT write port, and the array MUST include the CII
+  scalar-dest write port `usingRVV` adds (`numVecIrfWritePorts`), or a base
+  address produced by `vmv.x.s` is missed.
   All three are members of `VecPipelineIO` and belong in `VecBundles` beside it.
   <|end_ports|>
 

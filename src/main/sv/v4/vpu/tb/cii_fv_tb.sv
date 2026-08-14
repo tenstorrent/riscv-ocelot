@@ -246,8 +246,8 @@ module cii_fv_tb import tt_cii_caracal_pkg::*; ;
     @(posedge rst_n);
     for (int c = 0; c < 120; c++) begin
       @(posedge clk);
-      $display("[MON] c=%0d iss_st=%0d pf_src=%0d pf_mem=%0d rcv=%0d req_v=%b dat_v=%b | dst_nm=%0d lqvld=%b%b%b%b",
-        c, dut.iss_state, dut.pf_src, dut.pf_mem, dut.rcv_cnt, ifh.req_valid, ifh.dat_valid,
+      $display("[MON] c=%0d iss_st=%0d src_beat=%0d wbx_pend=%b req_v=%b dat_v=%b | dst_nm=%0d lqvld=%b%b%b%b",
+        c, dut.iss_state, dut.next_src_beat, dut.wbx_pending, ifh.req_valid, ifh.dat_valid,
         dut.dst_nm, dut.vex_mem_lqvld_1c, dut.vex_mem_lqvld_2c, dut.vex_mem_lqvld_3c, dut.vex_mem_lqvld_div);
     end
   end

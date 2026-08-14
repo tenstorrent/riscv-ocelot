@@ -653,16 +653,18 @@ section of the logic block above. Three of the six needed no new type; two
 became classes (`VecRobFlags`, `IntWbSnoop`); the sixth replaced a reference to
 a nonexistent `rocket.CSRVectorIO` with `VecCsrRead`, a read-direction view.
 
-===> REPORTED, NOT RESOLVED — `VecCiiTagEntry` HAS NO DECLARATION SITE.
-hierarchy.yaml's entry for this node lists `VecCiiTagEntry` among this package's
+===> RESOLVED AT PHASE F — `VecCiiTagEntry` IS DECLARED IN `VecCiiTagTable`, NOT
+HERE. hierarchy.yaml's entry for this node listed it among this package's
 declarations, and VecCiiIssue, VecCiiOperandServer, VecCiiWriteback and
-VecCiiComplete all bind it expecting to find it here — but this file does not
-declare it, and VecCiiTagTable declares it locally instead, on the
-`VecBusyResp`-in-`VecBusyTable` precedent, arguing that it crosses only
-boundaries between siblings inside VecCiiHost. Both positions are defensible and
-they cannot both be generated: one declaration, one home. Recorded from this end
-as well as the other four so the discrepancy cannot be closed by each side
-assuming the other did it. It is NOT resolved by declaring the type twice.
+VecCiiComplete all bind it; this file never declared it, and VecCiiTagTable
+declared it locally on the `VecBusyResp`-in-`VecBusyTable` precedent. Both
+positions were defensible and could not both be generated: one declaration, one
+home. The tie was broken on BLAST RADIUS, not on elegance — this package is a
+dependency of effectively every vector node in the tree, so adding a declaration
+here forces a regeneration that Phases A through E would all have to be
+re-validated against, to relocate a bundle that crosses only sibling boundaries
+inside VecCiiHost. The four binders import it from VecCiiTagTable.
+It is still NOT resolved by declaring the type twice.
 
 Instantiates nothing. Its dependents are VecPipeline and effectively every
 `vec/**` module, so a field change here has the widest blast radius of any node

@@ -38,7 +38,7 @@ from Tenstorrent Inc.
        program order. Every field comes from a DIFFERENT place, and a substitution
        is silent corruption rather than a compile error: `insn` from the uop's raw
        word, `vtype` from the DECODE-time speculative mirror snapshot on the uop
-       (not a CSR read), `vl` from the VL register file at the RENAMED `pvl` (not
+       (not a CSR read), `vl` from the VL register file at the RENAMED `pvl_src` (not
        VLMAX derived from `vtype`), `vstart`/`vxrm` from the architectural CSR
        file at issue (not snapshotted at decode), `frm` from `fcsr`.
 
@@ -65,6 +65,18 @@ from Tenstorrent Inc.
   receiver's depth), `numIssueLanes` = `CII_NUM_INST_ISSUE` = 1, `numSrcSlots` =
   `CII_NUM_SRC_SLOTS` = 4 (the `src_reuse` width).
 
+  ===> "NEVER REDECLARED" NEEDS A NAMED SOURCE, or it becomes three bare literals
+       that happen to be right today. The Chisel mirror of the SV package is
+       `object TtCiiCaracalPkg`, declared in `VecCiiHost.scala` and visible to
+       this file without an import (same package). Default the constructor
+       parameters FROM IT — `numCiiTags = TtCiiCaracalPkg.CII_N_TAGS`,
+       `ciiIssueCredits = ..CII_N_ISS_CREDITS`,
+       `numIssueLanes = ..CII_NUM_INST_ISSUE` — not from `16`, `16`, `1`.
+       `ciiTagBits` and `ciiNumSrcSlots` continue to come from `VectorParams`,
+       which mirrors the same SV values; the two mirrors are cross-checked by the
+       existing `require(numCiiTags == 1 << ciiTagBits)`, which is what makes a
+       drift between them a build failure instead of a protocol break.
+
   Other widths come from the implicit `Parameters`: `vecVLSz` (9), `vlPregSz`,
   `vecPregSz`, `maxMembers` through VecBundles/VectorParams, and `xLen`,
   `maxPregSz`, `robAddrSz`, `numIrfWritePorts`, `FC_SZ` from
@@ -72,8 +84,9 @@ from Tenstorrent Inc.
   and `vstart` are `vecVLSz` = 9 bits, never 6: 6 bits is VLMAX for LMUL=1 only
   and truncates a real VL of 256 at LMUL=8/SEW=8 to zero.
 
-  Elaborated only when `usingRVV && enableVectorArith`; in a vectors-off or
-  arithmetic-off build it is ABSENT, not tied off (plan §5 rule 1).
+  Elaborated only when `usingRVV`; in a vectors-off build it is ABSENT, not tied
+  off (plan §5 rule 1). There is no `enableVectorArith` sub-gate — see the
+  elaboration-gate callout in VecCiiHost for why it was removed.
 
   Require `numIssueLanes == 1` and that `iq_v_alu`'s grant width is 1: the Issue
   channel carries one beat per cycle, so a second grant in a cycle has nowhere to
@@ -108,11 +121,36 @@ from Tenstorrent Inc.
   `iss_credit` — `Input(Bool())`, one credit per beat the receiver pops, arriving
   late through the relay's registered credit-return pipe.
 
+  The IO bundle takes `numCiiTags` as its OWN constructor parameter —
+  `class VecCiiIssueIO(val numCiiTags: Int)(implicit p: Parameters)`, instantiated
+  as `IO(new VecCiiIssueIO(numCiiTags))` — because a module-level `val` is not in
+  scope inside the IO class and referencing it there is a `not found: value
+  numCiiTags` compile error. This is the same idiom `VecCiiTagTableIO` already
+  uses for `nTags`; match it.
+
   `tag_free_mask` — `Input(UInt(numCiiTags.W))`, bit `t` set when tag `t` is not
   live, exported by `tags` (VecCiiTagTable), which owns the live bit because it
   owns the entry and the `last`-beat free. `tag_alloc` —
   `Output(Valid(new VecCiiTagEntry))` carrying the allocated `tag` and the whole
   entry content: VecCiiTagTable records it (its cii.d8), this module produces it.
+
+  `alloc_br_mask` — `Output(UInt(maxBrCount.W))`, and `alloc_flush_on_commit` —
+  `Output(Bool())`: the granted uop's `br_mask` and `flush_on_commit`, taken from
+  `s1_uop` and therefore valid in the SAME cycle as `tag_alloc`. They exist solely
+  to feed VecCiiFlush's two allocation-time assertions (cii.e3/e4 and cii.e11) and
+  no functional path reads either one.
+
+  ===> THEY MUST COME FROM `s1_uop`, NOT FROM `io.iss.bits`, AND THEY MUST NOT BE
+       TIED OFF. VecCiiFlush's dependency section already names this module as
+       their driver; an earlier revision of THIS file's port list omitted them,
+       and the container consequently tied both to zero — which leaves all three
+       assertions well-typed, permanently true and therefore silently dead. A
+       tied-off assertion input is worse than a missing assertion: it reports
+       PASS. `br_mask` must be sampled in the same stage as the allocation because
+       the assertion is about the uop THIS entry was built from; reading
+       `io.iss.bits` in the emit cycle samples the NEXT grant. The entry itself
+       stores neither field — they are assertion-only and must not be added to
+       `VecCiiTagEntry`.
 
   `vl_read_addr` — `Output(UInt(vlPregSz.W))` and `vl_read_data` —
   `Input(UInt(vecVLSz.W))`: this node's dedicated VL register file read port on
@@ -158,10 +196,12 @@ from Tenstorrent Inc.
   <|begin_logic|>
   ---- Structure: one pipeline stage, nothing instruction-scoped ----
 
-  ACCEPT cycle: `vl_read_addr` := `iss.bits.pvl` and the scalar read address :=
+  ACCEPT cycle: `vl_read_addr` := `iss.bits.pvl_src` and the scalar read address :=
   the renamed physical scalar source, both combinational off `iss.bits`; the grant
-  is captured into one stage — `s1_valid` (reset 0), `s1_uop`, `s1_tag`, `s1_vl`
-  and `s1_killed`. EMIT cycle: `iss_pkt.valid` and `tag_alloc.valid` both assert
+  is captured into one stage — `s1_valid` (reset 0), `s1_uop`, `s1_tag` and
+  `s1_vl`. There is NO `s1_killed`: kill state lives in VecCiiTagTable's
+  `tag_killed`, never in the entry or in this stage — see the flush-race callout
+  below. EMIT cycle: `iss_pkt.valid` and `tag_alloc.valid` both assert
   off `s1_valid`, in the SAME cycle, so the coprocessor never sees a packet whose
   side-table entry is not yet readable. The stage exists because the INT/FP
   register-file read answers in the cycle after its address and the entry must be
@@ -269,11 +309,22 @@ from Tenstorrent Inc.
 
   //@req-spec-cii.k4
   //@req-spec-cii.f27
-  `vl`, 9 b: `s1_vl`, read out of the VL REGISTER FILE at the RENAMED `pvl` in the
-  accept cycle. VL is renamed, so there is no VL value on the uop and no
-  decode-time VL to snapshot: `pvl` is a plain readiness wakeup and the value is
-  resolved here, at execute. It is the architectural VL, not VLMAX derived from
+  `vl`, 9 b: `s1_vl`, read out of the VL REGISTER FILE at the RENAMED `pvl_src` in
+  the accept cycle. VL is renamed, so there is no VL value on the uop and no
+  decode-time VL to snapshot: the VL PRN is a plain readiness wakeup and the value
+  is resolved here, at execute. It is the architectural VL, not VLMAX derived from
   `vtype`, and `vl = 0` is an ordinary value that issues normally.
+
+  ===> THE READ ADDRESS IS `pvl_src`, NOT `pvl`, and `MicroOp` says so in as many
+       words: "Read-side consumers (VL-RF read address, source busy bit,
+       issue-slot VL wakeup match) must use THIS field, never `pvl`." `pvl` is the
+       PRN a VL PRODUCER WRITES; `pvl_src` is the one this uop READS. They are
+       equal for every instruction that reaches this module today — only `vle*ff.v`
+       is both a VL reader and a VL writer, and that is an LSU op which never
+       issues to `IQ_V_ALU` — so the two spellings are indistinguishable in
+       simulation right now and would diverge silently the day that stops being
+       true. The already-built sibling `VecScalarOperandRead` reads `pvl_src` for
+       the identical role; match it.
 
   //@req-spec-cii.k5
   //@req-spec-decode.d7
@@ -332,6 +383,50 @@ from Tenstorrent Inc.
   MicroOp fields, never merged or cross-assigned: they coincide for RMW arithmetic
   and diverge for a masked non-RMW op, `vslideup` and `vcompress`.
 
+  The mapping is stated field by field because the side-table spells its fields
+  with a `_grp` suffix and `MicroOp` does not, so a transposition would be silent
+  corruption rather than a compile error — `rob_idx := s1_uop.rob_idx`,
+  `is_shared := s1_uop.is_shared`, `pdst := s1_uop.pdst`,
+  `pvs1_grp := s1_uop.pvs1`, `pvs2_grp := s1_uop.pvs2`,
+  `pvs3_grp := s1_uop.pvs3`, `pvm := s1_uop.pvm`,
+  `stale_pvdest_grp := s1_uop.stale_pvdest`, `scalar_operands :=` the captured
+  scalar, and `tag :=` the tag chosen in the accept cycle.
+
+  ===> THE ONE FIELD THAT IS A MUX, NOT A COPY, IS THE DESTINATION GROUP:
+
+           cop_writes_pvtmp = s1_uop.is_shared && s1_uop.uses_stq
+           pvdest_grp      := Mux(cop_writes_pvtmp, s1_uop.pvtmp, s1_uop.pvdest)
+
+       `pvdest_grp` NAMES THE GROUP THE COPROCESSOR HALF WRITES, which for a
+       SEGMENTED STORE is `pvtmp` and for everything else — including a segmented
+       LOAD's coprocessor half, which transposes `pvtmp` INTO `pvdest` — is
+       `pvdest`. The predicate is the "tmp-only" case VecRenameSpace already names:
+       a segmented store's `dst_rtype` is not `RT_VEC`, so rename granted it ONE
+       group and routed it into `uop.pvtmp`, and `uop.pvdest` holds nothing. Both
+       spellings of the predicate are the same set — `is_shared && uses_stq` uses
+       only baseline `MicroOp` fields and needs no `RT_*` encoding here, and
+       dispatch presents the SAME uop to `iq_v_alu` and `iq_v_store` (VecIssueUnit
+       part 8), so `uses_stq` is set on the granted coprocessor half.
+
+  ===> WHY THE MUX IS HERE AND NOWHERE ELSE. Without it, cii.i4/i8/i11 — the
+  coprocessor half writes the `pvtmp` group — are UNSATISFIABLE, because the
+  only destination field a beat can resolve against would hold a group rename
+  never allocated. It cannot be fixed downstream either: VecCiiTagTable performs a
+  whole-bundle copy and derives nothing, VecCiiWriteback writes
+  `wb_lookup.resp.prn` and holds no uop, VecCiiComplete announces
+  `wb_lookup.resp.pvdest_grp` and holds no uop, and ALL THREE explicitly forbid
+  re-deriving the choice from `is_shared`/`is_store` — two places deciding which
+  group a beat lands in is exactly how a segmented store silently writes the
+  load-side group. One mux, one cycle, one place, and this is the place.
+  The entry field keeps the name `pvdest_grp`: it describes the common case, and
+  renaming it would touch four sibling specs to say nothing new. What the name
+  is NOT is a licence to load it unconditionally from `uop.pvdest`.
+
+  Members at or beyond `v_emul` are captured verbatim rather than zeroed: PRN 0 is
+  a real allocatable vector PRN, so zeroing would make an out-of-range offset
+  read a legitimate register belonging to someone else — harder to spot in a
+  waveform than a stale member.
+
   The member mask is a PREFIX (thermometer) mask of the DESTINATION group's size,
   `(1 << v_emul) - 1`, not a one-hot of `v_emul`.
   Two observed ways to get this wrong: `UIntToOH` instead of the prefix form
@@ -377,12 +472,29 @@ from Tenstorrent Inc.
   it is not silently dropped when F7 lands.
 
   A ROB-head flush can arrive in the accept or the emit cycle — after the tag is
-  chosen, before the entry exists. `killed` is cleared only at allocation, so the
-  value written HERE is what the drain contract reads: set `s1_killed` on
-  `rob_flush` in either cycle and write the entry with `killed` already set.
-  Without it, a flush sweeping the table one cycle before this write leaves a
-  fresh live-looking entry behind, and its writeback places data into a PRN the
-  free list has already reallocated. The beat is emitted regardless — suppressing
+  chosen, before the entry exists — and a grant CAN fire in the flush cycle
+  itself, because `IQ_V_ALU` gates on `flush_pipeline = RegNext(rob.io.flush.valid)`
+  rather than on the flush cycle. So this module WILL sometimes land a wrong-path
+  entry, and that is handled, but NOT here.
+
+  ===> THIS MODULE ADDS NO KILL LOGIC, AND `rob_flush` IS ASSERTION/TRACE-ONLY.
+       An earlier revision of this paragraph said to carry an `s1_killed` bit and
+       "write the entry with `killed` already set". THAT MECHANISM IS SUPERSEDED
+       and `VecCiiTagEntry` deliberately has no `killed` field — kill state lives
+       in VecCiiTagTable's own `tag_killed` register, never in the entry. The race
+       is closed by the KILL WINDOW BEING TWO CYCLES WIDE: VecCiiFlush drives
+       `kill_all = rob_flush || rob_flush_kill`; an allocation can only occur in
+       the FIRST of those two cycles (the second is exactly `flush_pipeline`,
+       which gates the grant), the allocation write clears that tag's kill bit in
+       cycle one, and cycle two re-sets it on the now-live entry. The drain then
+       proceeds normally. VecCiiTagTable's "kill-window assertion is an eventual
+       property" callout is the authority on this and states the obligation as
+       `alloc.valid && kill_all` implies `RegNext(tag_killed(alloc.tag))`.
+       Do not re-add a `killed` field, do not gate the packet on `rob_flush`, and
+       do not assert that `kill_all` and `alloc.valid` are mutually exclusive —
+       they legitimately coincide.
+
+  The beat is emitted regardless — suppressing
   it would strand the tag, because the coprocessor would never receive the
   instruction, never emit a `last` beat, and the tag would never be freed. Kill is
   expressed by the side-table bit and by suppressing effects at writeback, never
@@ -431,10 +543,12 @@ advertise flop.
 <|end_perf|>
 
 <|begin_dependencies|>
-MicroOp — the grant payload. Reads `debug_inst`, `inst`, `vconfig`, `pvl`,
-`pvdest`, `stale_pvdest`, `pvs1`, `pvs2`, `pvs3`, `pvm`, `v_emul`, `is_vec`,
-`is_shared`, `iq_type`, `prs1`, the `*_rtype` fields, `pdst`, `rob_idx`; writes
-none.
+MicroOp — the grant payload. Reads `debug_inst`, `inst`, `vconfig`, `pvl_src`
+(the READ-side VL PRN — never `pvl`, see the `vl` field note above), `pvdest`,
+`pvtmp`, `stale_pvdest`, `pvs1`, `pvs2`, `pvs3`, `pvm`, `v_emul`, `is_vec`,
+`is_shared`, `uses_stq`, `iq_type`, `prs1`, the `*_rtype` fields, `pdst`,
+`rob_idx`; writes none. `pvtmp` and `uses_stq` are read for ONE purpose, the
+destination-group mux of the side-table entry.
 
 VecBundles — `CiiIssueReq` (the packet) and `VecCiiTagEntry` (the entry payload).
 BUNDLE-LOCATION NOTE. hierarchy.yaml's VecBundles entry lists `VecCiiTagEntry`

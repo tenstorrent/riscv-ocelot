@@ -84,6 +84,15 @@ class VecFreeList(
     val dealloc = Input(Vec(deallocWidth, Valid(UInt(pregSz.W))))
     val dealloc_tmp = if (maxGroupSize > 1) Some(Input(Vec(deallocWidth, Valid(UInt(pregSz.W))))) else None
 
+    // De-speculation, paired 1:1 with `dealloc`: same valid, but carrying the
+    // COMMITTING group's own pvdest members where `dealloc` carries the stale
+    // ones it frees.  This does not free anything -- it only retires those PRNs
+    // out of `spec_alloc_list` now that they are architectural.  Without it a
+    // committed PRN stays speculative forever and the wholesale
+    // `rollback_deallocs = spec_alloc_list` hands live architectural registers
+    // back to the free list.  Mirrors the scalar RenameFreeList's `despec`.
+    val despec = Input(Vec(deallocWidth, Valid(UInt(pregSz.W))))
+
     val ren_br_tags = Input(Vec(coreWidth + 1, Valid(UInt(brTagSz.W))))
     val brupdate    = Input(new BrUpdateInfo)
     val rollback    = Input(Bool())
@@ -301,10 +310,18 @@ class VecFreeList(
   val rollback_deallocs = spec_alloc_list & Fill(n, io.rollback)
   val dealloc_mask = com_deallocs | br_deallocs | rollback_deallocs
 
+  // Not RegNext'd, unlike com_deallocs: `despec` only ever REMOVES bits from
+  // spec_alloc_list, so retiring them a cycle early can at worst decline to
+  // roll back a PRN that has already committed -- which is the correct answer.
+  val com_despec = io.despec.map(d => UIntToOH(d.bits)(n - 1, 0) & Fill(n, d.valid)).reduce(_ | _)
+
   //@req-spec-rename.f10
   //@req-spec-rename.f11
   free_list := (free_list & ~sel_mask) | dealloc_mask
-  spec_alloc_list := (spec_alloc_list | alloc_masks(0)) & ~dealloc_mask
+  // `& ~com_despec` is what bounds spec_alloc_list to genuinely speculative
+  // PRNs.  br_alloc_lists needs no such term: a snapshot is only consulted
+  // while its branch is unresolved, and nothing older can have committed yet.
+  spec_alloc_list := (spec_alloc_list | alloc_masks(0)) & ~dealloc_mask & ~com_despec
 
   // ===========================================================================
   // ---- Observability, assertions ----

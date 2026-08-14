@@ -673,6 +673,15 @@ from Tenstorrent Inc.
   valid for `j < v_emul`, and `dealloc_tmp` takes `pvtmp(j)` under the separate
   gate `io.com_valids(w) && is_vec && is_shared` — separate because a segmented
   STORE has a `pvtmp` group to free and no vector destination at all. Under
+  Independently of `freeDiscipline`, the free list's `despec` slots
+  `w*maxGroupSize + j` take the committing group's OWN new PRN —
+  `com_uops(w).pvdest(j)` for `vec_rename`, `com_uops(w).pvl` for `vl_rename` —
+  under `com_valids(w) && j < comMembers(w)`, the SAME member predicate the
+  `dealloc` slots use. `despec` frees nothing; it retires those PRNs out of the
+  free list's `spec_alloc_list` now that they are architectural. Omitting it lets
+  a rollback return a live architectural register to the pool — see the `despec`
+  section of VecFreeList.nlhdl.scala. Use `comMembers(w)`, not `v_emul`
+  directly: `v_emul` is 0 in VL space. Under
   "committed_ptr" slot `w*maxGroupSize` takes `maptable.io.com_stale_resps(w)(0)`,
   the pointer the commit install DISPLACES, read from the committed table before
   the update. A register-sourced `vset` therefore runs BOTH free paths at commit:

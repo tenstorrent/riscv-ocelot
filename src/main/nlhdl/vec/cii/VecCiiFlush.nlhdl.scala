@@ -74,10 +74,11 @@ from Tenstorrent Inc.
 
   <|begin_parameters|>
   The module is elaborated only when `usingRVV` is set — a Scala `Boolean` from
-  `BoomCoreParams`, never a hardware `Bool`, and never rocket's `usingVector` —
-  and, like its siblings, inside VecCiiHost's additional `enableVectorArith`
-  gate. In a build with either off it is ABSENT, not tied off, so that a
-  vectors-off build is bit-identical to pre-Caracal BOOM v4.
+  `BoomCoreParams`, never a hardware `Bool`, and never rocket's `usingVector`.
+  Like its siblings it lives inside VecCiiHost, which carries no additional
+  `enableVectorArith` sub-gate (see that file's elaboration-gate callout). In a
+  vectors-off build it is ABSENT, not tied off, so that build is bit-identical to
+  pre-Caracal BOOM v4.
 
   `nTags` — Int, `1 << ciiTagBits` from VectorParams, i.e. 16 at the default
   `ciiTagBits = 4`. Not a free choice: it must equal `CII_N_TAGS` in

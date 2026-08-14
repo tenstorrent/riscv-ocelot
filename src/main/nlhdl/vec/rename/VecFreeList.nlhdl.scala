@@ -437,11 +437,31 @@ from Tenstorrent Inc.
   `com_deallocs | br_deallocs | rollback_deallocs`, unchanged in form. The state
   update is the scalar file's verbatim:
   `free_list := (free_list & ~sel_mask) | dealloc_mask` and
-  `spec_alloc_list := (spec_alloc_list | alloc_masks(0)) & ~dealloc_mask`.
+  `spec_alloc_list := (spec_alloc_list | alloc_masks(0)) & ~dealloc_mask & ~com_despec`.
 
-  There is no `despec` port and no `isImm` mode. Those serve the scalar immediate
-  free list, whose consumers clear busy on read; a vector group's busy bits are
-  cleared by group-done in VecBusyTable, which never touches the free list.
+  There IS a `despec` port, `Vec(deallocWidth, Valid(UInt(pregSz.W)))`, paired
+  1:1 with `dealloc`: the same lane and the same member predicate, but carrying
+  the committing group's OWN `pvdest` members where `dealloc` carries the stale
+  ones it frees. `com_despec` is their OR of one-hots, and it appears ONLY in the
+  `spec_alloc_list` update -- it frees nothing. Not registered, unlike
+  `com_deallocs`: it only ever removes bits, so acting a cycle early can at worst
+  decline to roll back an already-committed PRN, which is correct.
+
+  This port is REQUIRED, and omitting it is a silent-corruption bug, not a
+  simplification. `rollback_deallocs` returns `spec_alloc_list` WHOLESALE; if a
+  committed PRN is never retired out of that set it stays speculative forever,
+  and the first rollback after it commits hands a live architectural register
+  back to the free list to be re-allocated under a second name. The symptom is
+  the leak assertion in VecRenameSpace firing on the population check -- in the
+  over-free direction, since that check is an equality.
+
+  (An earlier revision of this spec said "there is no `despec` port... those
+  serve the scalar immediate free list". That was backwards and is corrected
+  here: `despec` is driven by the GENERIC `RenameStage`, and it is
+  `ImmRenameStage` that ties it off. `isImm` remains genuinely absent -- that
+  mode only adds `& ~com_deallocs` to the branch snapshots, which a vector group
+  does not need because its busy bits are cleared by group-done in
+  VecBusyTable, which never touches the free list.)
 
   ---- Branch reclaim: unchanged ----
 

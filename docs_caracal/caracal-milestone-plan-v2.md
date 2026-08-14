@@ -879,7 +879,7 @@ stale `pvdest` corrupts whatever now owns that PRN.
 
 | Step | Kind | Scope |
 |---|---|---|
-| **F2** | SV | Generate `tt_cii_host_wrap.sv` (specs from **N6**); apply the `tt_cii_caracal_pkg` delta. Bind via `HasBlackBoxPath` against `src/main/sv/v4/**`. Verify the tb still passes. |
+| **F2** | SV | REUSE `tt_cii_host_wrap.sv` (specs from **N6**); apply the `tt_cii_caracal_pkg` delta. Bind via `HasBlackBoxPath` against `src/main/sv/v4/**`. Verify the tb still passes. |
 | **F3** | Chisel | `VecCiiTagTable` + `VecCiiHost` skeleton + **`VecCiiIssue`** — the issue path (`IQ_V_ALU` → Issue channel): tag allocation, the full issue packet, credit-metered `fu_types`. |
 | **F4** | Chisel | `VecCiiOperandServer` — Src-Request → VRF read (`R5`–`R8`) / scalar from side-table → Src-Data, **in the exact order requests arrived** (a small ordering FIFO covers the registered 1-cycle VRF read). |
 | **F5** | Chisel | `VecCiiWriteback` — beats by `dst_kind` to VRF `W2` / INT RF / FP RF — plus **`VecCiiComplete`**: accrue `vxsat`/`fflags`, and on `last` one group-done + one ROB clear + the tag free. **Gate (e4) must pass.** |
@@ -1242,7 +1242,16 @@ across all six B2 nodes.** Run it as part of gate (i) from Phase C on.
 
 #### Known gaps carried out of Phase B
 
-- **Defect 14 (`vfwcvt`/`vfncvt` EMUL) is unowned** and must be resolved before Phase F.
+- ~~**Defect 14 (`vfwcvt`/`vfncvt` EMUL) is unowned** and must be resolved before Phase F.~~
+  **CLOSED at the Phase F precondition check.** The gap was already carried into the spec and
+  the RTL by a later `VDecode` revision, so the "unowned" status was stale, not outstanding.
+  `VDecode.nlhdl.scala` now partitions `VFUNARY0` (funct6 `0x12` under OPFVV) by the top two
+  bits of the `vs1` opcode extension, and `VDecode.scala:88`–`92` implements it:
+  `is_vfwcvt = is_vfunary0 && vs1f(4,3) === "b01"`, folded into `is_widening_total` so
+  `dest_eew` becomes `sew +& 1`. `vfncvt` (`vs1f(4,3) === "b10"`) is deliberately **excluded** —
+  its destination is SEW and its *source* is 2×SEW, so the symmetry "fix" would be a bug. The
+  `0x30`..`0x3F` widening test (`is_widening`) is unchanged and still bounds the arithmetic
+  families. No action taken in Phase F beyond verifying it.
 - **Defect 13's spec contradiction** is worked around in RTL but not yet removed from the spec.
 - `VtypeTable.VtypeInfo` still drops `vsew`/`vlmul_sign`/`vlmul_mag`, so `VConfigUnit` and
   `VecDecode` call rocket's `VType.fromUInt` directly for the full-`VType` path. Single-sourced
