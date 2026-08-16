@@ -60,12 +60,28 @@ from Tenstorrent Inc.
   Elaborated only when `usingRVV` is true — a Scala `Boolean` from
   `BoomCoreParams`, never a hardware `Bool`, and never rocket's `usingVector`.
 
-  One constructor parameter. `enableVecStoreForward` (Boolean, default true):
-  when false every eligible forward becomes the replay of logic paragraph 6.
-  Forwarding is a PERFORMANCE mechanism layered on the `order_fail` floor, so the
-  machine must be correct with it off; with no unit tests in this project, a switch
-  that isolates this module is the only way to attribute a cosim `MISMATCH` to it
-  rather than to the snoop or the queues.
+  Two constructor parameters, one per CONSUMER CLASS, because the two consumers
+  have different partners and collapsing them into one switch over-couples this
+  module to VecOrderHold. Forwarding is a PERFORMANCE mechanism layered on the
+  `order_fail` floor, so the machine must be correct with either off; with no unit
+  tests in this project, switches that isolate this module are the only way to
+  attribute a cosim `MISMATCH` to it rather than to the snoop or the queues.
+
+  `enableVecStoreForward` (Boolean, default true): the SCALAR-consumer forward of
+  logic paragraphs 3-8, `io.fwd_resp`. When false every eligible scalar forward
+  becomes the replay of logic paragraph 6. It has NO partner in VecOrderHold —
+  the hold only ever admits a load with `is_vec` set, so a scalar load's forward
+  and the hold can never both apply to the same load, and the "exact complements"
+  argument below does not reach this switch.
+
+  `enableVecBeatForward` (Boolean, default true): the UNIT-STRIDE VECTOR-consumer
+  forward of logic paragraph 9, `io.fwd_beat`. THIS is the switch that must equal
+  VecOrderHold's `forwardingEnabled`, and only this one: paragraph 9's US->US pair
+  is exactly the pair the hold excludes when its `forwardingEnabled` is true. With
+  the two disagreeing in the direction (hold excludes, beat forward off) a US load
+  overlapping a US store neither forwards nor waits and reads stale data.
+  Elaboration asserts the pairing rather than trusting the instantiator, since
+  VecLsu is the only instantiator and a silent mismatch here is data corruption.
 
   Everything else comes from the existing traits and no width below is a literal:
   `lsuWidth`, `numStqEntries`, `corePAddrBits`, `coreDataBytes`, `xLen`,
@@ -196,12 +212,37 @@ from Tenstorrent Inc.
   Decided from the two access classes alone, before any data is read:
 
     load     store    forward?
-    scalar   US       YES
-    scalar   SSI      YES
-    US       US       YES
+    scalar   US       YES, via io.fwd_resp   (gated by enableVecStoreForward)
+    scalar   SSI      YES, via io.fwd_resp   (gated by enableVecStoreForward)
+    US       US       YES, via io.fwd_beat   (gated by enableVecBeatForward)
     US       SSI      NO   -> VecOrderHold
     SSI      US       NO   -> VecOrderHold
     SSI      SSI      NO   -> VecOrderHold
+
+  A row whose switch is false falls to VecOrderHold if the load is a vector load,
+  and to logic paragraph 6's replay if it is scalar. Those two are not
+  interchangeable and the choice is forced by which one the load can survive: a
+  held SCALAR load would occupy an LDQ entry the hold has no release event for
+  (the hold releases on the older store's drain, keyed on a vector store, and its
+  `ld_ctx` admission requires `is_vec`), and a REPLAYED vector load re-fails on
+  every retry until the store commits, which is the replay storm the hold exists
+  to remove.
+
+  ===> SO THERE ARE TWO ELIGIBILITY PREDICATES HERE, NOT ONE, AND COLLAPSING THEM
+       IS THE MIS-GENERATION TO WATCH FOR. The table above selects the FORWARDING
+       POOL — the candidate bits that feed the youngest-forwarder reduction — and
+       its scalar row IS gated by `enableVecStoreForward`. The predicate that
+       gates `io.replay` is a DIFFERENT one and its scalar row is NOT gated by any
+       switch: with the scalar forward off, a scalar load with a known overlap
+       must STILL replay, because replay is the floor the forward sits on top of
+       and turning the forward off may not turn the floor off. Written out, the
+       replay predicate is
+         `!is_vec || (ld.is_unit_stride && winner.is_unit_stride &&
+                      enableVecBeatForward)`
+       — scalar always, US/US only while the beat forward owns that pair, and
+       never for the three rows VecOrderHold owns. Deriving `io.replay` from the
+       pool predicate instead makes a scalar load with the switch off proceed to
+       the D$ silently, which is the one outcome neither mechanism catches.
 
   A SCALAR load forwards from an older vector store of EITHER class. A
   vector-to-vector forward is attempted ONLY when BOTH sides are unit-stride, and
@@ -360,6 +401,36 @@ from Tenstorrent Inc.
 
   ---- 9. The unit-stride vector consumer ----
 
+  This whole paragraph is under `enableVecBeatForward`. With it false `io.fwd_beat`
+  is held invalid, no US/US candidate is ever selected as a forwarder, and the pair
+  is left to VecOrderHold — which is why VecOrderHold's `forwardingEnabled` must
+  carry the SAME value and why elaboration asserts it.
+
+  ===> AND `enableVecBeatForward` IS FALSE AT EVERY INSTANTIATION TODAY, BECAUSE
+       THIS PARAGRAPH CONTRADICTS THE PORTS SECTION. Read literally it needs
+       per-instruction state and this module is forbidden to hold any ("It holds
+       no state scoped to an instruction: its only registers are the one-cycle
+       search-to-response pipeline registers of paragraph 1"). The contradiction
+       is structural, not a wording slip: a unit-stride vector load presents ONE
+       range search to the LCAM, on its FIRST beat only, so the cover decision is
+       taken once — but the paragraph then requires every SUBSEQUENT beat of that
+       load to be answered from the store data queue instead of the D$, and
+       nothing in this interface tells a later beat which store, if any, its
+       instruction decided to forward from. Carrying that decision means a
+       per-load row keyed on `ldq_idx`, which is the state the ports section
+       forbids and which plan section 5 rule 6 forbids more generally.
+       There is a second, independent blocker one level up: the LCAM presentation
+       and the D$ request for a beat are ONE arbiter grant in VecDcacheArbiter, so
+       "search, then decline the access" cannot be expressed — suppressing the
+       access needs a predicate evaluated BEFORE the grant, which neither this
+       spec nor the arbiter's defines.
+       Until both are resolved the pair is covered by VecOrderHold, which is
+       correct and costs only the forward's latency win. DO NOT GENERATE THIS
+       PARAGRAPH from the text above; generate the switch and the invalid
+       `io.fwd_beat`, and leave the mechanism to whoever resolves the ownership
+       question. The rest of the paragraph is retained verbatim below because it
+       states the intended datapath, and it is the starting point for that work.
+
   When both sides are unit-stride the decision is made ONCE, at the load's
   range-overlap check, and is all-or-nothing: the store's active bytes must fully
   cover the load's active bytes, or paragraph 6 replays the WHOLE vector load (a
@@ -384,13 +455,30 @@ from Tenstorrent Inc.
   at or above `members`; `io.fwd_resp` and `io.fwd_beat` valid on one lane in one
   cycle; a forward asserted for one of paragraph 3's three ineligible pairs.
 
+  Two further assertions guard the switch split, because a wrong switch is silent:
+  `io.fwd_beat` valid while `enableVecBeatForward` is false, and `io.fwd_resp`
+  valid for a load with `is_vec` set (a vector load's result never returns on the
+  scalar response port). Both are structurally unreachable, which is the point —
+  they cost nothing and they fail loudly if a later edit re-couples the classes.
+
   Tracing through the shared `VecTrace` helpers, gated on the `vecTrace` plusarg
-  and `!reset`, off by default: one line per taken forward (`rob_idx`, `ldq_idx`,
-  winning `stq_idx`, queue and entry index, ordinal, forwarded byte mask), one per
-  declined forward naming WHICH of paragraph 6's four conditions declined it, and
-  one per exported `known_overlap`. The declined-reason field earns its keep —
-  "the load replayed" is otherwise indistinguishable between a mask hole, a
-  straddle and a snoop that never produced a candidate.
+  and `!reset`, off by default:
+    - one line per taken scalar forward (`rob_idx`, `ldq_idx`, winning `stq_idx`,
+      queue and entry index, ordinal, forwarded byte mask);
+    - one line per taken beat forward (same, plus `member` and `byte_offset`);
+    - one per declined forward naming WHICH of paragraph 6's four conditions
+      declined it, and additionally which of the two switches declined it when the
+      decline was a switch rather than a cover failure;
+    - one per exported `known_overlap`;
+    - one per SEARCH that found a tier-1 match but NO usable candidate, carrying
+      the load's class and the winner's class. This is the "the snoop matched but
+      nothing forwarded" case, which is otherwise indistinguishable from "the
+      snoop never matched" and is the single most likely shape of a Phase-G
+      regression: the load quietly falls back to the replay floor and only shows
+      up as a performance loss or, if the floor is also broken, as stale data.
+  The declined-reason field earns its keep — "the load replayed" is otherwise
+  indistinguishable between a mask hole, a straddle and a snoop that never
+  produced a candidate.
   <|end_logic|>
 
 <|end_module|>

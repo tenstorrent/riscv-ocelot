@@ -55,7 +55,7 @@ import freechips.rocketchip.util.Str
 import boom.v4.common._
 import boom.v4.exu.{BrUpdateInfo, Exception, CommitSignals, MemGen, ExeUnitResp, Wakeup}
 import boom.v4.util._
-import boom.v4.vec.generated.{VecMemAccess, VecLcamSearch, VecLdSearch}
+import boom.v4.vec.generated.{VecMemAccess, VecLcamSearch, VecLdSearch, VecTrace}
 import boom.v4.vec.generated.lsu.{LsuResourceClaim, VecHoldStEvent, VecStoreForwardResp}
 import boom.v4.vec.formal.{BoomSvaLayer, LSUChecks}
 
@@ -1571,6 +1571,23 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     stld_prs2_matches(w)    := (prs2_matches(w).asUInt & ~age_matches(w).asUInt) & fast_stq_valids
   }
 
+  //@req-spec-memord.a21
+  //@req-spec-memord.b6
+  if (usingRVV) {
+    val vec = io.core.lsu_vec.get
+    for (w <- 0 until lsuWidth) {
+      // RegNext: replay is VecStoreForward's RESPONSE-cycle output while vst_match
+      // is combinational from the search cycle, so they are one cycle apart.
+      assert(!vec.replay(w).valid || RegNext(vec.vst_match(w)) =/= 0.U,
+        "LSU: a VecStoreForward replay was not contained by the vst_match kill -- " +
+        "the load would proceed to the D$ past an older vector store")
+      when (vec.replay(w).valid) {
+        VecTrace.traceId("LSU", "replay_contained", ldq_uop(GetRealLSQIdx(vec.replay(w).bits)).rob_idx,
+          Seq(("ldq_idx", vec.replay(w).bits), ("vst_match", RegNext(vec.vst_match(w)))))
+      }
+    }
+  }
+
   val stq_amos = VecInit(stq_uop.map(u => u.is_fence || u.is_amo))
   for (w <- 0 until lsuWidth) {
     val has_older_amo = (stq_amos.asUInt & age_matches(w).asUInt) =/= 0.U
@@ -1896,6 +1913,42 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq_forward_stq_idx(f_idx) := wb_ldst_forward_stq_idx(w)
 
       ldq_debug_wb_data  (f_idx) := loadgen.data
+    }
+
+    if (usingRVV) {
+      val vec = io.core.lsu_vec.get
+      //@req-spec-memord.a21
+      //@req-spec-memord.b6
+      // The chain above covers wb_ldst_forward_valid in both dmem_resp_fired
+      // polarities, so !wb_ldst_forward_valid is exactly its else-region; this is
+      // that chain's next arm, spelled as a guard so a vectors-off build emits
+      // nothing here at all.
+      when (!dmem_resp_fired(w) && !wb_ldst_forward_valid(w) && vec.fwd_resp(w).valid) {
+        val f_idx       = vec.fwd_resp(w).bits.ldq_idx
+        val forward_uop = vec.fwd_resp(w).bits.uop
+
+        wb_slow_wakeups(w).valid    := forward_uop.dst_rtype === RT_FIX
+        wb_slow_wakeups(w).bits.uop := forward_uop
+        wb_slow_wakeups(w).bits.speculative_mask := 0.U
+        wb_slow_wakeups(w).bits.rebusy := false.B
+        wb_slow_wakeups(w).bits.bypassable := false.B
+
+        iresp(w).valid := (forward_uop.dst_rtype === RT_FIX)
+        fresp(w).valid := (forward_uop.dst_rtype === RT_FLT)
+        iresp(w).bits.uop  := forward_uop
+        fresp(w).bits.uop  := forward_uop
+        iresp(w).bits.data := vec.fwd_resp(w).bits.data
+        fresp(w).bits.data := vec.fwd_resp(w).bits.data
+
+        ldq_will_succeed   (f_idx) := true.B
+        ldq_forward_std_val(f_idx) := true.B
+        ldq_forward_stq_idx(f_idx) := vec.fwd_resp(w).bits.forward_stq_idx
+
+        ldq_debug_wb_data  (f_idx) := vec.fwd_resp(w).bits.data
+      }
+      assert(!(wb_ldst_forward_valid(w) && vec.fwd_resp(w).valid),
+        "LSU: the scalar and vector store-to-load forwards both fired on one lane -- " +
+        "the two age reductions have drifted and one of them names the wrong store")
     }
 
     // Forward loads to store-data
@@ -2243,11 +2296,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     vec.stq_addr_matches    := ldst_addr_matches
     vec.stq_forward_matches := ldst_forward_matches
 
-    // No existing memory-dependence predictor in this file feeds this port
-    // (see report); tied off rather than guessed.
     for (w <- 0 until lsuWidth) {
       vec.pred_overlap(w).valid := false.B
       vec.pred_overlap(w).bits  := DontCare
+      assert(!vec.pred_overlap(w).valid,
+        "LSU: pred_overlap asserted, but this BOOM has no memory-dependence predictor to drive it")
     }
 
     //@req-spec-lsu.a6

@@ -45,13 +45,16 @@ class VecHoldStEvent(implicit p: Parameters) extends BoomBundle
 
 class VecOrderHold(
   val enableOrderHold: Boolean = true,
-  // Must equal VecStoreForward's enableVecStoreForward. The two predicates are exact
+  // Must equal VecStoreForward's enableVecBeatForward. The two predicates are exact
   // complements only if they agree on whether forwarding covers the US->US case; if
   // forwarding is off and this is true, a US load overlapping a US store neither
   // forwards nor waits and reads stale data.
   val forwardingEnabled: Boolean = true
 )(implicit p: Parameters) extends BoomModule
 {
+  require(enableOrderHold || !forwardingEnabled,
+    "VecOrderHold: forwardingEnabled requires enableOrderHold -- with the hold disabled, excluding the US/US pair here would leave it uncovered by either mechanism")
+
   val io = IO(new Bundle {
     val ld_ctx           = Input(Vec(lsuWidth, Valid(new VecHoldLdCtx)))
     val known_overlap    = Input(Vec(lsuWidth, Valid(new VecHoldStEvent)))
@@ -108,6 +111,11 @@ class VecOrderHold(
         "VecOrderHold: hold_valid held on an LDQ entry that was already invalid last cycle")
       assert(!(hold_valid(i) && hold_age_ctr(i) === ageCtrMax),
         "VecOrderHold: hold has not released for an excessive number of cycles (liveness tripwire)")
+      // Excludes the release cycle: stq_head advances and stq_vec_valid clears
+      // together, so the age test goes false in the same cycle base_clear fires.
+      assert(!(hold_valid(i) && !base_clear(i) &&
+               !EntryValidFromAge(io.stq_head, io.ldq_next_stq_idx(i), hold_stq_idx(i))),
+        "VecOrderHold: hold_stq_idx names a store that is not older than the held load")
     }
 
     for (w <- 0 until lsuWidth) {
@@ -143,6 +151,15 @@ class VecOrderHold(
       val overwrite_ok = !hold_valid(target) || IsOlderLSU(hold_stq_idx(target), new_stq, io.stq_head)
       val installed     = new_valid && !base_clear(target) && overwrite_ok
 
+      val k_excluded_usus = (if (forwardingEnabled)
+        ld.valid && k_ev.valid && ld.bits.is_vec && ld.bits.is_unit_stride && k_ev.bits.is_unit_stride &&
+          !io.st_drained(GetRealLSQIdx(k_ev.bits.stq_idx)) && liveOk && k_ageOk
+        else false.B)
+      val p_excluded_usus = (if (forwardingEnabled)
+        ld.valid && p_ev.valid && ld.bits.is_vec && ld.bits.is_unit_stride && p_ev.bits.is_unit_stride &&
+          !io.st_drained(GetRealLSQIdx(p_ev.bits.stq_idx)) && liveOk && p_ageOk
+        else false.B)
+
       when (installed) {
         hold_valid(target)   := true.B
         hold_stq_idx(target) := new_stq
@@ -150,6 +167,8 @@ class VecOrderHold(
         hold_age_ctr(target) := 0.U
       }
 
+      assert(!(installed && !io.ldq_valid(target)),
+        "VecOrderHold: hold installed on an LDQ entry that is not valid")
       assert(!(k_admit && ld.bits.is_unit_stride && k_ev.bits.is_unit_stride),
         "VecOrderHold: admitted a known US/US pair -- forward/hold predicates have drifted out of complement")
       assert(!(p_admit && ld.bits.is_unit_stride && p_ev.bits.is_unit_stride),
@@ -159,11 +178,11 @@ class VecOrderHold(
 
       when (installed && new_is_known) {
         VecTrace.traceId("VecOrderHold", "admit_known", ld.bits.rob_idx, Seq(
-          ("ldq_idx", target), ("stq_idx", new_stq)))
+          ("ldq_idx", target), ("stq_idx", new_stq), ("usus_excluded", k_excluded_usus || p_excluded_usus)))
       }
       when (installed && !new_is_known) {
         VecTrace.traceId("VecOrderHold", "admit_pred", ld.bits.rob_idx, Seq(
-          ("ldq_idx", target), ("stq_idx", new_stq)))
+          ("ldq_idx", target), ("stq_idx", new_stq), ("usus_excluded", k_excluded_usus || p_excluded_usus)))
       }
       when (k_ageFail) {
         VecTrace.traceId("VecOrderHold", "dropped_age", ld.bits.rob_idx, Seq(

@@ -1806,3 +1806,186 @@ with a clean `git status` and the class plainly present in the file. `regen.sh` 
 that jar on exit. `cp -p` is deliberate (a fresh mtime would force a full downstream
 rebuild every gate-(f) run), so deleting the one artifact it actually invalidated is the
 right lever — and it is the honest statement: the cache was built from a mutated source.
+
+---
+
+### Phase G — as built
+
+*Started 2026-08-16, on the post-Phase-F tree (Mega baseline 36 PASS / 13 ASSERT /
+2 MISMATCH on `vset_loadstore_tests.txt`, 2 PASS / 4 ASSERT / 3 MISMATCH on
+`performance_vector.txt`).*
+
+#### Phase G is much smaller than §8 says, because E6.5 already landed G1–G3's hardware
+
+The step table in [§8 Phase G](#phase-g--memory-ordering-and-disambiguation) reads as
+five Chisel steps. Against the tree it is not: `VecCrossLsuSnoop`, `VecStoreForward` and
+`VecOrderHold` were all generated at E6.5 and are all wired into `VecLsu` section 10, and
+the LSU delta's bidirectional LCAM half (`ldq_vec_lo`/`ldq_vec_hi`, the range-overlap
+predicate, `vst_match` ORed into `ldst_addr_matches`) is in `lsu.scala` today. What was
+left is the part E6.5 could not land while the CII was staged off and forwarding was off:
+
+| §8 step | State found | Phase G's actual delta |
+|---|---|---|
+| **G1** | Landed and LIVE, unconditionally. | Audit; make `vecScalarSnoopEnable` mean something. |
+| **G2** | The order-fail path is reachable and the conservative replay is already the LSU's existing `ldst_addr_matches` kill. `vec.replay` is declared and **unconsumed**; `vec.pred_overlap` is **tied off**. | Consume `replay` as a containment assertion; settle `pred_overlap`. |
+| **G3** | `VecStoreForward(enableVecStoreForward = false)`, `VecOrderHold(forwardingEnabled = false)`; `vec.fwd_resp` declared and **unconsumed**. | Turn the scalar-consumer forward on and consume it. |
+| **G4** | `ld_range_agen.io.fault` and `ld_beat.io.stop` are **tied off** — `vleff`'s trim-and-continue cannot fire. `ms11d_vleff` passes only because it never faults. | Build the fault report. |
+| **G5** | `dual-dynamic` exists and Mega already uses it (`lsuWidth = 2`). | Verify; the other half is out of scope (below). |
+
+#### Four spec defects found at Phase G planning, all of them ownership errors
+
+| # | Where | Defect | Resolution |
+|---|---|---|---|
+| 1 | §8 Phase E note / config | **`vecScalarSnoopEnable` has no correct `false` setting if it reaches the snoop.** The E6.5 note says the flag "gates their BEHAVIOR, not their existence" for all three nodes. For `fwd` and `hold` that is right. For `snoop` it is not: a vector store drains **post-commit**, so its published addresses are the *only* thing ordering a younger scalar load against it — with the search off that load reads a line the store has not written and nothing replays it. | The snoop stays unconditional. The flag now gates `fwd`'s scalar forward only, and `hold` stays on at every tier. Written into `VecLsu.nlhdl.scala` section (h2) so a regeneration cannot re-derive the wrong mapping. Also: **no config set the flag at all**, so it was dead in both directions. |
+| 2 | `VecStoreForward` params | **One switch was made to carry two consumer classes.** `enableVecStoreForward` gated both the scalar forward and the US→US vector forward, and was required to equal `VecOrderHold.forwardingEnabled`. But the hold only ever admits a load with `is_vec` set, so the scalar forward can never be the hold's complement. The coupling made "scalar forwarding on, beat forwarding off" — the only state Phase G can actually reach — inexpressible. | Split into `enableVecStoreForward` (scalar, `io.fwd_resp`) and `enableVecBeatForward` (US/US, `io.fwd_beat`). Only the latter pairs with `forwardingEnabled`, and both modules now assert the pairing rather than trusting `VecLsu`. |
+| 3 | `VecStoreForward` ¶9 | **The unit-stride vector consumer contradicts its own ports section, and is not implementable as written.** It needs every beat *after* the first to be answered from the store data queue, but a US vector load presents ONE range search — on its first beat — so carrying the decision needs a per-`ldq_idx` row, which the ports section ("holds no state scoped to an instruction") and §5 rule 6 both forbid. Independently, the LCAM presentation and the D$ request for a beat are **one** `VecDcacheArbiter` grant, so "search, then decline the access" cannot be expressed without a pre-grant predicate neither spec defines. | `enableVecBeatForward = false` at every tier; `VecOrderHold` covers the pair, which is correct and costs only the forward's latency win. ¶9's text retained verbatim under a do-not-generate banner, since it is the right starting point for whoever resolves the ownership question. **Open, owner unassigned.** |
+| 4 | `VecLsu` ¶6b | **`vleff`'s fault report is attributed to a module that cannot raise it.** ¶6b says the report is "raised by `ld_beat`", but a beat's fault is a TLB exception returned on `xlate_resp` one cycle *after* the grant, and `VecBeatExpander` has a `stop` input and no fault output at all. The as-built RTL had already noticed and tied the port off with a comment — so `vleff` silently degraded to trap-on-any-fault, the exact behaviour the form exists to prevent. | The report is formed in `VecLsu` from the exception shadow it already keeps for `vec_xcpt`; `elem_idx` is derived as `(shadow.vaddr - range.base) >> eew` (both virtual on the load side, so it is exact across the page boundary a `vleff` faults on). `ld_beat.io.stop` and the `fault_trap` qualification of `vec_xcpt` land with it. |
+
+#### Two things deliberately NOT built, with the reason
+
+- **No memory-dependence predictor.** §8 G2 says the hold uses "BOOM's existing mem-dep
+  predictor". **There is none in this BOOM v4** — no predictor table, no training path, no
+  `pred_*` state in `lsu.scala`; the LDQ's store-dependency block is the `next_stq_idx` age
+  bound, which `VecOrderHold` already receives directly. `pred_overlap` stays declared (it
+  is the seam a predictor would attach to, and deleting it would collapse the hold's
+  two-event admission logic) and stays **invalid**, asserted constantly false. The hold is
+  complete without it: `known_overlap` covers everything correctness depends on.
+- **No wider vector cache port.** §8 G5 pairs `dual-dynamic` with a "wide vector cache
+  port", but `VecDcacheArbiter.nlhdl.scala`'s own perf section already rules that out —
+  *"A wider vector cache port is out of scope for the whole plan"* — and §9 defers port
+  tuning. The peak stays `lsuWidth * dmemBeatBytes` (128 b/cycle on Mega). This matters
+  because it names the ceiling `transpose-vector` is hitting: its dominant refusal
+  signature is `dmem_rdy=0` with every other resource free, which is D$ back-pressure, not
+  arbitration, and no arbiter change can raise it.
+
+#### Bring-up, staged so each change is attributable
+
+With no unit tests, the only way to tell which of Phase G's four changes moved a
+result is to land them in stages against a fixed baseline. Baseline is
+`regr_ls3_MegaBoomV4VectorConfig` (2026-08-14, 36 PASS / 13 ASSERT / 2 MISMATCH over
+the full 51); the focused list is `sims/vcs/tests_regr/phaseG_order.txt`, 16 tests —
+the pairs Phase G should move, plus five no-regression controls chosen for the
+shapes that broke during Phase E (deepest group, most commits, strided, masked
+store, indexed store).
+
+| Stage | What changed | Focused result (16) |
+|---|---|---|
+| **A** | All plumbing in, `vecScalarSnoopEnable` still **false**. `vleff` fault path live. | **9 PASS / 5 ASSERT / 2 MISMATCH — byte-identical to baseline**, every cycle count included. |
+| **B** | `WithVecScalarSnoop` added to both vector configs, so the scalar forward turns on. | 8 / 7 / 1. `ms4p5_vle64_2` MISMATCH → `VecStoreForward:345`; `ms11b_vlse` PASS → hang. |
+| **C** | The `data_filled` gate made real (below). | **9 / 6 / 1**, all eight controls at baseline cycle counts. |
+
+Stage A is the load-bearing one. It says the `vleff` fault path, the `replay`
+containment assertion, the `fwd_resp` writeback arm and the switch split changed
+NOTHING while the flag was off — so every Stage-B difference is attributable to the
+forward itself and to nothing else.
+
+#### `data_filled` was approximated as a constant, and the approximation is false
+
+`VecCrossLsuSnoop` gates a store presentation on `c.ready := !is_store ||
+data_filled` (memord.a22), and `VecStoreForward` ¶2 leans on that gate to call
+"matched a store whose data is not captured yet" UNREACHABLE — which is why it
+checks `resp.filled` with an **assertion** rather than a stall. `VecLsu` was driving
+`data_filled := true.B` with a written-down rationale: `VecQueueReservation` claims a
+store's address and data regions together with equal counts and bases, so the data is
+always written first.
+
+It is not. Stage B tripped *"SSI forward read an unfilled data-queue entry"*
+immediately, on the first test with a scalar load after a vector store. The constant
+defeated the gate, a store address reached the LCAM ahead of its bytes, and the
+forward read an unwritten entry — **silent corruption anywhere the assertion is
+compiled out**. This is the assertion earning its whole cost: the mechanism it
+guards was landed on an argument that sounded right and was wrong.
+
+The fix answers it from the queues' own state. `VecElemQueue` exposes `filled_vec`,
+a read-only view of the per-entry register it already keeps — no new state, no new
+read port, and it must be a combinational view because the `rd` port's `resp.filled`
+is registered and arrives a cycle *after* the presentation it was meant to gate. A US
+candidate is one range whose data occupies `members` entries, and a future load may
+address any of them, so the answer is the AND over that window; an SSI candidate is
+one element at the same ordinal as its address entry; a load candidate answers true.
+
+`ms11b_vlse`'s Stage-B hang was the same root cause — an unfilled forward returning
+garbage into control flow — and Stage C restored it to PASS at its exact baseline
+cycle count (31304).
+
+#### What Phase G moved, and what it did not
+
+- **`ms4p7_vlnr_vsnr` PASSES** (55392 cycles), from `lsu.scala:782`. This is Phase G's
+  one outright fix on the loadstore suite.
+- `ms4p6_vle32_2` and `ms4p6_vle32_8` left the LCB-starvation watchdog
+  (`VecLoadCoalescingBuffer:459`) for a data MISMATCH ~100 cycles later — i.e. they
+  now get *past* the deadlock and complete with wrong data. Same direction
+  `conv1d-vector` moved during Phase E; a mismatch is a better failure than a hang
+  because it is attributable.
+- `ms4p5_vle64_2` went MISMATCH → `lsu.scala:782`, a **baseline BOOM** assertion (an
+  AGEN that no `will_fire_*_agen` accepted) that `ms4p7_vlnr_vsnr` already hit before
+  Phase G. Converting a silent wrong value into a named, already-classified assertion
+  is the useful direction, but the test still fails. The mechanism is real and worth
+  recording: `lsu_sched` seeds `tlb_avail`/`dc_avail`/`lcam_avail` from `vec_claim`,
+  and an AGEN has no retry path, so a vector claim that lands on the wrong cycle
+  starves a scalar AGEN outright. Delaying store presentation by one gate was enough
+  to expose it on one more test. **This belongs to `VecDcacheArbiter`'s scalar-priority
+  floor — it is handed `scalar_demand` for exactly this purpose — and it is the first
+  thing to look at when the remaining `lsu.scala:782` failures are triaged.**
+
+#### Full-suite result: 37 PASS / 11 ASSERT / 3 MISMATCH, zero regressions
+
+`vset_loadstore_tests.txt` (51) on `MegaBoomV4VectorConfig`, against the
+`regr_ls3` baseline of 36 / 13 / 2. **All 36 baseline PASS tests still pass, every
+one at a byte-identical cycle count** — the strongest available statement that the
+`data_filled` gate, which changes store-presentation timing for every vector store,
+cost nothing. Four rows moved, and only four:
+
+| Test | Baseline | Phase G |
+|---|---|---|
+| `ms4p7_vlnr_vsnr` | ASSERT `lsu.scala:782` | **PASS** (55392) |
+| `ms4p5_vle64_2` | MISMATCH | ASSERT `lsu.scala:782` |
+| `ms4p6_vle32_2` | ASSERT `VecLoadCoalescingBuffer:459` | MISMATCH |
+| `ms4p6_vle32_8` | ASSERT `VecLoadCoalescingBuffer:459` | MISMATCH |
+
+The `lsu.scala:782` pair is the interesting one: the same shift in presentation
+timing that FIXED `ms4p7` EXPOSED the identical assertion on `ms4p5`. That is the
+signature of a scheduling hazard that was always present and is merely
+timing-sensitive — not of something Phase G introduced — and it locates the work
+precisely, at `VecDcacheArbiter`'s scalar-priority floor.
+
+> ⚠ **A Stage-C observation that did NOT reproduce, recorded so it is not chased.**
+> The focused Stage-C run showed `edge_ls_gen` moving off `tile.scala:136`
+> (AcquireBlock) to `VecLoadCoalescingBuffer:459` at 21988 cycles, which read like
+> the AcquireBlock class breaking open. The full run puts it back at
+> `tile.scala:136` at 20169 — the baseline cycle count exactly. So that was run-to-run
+> variance, not a result. The AcquireBlock class is UNTOUCHED by Phase G: all four
+> members still fail the same way. Per the Phase-E lesson, a single run is not a
+> measurement.
+
+`performance_vector.txt` (9 kernels, Mega) is **byte-identical** to the pre-Phase-G
+run — 2 PASS / 4 ASSERT / 3 MISMATCH, every cycle count unchanged. That is the
+expected result and worth stating rather than omitting: these kernels are dominated
+by vector arithmetic and by the LCB / D$-bandwidth classes, and none of them has a
+scalar load aliasing an in-flight vector store, which is the only pair Phase G's
+forward accelerates. Phase G is a correctness and ordering phase; the P1-P7 numbers
+belong to Phase H.
+
+#### Phase G exit state
+
+| Gate / suite | Result |
+|---|---|
+| `sbt boom/compile`, elaboration, firtool, VCS | PASS on `MegaBoomV4VectorConfig` |
+| Stage-A neutrality (flag off) | PASS — byte-identical to baseline, cycle counts included |
+| `vset_loadstore_tests.txt` (51) | **37 / 11 / 3**, from 36 / 13 / 2. Zero regressions. |
+| `performance_vector.txt` (9) | 2 / 4 / 3, byte-identical |
+| Gate (f) vectors-off bit-identity | **NOT RE-RUN** — see below |
+
+> **Carried out of Phase G, honestly:**
+> 1. **Gate (f) was not re-run.** Every addition is inside a `usingRVV` gate and the
+>    LSU arm was deliberately spelled as a guarded `when` so a vectors-off build
+>    emits nothing, but that is an argument, not a measurement. Run
+>    `docs_caracal/v2-rebaseline/regen.sh check` before Phase H.
+> 2. **`VecStoreForward` ¶9 (US->US beat forward) is unimplemented and unowned**, for
+>    the two structural reasons in the defect table. `VecOrderHold` covers the pair,
+>    so the cost is latency, not correctness.
+> 3. **The `lsu.scala:782` AGEN-starvation class is now the top loadstore item.**
+>    Phase G both fixed it on one test and exposed it on another, which is what
+>    identifies it as timing-sensitive and pre-existing. Owner: `VecDcacheArbiter`'s
+>    scalar-priority floor, which already receives `scalar_demand`.
+> 4. **The AcquireBlock class (4 tests) is untouched**, as is `ms4p9_vl`.

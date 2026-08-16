@@ -95,7 +95,11 @@ class VecLsuIO(implicit p: Parameters) extends BoomBundle
   val lsu_fencei_rdy_vec = Output(Bool())
 }
 
-class VecLsu(implicit p: Parameters) extends BoomModule
+class VecLsu(
+  // Cycles a load lane may be refused by the D$ arbiter with a beat pending
+  // before that counts as a deadlock; 0 disables (no register emitted).
+  val ldAcceptWatchdog: Int = 4096
+)(implicit p: Parameters) extends BoomModule
 {
   require(usingRVV, "VecLsu: elaborates only under usingRVV")
 
@@ -150,11 +154,9 @@ class VecLsu(implicit p: Parameters) extends BoomModule
 
   val snoop  = Module(new VecCrossLsuSnoop(searchPorts = lsuWidth))
   //@req-spec-memord.b16
-  // Phase E: forwarding off; hold therefore drops the US->US exclusion so every
-  // overlapping vector load waits for the older store to drain -- the conservative
-  // predecessor behavior. The two booleans below must agree (see report).
-  val fwd    = Module(new VecStoreForward(enableVecStoreForward = false))
-  val hold   = Module(new VecOrderHold(forwardingEnabled = false))
+  val vecBeatForwardEnable = false
+  val fwd    = Module(new VecStoreForward(enableVecStoreForward = vecScalarSnoopEnable, enableVecBeatForward = vecBeatForwardEnable))
+  val hold   = Module(new VecOrderHold(enableOrderHold = true, forwardingEnabled = vecBeatForwardEnable))
   val squash = Module(new VecSquashUnit(nQueues = 6, nKillClients = nKillClients))
 
   //@req-spec-core.c10
@@ -338,7 +340,24 @@ class VecLsu(implicit p: Parameters) extends BoomModule
   val ldWinnerUop     = Mux(ldWinnerFresh, io.iss_ld.bits, ldRows(ldWinnerSlot).uop)
 
   val ldStreamerBusy = RegInit(false.B)
-  val ldPresent = ldWinnerValid && !ldStreamerBusy
+  // Forward declaration. `lcbWalkActive` is defined beside the allocation walk
+  // several hundred lines below, and Scala would read a null here -- the same
+  // trap the LCB-credit note in the spec calls out. Declare the Wire and connect
+  // it there.
+  val lcbWalkBusy = Wire(Bool())
+  // The LCB allocation walk holds ONE op at a time (see the assert beside it),
+  // and the walk stalls whenever the LCB has no free entry, so admitting the next
+  // load while a walk is live would begin a second one and lose the first's
+  // remaining members. Back-pressure HERE, at admission, and nowhere later: the
+  // op simply stays valid in `ldRows` because only `ldPresent` clears it.
+  //
+  // It specifically must NOT be done by gating `ldMaskFire`. For a unit-stride
+  // op VecMaskStream retires the instant its latch loads
+  // (`done_unit_stride = fresh_this_cycle && us_now`), so `us_mask.valid` is a
+  // ONE-CYCLE PULSE -- that is what "the launch cycle must be able to fire" below
+  // is protecting, and deferring it would silently drop the op rather than stall
+  // it.
+  val ldPresent = ldWinnerValid && !ldStreamerBusy && !lcbWalkBusy
   when (ldPresent) {
     ldRows(GetRealLSQIdx(ldWinnerFullIdx)).valid := false.B
     ldStreamerBusy := true.B
@@ -701,14 +720,27 @@ class VecLsu(implicit p: Parameters) extends BoomModule
   val ldUsStagedValid = ld_US_ADDR_Q.io.rd(0).resp.filled && (ldUsDrainPtrPrev === ldUsDrainPtr)
   val ldUsStagedBits  = ld_US_ADDR_Q.io.rd(0).resp.data.asTypeOf(new VecRangeEntry)
 
+  // Forward declaration. `ldRangeFaulted` is defined beside the exception shadow
+  // several hundred lines below, and Scala would read a null here -- the same
+  // trap the LCB-credit note in the spec calls out. Declare the Wire and connect
+  // it there.
+  val ldBeatStop = Wire(Bool())
+  // A trimmed vleff retires its range entry HERE, because ld_beat cannot: us_pop
+  // needs usAnyAdvance, which needs usGate, which needs !stop -- so a stopped
+  // entry never pops itself. That is right for a trap (the flush retires it) and
+  // wrong for a trim, which raises no trap: the instruction is architecturally
+  // complete at the trimmed VL and its entry has no further beats to give.
+  val ldUsTrimRetire = Wire(Bool())
+
   ld_beat.io.us_head.valid := ldUsStagedValid
   ld_beat.io.us_head.bits  := ldUsStagedBits
   ld_beat.io.us_cursor     := ldUsCursor
-  ld_beat.io.stop          := false.B
+  ld_beat.io.stop          := ldBeatStop
   ld_beat.io.kill          := squash.io.kill(2)
+  val ldUsRetire = ld_beat.io.us_pop || ldUsTrimRetire
   when (ld_beat.io.us_cursor_wr.valid) { ldUsCursor := ld_beat.io.us_cursor_wr.bits }
-  when (ld_beat.io.us_pop) { ldUsCursor := 0.U; ldUsDrainPtr := ldUsDrainPtr + 1.U }
-  ld_US_ADDR_Q.io.consume(0).valid := ld_beat.io.us_pop
+  when (ldUsRetire) { ldUsCursor := 0.U; ldUsDrainPtr := ldUsDrainPtr + 1.U }
+  ld_US_ADDR_Q.io.consume(0).valid := ldUsRetire
   ld_US_ADDR_Q.io.consume(0).bits  := ldUsDrainPtr
   for (i <- 1 until queuePorts) { ld_US_ADDR_Q.io.consume(i).valid := false.B; ld_US_ADDR_Q.io.consume(i).bits := 0.U }
   // Only rd(0) is a live drain lane for the US queues (VecBeatExpander takes a
@@ -972,6 +1004,10 @@ class VecLsu(implicit p: Parameters) extends BoomModule
     lcbWalkIdx := lcbWalkIdx + 1.U
     when (done) { lcbWalkActive := false.B }
   }
+  // Connects the forward declaration at the load-admission point above, which is
+  // what now ENFORCES the assert below rather than merely checking it.
+  lcbWalkBusy := lcbWalkActive
+
   // A walk that fails to terminate has no downstream signature but a hang, and it
   // cannot be caught by bounding the index: the wrap it comes from is what hides it.
   assert(!(ldLcbTrigger && lcbWalkActive),
@@ -1029,11 +1065,25 @@ class VecLsu(implicit p: Parameters) extends BoomModule
   lcb.io.alloc.bits.pvl            := lcbWalkUop.pvl.get
   lcb.io.alloc.bits.vl_final       := lcbWalkVl
 
-  // A free entry is needed only while the walk is still ALLOCATING. Once it has
-  // finished, this op's entries exist and its beats need no new one -- gating them
-  // on free_count deadlocks at EMUL = lcbEntries, where the op owns every entry.
-  ld_beat.io.lcb_alloc_rdy.get := VecInit(Seq.fill(lsuWidth)(
-    lcb.io.free_count =/= 0.U || !lcbWalkActive))
+  // Hand the beat expander the three RAW terms, not a reduced ready bit. A free
+  // entry is needed only while the walk is still ALLOCATING; once it has
+  // finished, that op's entries exist and its beats need no new one -- gating
+  // them on free_count alone deadlocks at EMUL = lcbEntries, where one op owns
+  // every entry. The third term is the op identity, and it must be compared
+  // against the head the BEAT belongs to. Only the expander knows that: its
+  // unit-stride path reads `us_head` while each SSI lane reads its own
+  // `ssi_head(i)`, and those are different in-flight ops. Reducing here would
+  // force one of them onto both paths -- which is exactly how the strided
+  // (`vlse`/SSI) path kept starving after the unit-stride path was fixed.
+  //
+  // Observed on `axpy-vector` (LMUL=8, e64, lcbEntries = 2*maxVecMembers): two
+  // groups owned all 16 entries, a third op's walk stalled, and the second
+  // group's cursor froze mid-stream at element 25 of 32 -- members 6 and 7 never
+  // filled, so its group_done never fired and rename deadlocked on an empty
+  // vector free list, tens of thousands of cycles later and three modules away.
+  ld_beat.io.lcb_free_nonzero.get := lcb.io.free_count =/= 0.U
+  ld_beat.io.lcb_walk_active.get  := lcbWalkActive
+  ld_beat.io.lcb_walk_rob.get     := lcbWalkUop.rob_idx
 
   //@req-spec-lsu.g7 (vleff's element-i>0 trim -> LCB {member, keep_bytes})
   ld_range_agen.io.ff_trim.foreach { trim =>
@@ -1053,12 +1103,8 @@ class VecLsu(implicit p: Parameters) extends BoomModule
     lcb.io.trim.valid := false.B
     lcb.io.trim.bits  := DontCare
   }
-  // Spec defect (see report, high severity): section 6b routes a drain-side
-  // fault report from ld_beat into ld_range_agen.io.fault, but VecBeatExpander
-  // exposes no fault port at all -- there is no as-built signal to route.
-  // Tied off; vec_xcpt below is instead derived generically from xlate_resp,
-  // so vle*ff's trim-and-continue policy specifically does not fire.
-  ld_range_agen.io.fault.foreach { f => f.valid := false.B; f.bits := DontCare }
+  // ld_range_agen.io.fault is driven below, beside the exception shadow it
+  // depends on.
   ld_elem_agen.io.fault.valid := false.B
   ld_elem_agen.io.fault.bits  := 0.U
   st_elem_agen.io.fault.valid := false.B
@@ -1203,10 +1249,37 @@ class VecLsu(implicit p: Parameters) extends BoomModule
         ("tag", arb.io.vec_fire(w).bits.uop.v_mem_tag.get), ("rpy", ldRpyValid(w).asUInt),
         ("busy", ldTagBusy), ("rpy_mask", ldTagReplay)))
     }
-    when ((ld_beat.io.req(w).valid || ldRpyValid(w)) && !arb.io.ld_req(w).ready) {
+    val ldBlocked = (ld_beat.io.req(w).valid || ldRpyValid(w)) && !arb.io.ld_req(w).ready
+    when (ldBlocked) {
       VecTrace.traceId("VecLsu", "ld_blocked", ld_beat.io.req(w).bits.uop.rob_idx, Seq(("lane", w.U),
         ("beat_v", ld_beat.io.req(w).valid.asUInt), ("avail", ldTagAvail.asUInt),
         ("rpy", ldRpyValid(w).asUInt), ("busy", ldTagBusy), ("rpy_mask", ldTagReplay)))
+    }
+
+    //@req-spec-lsu.a12
+    // D$-ACCEPTANCE WATCHDOG. A lane holding a beat the arbiter will not take is
+    // normal for a few cycles -- the scalar side wins, or an MSHR is filling.
+    // Permanently refused is a different thing: the beats behind it are the ones
+    // a destination group is still waiting on, so the group never completes and
+    // the deadlock surfaces two modules away, in rename, as an empty free list.
+    //
+    // This is the assertion that names the ACTUAL stall point. On `axpy-vector`
+    // the lane sat here with `beat_v=1 avail=1` -- a beat ready to go and a tag
+    // free to carry it -- while the arbiter refused it forever. Both of those
+    // being high is what rules out the vector side and puts the fault at the
+    // cache interface, so keep them in the message.
+    if (ldAcceptWatchdog > 0) {
+      val blocked_cnt = RegInit(0.U(log2Ceil(ldAcceptWatchdog + 2).W))
+      when (ldBlocked) {
+        blocked_cnt := blocked_cnt + 1.U
+      } .otherwise {
+        blocked_cnt := 0.U
+      }
+      assert(blocked_cnt <= ldAcceptWatchdog.U,
+        s"VecLsu: load lane $w has been refused by the D\\$$ arbiter for ldAcceptWatchdog " +
+        "cycles with a beat pending -- the destination group can never fill, so its " +
+        "group_done will never fire and rename will deadlock on an empty free list. " +
+        "Check the arbiter's grant policy and whether an MSHR is stuck.")
     }
   }
   // ---- Store beats get the same tag pool and replay path. A store returns no data,
@@ -1368,13 +1441,31 @@ class VecLsu(implicit p: Parameters) extends BoomModule
     snoop.io.cand(w).bits.q_base         := Mux(isStoreWinner, stSsiPass1Base, 0.U)
     snoop.io.cand(w).bits.members        := Mux(isStoreWinner, stUsStagedBits.members, ldUsStagedBits.members)
     snoop.io.cand(w).bits.us_data_base   := Mux(isStoreWinner, stUsStagedBits.us_data_base, 0.U)
-    // Simplification (see report): data_filled approximated as "always filled
-    // by the time the arbiter grants a store beat" -- the address and its
-    // paired data are claimed together by resv with equal counts/bases, and
-    // DGEN/range_agen write data before this container ever drains that
-    // index, so this holds for the ordinary case but is not independently
-    // checked against the data queues' own filled bits here.
-    snoop.io.cand(w).bits.data_filled    := true.B
+    //@req-spec-memord.a22
+    // Answered from the data queues' OWN filled bits. This was previously
+    // approximated as a constant true on the argument that resv claims the
+    // address and data regions together, so data is always written first. It is
+    // not: with the scalar forward enabled, `ms4p5_vle64_2` trips
+    // VecStoreForward's own "SSI forward read an unfilled data-queue entry"
+    // assertion, because the constant defeats the snoop's `c.ready` data gate
+    // and lets a store address reach the LCAM ahead of its bytes. Forwarding
+    // then reads an unwritten entry, which is silent corruption everywhere the
+    // assertion is compiled out.
+    //
+    // A US candidate describes ONE range whose data is `members` entries, and a
+    // future load may want any of them, so every member must be filled; an SSI
+    // candidate is one element at the same ordinal as its address entry.
+    val stUsDataFilled = {
+      val f    = st_US_DATA_Q.io.filled_vec
+      val base = stUsStagedBits.us_data_base
+      (0 until usQueueEntries).map { k =>
+        !(k.U < stUsStagedBits.members) || f((base + k.U)(st_US_DATA_Q.idxW - 1, 0))
+      }.reduce(_ && _)
+    }
+    val stSsiDataFilled =
+      st_SSI_DATA_Q.io.filled_vec((stSsiActiveBase + w.U)(st_SSI_DATA_Q.idxW - 1, 0))
+    snoop.io.cand(w).bits.data_filled    :=
+      Mux(!isStoreWinner, true.B, Mux(isUs, stUsDataFilled, stSsiDataFilled))
   }
   snoop.io.ld_search     := vec.ld_search
   snoop.io.stq_vec_valid := vec.stq_vec_valid
@@ -1524,9 +1615,7 @@ class VecLsu(implicit p: Parameters) extends BoomModule
   vec.st_drain_done.bits  := Mux(stUsPass2Done, stUsStagedBits.stq_idx,
     PriorityMux(stSsiPass2Done, (0 until lsuWidth).map(i => st_SSI_ADDR_Q.io.rd(i).resp.data.asTypeOf(new VecElemAccess).uop.stq_idx)))
 
-  // ---- exception, from the translate responses (see report: replaces the
-  // ld_elem_agen/ld_range_agen fault_trap route, which cannot be driven -- see
-  // the tie-offs above -- because VecBeatExpander exposes no fault port) ----
+  // ---- exception, from the translate responses ----
   class XcptShadow extends BoomBundle {
     val valid = Bool()
     val uop   = new MicroOp
@@ -1539,10 +1628,93 @@ class VecLsu(implicit p: Parameters) extends BoomModule
     xcptShadow(w).vaddr := arb.io.vec_fire(w).bits.vaddr
   }
   val xcptHit = (0 until lsuWidth).map(w => xcptShadow(w).valid && vec.xlate_resp(w).valid && vec.xlate_resp(w).bits.xcpt_valid)
-  val xcptAny = xcptHit.reduce(_ || _)
-  val xcptWinUop    = PriorityMux(xcptHit, xcptShadow.map(_.uop))
-  val xcptWinVaddr  = PriorityMux(xcptHit, xcptShadow.map(_.vaddr))
-  val xcptWinCause  = PriorityMux(xcptHit, vec.xlate_resp.map(_.bits.xcpt_cause))
+
+  // The fault report is formed HERE, from the exception shadow above, restricted
+  // to the load side and the unit-stride path and qualified against the walking
+  // rob_idx so a fault for a squashed op cannot classify against a live one.
+  val ldRangeFaultCand = (0 until lsuWidth).map { w =>
+    xcptHit(w) && xcptShadow(w).uop.uses_ldq && xcptShadow(w).uop.v_is_unit_stride.get
+  }
+  val ldRangeFaultMatch = (0 until lsuWidth).map { w =>
+    ldRangeFaultCand(w) && ldUsStagedValid && (xcptShadow(w).uop.rob_idx === ldUsStagedBits.rob_idx)
+  }
+  val ldRangeFaultDrop  = (0 until lsuWidth).map { w => ldRangeFaultCand(w) && !ldRangeFaultMatch(w) }
+  val ldRangeFaultAny   = ldRangeFaultMatch.reduce(_ || _)
+  val ldRangeFaultVaddr = PriorityMux(ldRangeFaultMatch, xcptShadow.map(_.vaddr))
+  // Both addresses are virtual on the load side (ld_US_ADDR_Q has no translate
+  // pass), so the subtraction stays exact across a page boundary.
+  val ldRangeFaultElemIdx = ((ldRangeFaultVaddr - ldUsStagedBits.base) >> ldUsStagedBits.eew)(vecVLSz - 1, 0)
+
+  ld_range_agen.io.fault.foreach { f =>
+    f.valid         := ldRangeFaultAny
+    f.bits.elem_idx  := ldRangeFaultElemIdx
+    f.bits.is_ff     := ldUsStagedBits.is_ff
+    f.bits.rob_idx   := ldUsStagedBits.rob_idx
+    f.bits.ldq_idx   := ldUsStagedBits.ldq_idx
+  }
+
+  // stop is a level while the fault hit above is a one-cycle pulse. One entry
+  // is sufficient: io.stop gates usGate alone, which serves the single retained
+  // unit-stride head.
+  class LdRangeFaulted extends BoomBundle {
+    val valid   = Bool()
+    val rob_idx = UInt(robAddrSz.W)
+  }
+  val ldRangeFaulted = RegInit(0.U.asTypeOf(new LdRangeFaulted))
+  // Retire outranks set: a trim raises ff_trim in the SAME cycle as the fault, so
+  // an elsewhen'd clear would leave the latch holding a retired op's rob_idx.
+  when (ldUsRetire || squash.io.kill(2)) {
+    ldRangeFaulted.valid := false.B
+  } .elsewhen (ldRangeFaultAny) {
+    ldRangeFaulted.valid   := true.B
+    ldRangeFaulted.rob_idx := ldUsStagedBits.rob_idx
+  }
+  // Combinational on the hit as well as on the latch: the latch asserts a cycle
+  // later, and that cycle is one more beat past the fault.
+  ldBeatStop := ldRangeFaultAny ||
+    (ldRangeFaulted.valid && (ldRangeFaulted.rob_idx === ldUsStagedBits.rob_idx))
+  ldUsTrimRetire := ld_range_agen.io.ff_trim.get.valid
+
+  when (ldRangeFaultAny) {
+    VecTrace.traceId("VecLsu", "vleff_fault_report", ldUsStagedBits.rob_idx,
+      Seq(("ldq_idx", ldUsStagedBits.ldq_idx), ("elem_idx", ldRangeFaultElemIdx),
+          ("is_ff", ldUsStagedBits.is_ff.asUInt), ("vaddr", ldRangeFaultVaddr),
+          ("base", ldUsStagedBits.base), ("eew", ldUsStagedBits.eew)))
+  }
+  for (w <- 0 until lsuWidth) {
+    when (ldRangeFaultDrop(w)) {
+      VecTrace.traceId("VecLsu", "vleff_fault_dropped", xcptShadow(w).uop.rob_idx)
+    }
+  }
+  when (ld_range_agen.io.fault_trap.get) {
+    VecTrace.traceId("VecLsu", "vleff_fault_trap", ldUsStagedBits.rob_idx)
+  }
+  when (ld_range_agen.io.ff_trim.get.valid) {
+    VecTrace.traceId("VecLsu", "vleff_trim", ldUsStagedBits.rob_idx,
+      Seq(("elem_idx", ld_range_agen.io.ff_trim.get.bits)))
+  }
+
+  // ldUsStagedBits is raw read data and is meaningful ONLY under ldUsStagedValid;
+  // unqualified, this fires on an empty queue where the fields are undefined.
+  assert(!(ldUsStagedValid && ldUsStagedBits.is_ff) || ldUsStagedBits.is_unit_stride,
+    "VecLsu: is_ff asserted on a retained range entry without is_unit_stride")
+  assert(!(ld_range_agen.io.fault_trap.get && ld_range_agen.io.ff_trim.get.valid),
+    "VecLsu: ld_range_agen fault_trap and ff_trim valid in the same cycle")
+  assert(!ldRangeFaultAny || (ldRangeFaultElemIdx < (ldUsStagedBits.len >> ldUsStagedBits.eew)),
+    "VecLsu: vleff elem_idx not below the retained range entry's element count")
+  assert(!ld_range_agen.io.ff_trim.get.valid || ldBeatStop,
+    "VecLsu: ff_trim valid without ld_beat.io.stop in the same cycle")
+
+  // vec_xcpt.valid is QUALIFIED by fault_trap on the unit-stride load path, not
+  // merely accompanied by it -- an element-i>0 vleff fault must trim, not trap.
+  // Every other path keeps the generic derivation off xlate_resp unchanged.
+  val xcptHitQualified = (0 until lsuWidth).map { w =>
+    xcptHit(w) && (!ldRangeFaultMatch(w) || ld_range_agen.io.fault_trap.get)
+  }
+  val xcptAny = xcptHitQualified.reduce(_ || _)
+  val xcptWinUop    = PriorityMux(xcptHitQualified, xcptShadow.map(_.uop))
+  val xcptWinVaddr  = PriorityMux(xcptHitQualified, xcptShadow.map(_.vaddr))
+  val xcptWinCause  = PriorityMux(xcptHitQualified, vec.xlate_resp.map(_.bits.xcpt_cause))
   io.vec_xcpt.valid         := xcptAny
   io.vec_xcpt.bits.uop      := xcptWinUop
   io.vec_xcpt.bits.cause    := xcptWinCause

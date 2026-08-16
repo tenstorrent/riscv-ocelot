@@ -333,7 +333,7 @@ from Tenstorrent Inc.
        entry, so `free_count` is 0 for that op's entire lifetime. Measured on
        `ms14_vls_e64_m8` (LMUL 8, `lcbEntries` 8): 8 entries allocated, 5 of 32
        placements, `group_done` never fired, and the dependent store never started.
-       The binding guard is the per-PRN `lcb_alloc_rdy` test that VecBeatExpander
+       The binding guard is the per-op LCB credit test (`lcbRdyFor`) that VecBeatExpander
        already applies to every beat; this coarse one is redundant for correctness.
 
   `io.lcb_free_count` is therefore still an input (VecLoadCoalescingBuffer owns

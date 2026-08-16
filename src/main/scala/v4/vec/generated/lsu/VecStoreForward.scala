@@ -83,7 +83,7 @@ class VecStoreForwardIO(implicit p: Parameters) extends BoomBundle
   val rob_flush = Input(Bool())
 }
 
-class VecStoreForward(val enableVecStoreForward: Boolean = true)(implicit p: Parameters) extends BoomModule
+class VecStoreForward(val enableVecStoreForward: Boolean = true, val enableVecBeatForward: Boolean = true)(implicit p: Parameters) extends BoomModule
 {
   require(usingRVV, "VecStoreForward: elaborates only under usingRVV")
 
@@ -117,6 +117,7 @@ class VecStoreForward(val enableVecStoreForward: Boolean = true)(implicit p: Par
   val s1_isVecBeat   = Wire(Vec(lsuWidth, Bool()))
   val s1_isUS        = Wire(Vec(lsuWidth, Bool()))
   val s1_attempt     = Wire(Vec(lsuWidth, Bool()))
+  val s1_eligible    = Wire(Vec(lsuWidth, Bool()))
   val s1_knownValid  = Wire(Vec(lsuWidth, Bool()))
   val s1_knownStqIdx = Wire(Vec(lsuWidth, UInt((1 + stqAddrSz).W)))
   val s1_knownIsUS   = Wire(Vec(lsuWidth, Bool()))
@@ -136,7 +137,9 @@ class VecStoreForward(val enableVecStoreForward: Boolean = true)(implicit p: Par
 
     val candValidBits = VecInit(cand.map(_.valid)).asUInt
     val eligibleBits  = VecInit((0 until numStqEntries).map { i =>
-      cand(i).valid && (!ld.bits.is_vec || (ld.bits.is_unit_stride && cand(i).bits.is_unit_stride))
+      cand(i).valid && Mux(ld.bits.is_vec,
+        ld.bits.is_unit_stride && cand(i).bits.is_unit_stride && enableVecBeatForward.B,
+        enableVecStoreForward.B)
     }).asUInt
 
     val addrPool = io.stq_addr_matches(w) | candValidBits
@@ -160,8 +163,34 @@ class VecStoreForward(val enableVecStoreForward: Boolean = true)(implicit p: Par
     //@req-spec-memord.a23
     //@req-spec-memord.b10
     //@req-spec-memord.b14
+    // Gates io.replay, NOT the forwarding pool, so the scalar arm is NOT gated by
+    // enableVecStoreForward: with that switch off a scalar load must still replay
+    // (para. 3), while a vector load falls to VecOrderHold and must not.
+    val replayEligible = Mux(ld.bits.is_vec,
+      ld.bits.is_unit_stride && winner.bits.is_unit_stride && enableVecBeatForward.B,
+      true.B)
+    s1_eligible(w) := replayEligible
+
+    val scalarSwitchDeclined = knownValid && !ld.bits.is_vec && !enableVecStoreForward.B
+    val beatSwitchDeclined   = knownValid && ld.bits.is_vec && ld.bits.is_unit_stride &&
+      winner.bits.is_unit_stride && !enableVecBeatForward.B
+    when (scalarSwitchDeclined) {
+      VecTrace.traceId("VecStoreForward", "declined_store_switch", ld.bits.uop.rob_idx, Seq(
+        ("stq_idx", winner.bits.stq_idx)))
+    }
+    when (beatSwitchDeclined) {
+      VecTrace.traceId("VecStoreForward", "declined_beat_switch", ld.bits.uop.rob_idx, Seq(
+        ("stq_idx", winner.bits.stq_idx)))
+    }
+    when (knownValid && !sameWinner) {
+      VecTrace.traceId("VecStoreForward", "no_usable_candidate", ld.bits.uop.rob_idx, Seq(
+        ("ld_is_vec", ld.bits.is_vec.asUInt),
+        ("ld_is_us", ld.bits.is_unit_stride.asUInt),
+        ("winner_is_us", winner.bits.is_unit_stride.asUInt)))
+    }
+
     val killedNow = IsKilledByBranch(io.brupdate, io.rob_flush, ld.bits.uop)
-    val attemptForward = knownValid && sameWinner && enableVecStoreForward.B &&
+    val attemptForward = knownValid && sameWinner &&
       ld.bits.can_forward && !ld.bits.kill_forward && !killedNow
 
     val eew      = winner.bits.eew
@@ -232,6 +261,7 @@ class VecStoreForward(val enableVecStoreForward: Boolean = true)(implicit p: Par
 
   class Stage2 extends Bundle {
     val doForward = Bool()
+    val eligible  = Bool()
     val isVecBeat = Bool()
     val isUS      = Bool()
     val uop       = new MicroOp
@@ -250,6 +280,7 @@ class VecStoreForward(val enableVecStoreForward: Boolean = true)(implicit p: Par
   for (w <- 0 until lsuWidth) {
     s2Valid(w)          := s1_valid(w)
     s2(w).doForward      := s1_portWon(w)
+    s2(w).eligible       := s1_eligible(w)
     s2(w).isVecBeat      := s1_isVecBeat(w)
     s2(w).isUS           := s1_isUS(w)
     s2(w).uop            := s1_uop(w)
@@ -280,26 +311,30 @@ class VecStoreForward(val enableVecStoreForward: Boolean = true)(implicit p: Par
     val e = s2(w)
     when (s2Valid(w)) {
       when (!e.doForward) {
-        //@req-spec-memord.b6
-        //@req-spec-memord.b7
-        io.replay(w).valid := true.B
-        io.replay(w).bits  := e.ldqIdx
+        when (e.eligible) {
+          //@req-spec-memord.b6
+          //@req-spec-memord.b7
+          io.replay(w).valid := true.B
+          io.replay(w).bits  := e.ldqIdx
+        }
       } .elsewhen (e.isVecBeat) {
-        //@req-spec-memord.a24
-        assert(io.st_us_rd.resp.filled, "VecStoreForward: US forward read an unfilled data-queue entry")
-        val byteOff     = (e.paddr - e.entryPaddr)(log2Ceil(vLenBytes) - 1, 0)
-        val slice       = (io.st_us_rd.resp.data >> Cat(byteOff, 0.U(3.W)))(coreDataBytes * 8 - 1, 0)
-        val loadMember  = (e.paddr - e.rangeBase) >> log2Ceil(vLenBytes)
-        val loadByteOff = (e.paddr - e.rangeBase)(log2Ceil(vLenBytes) - 1, 0)
+        if (enableVecBeatForward) {
+          //@req-spec-memord.a24
+          assert(io.st_us_rd.resp.filled, "VecStoreForward: US forward read an unfilled data-queue entry")
+          val byteOff     = (e.paddr - e.entryPaddr)(log2Ceil(vLenBytes) - 1, 0)
+          val slice       = (io.st_us_rd.resp.data >> Cat(byteOff, 0.U(3.W)))(coreDataBytes * 8 - 1, 0)
+          val loadMember  = (e.paddr - e.rangeBase) >> log2Ceil(vLenBytes)
+          val loadByteOff = (e.paddr - e.rangeBase)(log2Ceil(vLenBytes) - 1, 0)
 
-        io.fwd_beat(w).valid            := true.B
-        io.fwd_beat(w).bits.prn         := e.uop.pvdest.get(loadMember)
-        io.fwd_beat(w).bits.byte_offset := loadByteOff
-        io.fwd_beat(w).bits.data        := slice
-        io.fwd_beat(w).bits.byte_mask   := e.ldMask
-        io.fwd_beat(w).bits.rob_idx     := e.uop.rob_idx
-        io.fwd_beat(w).bits.ldq_idx     := e.ldqIdx
-        io.fwd_beat(w).bits.last        := true.B
+          io.fwd_beat(w).valid            := true.B
+          io.fwd_beat(w).bits.prn         := e.uop.pvdest.get(loadMember)
+          io.fwd_beat(w).bits.byte_offset := loadByteOff
+          io.fwd_beat(w).bits.data        := slice
+          io.fwd_beat(w).bits.byte_mask   := e.ldMask
+          io.fwd_beat(w).bits.rob_idx     := e.uop.rob_idx
+          io.fwd_beat(w).bits.ldq_idx     := e.ldqIdx
+          io.fwd_beat(w).bits.last        := true.B
+        }
       } .otherwise {
         //@req-spec-memord.a21
         val loadgenData = Mux(e.isUS, {
@@ -330,6 +365,12 @@ class VecStoreForward(val enableVecStoreForward: Boolean = true)(implicit p: Par
       "VecStoreForward: fwd_resp and fwd_beat both valid on one lane in one cycle")
     assert(!(io.replay(w).valid && (io.fwd_resp(w).valid || io.fwd_beat(w).valid)),
       "VecStoreForward: replay asserted alongside a forwarded result on the same lane")
+    assert(!(io.replay(w).valid && !e.eligible),
+      "VecStoreForward: replay asserted for a pair paragraph 3 leaves to VecOrderHold")
+    assert(!(io.fwd_beat(w).valid && !enableVecBeatForward.B),
+      "VecStoreForward: fwd_beat valid while enableVecBeatForward is false")
+    assert(!(io.fwd_resp(w).valid && e.isVecBeat),
+      "VecStoreForward: fwd_resp valid for a load with is_vec set")
 
     when (io.fwd_resp(w).valid) {
       VecTrace.trace("VecStoreForward", "forward_resp", e.uop, Seq(

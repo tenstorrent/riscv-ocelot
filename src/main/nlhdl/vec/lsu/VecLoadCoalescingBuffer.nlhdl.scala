@@ -487,6 +487,34 @@ from Tenstorrent Inc.
   no access beyond the faulting element was ever issued, and the ones below it are
   simply dropped by the rule above.
 
+  ---- 10b. Per-entry completion watchdog ----
+
+  //@req-spec-lsu.e6
+  //@req-spec-lsu.e13
+  Parameter `lcbStallWatchdog` (Int, default 4096, 0 disables and emits no
+  register). Per ENTRY, count cycles for which the entry is
+  `valid && !written && !killHere && !preload_pending && !activeCovered` — that
+  is, genuinely still waiting on its member's bytes — and assert the count stays
+  within the bound. Reset it on any other cycle.
+
+  An allocated entry is a PROMISE: its member's bytes are in flight, and the
+  group's `group_done` (section 7) cannot broadcast until every member has them.
+  So an entry that stays valid-but-uncovered forever is not slow, it is a LOST
+  BEAT — and the damage lands nowhere near the cause. The group never completes,
+  its destination PRNs never clear busy, no consumer wakes, commit stops, and the
+  vector free list drains until rename deadlocks; what finally fires is
+  core.scala's generic "Pipeline has hung", tens of thousands of cycles later and
+  naming nothing. Real case (`axpy-vector`, LMUL=8/e64): the second load group
+  received all four beats on members 0..5, ONE on member 6 and NONE on member 7,
+  because the remaining beats were refused by the D$ arbiter indefinitely.
+
+  Keep it per-ENTRY, not per-group: a group-level check cannot say WHICH member
+  is short, and that fact is what localises the bug to the beat path instead of
+  to this module's completion logic. Report the entry, its group and the missing
+  bytes (`byte_valid` against `active_bytes`) — the byte arithmetic was the
+  diagnosis. Exclude `preload_pending` entries, which are waiting on the `R2`
+  stale read and have their own path and back-pressure.
+
   ---- 11. Trace ----
 
   Emit one guarded `VecTrace` line per key event, tagged with module name

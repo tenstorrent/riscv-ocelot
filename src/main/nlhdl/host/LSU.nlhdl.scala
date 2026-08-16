@@ -121,7 +121,22 @@ from Tenstorrent Inc.
   vector unit-stride load; `stq_addr_matches` / `stq_forward_matches`, the
   existing `ldst_addr_matches` / `ldst_forward_matches` unmodified;
   `pred_overlap`, `Vec(lsuWidth, Valid({stq_idx, is_unit_stride}))`, from BOOM's
-  EXISTING memory-dependence machinery in this file; and `resp` / `nack` /
+  EXISTING memory-dependence machinery in this file — WHICH DOES NOT EXIST, so the
+  port is driven INVALID and that is its specified value, not a stub. There is no
+  memory-dependence predictor anywhere in this BOOM v4: `lsu.scala` has no
+  predictor table, no training path and no `pred_*` state, and the LDQ's
+  store-dependency block is the `next_stq_idx` age bound, which VecOrderHold
+  already receives directly on `ldq_next_stq_idx`. The port stays declared because
+  VecOrderHold's admission logic is written against both a Known and a Predicted
+  event and rewriting it to a single event would delete the seam a predictor would
+  attach to; it stays INVALID because inventing a predictor here is a new
+  mechanism, not a delta, and because holding on a guess with no training path
+  would cost bandwidth with no way to measure the trade. VecOrderHold is complete
+  without it: `known_overlap` alone covers every case correctness depends on, and
+  its own header says a hold-related failure is a hang or lost bandwidth, never a
+  mismatch. Assert `pred_overlap(w).valid` is constantly false so that a later
+  predictor lands as a deliberate change rather than by accident; and `resp` /
+  `nack` /
   `store_ack`, the share of `io.dmem.resp` / `nack` / `store_ack` whose
   `uop.is_vec` is set, forwarded verbatim so element responses reach the LCB and
   the drains.
@@ -382,6 +397,78 @@ from Tenstorrent Inc.
   this file exposes no partial-group rewind — on replay the op re-renames its
   whole destination group and re-drains from element zero through the LCB, which
   is what keeps it consistent with the one-group-done completion model.
+
+  ---- 6b. Consuming `fwd_resp` and `replay` ----
+
+  //@req-spec-memord.a21
+  //@req-spec-memord.b6
+  These are the two inputs VecStoreForward drives back, and the whole point of
+  section 6b is that NEITHER adds a mechanism — one reuses the writeback arm the
+  scalar forward already has, the other reuses a kill this file already performs.
+
+  `fwd_resp(w)` merges into the EXISTING forward writeback as one further arm on
+  the same `when (dmem_resp_fired(w) && ...)` chain, ranked
+  BELOW the D$ response for the same reason the scalar forward is (the D$ response
+  takes precedence and the forward is dropped) and beside the scalar forward
+  rather than above or below it, because THE TWO ARE MUTUALLY EXCLUSIVE BY
+  CONSTRUCTION and an assertion must say so. `wb_ldst_forward_valid(w)` requires
+  `youngest_matching === youngest_forwarder` over `ldst_addr_matches` — which now
+  includes `vst_match` — against `ldst_forward_matches`, which holds SCALAR stores
+  only; so whenever the youngest matching store is a vector store the scalar
+  forward is already suppressed, and VecStoreForward reaches its own decision from
+  the same union with the same age logic. If both ever assert, one of the two age
+  reductions has drifted and the machine is forwarding from the wrong store —
+  which is silent data corruption, so it is asserted, not muxed.
+
+  The arm's body is the scalar arm's body with one substitution and one deletion:
+  the data comes from `fwd_resp(w).bits.data`, ALREADY aligned and sign/zero
+  extended by VecStoreForward (it runs the same rocket `StoreGen`/`LoadGen` pair on
+  the load's own `mem_size`/`mem_signed`), so this file instantiates NEITHER
+  generator on this path; and there is no `stq_data(s_idx)` read, because a vector
+  store's STQ entry holds no data — reading it here is the mis-generation this
+  paragraph exists to prevent, and it is the same trap VecStoreForward's own header
+  names. Everything else is identical and must be set: `iresp`/`fresp` valid by
+  `dst_rtype`, the uop, `wb_slow_wakeups` for the `RT_FIX` case, `ldq_will_succeed`,
+  `ldq_debug_wb_data`, and — the item whose omission is undetectable —
+  `ldq_forward_std_val(f_idx) := true.B` with `ldq_forward_stq_idx(f_idx) :=
+  fwd_resp(w).bits.forward_stq_idx`. That index is the forwarding vector store's
+  STQ PLACEHOLDER index, which is what section 6's `l_forward_stq_idx` comparison
+  is against; a queue index recorded there compares against an unrelated store and
+  either fails loads that were fine or spares loads that were not.
+
+  ===> SPELL THE NEW ARM AS A GUARDED `when`, NOT AS A DEFERRED `.elsewhen`. The
+       two existing arms cover `wb_ldst_forward_valid` in BOTH `dmem_resp_fired`
+       polarities, so `!wb_ldst_forward_valid` is exactly the chain's else-region
+       and `when (!dmem_resp_fired(w) && !wb_ldst_forward_valid(w) &&
+       fwd_resp(w).valid)` is logically the chain's next arm. Two reasons this
+       form and not the other. It emits NOTHING in a vectors-off build, so gate
+       (f) holds by construction rather than by trusting a constant to fold;
+       and capturing the chain's `WhenContext` in a Scala val to call `.elsewhen`
+       on it later is fragile — the chaining is only sound while no Chisel command
+       has been issued in between, which is a property of the surrounding code
+       that a later edit can silently break.
+
+  `replay(w)` and `vst_match(w)` ARE ONE CYCLE APART, and the containment
+  assertion below must say so. `VecStoreForward` is two cycles wide: it consumes
+  `ld_search` in the SEARCH cycle and drives `io.replay` in the RESPONSE cycle,
+  while `vst_match` is combinational from the snoop on that same search. So the
+  assertion compares `replay(w).valid` against `RegNext(vst_match(w))`. Written
+  same-cycle it fires on every correctly-contained replay, which is worse than no
+  assertion — it would be read as evidence the containment is broken.
+
+  `replay(w)` adds NO hardware, and that is a finding rather than an omission.
+  VecStoreForward asserts it when it has a KNOWN overlap it cannot fully cover,
+  and a known overlap implies a `snoop_cand` bit, which is a subset of
+  `vst_match(w)`, which ORs into `ldst_addr_matches(w)` — and this file ALREADY
+  kills on `ldst_addr_matches(w) =/= 0`, dropping `s1_set_execute` and raising
+  `io.dmem.s1_kill(w)`. The load is therefore already left un-executed and already
+  retries; a second suppression path would be a duplicate, and a duplicate that
+  can disagree. So consume `replay` as an ASSERTION that the containment holds —
+  `replay(w).valid` implies `vst_match(w) =/= 0` in the same cycle — plus a guarded
+  trace line. The assertion is the load-bearing part: if the containment ever
+  breaks, a load that VecStoreForward believes it declined would proceed to the D$
+  and read a line an older vector store has not written, which no other check in
+  either file would catch.
 
   ---- 7. Commit, drain eligibility, and the vse teardown hang ----
 
@@ -654,6 +741,15 @@ Counterparties, each of which Phase R must check from the other side:
       predicate under `lcam(i).is_range`, plus the new `ldq_vec_lo` /
       `ldq_vec_hi` registers and their widen/clear.
     - `ldst_addr_matches`: OR in `vst_match(w).addr_match`.
+    - The forward writeback chain: ONE added `.elsewhen` arm for `fwd_resp(w)`,
+      per section 6b. This is the one entry that overlaps the must-not-regress
+      list below, and the two are reconciled the way every other `usingRVV`
+      addition in this file is: the arm elaborates only under `usingRVV`, the
+      existing arms keep their conditions and bodies verbatim, and with vectors
+      off the chain is the same chain. "Must not regress" there means the scalar
+      forward's structure, timing and age reduction are not to be rewritten — not
+      that no vector-gated arm may be appended, which would leave `fwd_resp` an
+      input with no consumer and section 6b unimplementable.
     - `io.core.fencei_rdy`: add the `&& vec_lsu_empty` term.
     - `can_enq_store_execute`: add the `&& !uop.is_vec` qualification.
     - The `when (clear_store)` block: extend the `stq_execute_head` advance

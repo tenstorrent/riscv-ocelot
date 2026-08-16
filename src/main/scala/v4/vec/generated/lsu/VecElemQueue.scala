@@ -105,6 +105,12 @@ class VecElemQueue(
 
     val squash = Input(Valid(UInt(ptrW.W)))
     val empty  = Output(Bool())
+
+    //@req-spec-memord.a22
+    // Read-only view of the existing per-entry filled register, indexed by
+    // phys(). The data gate the snoop owes VecStoreForward has to be answered
+    // COMBINATIONALLY at presentation, which the registered rd port cannot do.
+    val filled_vec = Output(UInt(entries.W))
   })
 
   //@req-spec-lsu.a5
@@ -176,6 +182,8 @@ class VecElemQueue(
   io.resv.avail := avail_reg
   io.resv.tail  := tail
   io.empty      := head === tail
+  //@req-spec-memord.a22
+  io.filled_vec := filled
 
   for (r <- 0 until readPorts) {
     val idxPhys = phys(io.rd(r).req.bits)

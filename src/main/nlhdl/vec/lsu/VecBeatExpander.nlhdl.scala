@@ -170,9 +170,31 @@ from Tenstorrent Inc.
   unqualified pop makes it total — and fixing only the gate converts corruption into a
   hang rather than into correct data.
 
-  `lcb_alloc_rdy` (Input, `Bool`, loads only) says an LCB assembly entry exists
-  for the PRN the next beat targets; a load beat is not requested without it,
-  because the LCB may never back-pressure a response. `stop` (Input, `Bool`) says
+  `lcb_free_nonzero`, `lcb_walk_active` (Inputs, `Bool`) and `lcb_walk_rob`
+  (Input, `UInt(robAddrSz.W)`), loads only, are the LCB allocation credit as
+  three RAW terms rather than one pre-reduced ready bit. A load beat is not
+  requested without an assembly entry for the PRN it targets, because the LCB may
+  never back-pressure a response. Form the test HERE, per path:
+
+      def lcbRdyFor(rob) = lcb_free_nonzero || !lcb_walk_active || rob =/= lcb_walk_rob
+
+  and apply it as `lcbRdyFor(us_head.rob_idx)` in `usGate` and
+  `lcbRdyFor(ssi_head(i).uop.rob_idx)` in `ssiLaneFire(i)`.
+
+  ===> THE OP IDENTITY MUST COME FROM THE PATH'S OWN HEAD, WHICH IS WHY THE TERMS
+       ARRIVE RAW. A beat needs a free entry only while ITS OWN op is still
+       allocating; the walk is one global resource, so without the `rob_idx` term
+       a later op's stalled walk blocks beats belonging to an earlier op whose
+       entries already exist — a circular wait, since those beats are what lets
+       that op complete, retire and free what the walk is waiting for. The
+       unit-stride path and each SSI lane carry DIFFERENT ops at the same time, so
+       a ready bit reduced upstream necessarily carries one identity and
+       mis-answers for the other. That is not hypothetical: the unit-stride path
+       was fixed first with the comparison done in VecLsu against
+       `us_head.rob_idx`, and the strided (`vlse`) path went on starving until the
+       comparison moved in here.
+
+  `stop` (Input, `Bool`) says
   the head's cursor has latched `fault_elem`. `kill` (Input, `Bool`) is
   `brupdate`/`rob_flush` on the head and suppresses requests this cycle; pointer
   rollback is VecSquashUnit's, and nothing is undone here because nothing is held
@@ -419,7 +441,7 @@ into whether P1 is met.
 Instantiates nothing. Its seams, each to be checked from the other side in
 Phase R: VecElemQueue (peek/pop plus the cursor read-modify-write on the US head),
 VecDcacheArbiter (`req.ready` is the grant covering D$ + TLB + LCAM),
-VecLoadCoalescingBuffer (`lcb_alloc_rdy` in, placement `prn` + byte offset out),
+VecLoadCoalescingBuffer (`lcb_free_nonzero`/`lcb_walk_active`/`lcb_walk_rob` in, placement `prn` + byte offset out),
 VecCrossLsuSnoop / VecStoreForward (the LCAM query, one range check for US),
 VecDgen (the `vLen`-wide `st_US_DATA_Q` entry this module slices), and VecLsu
 (`is_write_pass`, `stop`, `kill`, and the cursor reset between store passes).

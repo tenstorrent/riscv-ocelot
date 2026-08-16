@@ -315,9 +315,14 @@ glossary.rst `glossary-terms`.
   apart. Its `readPorts` is DERIVED (`ports + 1`), not a parameter.
   `VecBeatExpander` takes `(isStore, nLanes, dmemBeatBytes)` — pass `lsuWidth` and
   `coreDataBytes`; neither has a default, deliberately.
-  `VecLoadCoalescingBuffer`'s `lcb_alloc_rdy` toward the beat expanders is
-  `Vec(nLanes, Bool())`, not one bit: at `lsuWidth = 2` two beats in one cycle can target
-  two different destination members, which are two independent allocations.
+  The LCB credit toward the beat expander is THREE RAW TERMS —
+  `lcb_free_nonzero`, `lcb_walk_active`, `lcb_walk_rob` — not a reduced ready bit
+  and not a per-lane vector of them. Per-lane was the old shape and it solved the
+  wrong half of the problem: at `lsuWidth = 2` two beats in one cycle can indeed
+  target two different destination members, but what actually decides the credit
+  is WHICH OP each beat belongs to, and that is `us_head` for the unit-stride path
+  and `ssi_head(i)` for each SSI lane. Only the expander holds both, so it forms
+  the test; see its `lcbRdyFor`.
 
   (g) HOISTED INSTANCES AND THEIR ROUTING. `VecMaskStream` is instantiated HERE, once per
   direction, not inside the agens. Route its `us_mask` to `VecRangeAgen.io.mask` (the range
@@ -344,6 +349,61 @@ glossary.rst `glossary-terms`.
   because it has a declared replay path, while `snoop`'s read is tied to an LCAM grant the
   arbiter cannot retract.
 
+  (h2) THE THREE ORDERING SWITCHES, AND WHICH ONE `vecScalarSnoopEnable` IS. This
+  container is the only instantiator of the three ordering nodes, so it is where the
+  config sub-flag becomes hardware, and the mapping is NOT one flag to three modules:
+
+    snoop  — instantiated and active UNCONDITIONALLY. It has no correct `false`
+             setting and `vecScalarSnoopEnable` must not reach it. A vector store
+             drains POST-COMMIT, so its addresses are the ONLY thing that orders a
+             younger scalar load against it; with the search off that load reads a
+             line the store has not written yet and nothing replays it. The plan's
+             "the flag gates their behaviour, not their existence" is right about
+             `fwd` and `hold` and wrong about `snoop`, and this is where that is
+             resolved rather than in the config.
+    fwd    — `enableVecStoreForward = vecScalarSnoopEnable`, the scalar-consumer
+             forward. Genuinely optional: with it false every eligible scalar
+             forward becomes a replay, which is slower and correct.
+             `enableVecBeatForward = false` at every tier, per that module's
+             logic paragraph 9 and the ownership question recorded there.
+    hold   — `enableOrderHold = true` at every tier, and
+             `forwardingEnabled = enableVecBeatForward` — i.e. false — so the hold
+             covers the US/US pair `fwd` is not building. The two flags are asserted
+             equal inside the modules; this file must pass the SAME Scala value to
+             both and must not spell the constant twice.
+
+  ===> DO NOT DERIVE `enableOrderHold` FROM `vecScalarSnoopEnable`. Turning the
+       hold off while the scalar forward is also off is harmless (the LSU's own
+       `ldst_addr_matches` kill/replay is the floor for every class), but turning
+       the hold off is the one change that converts a correctness mechanism's
+       absence into a replay storm on multi-element loads, and the flag's stated
+       purpose is to stage the PERFORMANCE mechanisms, not the floor.
+
+  (h3) `data_filled` ON A SNOOP CANDIDATE IS ANSWERED FROM THE DATA QUEUES' OWN FILLED
+  BITS, AND MAY NOT BE A CONSTANT. `VecCrossLsuSnoop` gates a store presentation on
+  `c.ready := !is_store || data_filled` (spec-memord.a22), and `VecStoreForward` ¶2 relies
+  on that gate to call "matched a store whose data is not captured yet" UNREACHABLE —
+  which is why it checks `resp.filled` with an assertion rather than a stall. Driving
+  `data_filled` from a constant true defeats the gate and makes the unreachable case
+  reachable: a store address reaches the LCAM ahead of its bytes and the forward reads an
+  unwritten entry. That is silent corruption wherever the assertion is compiled out.
+
+  ===> THE CONSTANT-TRUE FORM WAS TRIED AND IS WRONG, so do not re-derive it. The argument
+       for it — `VecQueueReservation` claims a store's address and data regions together
+       with equal counts and bases, so the data is always written first — is plausible and
+       false. With the scalar forward enabled, `ms4p5_vle64_2` trips VecStoreForward's
+       "SSI forward read an unfilled data-queue entry" assertion directly.
+  The two classes are answered differently and the difference is not cosmetic. A US
+  candidate describes ONE range whose data occupies `members` entries of `st_US_DATA_Q`
+  starting at `us_data_base`, and a future load may address ANY of them, so the answer is
+  the AND over that whole window — a per-member answer is not available at presentation
+  time, because which member a load will want is not known until the load searches. An SSI
+  candidate is a single element, at the SAME ordinal in `st_SSI_DATA_Q` as its address
+  entry. A LOAD candidate has no data half and answers true.
+  This needs a combinational read of the filled state, which the registered `rd` port
+  cannot give, so `VecElemQueue` exposes `filled_vec` — a read-only view of the per-entry
+  register it already keeps, declaring no new state and adding no read port.
+
   (i) PORTS THE SUB-MODULES NEED FROM `lsu.scala`, VIA `VecLsuCoreIO`, THAT THE LSU DELTA
   MUST THEREFORE EXPOSE: `VecQueueReservation` needs `ldq_head` and `stq_head` (for
   `IsOlderLSU`); `VecOrderHold` needs `stq_head` and `ldq_next_stq_idx`; `VecSquashUnit`
@@ -351,6 +411,24 @@ glossary.rst `glossary-terms`.
   track LDQ/STQ pointers locally — a second copy drifts on precisely the mispredict cycle
   it is needed. The store tag pool additionally needs `store_failed`, the D$'s
   `s2_store_failed` forwarded unfiltered — see the store-squash entry in section (j).
+
+  (i2) D$-ACCEPTANCE WATCHDOG ON THE LOAD BEAT PATH. Parameter `ldAcceptWatchdog`
+  (Int, default 4096, 0 disables and emits no register). Per load lane, count cycles for
+  which a beat is pending and the arbiter refuses it — the same condition the `ld_blocked`
+  trace already reports, `(ld_beat.req(w).valid || ldRpyValid(w)) && !arb.ld_req(w).ready`
+  — and assert the count stays within the bound.
+
+  A refused lane is normal for a few cycles: the scalar side wins the port, or an MSHR is
+  filling. Permanently refused is a different failure. The beats stuck behind it are the
+  ones some destination group is still waiting on, so that group never completes and the
+  deadlock surfaces TWO MODULES AWAY, in rename, as an empty free list — which is where
+  the reader ends up looking. This assertion is the one that names the actual stall point.
+
+  Keep `beat_v` and `avail` in the message. On `axpy-vector` the lane sat here with
+  `beat_v=1 avail=1` — a beat ready to send and a tag free to carry it — and that pair
+  being high is exactly what rules out the vector side and puts the fault at the cache
+  interface. Pairs with VecLoadCoalescingBuffer's per-entry completion watchdog: this one
+  says WHERE the beats stopped, that one says WHICH member went short.
 
   (k) ONE GRANT PER DIRECTION PER CYCLE, AND `vecIssueGrantWidth` DOES NOT APPLY TO THE
   MEMORY QUEUES AS BUILT. Found at E7 on the wide tier. `iss_ld`/`iss_st` are each a
@@ -712,7 +790,7 @@ glossary.rst `glossary-terms`.
        entirely and would desync the queue permanently.
 
   Nothing else bounds how many beats are outstanding, so the beat request MUST be
-  qualified by tag availability, exactly as it already is by `lcb_alloc_rdy`: same
+  qualified by tag availability, exactly as it already is by the LCB credit: same
   rule, same reason, a second response-tracking resource that cannot back-pressure
   once the beat has fired. PICK EVERY LANE'S TAG FROM THE BUSY REGISTER ALONE,
   never from another lane's fire in the same cycle, and require `lsuWidth` free
@@ -738,7 +816,7 @@ glossary.rst `glossary-terms`.
        first-issue beat two different requests, and only one of the two paths would
        ever be exercised by a test that does not nack.
 
-  ===> `lcb_alloc_rdy` IS NOT `free_count =/= 0`. VecDcacheArbiter's spec calls this
+  ===> THE LCB CREDIT IS NOT `free_count =/= 0`. VecDcacheArbiter’s spec calls this
        "the exact per-PRN test", and as built it was not: driving it from the LCB's
        coarse `free_count` deadlocks at `EMUL = lcbEntries`, where ONE group owns
        every entry, `free_count` is 0 for the op's whole lifetime, and the beat
@@ -746,10 +824,63 @@ glossary.rst `glossary-terms`.
        entries. Measured on `ms14_vls_e64_m8`: 8 entries allocated, 7 of 32
        placements, one VRF write, `group_done` never fired. A free entry is needed
        only while the allocation WALK is still running; once it has finished, this
-       op's entries exist and its beats need no new one. Gate on
-       `free_count =/= 0 || !lcbWalkActive`, and note this assignment must sit
-       BESIDE the walk it reads — placing it earlier in the file is a Scala forward
-       reference that elaborates as a null and fails at FIRRTL time, not at compile.
+       op's entries exist and its beats need no new one. Do NOT reduce the credit
+       to a ready bit here. Export the THREE RAW TERMS to the beat expander —
+       `lcb_free_nonzero` (`free_count =/= 0`), `lcb_walk_active`
+       (`lcbWalkActive`) and `lcb_walk_rob` (`lcbWalkUop.rob_idx`) — and let it
+       form `free_nonzero || !walk_active || beat_rob =/= walk_rob` per path.
+       These assignments must sit BESIDE the walk they read — placing them earlier
+       in the file is a Scala forward reference that elaborates as a null and
+       fails at FIRRTL time, not at compile.
+
+       THE `rob_idx` TERM IS NOT OPTIONAL — it covers the CROSS-OP case, which the
+       other two do not and which deadlocks identically. `lcbWalkActive` is ONE
+       GLOBAL register, so a LATER op's walk stalling at `free_count = 0` gates
+       beat production for EVERY in-flight load, including an EARLIER op whose
+       walk already finished and whose entries already exist. That is a circular
+       wait: the new walk needs a free entry, entries are freed only when an
+       in-flight op completes and RETIRES, and that op's completion needs exactly
+       the beats this gate is blocking. Walks are serialised in op order (the
+       `ldLcbTrigger && lcbWalkActive` assert guarantees it), so a head whose
+       `rob_idx` differs from the walking op's has provably finished allocating and
+       can never need a free entry — the term is safe as well as necessary.
+       Measured on `axpy-vector` (LMUL=8, e64, `lcbEntries = 2*maxVecMembers`): two
+       groups owned all 16 entries, a third op's walk stalled, and the second
+       group's cursor froze mid-stream at element 25 of 32, leaving members 6 and 7
+       unfilled. Note the shape of the symptom — `group_done` never fires, the
+       destination PRNs stay busy, commit stops, and the VECTOR FREE LIST drains
+       until rename deadlocks, so what you actually see is an allocation stall in
+       a different module tens of thousands of cycles later.
+
+       AND THE COMPARISON IS PER PATH, WHICH IS WHY THE TERMS GO DOWN RAW. The
+       expander's unit-stride path reads `us_head` while each SSI lane reads its
+       own `ssi_head(i)`, and those are DIFFERENT ops in flight simultaneously. A
+       single ready bit reduced here carries one of those identities and answers
+       the wrong question for the other — the unit-stride path was fixed first
+       against `us_head.rob_idx` alone and the strided (`vlse`) path went on
+       starving until the comparison moved into the expander.
+
+  ===> THE WALK IS A ONE-OP RESOURCE AND MUST BE BACK-PRESSURED AT ADMISSION.
+       `lcbWalkActive` holds a single op, and the walk STALLS whenever the LCB has
+       no free entry, so a second load admitted meanwhile begins a second walk and
+       the first's remaining members are simply lost. Gate `ldPresent` — the point
+       where a winning load enters the streamer — on `!lcbWalkActive` as well as
+       `!ldStreamerBusy`. Nothing is lost by stalling there: only `ldPresent`
+       clears the op's `ldRows` entry, so it just waits. Progress is guaranteed
+       because the blocking walk completes as soon as an older in-flight op
+       retires and frees its entries.
+
+       DO NOT back-pressure by gating `ldMaskFire` instead. For a unit-stride op
+       VecMaskStream retires the instant its latch loads
+       (`done_unit_stride = fresh_this_cycle && us_now`), so `us_mask.valid` is a
+       ONE-CYCLE PULSE — that is what the "launch cycle must be able to fire" note
+       protects — and deferring it DROPS the op rather than stalling it, turning a
+       stall bug into a silent lost-instruction bug.
+
+       `lcbWalkActive` is defined beside the walk, hundreds of lines after the
+       admission point, so declare a `Wire(Bool())` at the admission point and
+       connect it at the walk. Referencing the register directly reads a Scala
+       null and fails at FIRRTL time, not at compile time.
 
   ===> THE WALK'S TERMINATION TEST MUST USE THE WIDTH-EXPANDING `+&`. The walk index
        is `log2Ceil(maxVecMembers)` bits and the member count is one bit wider, so at
@@ -1011,13 +1142,18 @@ glossary.rst `glossary-terms`.
   same two passes, so its coprocessor round trip changes when its data arrives,
   never when its writes are permitted.
 
-  The load drain's LCB credit is ONE NUMBER READ TWICE. `ld_beat.lcb_alloc_rdy` is
-  driven from `lcb.io.alloc.ready`, which the LCB defines as "an entry is free",
-  i.e. `free_count =/= 0` — the same quantity `arb` consumes on
-  `io.lcb_free_count` for its coarse suppression. Deriving the per-beat gate FROM
-  the credit rather than computing it independently is what makes the two
-  consistent; any per-PRN refinement (a beat landing in an already-allocated entry
-  needs no new credit) must be published by the LCB, never recomputed here.
+  The load drain's LCB credit starts from ONE NUMBER: `lcb.io.free_count`, the
+  same quantity `arb` consumes on `io.lcb_free_count` for its coarse suppression.
+  Export it to `ld_beat` as `lcb_free_nonzero` (`free_count =/= 0`) alongside
+  `lcb_walk_active` and `lcb_walk_rob`, so both consumers rest on the same
+  underlying count rather than each computing its own.
+
+  The per-PRN refinement — "a beat landing in an already-allocated entry needs no
+  new credit" — is NOT published by the LCB and must not be. It cannot be: it is a
+  question about the BEAT (which op does it belong to, and has that op's walk
+  finished?), not about the buffer, and the two live in different modules. The LCB
+  publishes the count; VecLsu publishes the walk's identity; the expander, which
+  is the only module holding the beat's own head, forms the answer.
 
   ---- 6. Completion: one event per shape, and nothing streamed ----
 
@@ -1080,13 +1216,96 @@ glossary.rst `glossary-terms`.
   fault-only-first form):
 
   - `ld_range_agen.io.fault` (INPUT to the agen) — the DRAIN-side fault report,
-    raised by `ld_beat` against the RETAINED RANGE ENTRY, carrying
+    raised against the RETAINED RANGE ENTRY, carrying
     {`elem_idx`, `is_ff`, `rob_idx`, `ldq_idx`} read out of that entry. Routing it
     off the entry rather than off a latch is what keeps `VecRangeAgen` free of
     per-instruction state: the entry is what remembers the instruction. This
     module QUALIFIES it against the walking `rob_idx` exactly as it qualifies the
     element agens' fault reports — same comparison, same kill terms — so a fault
     for a squashed op cannot classify against a live one.
+
+    ===> AND THIS MODULE FORMS THAT REPORT ITSELF; `ld_beat` DOES NOT RAISE IT.
+         Earlier text here said "raised by `ld_beat`", and that is not
+         implementable: a beat's fault is a TLB exception returned on
+         `xlate_resp` ONE CYCLE AFTER the arbiter granted the beat, and
+         `VecBeatExpander` sees neither `xlate_resp` nor any other fault input —
+         it has a `stop` INPUT and no fault OUTPUT, by its own ports section. So
+         the report is built HERE, from the exception shadow this module already
+         keeps for `vec_xcpt` (per-lane {valid, uop, vaddr}, registered on a
+         granted `uses_tlb` beat, matched against `xlate_resp(w).xcpt_valid`):
+           `valid`    = that same exception hit, restricted to the LOAD side and
+                        to the unit-stride path (`lcam_range_len` class), so an
+                        SSI fault does not reach the range agen;
+           `elem_idx` = `(shadow.vaddr - retained_range.base) >> eew`, the
+                        faulting beat's element index. Both addresses are
+                        VIRTUAL on the load side (`ld_US_ADDR_Q` has no translate
+                        pass, so its `base` is never overwritten with a paddr),
+                        so the subtraction is the architecturally meaningful one
+                        and stays correct across a page boundary — which is the
+                        boundary a `vleff` exists to fault on;
+           `is_ff`, `rob_idx`, `ldq_idx` = read off the retained range entry, per
+                        the paragraph above.
+         Deriving `elem_idx` from the address rather than adding an element index
+         to `VecMemAccess` is deliberate: the beat is already the unit of the
+         cursor, the arithmetic is exact for a unit-stride range by construction,
+         and widening the drain-side bundle for one classification would put the
+         index on every beat of every op.
+
+  - `ld_beat.io.stop` — asserted by the same qualified fault hit, for the same
+    cycle onward, so the cursor stops and no beat past the faulting element is
+    requested. Without it the trim is meaningless: elements above `elem_idx`
+    would keep issuing and landing in the LCB, and the trimmed VL would describe
+    a group that had already been written past. This is the input the "Faults"
+    paragraph of `VecBeatExpander` is written against, and it currently has no
+    driver.
+
+    ===> AND `stop` IS A LEVEL WHILE THE FAULT HIT IS A ONE-CYCLE PULSE, so it
+         needs a latch and the latch must be sized honestly. Keep ONE register
+         {valid, `rob_idx`}, set by the qualified fault hit and cleared by the
+         US load's `us_pop` or by `squash`/`kill`, and drive
+         `stop = faulted.valid && faulted.rob_idx === us_head.rob_idx`. One entry
+         is not an approximation: `io.stop` gates `usGate` alone, which serves the
+         SINGLE retained unit-stride head, so there is never a second faulted US
+         load to track. This is state scoped to the QUEUE HEAD, not to an
+         instruction — the same shape as the exception shadow and the LCB walk
+         registers already in this file — and §5 rule 6's prohibition is on a
+         module owning per-op state that an ISSUE UNIT then waits on, which this
+         drives nothing of. A pulse-only `stop` looks correct in the TRAP case
+         (the ROB flush arrives within a few cycles and `kill` finishes the job)
+         and is wrong in exactly the case the mechanism exists for: a `vleff`
+         trim raises no flush, so the cursor would resume on the next cycle and
+         run past the fault.
+
+  - A TRIMMED `vleff` RETIRES ITS RANGE ENTRY HERE, and nothing else can do it.
+    `VecBeatExpander.io.us_pop` requires `usAnyAdvance`, which requires `usGate`,
+    which requires `!io.stop` — so an entry this module has STOPPED can never pop
+    itself. For a TRAP that is correct and invisible: the ROB flush squashes the
+    op and `kill` retires the entry. For a TRIM it is a HANG, and a silent one:
+    a `vleff` trimmed at element `i > 0` raises no trap, the instruction is
+    architecturally complete at the trimmed VL, and its entry has no further beats
+    to give — but `us_pop` never fires, so `ldUsDrainPtr` never advances, the
+    queue entry is never consumed, its reservation is never released, and the next
+    unit-stride op never stages. `VecBeatExpander`'s own "Faults" paragraph is
+    silent on who retires a stopped entry, which is how this was missed.
+    So the retire event is `us_pop OR ff_trim`, and it drives all three of the
+    cursor reset, the `ldUsDrainPtr` advance and `ld_US_ADDR_Q.consume` — this
+    module already owns that pointer, so no port moves.
+    The faulted-head latch must be cleared by that same retire event with
+    PRIORITY OVER ITS OWN SET, because `ff_trim` is combinational from `io.fault`
+    and therefore fires in the SAME cycle as the fault: an `elsewhen`'d clear
+    leaves the latch holding a retired op's `rob_idx`.
+    And for the same reason `stop` is driven combinationally from the fault hit as
+    well as from the latch. The latch alone asserts a cycle late, which is one
+    more beat past the fault, and it would make the `ff_trim => stop` assertion
+    below fire on every correct trim.
+
+  - `vec_xcpt.valid` is QUALIFIED BY `fault_trap`, not merely accompanied by it.
+    A `vleff` faulting at element `i > 0` must NOT trap; if `vec_xcpt` fires
+    generically off `xlate_resp` while `ff_trim` also fires, the machine both
+    traps and trims, and the trap wins — which is the architectural violation the
+    form exists to prevent, silently, on exactly the `strlen` loop it is for. So
+    on the unit-stride load path `vec_xcpt.valid` takes `fault_trap`; every other
+    path keeps the generic derivation unchanged.
   - `ld_range_agen.io.fault_trap` (output) — an element-0 fault. Becomes
     `vec_xcpt` with `vstart = 0` and no element index.
   - `ld_range_agen.io.ff_trim` (output) — an element-`i > 0` fault. Goes to
@@ -1109,6 +1328,24 @@ glossary.rst `glossary-terms`.
   PRODUCERS on a statically partitioned, never-arbitrated write port, and it would
   publish a trimmed VL — waking every `pvl` dependent — before the group that VL
   describes had been assembled.
+
+  TRACE AND ASSERT THIS PATH HEAVILY, because every one of its outcomes is
+  invisible in a passing run and none of them has a natural failure signature. One
+  guarded `VecTrace` line per formed fault report (`rob_idx`, `ldq_idx`,
+  `elem_idx`, `is_ff`, the shadow's `vaddr`, the range's `base` and `eew`), one per
+  `fault_trap`, one per `ff_trim` (with the derived `member`/`keep_bytes`), and one
+  per fault hit that was DROPPED by the `rob_idx` qualification — that last one is
+  how a squashed-op fault mis-attributed to a live op is caught, and it is the only
+  outcome with no downstream effect to observe. Assertions: `is_ff` implies
+  `is_unit_stride` on the retained entry — QUALIFIED ON THAT ENTRY BEING STAGED,
+  because the staged bits are raw queue read data and mean nothing while the
+  queue is empty, so the unqualified form fires at time zero on every test that
+  never issues a unit-stride load, which is most of them; `fault_trap` and
+  `ff_trim` never valid in
+  the same cycle; `elem_idx` strictly below the entry's element count
+  (`len >> eew`), which fires if the address arithmetic above ever underflows or
+  the entry is the wrong one; and `ff_trim` valid implies `ld_beat.io.stop` in the
+  same cycle, which is the coupling a later edit is most likely to break.
 
   `VecRangeEntry` MUST CARRY `is_ff`. The drain side raises its fault against the
   entry and has no other way to tell a fault-only-first load from an ordinary one:

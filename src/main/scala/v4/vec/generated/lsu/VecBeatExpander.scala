@@ -75,7 +75,16 @@ class VecBeatExpander(
     // be an output too, and it is the arbiter's grant coming back.
     val req = Vec(nLanes, Decoupled(new VecMemAccess))
 
-    val lcb_alloc_rdy = if (!isStore) Some(Input(Vec(nLanes, Bool()))) else None
+    // The LCB-allocation credit, as three raw terms rather than one pre-reduced
+    // ready bit. The escape "this beat's op has already finished allocating, so
+    // it can never need a free entry" depends on WHICH op the beat belongs to,
+    // and only this module knows that: the unit-stride path reads `us_head`
+    // while each SSI lane reads its own `ssi_head(i)`. Reducing it upstream
+    // forces one op's identity onto both paths and silently mis-answers for the
+    // other -- see `lcbRdyFor`.
+    val lcb_free_nonzero = if (!isStore) Some(Input(Bool()))                 else None
+    val lcb_walk_active  = if (!isStore) Some(Input(Bool()))                 else None
+    val lcb_walk_rob     = if (!isStore) Some(Input(UInt(robAddrSz.W)))      else None
     val stop = Input(Bool())
     val kill = Input(Bool())
   })
@@ -156,16 +165,32 @@ class VecBeatExpander(
   //@req-spec-lsu.c6
   //@req-spec-lsu.j2
   val usInitByte = (io.us_cursor << io.us_head.bits.eew)(byteW - 1, 0)
-  // Per-lane LCB credit: at nLanes>1 two beats in one cycle can target two different
-  // destination members, which are two independent allocations.
-  def lcbRdy(i: Int): Bool = if (!isStore) io.lcb_alloc_rdy.get(i) else true.B
+  // A beat needs a free LCB entry ONLY while its OWN op is the one still
+  // allocating. The walk is a single global resource, so without the rob_idx
+  // term a LATER op's walk stalling at free_count = 0 blocks beats belonging to
+  // an EARLIER op whose entries already exist -- a circular wait, because those
+  // beats are what lets that op complete, retire and free the entries the walk
+  // is waiting for.
+  //
+  // Take the op identity PER PATH. `us_head` and `ssi_head(i)` are different
+  // ops in flight at the same time, so a single ready bit computed upstream from
+  // one of them answers the wrong question for the other: that is why the
+  // strided (`vlse`/SSI) path still starved after the unit-stride path was
+  // fixed against `us_head.rob_idx` alone.
+  def lcbRdyFor(rob: UInt): Bool =
+    if (!isStore) io.lcb_free_nonzero.get || !io.lcb_walk_active.get || (rob =/= io.lcb_walk_rob.get)
+    else true.B
   // The data queue read has a cycle of latency, so a write-pass beat composed
   // before it lands sends stale bytes to the D$ -- silently, as a store.
   def usDataRdy: Bool = if (isStore) (!io.is_write_pass.get || io.st_us_data.get.valid) else true.B
-  val usGate = io.us_head.valid && !io.stop && !io.kill && lcbRdy(0) && usDataRdy
+  val usGate = io.us_head.valid && !io.stop && !io.kill &&
+    lcbRdyFor(io.us_head.bits.rob_idx) && usDataRdy
 
   //@req-spec-agen.c1
-  val ssiLaneFire = Seq.tabulate(nLanes)(i => io.ssi_head(i).valid && lcbRdy(i))
+  // Per-lane, and per-lane's OWN op: at nLanes>1 two beats in one cycle can target
+  // two different destination members, which are two independent allocations.
+  val ssiLaneFire = Seq.tabulate(nLanes)(i =>
+    io.ssi_head(i).valid && lcbRdyFor(io.ssi_head(i).bits.uop.rob_idx))
 
   val usWantsAny  = usGate
   val ssiWantsAny = ssiLaneFire.reduce(_ || _)

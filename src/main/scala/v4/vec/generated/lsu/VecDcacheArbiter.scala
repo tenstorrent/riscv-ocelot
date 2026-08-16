@@ -110,7 +110,7 @@ class VecDcacheArbiter(implicit p: Parameters) extends BoomModule
     ldSuppressedHold(w) := io.hold_ldq(GetRealLSQIdx(io.ld_req(w).bits.uop.ldq_idx))
 
     // NOT gated on lcb_free_count: a beat always lands in an entry its op allocated
-    // at launch, and VecBeatExpander already applies the exact per-PRN lcb_alloc_rdy
+    // at launch, and VecBeatExpander already applies the exact per-op LCB credit
     // test. Suppressing on the coarse credit DEADLOCKS at EMUL = lcbEntries, where one
     // group owns every entry and free_count is 0 for the op's whole lifetime.
     ldSuppressedCredit(w) := false.B
@@ -198,6 +198,28 @@ class VecDcacheArbiter(implicit p: Parameters) extends BoomModule
     (bits.uses_tlb && demand.tlb) || (bits.uses_dcache && demand.dcache) || (bits.uses_lcam && demand.lcam)
 
   for (w <- 0 until lsuWidth) {
+    // A refused load is the hard one to debug: VecLsu can see only that
+    // `ld_req.ready` is low, and every distinguishing term lives HERE. A
+    // permanently refused lane starves its destination group, so the failure
+    // finally reports as an empty free list in rename -- three modules away.
+    // Break the refusal into its causes at the point where they are visible:
+    // `hold` (the memory-ordering suppression) versus the resource terms
+    // (the scalar side owning the TLB/LCAM/D$ port, or dmem back-pressure).
+    when (io.ld_req(w).valid && !ldWins(w)) {
+      VecTrace.trace("VecDcacheArbiter", "ld_refused", io.ld_req(w).bits.uop, Seq(
+        ("lane", w.U),
+        ("hold", ldSuppressedHold(w).asUInt),
+        ("elevate_ld", elevateLoad.asUInt),
+        ("elevate_st", elevateStore.asUInt),
+        ("st_valid", io.st_req(w).valid.asUInt),
+        ("dmem_rdy", io.dmem_req_ready(w).asUInt),
+        ("av_tlb", io.scalar_avail(w).tlb.asUInt),
+        ("av_dcache", io.scalar_avail(w).dcache.asUInt),
+        ("av_lcam", io.scalar_avail(w).lcam.asUInt),
+        ("uses_tlb", io.ld_req(w).bits.uses_tlb.asUInt),
+        ("uses_dcache", io.ld_req(w).bits.uses_dcache.asUInt),
+        ("uses_lcam", io.ld_req(w).bits.uses_lcam.asUInt)))
+    }
     when (ldWins(w)) {
       VecTrace.trace("VecDcacheArbiter", "grant", io.ld_req(w).bits.uop, Seq(
         ("lane", w.U), ("requestor", 0.U),

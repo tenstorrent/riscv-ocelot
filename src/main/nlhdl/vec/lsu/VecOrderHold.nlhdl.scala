@@ -67,7 +67,7 @@ from Tenstorrent Inc.
   the extra bit is the wrap-carry bit and the age comparisons below are wrong
   without it, so it must not be truncated at this boundary.
 
-  One Scala parameter. `enableOrderHold` (Boolean, default true) — when false the
+  Two Scala parameters. `enableOrderHold` (Boolean, default true) — when false the
   module elaborates to a constant-zero hold mask and no state. It is the
   EXECUTABLE FORM of the header's correctness claim: with the hold off the machine
   must still be correct, differing only in how often a vector load order-fails, so
@@ -76,8 +76,23 @@ from Tenstorrent Inc.
   A Scala `Boolean` and not a plusarg, so a build that does not want the mechanism
   does not carry its flops.
 
-  No threshold, no counter width and no timeout parameter — there is no timer
-  anywhere in this module.
+  `forwardingEnabled` (Boolean, default true) — MUST EQUAL VecStoreForward's
+  `enableVecBeatForward`, and elaboration asserts it rather than trusting VecLsu.
+  It selects one term of the admission predicate and nothing else: when true, a
+  load whose class and the overlapping store's class are BOTH unit-stride is
+  excluded here, because VecStoreForward's logic paragraph 9 forwards that pair;
+  when false the exclusion is dropped and every overlapping vector load is held.
+  The two predicates are exact complements only if the two flags agree, and the
+  asymmetry of getting it wrong is total: hold-excludes-while-forward-off leaves a
+  US load overlapping a US store neither forwarded nor waiting, so it reads stale
+  data, while hold-covers-while-forward-on merely costs the forward's latency win.
+  It does NOT pair with `enableVecStoreForward`, which gates the SCALAR-consumer
+  forward — this module never admits a scalar load, so that switch cannot reach
+  this predicate.
+
+  No threshold and no timeout parameter — there is no timer anywhere in this
+  module, only the free-running liveness counter of the assertion below, whose
+  width is a local constant and not a knob.
   <|end_parameters|>
 
   <|begin_ports|>
@@ -360,6 +375,25 @@ from Tenstorrent Inc.
   tripwire, `assert` only, no functional effect); and a hold admitted for a US/US
   pair, which would mean the forwarding predicate and this one have drifted out of
   complement.
+
+  And one standing invariant on the state itself: while a hold is valid, its
+  `hold_stq_idx` names a store the age test still places between `stq_head` and
+  the held load's `ldq_next_stq_idx`. Reuse `EntryValidFromAge`; do not write a
+  second age compare inline.
+
+  ===> THAT INVARIANT MUST EXCLUDE THE RELEASE CYCLE, or it fires on every
+       correctly-released hold and the assertion is worse than useless. `stq_head`
+       advances and `stq_vec_valid` clears in the SAME cycle the store retires, so
+       the age test goes false in exactly the cycle `st_drained` — and therefore
+       `release`, and therefore `base_clear` — goes true, while `hold_valid` is
+       still set because it is a register that clears at the end of that cycle.
+       Qualify the assertion with `!base_clear(i)`.
+
+  The admitted-hold trace line additionally reports whether a candidate was
+  rejected THIS cycle by the US/US exclusion. Without it "the hold did nothing"
+  is one signature covering two opposite situations — no overlap at all, versus an
+  overlap deliberately left to the forward — and telling them apart from outside
+  the module is impossible.
   <|end_logic|>
 
 <|end_module|>

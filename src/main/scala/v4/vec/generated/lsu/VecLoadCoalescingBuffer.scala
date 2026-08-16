@@ -89,7 +89,11 @@ class LcbEntry(implicit p: Parameters) extends BoomBundle
   val vl_final        = UInt(vecVLSz.W)
 }
 
-class VecLoadCoalescingBuffer(implicit p: Parameters) extends BoomModule
+class VecLoadCoalescingBuffer(
+  // Cycles an allocated entry may wait for its member's bytes before that counts
+  // as a dropped beat rather than back-pressure; 0 disables (no register).
+  val lcbStallWatchdog: Int = 4096
+)(implicit p: Parameters) extends BoomModule
 {
   require(usingRVV, "VecLoadCoalescingBuffer: elaborates only under usingRVV")
   require(lcbEntries >= maxVecMembers,
@@ -416,5 +420,47 @@ class VecLoadCoalescingBuffer(implicit p: Parameters) extends BoomModule
       elemDoneNelem        = io.elem_done(0).bits.nelem,
       vlWbValid            = io.vl_wb.valid
     )
+  }
+
+  //@req-spec-lsu.e6
+  //@req-spec-lsu.e13
+  // PER-ENTRY COMPLETION WATCHDOG. An allocated entry is a promise: its member's
+  // bytes are in flight and `group_done` cannot broadcast until every member of
+  // the group has them. So an entry that stays valid-but-not-covered forever is
+  // not slow, it is a LOST BEAT -- and the damage is remote from the cause. The
+  // group never completes, its destination PRNs never clear busy, no consumer
+  // wakes, commit stops, and the vector free list drains until rename deadlocks.
+  // What finally fires is core.scala's generic "Pipeline has hung", tens of
+  // thousands of cycles later and pointing at nothing.
+  //
+  // Observed exactly this on `axpy-vector` (LMUL=8, e64): the second load group
+  // got 4-of-4 beats on members 0..5, ONE beat on member 6 and NONE on member 7,
+  // because the remaining beats were refused by the D$ arbiter indefinitely. The
+  // byte arithmetic was the diagnosis, so report it: which entry, whose group,
+  // and which bytes are still missing.
+  //
+  // Deliberately per-ENTRY, not per-group: the group-level view cannot say WHICH
+  // member is short, and that is the fact that localises the bug to the beat
+  // path rather than to the completion logic.
+  if (lcbStallWatchdog > 0) {
+    for (i <- 0 until lcbEntries) {
+      val stall_cnt = RegInit(0.U(log2Ceil(lcbStallWatchdog + 2).W))
+      // Count only while the entry is genuinely waiting on bytes: a written or
+      // killed entry is finished, and a preload-pending one is waiting on the
+      // stale read, which has its own path and its own back-pressure.
+      val awaitingBytes = entries(i).valid && !entries(i).written &&
+                          !killHere(i) && !entries(i).preload_pending &&
+                          !activeCovered(i)
+      when (awaitingBytes) {
+        stall_cnt := stall_cnt + 1.U
+      } .otherwise {
+        stall_cnt := 0.U
+      }
+      assert(stall_cnt <= lcbStallWatchdog.U,
+        s"VecLoadCoalescingBuffer: entry $i has waited lcbStallWatchdog cycles for its " +
+        "member's bytes and is still short -- a load beat was dropped or never issued. " +
+        "The group's group_done can never fire, so its PRNs stay busy and rename will " +
+        "deadlock on an empty free list. Compare byte_valid against active_bytes.")
+    }
   }
 }

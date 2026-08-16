@@ -529,6 +529,25 @@ from Tenstorrent Inc.
   that no `dealloc`/`dealloc_tmp` slot beyond a committing group's member count
   is valid.
 
+  //@req-spec-rename.f5
+  STARVATION WATCHDOG, parameter `allocStarveWatchdog` (Int, default 4096, 0
+  disables and emits no register). Count cycles of uninterrupted `!alloc_ok` and
+  assert the count stays within it. `!alloc_ok` is ordinary back-pressure for a
+  few cycles — a wide group waiting on the pre-selection stage to refill — but it
+  can never be the steady state, because a rename stall blocks dispatch, which
+  stops commit, which is the only thing that returns PRNs: the stall sustains
+  itself and the machine is DEADLOCKED, not slow. Report `total_demand` and
+  `PopCount(free_list)`, since "free=0 while demand=16" is the entire diagnosis.
+
+  Without this assertion the only symptom is core.scala's generic "Pipeline has
+  hung" firing `boom_timeout` cycles later, naming nothing about vector rename
+  and pointing the reader at the LSU. Real case: at LMUL=8 an in-flight load
+  group starved at the D$ interface, so its `group_done` never broadcast, its
+  PRNs stayed busy and the free list drained to zero. Size the threshold far
+  above any legitimate refill — one selection port refills per cycle, so even a
+  full `allocWidth` reservoir reloads in `allocWidth` cycles. Same shape as
+  VecCiiFlush's `drainWatchdog`.
+
   Three assertions guard the per-lane fire specifically:
     - `alloc_fire(w)` implies `reqs(w)` — a lane cannot consume a window it never
       asked for;

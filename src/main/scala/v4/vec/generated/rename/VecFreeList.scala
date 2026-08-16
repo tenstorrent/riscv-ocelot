@@ -33,7 +33,10 @@ class VecFreeList(
   numPhysRegs:    Int,
   numArchRegs:    Int,
   maxGroupSize:   Int,
-  freeDiscipline: String
+  freeDiscipline: String,
+  // Cycles of uninterrupted `!alloc_ok` that count as a deadlock rather than
+  // back-pressure; 0 disables the counter entirely (no register emitted).
+  allocStarveWatchdog: Int = 4096
 )(implicit p: Parameters) extends BoomModule
 {
   // `require` it is one of the two known spellings: a mistyped discipline
@@ -334,6 +337,37 @@ class VecFreeList(
 
   assert(!(io.debug_freelist & dealloc_mask).orR,
     "VecFreeList: returning a free physical register")
+
+  //@req-spec-rename.f5
+  // STARVATION WATCHDOG. `!alloc_ok` is ordinary back-pressure for a few cycles
+  // -- a wide group waiting on the pre-selection stage to refill -- but it can
+  // never be the steady state: rename stalling forever blocks dispatch, which
+  // stops commit, which is the only thing that returns PRNs, so the stall
+  // becomes self-sustaining and the machine is deadlocked, not slow.
+  //
+  // Without this the only symptom is core.scala's generic "Pipeline has hung"
+  // firing `boom_timeout` cycles later, at a point that names nothing about the
+  // vector rename and sends you looking at the LSU. Cost of getting it wrong at
+  // LMUL=8: an in-flight group starves at the D$ interface, its group_done never
+  // broadcasts, its PRNs stay busy, and the free list drains to zero -- observed
+  // on `axpy-vector`. Report the demand and the free count, since "free=0 while
+  // demand=16" is the whole diagnosis.
+  //
+  // Threshold is deliberately far above any legitimate refill: one selection
+  // port refills per cycle, so even a full `allocWidth` reservoir reloads in
+  // `allocWidth` cycles. Mirrors VecCiiFlush's `drainWatchdog` idiom.
+  if (allocStarveWatchdog > 0) {
+    val starve_cnt = RegInit(0.U(log2Ceil(allocStarveWatchdog + 2).W))
+    when (!alloc_ok) {
+      starve_cnt := starve_cnt + 1.U
+    } .otherwise {
+      starve_cnt := 0.U
+    }
+    assert(starve_cnt <= allocStarveWatchdog.U,
+      "VecFreeList: no allocation has been possible for allocStarveWatchdog cycles -- " +
+      "the free list is starved and rename is deadlocked (commit cannot return PRNs " +
+      "while dispatch is blocked). Check for a vector group whose group_done never fired.")
+  }
 
   for (w <- 0 until coreWidth) {
     assert(!io.reqs(w) || (io.req_members(w) >= 1.U && io.req_members(w) <= maxGroupSize.U),

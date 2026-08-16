@@ -189,6 +189,21 @@ from Tenstorrent Inc.
   six instances (and the LCB) into `vec_lsu_empty`, which folds into
   `io.core.fencei_rdy`.
 
+  `io.filled_vec`, `UInt(entries.W)`: a READ-ONLY VIEW of the per-entry `filled`
+  register this module already keeps, in PHYSICAL index order (index it with
+  `phys()`, i.e. the low `idxW` bits of a pointer). It declares no state, adds no
+  read port and costs no cycle. It exists for one caller and one reason: the
+  snoop's store-presentation data gate (spec-memord.a22) must be answered
+  COMBINATIONALLY, in the cycle the candidate is built, and the `rd` port cannot
+  do it — that port's `resp.filled` is registered and arrives one cycle late,
+  which is already after the presentation it was meant to gate. See VecLsu
+  section (h3) for what goes wrong when the caller substitutes a constant.
+
+  ===> AND `filled_vec` IS NOT AN EXCEPTION TO THE STATUS RULE BELOW, because it
+       is per-ENTRY and carries no instruction identity: it says which slots hold
+       bytes, never which op owns them or whether that op is done. A reduction of
+       it routed to an issue unit would be exactly the `busy` the rule forbids.
+
   Clock and reset: Chisel's implicit `clock` (posedge) and `reset` (ACTIVE-HIGH,
   SYNCHRONOUS). No second clock or reset domain appears here.
 
