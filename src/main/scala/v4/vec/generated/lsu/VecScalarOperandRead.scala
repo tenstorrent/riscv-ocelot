@@ -24,7 +24,7 @@ import org.chipsalliance.cde.config.Parameters
 
 import boom.v4.common._
 import boom.v4.exu.BrUpdateInfo
-import boom.v4.util.{GetNewBrMask, IsKilledByBranch}
+import boom.v4.util.{GetNewBrMask, IsKilledByBranch, UpdateBrMask}
 import boom.v4.vec.generated.{IntWbSnoop, VecTrace}
 
 // GENERATED from src/main/nlhdl/vec/lsu/VecScalarOperandRead.nlhdl.scala. Do
@@ -74,6 +74,10 @@ class VecScalarOperandRead(
   val rr_held_cycles = Reg(UInt(8.W))
 
   val killedNow = IsKilledByBranch(io.brupdate, io.rob_flush, rr_uop)
+
+  // The grant-cycle form of `killedNow`: the branch resolving THIS cycle also
+  // kills the uop being granted this cycle (see the capture below).
+  val grantKilled = IsKilledByBranch(io.brupdate, io.rob_flush, io.iss.bits)
 
   //@req-spec-issue.d3
   val heldAddr = Seq(rr_uop.prs1, rr_uop.prs2)
@@ -235,14 +239,22 @@ class VecScalarOperandRead(
   val presented = (0 until 2).map(n => Mux(heldRtypeZero(n), 0.U(xLen.W), presentedRaw(n)))
 
   when (io.iss.valid) {
-    rr_uop         := io.iss.bits
-    rr_valid       := true.B
-    rr_need(0)     := !fire(0)
-    rr_need(1)     := !fire(1)
+    // THE GRANT CYCLE IS A KILL CYCLE TOO. `brupdate.b1` is a ONE-CYCLE pulse and
+    // the issue queues feeding this port are not past-PNR gated, so a grant can
+    // land in the very cycle its branch resolves. Capturing `iss.bits` raw kept
+    // the resolved branch's bit set in `rr_uop.br_mask` forever after -- b1 was
+    // gone the next cycle, so `killedNow` never fired again -- and the squashed
+    // uop walked out of `out.valid` as a zombie, launching VecGroupCopy and
+    // clearing rob_bsy on an entry the ROB had already squashed. Apply the
+    // same-cycle mask update on capture and drop a grant this branch kills.
+    rr_uop         := UpdateBrMask(io.brupdate, io.iss.bits)
+    rr_valid       := !grantKilled
+    rr_need(0)     := !fire(0) && !grantKilled
+    rr_need(1)     := !fire(1) && !grantKilled
     rr_held_cycles := 0.U
     //@req-spec-issue.d3
     for (n <- 0 until 2) {
-      rr_wb_wait(n) := grantArm(n)
+      rr_wb_wait(n) := grantArm(n) && !grantKilled
       rr_hint(n)    := grantArm(n)
       rr_wb_seen(n) := false.B
     }

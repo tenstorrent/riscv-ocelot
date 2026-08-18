@@ -840,6 +840,18 @@ from Tenstorrent Inc.
 
   ---- Kill, tracing, assertions ----
 
+  THE GRANT CYCLE IS A KILL CYCLE TOO. `brupdate.b1` is a ONE-CYCLE pulse and the
+  queues granting this port are not past-PNR gated, so a grant legitimately lands
+  in the very cycle its branch resolves. The capture therefore stores
+  `UpdateBrMask(brupdate, iss.bits)` -- NOT `iss.bits` raw -- and takes
+  `rr_valid`/`rr_need`/the writeback-wait bits as 0 when
+  `IsKilledByBranch(brupdate, rob_flush, iss.bits)` holds in the grant cycle.
+  A raw capture keeps the resolved branch's bit set in `rr_uop.br_mask` for the
+  rest of the op's life while b1 is gone the next cycle, so the held-form kill
+  below can never fire again: the squashed uop leaves through `out.valid` as a
+  zombie, launches `VecGroupCopy`, and its group-done clears `rob_bsy` on an entry
+  the ROB has already squashed (`[rob] vec_clr_bsy naming an invalid entry`).
+
   A grant captured in the stage register is killed when
   `IsKilledByBranch(brupdate, rob_flush, rr_uop)` holds, suppressing `out.valid`
   that cycle AND clearing `rr_valid`/`rr_need` so a killed grant stops re-presenting
