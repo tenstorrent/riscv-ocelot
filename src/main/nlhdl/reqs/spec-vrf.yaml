@@ -1,0 +1,1570 @@
+family: vrf
+description: >
+  Vector and VL register files: port assignment and budget, bypass network,
+  speculative wakeups, and undisturbed-lane sourcing from stale_pvdest.
+spec_sources:
+  - docs_caracal/src/midcore.rst
+
+groups:
+  a: register-file sizing and physical-register parameterization
+  b: vector-PRN capacity as a published architectural limit
+  c: where VL, VTYPE and the vector mask live
+  d: the vector bypass network and pvtmp in the main VRF
+  e: speculative-wakeup policy, split by operand class
+  f: VRF construction — flops, banks, ports and read forwarding
+  g: the canonical 0-based VRF port assignment
+  h: the frozen SV constants behind the coprocessor's ports
+  i: undisturbed lanes always come from stale_pvdest
+  j: pvs3 versus stale_pvdest, and what the coprocessor pulls
+
+reqs:
+
+  # --- a: register-file sizing and parameterization -----------------------------
+
+  - id: spec-vrf.a1
+    kind: structure
+    statement: >
+      Caracal must make the number of physical registers parameterizable.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        |caracal| shall be configured to support an performant number of physical registers via
+        parameterization.
+    notes: >
+      The per-file default counts the parameterization must ship with are spec-vrf.a2 through
+      spec-vrf.a5.
+
+  - id: spec-vrf.a2
+    kind: structure
+    statement: >
+      The integer register file must provide 32 architectural registers with a default of 128
+      physical registers.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        * - Register file
+        - Architectural regs
+        - Physical regs (default)
+        * - Integer (INT)
+        - 32
+        - 128
+
+  - id: spec-vrf.a3
+    kind: structure
+    statement: >
+      The floating-point register file must provide 32 architectural registers with a default of
+      128 physical registers.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        * - Floating-point (FP)
+        - 32
+        - 128
+    notes: >
+      The third column is "Physical regs (default)" per the table header quoted in spec-vrf.a2.
+
+  - id: spec-vrf.a4
+    kind: structure
+    statement: >
+      The vector register file must provide 32 architectural registers with a default of 96
+      physical registers.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        * - Vector (VEC)
+        - 32
+        - 96
+    notes: >
+      §"The Vector Register File" restates the 96-PRN default beside the port counts; the port
+      obligations are spec-vrf.f1 through spec-vrf.f3. What the 96 implies for in-flight groups is
+      spec-vrf.b1 through spec-vrf.b7.
+
+  - id: spec-vrf.a5
+    kind: structure
+    statement: >
+      The VL register file must provide 1 architectural register with a default of 64 physical
+      registers.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        * - VL
+        - 1
+        - 64
+    notes: >
+      That VL is renamed into its own register file with its own map table, free list and busy
+      table is mined by sibling families — spec-decode.i1 and the rename family — so only the
+      sizing row is a vrf requirement. Where the VL value is *not* held is spec-vrf.c1.
+
+  # --- b: vector-PRN capacity as a published architectural limit ----------------
+
+  - id: spec-vrf.b2
+    kind: structure
+    statement: >
+      32 of the 96 vector PRNs must always be held by the committed map table.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        32 of the 96
+        vector PRNs are always held by the committed map table
+
+  - id: spec-vrf.b3
+    kind: structure
+    statement: >
+      The RMT must map all 32 architectural vector registers at all times, regardless of the
+      current LMUL.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        the RMT maps all 32 architectural vregs
+        at all times, regardless of the current ``LMUL``
+    notes: >
+      Stated here as the basis of the capacity derivation; the RMT's own structure and update rules
+      are mined by the rename family from §"Rename Map Table (RMT)".
+
+  - id: spec-vrf.b4
+    kind: structure
+    statement: >
+      An LMUL=8 OP.v must take 8 vector PRNs at once.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        an ``LMUL=8`` ``OP.v`` takes 8 at once
+
+  - id: spec-vrf.b6
+    kind: structure
+    statement: >
+      A segmented op must take two vector groups — pvdest plus pvtmp, 16 PRNs.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        a segmented op takes two
+        groups (``pvdest`` + ``pvtmp``, 16 PRNs)
+
+  - id: spec-vrf.c1
+    kind: structure
+    statement: >
+      The VL value must not be held in the integer register file.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        The VL value is therefore **not** held in the integer
+        RF
+    notes: >
+      The VL rename space itself — its own map table with maxBrCount snapshots, free list, busy
+      table, wakeup network, commit logic and read ports to every vector EU — is mined by
+      spec-decode.i1 and the rename family. Its sizing row is spec-vrf.a5.
+
+  - id: spec-vrf.c2
+    kind: structure
+    statement: >
+      A vset's rd GPR write when ``rd != x0`` must be a separate, ordinary integer destination.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        ``vset``'s ``rd`` GPR write (when ``rd != x0``) is a separate, ordinary integer destination and
+        is the only integer-RF interaction, leaving integer rename unchanged.
+
+  - id: spec-vrf.c3
+    kind: structure
+    statement: >
+      The vset rd GPR write must be the only integer-register-file interaction of the vector path.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        ``vset``'s ``rd`` GPR write (when ``rd != x0``) is a separate, ordinary integer destination and
+        is the only integer-RF interaction, leaving integer rename unchanged.
+
+  - id: spec-vrf.c4
+    kind: structure
+    statement: >
+      Integer rename must be left unchanged.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        ``vset``'s ``rd`` GPR write (when ``rd != x0``) is a separate, ordinary integer destination and
+        is the only integer-RF interaction, leaving integer rename unchanged.
+
+  - id: spec-vrf.c5
+    kind: structure
+    statement: >
+      VTYPE must not be renamed.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        ``VTYPE`` is **not** renamed —
+        it is held in the VCFG ``vtype`` mirror and carried to the EU in the per-uOP ``VConfig`` snapshot
+        (no VTYPE register file).
+
+  - id: spec-vrf.c6
+    kind: structure
+    statement: >
+      VTYPE must be held in the VCFG vtype mirror.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        it is held in the VCFG ``vtype`` mirror and carried to the EU in the per-uOP ``VConfig`` snapshot
+    notes: >
+      The mirror's speculative update and recovery rules are mined by spec-decode from
+      frontend.rst §"VCFG Mirror Recovery (speculative vtype)"; the obligation here is only that
+      the mirror, not a register file, is where VTYPE lives.
+
+  - id: spec-vrf.c7
+    kind: interface
+    statement: >
+      VTYPE must be carried to the execution unit in the per-uOP VConfig snapshot.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        it is held in the VCFG ``vtype`` mirror and carried to the EU in the per-uOP ``VConfig`` snapshot
+
+  - id: spec-vrf.c8
+    kind: structure
+    statement: >
+      Caracal must contain no VTYPE register file.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        (no VTYPE register file).
+
+  - id: spec-vrf.c9
+    kind: structure
+    statement: >
+      Caracal must contain no dedicated mask register file.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        |caracal|/|boom| has no dedicated mask **register file**; Vector mask is treated
+        like any other vector register, with masking semantics handled in the execution units.
+
+  - id: spec-vrf.c10
+    kind: structure
+    statement: >
+      A vector mask must be treated like any other vector register.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        Vector mask is treated
+        like any other vector register, with masking semantics handled in the execution units.
+
+  - id: spec-vrf.c11
+    kind: function
+    statement: >
+      Masking semantics must be handled in the execution units.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        with masking semantics handled in the execution units.
+
+  - id: spec-vrf.b11
+    kind: function
+    statement: >
+      An ``OP.v`` that finds too few free vector PRNs must stall at rename.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "The Register Files and Bypass Network"
+      quote: >
+        **Nothing enforces the bound explicitly** — it is a consequence of free-list capacity, not a
+        credit. At the bound an ``OP.v`` simply finds too few free PRNs and **stalls at rename**, under the
+        ordinary all-or-nothing allocation rule (see :ref:`cii-shared-mapping`).
+    notes: >
+      Resolved 2026-08-03: the in-flight bound of 8 LMUL=8 groups is derived from free-list
+      capacity, not enforced by a credit check. The spec states there is no group-credit counter
+      and that none should be added, since it would duplicate state the free list holds; that
+      absence is not written as a requirement. The rename stall itself is spec-rename.e16 and
+      the all-or-nothing rule is spec-rename group e.
+
+  # --- d: the vector bypass network and pvtmp in the main VRF -------------------
+
+  - id: spec-vrf.d1
+    kind: structure
+    statement: >
+      Caracal must implement a vector-pipeline bypass network equivalent to BOOM's integer and FP
+      operand forwarding network.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "Vector Bypass Network"
+      quote: >
+        |boom| supports a full operand forwarding bypass network for the integer and FP pipeline. |caracal|
+        implements the equivalent bypass network for the vector pipeline.
+    notes: >
+      BOOM's existing integer/FP network is cited as the reference point, not as a Caracal
+      obligation on its own.
+
+  - id: spec-vrf.d2
+    kind: structure
+    statement: >
+      Caracal must contain no separate temporary register file.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "Vector Bypass Network"
+      quote: >
+        There is **no separate temporary
+        register file**
+
+  - id: spec-vrf.d3
+    kind: structure
+    statement: >
+      Intermediate results for shared instructions must live in the main VRF as the pvtmp group.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "Vector Bypass Network"
+      quote: >
+        intermediate results for shared instructions live in the main VRF as the
+        ``pvtmp`` group
+
+  - id: spec-vrf.d4
+    kind: structure
+    statement: >
+      Every vector execution unit must address pvtmp exactly as it addresses any other vector PRN.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "Vector Bypass Network"
+      quote: >
+        every vector EU
+        addresses ``pvtmp`` exactly as it addresses any other vector PRN
+
+  - id: spec-vrf.d5
+    kind: function
+    statement: >
+      pvtmp reads and writes must go through the existing vector register machinery.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "Vector Bypass Network"
+      quote: >
+        reads, writes, busy/wakeup, and
+        branch/commit reclaim all go through the existing vector register machinery.
+
+  - id: spec-vrf.d6
+    kind: function
+    statement: >
+      pvtmp busy tracking and wakeup must go through the existing vector register machinery.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "Vector Bypass Network"
+      quote: >
+        reads, writes, busy/wakeup, and
+        branch/commit reclaim all go through the existing vector register machinery.
+    notes: >
+      pvtmp's group-done wakeup of the consuming half of a shared instruction is mined by the
+      producer-side families from §"Segmented Load" (lsu) and §"Segmented Store" (cii).
+
+  - id: spec-vrf.d7
+    kind: function
+    statement: >
+      pvtmp branch and commit reclaim must go through the existing vector register machinery.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: regfiles-bypass
+      heading: "Vector Bypass Network"
+      quote: >
+        reads, writes, busy/wakeup, and
+        branch/commit reclaim all go through the existing vector register machinery.
+
+  # --- e: speculative-wakeup policy, split by operand class --------------------
+
+  - id: spec-vrf.e1
+    kind: structure
+    statement: >
+      The speculative-wakeup policy must be split by operand class.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: spec-wakeups
+      heading: "Speculative Wakeups"
+      quote: >
+        With the single unified issue stage there is no separate scalar/vector scheduling stage to steer
+        speculative wakeups to, so the policy is split by **operand class** instead:
+    notes: >
+      The split is forced by the single unified issue stage: there is no separate scalar/vector
+      scheduling stage to steer speculative wakeups to.
+
+  - id: spec-vrf.e2
+    kind: function
+    statement: >
+      Scalar feeders of a vector slot must participate in BOOM's existing speculative load-hit
+      wakeup unchanged.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: spec-wakeups
+      heading: "Speculative Wakeups"
+      quote: >
+        **Scalar feeders of a vector slot** (base/stride on the integer network, the ``.vf`` scalar on
+        the FP network) participate in |boom|'s existing **speculative load-hit wakeup** unchanged.
+
+  - id: spec-vrf.e3
+    kind: structure
+    statement: >
+      The base and stride feeders of a vector slot must be woken on the integer wakeup
+      network.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: spec-wakeups
+      heading: "Speculative Wakeups"
+      quote: >
+        (base/stride on the integer network, the ``.vf`` scalar on
+        the FP network)
+    notes: >
+      Scope narrowed to base and stride on 2026-08-03, when VL was removed from this bullet.
+      **This reverses the 2026-07-31 ruling** recorded here, which held that a pvl consumer is
+      speculatively woken on a scalar load hit and so follows the scalar speculation policy.
+      That conflated two consumers: when a vsetvli takes its AVL from a scalar load it is the
+      *vset* that is speculatively woken, as an ordinary integer consumer, while the younger
+      vector op's pvl waits on the vset's VL writeback. No pvl consumer is ever woken by a load
+      hit, so the VL network needs no re-busy machinery. The 2026-07-31 note also flagged that
+      "VL on the integer network" contradicted VL having its own network; that phrasing is now
+      corrected too. The VL wakeup policy is spec-vrf.e6.
+
+  - id: spec-vrf.e4
+    kind: interface
+    statement: >
+      The ``.vf`` scalar feeder of a vector slot must be woken on the FP wakeup network.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: spec-wakeups
+      heading: "Speculative Wakeups"
+      quote: >
+        the ``.vf`` scalar on
+        the FP network
+
+  - id: spec-vrf.e5
+    kind: function
+    statement: >
+      A vector uOP waiting on a scalar-load result must be woken speculatively just like any
+      integer or FP consumer.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: spec-wakeups
+      heading: "Speculative Wakeups"
+      quote: >
+        A vector
+        uOP waiting on a scalar-load result is woken speculatively just like any integer/FP consumer
+
+  - id: spec-vrf.e6
+    kind: function
+    statement: >
+      A speculatively woken vector uOP must be re-busied through the same machinery if the load
+      later misses.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: spec-wakeups
+      heading: "Speculative Wakeups"
+      quote: >
+        and is
+        re-busied through the same machinery if the load later misses.
+
+  - id: spec-vrf.e7
+    kind: function
+    statement: >
+      Vector operands must wake only on actual completion.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: spec-wakeups
+      heading: "Speculative Wakeups"
+      quote: >
+        **Vector operands** (``pvs*``, ``pvm`` on the vector wakeup network) wake only on **actual
+        completion**, not speculatively.
+    notes: >
+      Rationale: a vector-load producer completes via the Load Coalescing Buffer after a long,
+      variable, streaming latency and a vector-arithmetic producer completes in program order over
+      the CII, so neither has the fixed short load-use latency that makes speculation profitable;
+      waking on real writeback also avoids adding re-busy/replay machinery to the vector network
+      and the vector issue slots.
+
+  - id: spec-vrf.e8
+    kind: interface
+    statement: >
+      The pvs* and pvm operands must be woken on the vector wakeup network.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: spec-wakeups
+      heading: "Speculative Wakeups"
+      quote: >
+        (``pvs*``, ``pvm`` on the vector wakeup network)
+
+  - id: spec-vrf.e9
+    kind: function
+    statement: >
+      Vector operands must never be woken speculatively.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: spec-wakeups
+      heading: "Speculative Wakeups"
+      quote: >
+        wake only on **actual
+        completion**, not speculatively.
+
+  - id: spec-vrf.e10
+    kind: function
+    statement: >
+      ``pvl`` must wake on actual completion rather than speculatively.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: spec-wakeups
+      heading: "Speculative Wakeups"
+      quote: >
+        **``pvl``** wakes on **actual completion**, on its own **VL** wakeup network — *not* on the integer
+        network and *not* speculatively.
+    notes: >
+      Resolved 2026-08-03, and this REVERSES the 2026-07-31 ruling formerly recorded on
+      spec-vrf.e3, which placed VL in the speculative load-hit class. That ruling conflated two
+      consumers: a vsetvli fed by a scalar load is itself speculatively woken as an ordinary
+      integer consumer, while the younger vector op's pvl waits on the vset's VL writeback. The
+      spec's reason no VL producer suits speculation: vsetivli's pvl is born ready,
+      vsetvli/vsetvl have deterministic integer-ALU latency, and vleff publishes its trimmed VL
+      only after a long variable vector-load stream. So the VL network needs no re-busy or
+      replay machinery.
+
+  # --- f: VRF construction ------------------------------------------------------
+
+  - id: spec-vrf.f1
+    kind: structure
+    statement: >
+      The vector physical register file must be parameterizable.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        The vector physical register file will be parameterizable with default support for
+        96 PRNs, **9 Read Ports, and 3 Write Ports**
+    notes: >
+      The 96-PRN default is spec-vrf.a4, from the sizing table in §"The Register Files and Bypass
+      Network".
+
+  - id: spec-vrf.f2
+    kind: structure
+    statement: >
+      The VRF must provide 9 read ports by default.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        default support for
+        96 PRNs, **9 Read Ports, and 3 Write Ports** (see :ref:`vrf-ports` for the canonical
+        port assignment)
+    notes: >
+      Which unit owns which read port is spec-vrf.g2 through spec-vrf.g10.
+
+  - id: spec-vrf.f3
+    kind: structure
+    statement: >
+      The VRF must provide 3 write ports by default.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        default support for
+        96 PRNs, **9 Read Ports, and 3 Write Ports** (see :ref:`vrf-ports` for the canonical
+        port assignment)
+    notes: >
+      Which unit owns which write port is spec-vrf.g20, spec-vrf.g21, spec-vrf.g9 and spec-vrf.g11.
+
+  - id: spec-vrf.f4
+    kind: structure
+    statement: >
+      The VRF must be implemented using standard cell flip flops.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        The vector register file (VRF) will be
+        implemented using standard cell flip flops, with a banked architecture.
+    notes: >
+      This is the binding implementation choice. The §"The Register Files and Bypass Network"
+      clause asking that an area/timing estimate be produced before committing to flops rather
+      than a latch/SRAM-based banked file was ruled non-normative on 2026-07-31 — see
+      spec-vrf.f4.
+
+  - id: spec-vrf.f5
+    kind: structure
+    statement: >
+      The VRF must use a banked architecture.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        implemented using standard cell flip flops, with a banked architecture.
+
+  - id: spec-vrf.f6
+    kind: structure
+    statement: >
+      A vector register must split across 4 banks of 64 (VLEN/4) bits.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        A vector register
+        will split across 4 banks of 64 (VLEN/4) bits.
+
+  - id: spec-vrf.f7
+    kind: structure
+    statement: >
+      Each VRF port must have its own decoder.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        This each port will have its own
+        decoder and support forwarding for single cycle reads, if a write port writes
+        to the same PRN.
+
+  - id: spec-vrf.f8
+    kind: timing
+    statement: >
+      Each VRF port must support forwarding for single cycle reads when a write port writes to the
+      same PRN.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        support forwarding for single cycle reads, if a write port writes
+        to the same PRN.
+
+  - id: spec-vrf.f9
+    kind: structure
+    statement: >
+      The VRF must be initialized only by the usingRVV switch.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        The VRF is only initialized by the usingRVV switch.
+
+  - id: spec-vrf.f10
+    kind: structure
+    statement: >
+      The VRF bank count must be fixed at 4.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        **Bank count is fixed at 4 and bank width is ``VLEN/4``**; the array is
+        ``numVecPhysRegisters × VLEN``.
+    notes: >
+      Resolved 2026-08-03. The 64 b, 96 x 256 b and 24 kbit figures are the VLEN = 256 instances
+      of these formulas, not independent constants.
+
+  - id: spec-vrf.f11
+    kind: structure
+    statement: >
+      The VRF bank width must be ``VLEN/4``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        **Bank count is fixed at 4 and bank width is ``VLEN/4``**; the array is
+        ``numVecPhysRegisters × VLEN``.
+
+  - id: spec-vrf.f12
+    kind: structure
+    statement: >
+      The VRF array must be ``numVecPhysRegisters × VLEN``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        the array is
+        ``numVecPhysRegisters × VLEN``.
+
+  - id: spec-vrf.f13
+    kind: structure
+    statement: >
+      Two write ports must never target the same PRN.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        **Two write ports never target the same PRN.** Every PRN is the destination of exactly one
+        producer, and rename always allocates a *fresh* group, so ``W0``/``W1`` (the LCB's lanes, one write
+        per destination PRN) and ``W2`` (the coprocessor) can never name the same register
+    notes: >
+      Resolved 2026-08-03. Holds for shared instructions too, where one half writes pvtmp and
+      the other pvdest — two distinct groups. The spec states no write arbitration or priority
+      is required; that absence is not written as a separate requirement.
+
+  - id: spec-vrf.f14
+    kind: structure
+    statement: >
+      Every VRF read port must span all four banks.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vector-regfile
+      heading: "The Vector Register File"
+      quote: >
+        Banking splits the register's **width**, not the port
+        count: a VRF read is a full ``VLEN``, so *every* port spans all four banks, and each bank carries
+        all 12 ports at ``VLEN/4`` bits.
+    notes: >
+      Resolved 2026-08-03: this is why bank conflicts among the 9 read ports cannot arise.
+      Several read ports addressing one bank is the normal case, not a hazard, which is what the
+      per-port per-bank decoder exists for.
+
+  # --- g: the canonical 0-based VRF port assignment -----------------------------
+
+  - id: spec-vrf.g1
+    kind: structure
+    statement: >
+      VRF ports must be statically partitioned rather than arbitrated.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        Ports are **statically partitioned**, not arbitrated. This table is the single source of truth;
+        :doc:`cii` and :doc:`loadstore` refer to it rather than restating port numbers.
+    notes: >
+      This table is the single source of truth for port numbers; cii.rst and loadstore.rst defer
+      to it. The coprocessor-side restatements in cii.rst are mined as spec-cii.f25, spec-cii.f26
+      and spec-cii.f30, and the load-side ones by spec-lsu.
+
+  - id: spec-vrf.g2
+    kind: interface
+    statement: >
+      The Load Unit and LCB must read the index stream on ``R0``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        * - Load Unit / LCB
+        - ``R0`` index, ``R1`` mask, ``R2`` ``stale_pvdest``
+
+  - id: spec-vrf.g3
+    kind: interface
+    statement: >
+      The Load Unit and LCB must read the mask on ``R1``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        * - Load Unit / LCB
+        - ``R0`` index, ``R1`` mask, ``R2`` ``stale_pvdest``
+
+  - id: spec-vrf.g4
+    kind: interface
+    statement: >
+      The Load Unit and LCB must read ``stale_pvdest`` on ``R2``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        ``R2`` is likewise not in the oldest drafts: it is the LCB's read of ``stale_pvdest``, required for
+        tail-/mask-undisturbed loads
+    notes: >
+      R2 is absent from the oldest drafts and exists for tail-/mask-undisturbed loads. What the LCB
+      does with the port — pre-loading each assembly entry from the corresponding stale_pvdest
+      member — is mined by spec-lsu.e9, spec-lsu.e10 and spec-lsu.e11; the rule that stale_pvdest
+      is the only source of undisturbed lanes is spec-vrf.i4.
+
+  - id: spec-vrf.g20
+    kind: interface
+    statement: >
+      The Load Unit and LCB write ports must track ``lsuWidth``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        ``W0``–``W1``, tracking ``lsuWidth`` (``W0`` only at ``lsuWidth = 1``)
+    notes: >
+      Supersedes the retired spec-vrf.g5 and g6, which named the Large/Mega and Medium
+      configurations. Resolved on 2026-08-03: binding to the parameter covers every
+      configuration, including those below Medium, without this table tracking a config list.
+
+  - id: spec-vrf.g21
+    kind: interface
+    statement: >
+      The Load Unit and LCB must write the VRF on ``W0`` only at ``lsuWidth = 1``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        (``W0`` only at ``lsuWidth = 1``)
+
+  - id: spec-vrf.g7
+    kind: interface
+    statement: >
+      The Store Unit must read store data on ``R3``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        * - Store Unit
+        - ``R3`` store data, ``R4`` mask/index
+
+  - id: spec-vrf.g8
+    kind: interface
+    statement: >
+      The Store Unit must read the mask and index on ``R4``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        * - Store Unit
+        - ``R3`` store data, ``R4`` mask/index
+
+  - id: spec-vrf.g9
+    kind: structure
+    statement: >
+      The Store Unit must have no VRF write port.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        — (a store *reads* the VRF and writes memory; it never writes the VRF)
+
+  - id: spec-vrf.g10
+    kind: interface
+    statement: >
+      The CII coprocessor must read the VRF on ``R5``–``R8``, one port per Src-Request pull lane.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        * - CoProcessor (CII)
+        - ``R5``–``R8`` (the four Src-Request pull lanes)
+        - ``W2``
+    notes: >
+      This is the canonical statement; the cii.rst restatement of the same four ports is
+      spec-cii.f25. Why the count is four rather than chosen here: spec-vrf.h3.
+
+  - id: spec-vrf.g11
+    kind: interface
+    statement: >
+      The CII coprocessor must write the VRF on ``W2``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        * - CoProcessor (CII)
+        - ``R5``–``R8`` (the four Src-Request pull lanes)
+        - ``W2``
+    notes: >
+      Canonical statement; the cii.rst restatement is spec-cii.f26.
+
+  - id: spec-vrf.g22
+    kind: structure
+    statement: >
+      The per-unit port assignment must total 9 read ports and 2 write ports at
+      ``lsuWidth = 1``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        **The write-port count follows ``lsuWidth``**, so the total is **9R / 2W** at ``lsuWidth = 1`` and
+        **9R / 3W** at ``lsuWidth = 2``.
+    notes: >
+      Supersedes the retired spec-vrf.g12, which stated 9R/3W unconditionally. The 9R/3W figure
+      is spec-vrf.g23. The 9R/3W default port count in §"The Vector Register File"
+      (spec-vrf.f2/f3) is therefore the lsuWidth = 2 case.
+
+  - id: spec-vrf.g23
+    kind: structure
+    statement: >
+      The per-unit port assignment must total 9 read ports and 3 write ports at
+      ``lsuWidth = 2``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        the total is **9R / 2W** at ``lsuWidth = 1`` and
+        **9R / 3W** at ``lsuWidth = 2``.
+
+  - id: spec-vrf.g18
+    kind: structure
+    statement: >
+      ``R1`` and ``R4`` must each have exactly one reader.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        ``R1`` and ``R4`` each have **exactly one reader**. On the load path that reader is ``ld_vAGEN_1``,
+        which performs the mask read for **every** access class including unit-stride
+    notes: >
+      Resolved 2026-08-03, closing an open question filed against the agen family: with the
+      stage 2 Packer reading the VRF, R1 would have two concurrent readers. The AGEN-side
+      obligations are spec-agen.e12 and e13.
+
+  - id: spec-vrf.g19
+    kind: structure
+    statement: >
+      ``R4`` must serve both the store mask and the store index.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        ``R4`` serves both the store mask and the store index because **the two reads never need the same
+        cycle**
+    notes: >
+      Resolved 2026-08-03, closing the second agen open question. The reason no second port is
+      needed is the read cadence: the mask is read once per OP.v and latched (spec-agen.e14)
+      while index members are read as the walk advances, so an indexed masked store never needs
+      both in one cycle.
+
+  - id: spec-vrf.g13
+    kind: structure
+    statement: >
+      Segmented-LS temporaries in pvtmp must be ordinary VRF groups using the ports already
+      listed.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        Segmented-LS temporaries (``pvtmp``) are ordinary VRF groups and use these same ports — the
+        LSU/coprocessor read or write ``pvtmp`` on the ports already listed (it is a destination for one half
+        and a source for the other)
+
+  - id: spec-vrf.g14
+    kind: structure
+    statement: >
+      pvtmp must add no new VRF ports.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        adding no new ports.
+
+  - id: spec-vrf.g15
+    kind: function
+    statement: >
+      The CII must never stall on a VRF write port.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        Because the partition is static, **the CII can never stall on a VRF write port**: it owns ``W2``
+        outright.
+    notes: >
+      The invariant is load-bearing because the CII Writeback channel is credit-metered and has no
+      back-pressure line, so a port conflict would have nowhere to go. This is the canonical
+      statement; the cii.rst restatement is spec-cii.f30.
+
+  - id: spec-vrf.g16
+    kind: structure
+    statement: >
+      The CII must own ``W2`` outright.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        it owns ``W2``
+        outright.
+
+  - id: spec-vrf.g17
+    kind: interface
+    statement: >
+      The coprocessor must not present two result beats in one cycle.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        One port suffices precisely because
+        ``CII_NUM_DST_WB = 1``: the coprocessor cannot present two result beats in one cycle, so a second
+        port would never be driven.
+    notes: >
+      This is why one write port suffices; a second port would never be driven.
+
+  # --- h: the frozen SV constants behind the coprocessor's ports ----------------
+
+  - id: spec-vrf.h2
+    kind: interface
+    statement: >
+      The host must match ``tt_cii_caracal_pkg.svh``, which is the authority for the coprocessor
+      port figures.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        ``tt_cii_caracal_pkg.svh`` is the authority and the host must match it:
+    notes: >
+      The general obligation that both sides bind to that package is spec-cii.a3.
+
+  - id: spec-vrf.h3
+    kind: structure
+    statement: >
+      The frozen constants ``CII_NUM_SRC_REQ`` and ``CII_NUM_SRC_DAT_RSP`` of 4 must yield four
+      coprocessor read ports ``R5``–``R8``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        * - ``CII_NUM_SRC_REQ`` / ``CII_NUM_SRC_DAT_RSP``
+        - 4
+        - **Four** coprocessor read ports (``R5``–``R8``).
+    notes: >
+      All four lanes can be live in the same cycle, which is why four separate ports rather than a
+      shared arbitrated port are needed. The constants themselves are also mined from cii.rst as
+      spec-cii.a9 and spec-cii.a11.
+
+  - id: spec-vrf.h4
+    kind: structure
+    statement: >
+      The frozen constant ``CII_NUM_DST_WB`` of 1 must yield one coprocessor write port ``W2``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        * - ``CII_NUM_DST_WB``
+        - 1
+        - **One** coprocessor write port (``W2``).
+
+  - id: spec-vrf.h5
+    kind: interface
+    statement: >
+      ``CII_NUM_DST_WB`` must match the ``tt_cii_interface`` default.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        The constant is flagged *must match the*
+        ``tt_cii_interface`` *default* — the relay's ``type(wb_data)`` resolves against it, so an
+        override that differs is a port-connection mismatch.
+    notes: >
+      The relay's type(wb_data) resolves against the default, so an override that differs is a
+      port-connection mismatch.
+
+  - id: spec-vrf.h6
+    kind: structure
+    statement: >
+      The value of ``CII_NUM_SRC_REQ`` must be taken as authoritative over its inline comment.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        Note that ``tt_cii_caracal_pkg.svh`` also contradicts itself here — the
+        inline comment on ``CII_NUM_SRC_REQ = 4`` still reads "2 VRF read ports for CII (5,6)". The
+        **value** is authoritative, not the comment.
+    notes: >
+      Earlier drafts said 7R/4W, reasoning that a *pull* interface "can consume at most two VRF
+      reads per cycle"; the spec records that this was wrong in both directions once the SV froze —
+      the pull interface has four lanes and one write port, not two. The stale inline comment in
+      the package is a live source-of-truth hazard and is raised in open_questions.
+
+  - id: spec-vrf.h7
+    kind: interface
+    statement: >
+      The VPU wrapper must return member ``k`` of ``{VS1, VS2, VS3, VM}`` in one dat beat.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vrf-ports
+      heading: "Port assignment (canonical, 0-based)"
+      quote: >
+        The VPU wrapper returns "member ``k`` of
+        ``{VS1, VS2, VS3, VM}`` in one dat beat", so all four lanes can be live in the same cycle.
+    notes: >
+      Quoted here as the reason the four coprocessor read ports must be independent; the
+      coprocessor-side pull and Src-Data obligations are mined by the cii family from cii.rst.
+
+  # --- i: undisturbed lanes always come from stale_pvdest ----------------------
+
+  - id: spec-vrf.i1
+    kind: structure
+    statement: >
+      Under renaming, pvdest must be a fresh physical group.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        Under renaming, ``pvdest`` is a **fresh** group; the destination's previous contents live in
+        ``stale_pvdest``.
+
+  - id: spec-vrf.i2
+    kind: structure
+    statement: >
+      The destination's previous contents must live in stale_pvdest.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        the destination's previous contents live in
+        ``stale_pvdest``.
+
+  - id: spec-vrf.i3
+    kind: structure
+    statement: >
+      stale_pvdest must be the architectural old-``vd`` group.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        ``stale_pvdest`` is the architectural old-``vd`` group
+
+  - id: spec-vrf.i4
+    kind: function
+    statement: >
+      stale_pvdest must be the only source of undisturbed lanes.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        is the **only** source of undisturbed
+        lanes (``vta = 0`` tail, ``vma = 0`` masked-off, and any ``vstart > 0`` prefix)
+    notes: >
+      One rule governs every undisturbed case in the machine. Where each consumer applies it is
+      mined elsewhere: the coprocessor pulls old-vd as the STALE_VD slot and applies vta/vma itself
+      (spec-cii.f10, spec-cii.h18); the LCB pre-loads from stale_pvdest on R2 (spec-lsu.e9 through
+      spec-lsu.e11); the standalone VL == 0 group copy reuses the Load Unit's ports (spec-lsu.m5
+      through spec-lsu.m7).
+
+  - id: spec-vrf.i5
+    kind: function
+    statement: >
+      Tail lanes under ``vta = 0`` must be sourced from stale_pvdest.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        the **only** source of undisturbed
+        lanes (``vta = 0`` tail, ``vma = 0`` masked-off, and any ``vstart > 0`` prefix)
+
+  - id: spec-vrf.i6
+    kind: function
+    statement: >
+      Masked-off lanes under ``vma = 0`` must be sourced from stale_pvdest.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        the **only** source of undisturbed
+        lanes (``vta = 0`` tail, ``vma = 0`` masked-off, and any ``vstart > 0`` prefix)
+
+  - id: spec-vrf.i7
+    kind: function
+    statement: >
+      Any ``vstart > 0`` prefix lanes must be sourced from stale_pvdest.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        the **only** source of undisturbed
+        lanes (``vta = 0`` tail, ``vma = 0`` masked-off, and any ``vstart > 0`` prefix)
+
+  - id: spec-vrf.i8
+    kind: function
+    statement: >
+      A consumer needing old-``vd`` must read stale_pvdest.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        A consumer needing
+        old-``vd`` reads ``stale_pvdest`` — **never** ``pvs3``.
+
+  - id: spec-vrf.i9
+    kind: function
+    statement: >
+      A consumer needing old-``vd`` must never read pvs3.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        old-``vd`` reads ``stale_pvdest`` — **never** ``pvs3``.
+
+  # --- j: pvs3 versus stale_pvdest, and what the coprocessor pulls --------------
+
+  - id: spec-vrf.j1
+    kind: structure
+    statement: >
+      pvs3 and stale_pvdest must be two independent MicroOp fields.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        ``pvs3`` and ``stale_pvdest`` are **two independent ``MicroOp`` fields naming two independent physical
+        groups**
+
+  - id: spec-vrf.j2
+    kind: structure
+    statement: >
+      pvs3 and stale_pvdest must name two independent physical groups.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        **two independent ``MicroOp`` fields naming two independent physical
+        groups**
+
+  - id: spec-vrf.j3
+    kind: interface
+    statement: >
+      pvs3 and stale_pvdest must both be exposed to the coprocessor as separate CII source slots.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        and both are exposed to the coprocessor as **separate CII source slots**:
+
+  - id: spec-vrf.j4
+    kind: structure
+    statement: >
+      pvs3 must name the group holding an explicitly encoded third source operand.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        ``pvs3`` is the group holding an **explicitly encoded third source operand** — the store-data
+        register of ``vse.v vs3, (rs1)``, for instance.
+
+  - id: spec-vrf.j5
+    kind: structure
+    statement: >
+      stale_pvdest must name the group that held the destination architectural vreg before this
+      OP.v renamed it.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        ``stale_pvdest`` is the group that held the destination architectural vreg **before this ``OP.v``
+        renamed it**.
+
+  - id: spec-vrf.j6
+    kind: structure
+    statement: >
+      stale_pvdest must exist for every vector op with a destination, whether or not that op
+      encodes a third source.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        It exists for *every* vector op with a destination, whether or not that op encodes a
+        third source.
+
+  - id: spec-vrf.j7
+    kind: function
+    statement: >
+      For read-modify-write arithmetic whose third source is the old destination, pvs3 and
+      stale_pvdest must name the same group.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        They **coincide** for read-modify-write arithmetic, and that is the common case: ``vfmacc.vv vd, vs1,
+        vs2`` computes ``vd += vs1 * vs2``, so its third source *is* the old destination and both fields name
+        the same group.
+
+  - id: spec-vrf.j8
+    kind: function
+    statement: >
+      Whenever an op needs old-``vd`` for merging but its third source differs or is absent, pvs3
+      and stale_pvdest must name different groups.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        They **diverge** whenever an instruction needs old-``vd`` for merging but its third source is
+        something else, or has no third source at all — a masked ``vadd.vv`` under ``vma = 0``, a
+        ``vslideup`` whose untouched prefix comes from old-``vd``, a ``vcompress`` tail.
+
+  - id: spec-vrf.j10
+    kind: function
+    statement: >
+      The coprocessor must issue one Src-Request per source slot it actually needs.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        It has four
+        Src-Request lanes (``CII_NUM_SRC_REQ = 4``) and issues a request per slot it actually needs.
+
+  - id: spec-vrf.j11
+    kind: function
+    statement: >
+      The coprocessor must pull one group when pvs3 and stale_pvdest are the same group.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        When
+        ``pvs3`` and ``stale_pvdest`` are the same group it pulls **one**
+
+  - id: spec-vrf.j12
+    kind: function
+    statement: >
+      The coprocessor must pull both groups, spending an additional lane, when pvs3 and
+      stale_pvdest differ.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        when they differ it pulls
+        **both**, spending an additional lane.
+
+  - id: spec-vrf.j13
+    kind: function
+    statement: >
+      The host must never collapse the pvs3 and stale_pvdest slots.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        The host never collapses the two or guesses which was
+        meant
+
+  - id: spec-vrf.j14
+    kind: function
+    statement: >
+      The host must never guess which of the two slots was meant.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        The host never collapses the two or guesses which was
+        meant
+
+  - id: spec-vrf.j15
+    kind: function
+    statement: >
+      The host must serve whichever slot is requested from the per-tag side-table.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: old-vd
+      heading: "Undisturbed lanes always come from ``stale_pvdest``"
+      quote: >
+        it simply serves whichever slot is requested from the per-tag side-table.
+    notes: >
+      The host-side decode of op_id/op_offset against the side-table is mined by the cii family
+      from cii.rst §"Register operand delivery (VRF read ports)".
+
+coverage:
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "The Register Files and Bypass Network"
+    anchor: regfiles-bypass
+    reqs: [spec-vrf.a1, spec-vrf.a2, spec-vrf.a3, spec-vrf.a4, spec-vrf.a5,
+           spec-vrf.b2, spec-vrf.b3, spec-vrf.b4, spec-vrf.b6,
+           spec-vrf.c1, spec-vrf.c2, spec-vrf.c3, spec-vrf.c4, spec-vrf.c5, spec-vrf.c6,
+           spec-vrf.c7, spec-vrf.c8, spec-vrf.c9, spec-vrf.c10, spec-vrf.c11, spec-vrf.b11]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "Vector Bypass Network"
+    anchor: regfiles-bypass
+    reqs: [spec-vrf.d1, spec-vrf.d2, spec-vrf.d3, spec-vrf.d4, spec-vrf.d5, spec-vrf.d6,
+           spec-vrf.d7]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "Speculative Wakeups"
+    anchor: spec-wakeups
+    reqs: [spec-vrf.e1, spec-vrf.e2, spec-vrf.e3, spec-vrf.e4, spec-vrf.e5, spec-vrf.e6,
+           spec-vrf.e7, spec-vrf.e8, spec-vrf.e9, spec-vrf.e10]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "The Vector Register File"
+    anchor: vector-regfile
+    reqs: [spec-vrf.f1, spec-vrf.f2, spec-vrf.f3, spec-vrf.f4, spec-vrf.f5, spec-vrf.f6,
+           spec-vrf.f7, spec-vrf.f8, spec-vrf.f9,
+           spec-vrf.f10, spec-vrf.f11, spec-vrf.f12, spec-vrf.f13, spec-vrf.f14]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "Port assignment (canonical, 0-based)"
+    anchor: vrf-ports
+    reqs: [spec-vrf.g1, spec-vrf.g2, spec-vrf.g3, spec-vrf.g4, spec-vrf.g20, spec-vrf.g21,
+           spec-vrf.g7, spec-vrf.g8, spec-vrf.g9, spec-vrf.g10, spec-vrf.g11, spec-vrf.g22,
+           spec-vrf.g23, spec-vrf.g18, spec-vrf.g19,
+           spec-vrf.g13, spec-vrf.g14, spec-vrf.g15, spec-vrf.g16, spec-vrf.g17,
+           spec-vrf.h2, spec-vrf.h3, spec-vrf.h4, spec-vrf.h5, spec-vrf.h6,
+           spec-vrf.h7]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "Undisturbed lanes always come from ``stale_pvdest``"
+    anchor: old-vd
+    reqs: [spec-vrf.i1, spec-vrf.i2, spec-vrf.i3, spec-vrf.i4, spec-vrf.i5, spec-vrf.i6,
+           spec-vrf.i7, spec-vrf.i8, spec-vrf.i9,
+           spec-vrf.j1, spec-vrf.j2, spec-vrf.j3, spec-vrf.j4, spec-vrf.j5, spec-vrf.j6,
+           spec-vrf.j7, spec-vrf.j8, spec-vrf.j10, spec-vrf.j11, spec-vrf.j12,
+           spec-vrf.j13, spec-vrf.j14, spec-vrf.j15]
+
+retired:
+
+  - id: spec-vrf.g5
+    statement: >
+      The Load Unit and LCB must write the VRF dual-lane on ``W0``–``W1`` in the Large and Mega
+      configurations.
+    retired_because: >
+      Stated in terms of configuration names. Resolved on 2026-08-03 by binding the write-port
+      count to lsuWidth instead, which covers every configuration including those below Medium.
+      Superseded by spec-vrf.g20.
+
+  - id: spec-vrf.g6
+    statement: >
+      The Load Unit and LCB must write the VRF on ``W0`` only in the Medium configuration.
+    retired_because: >
+      Same configuration-name problem as spec-vrf.g5, and it also left the assignment for any
+      configuration smaller than Medium unstated, which was the open question. Superseded by
+      spec-vrf.g21.
+
+  - id: spec-vrf.g12
+    statement: >
+      The per-unit port assignment must total 9 read ports and 3 write ports.
+    retired_because: >
+      False at lsuWidth = 1, where the Load Unit has only W0 and the total is 9R/2W. The flat
+      9R/3W figure was the lsuWidth = 2 case all along, which is the open question resolved on
+      2026-08-03. Superseded by spec-vrf.g22 and g23.
+
+  - id: spec-vrf.b1
+    statement: >
+      The vector-PRN count must be treated as a published architectural limit rather than only an area parameter.
+    retired_because: >
+      A statement about how to regard a parameter ("must be treated as a published architectural limit") rather than an obligation on the design. No RTL artifact can satisfy or violate it. The parameter itself is spec-vrf.a4.
+
+  - id: spec-vrf.b10
+    statement: >
+      The VRF as specified must total ``96 × 256 b`` = 24 kbit.
+    retired_because: >
+      The quote opens "The VRF as specified is ...", recapping obligations stated elsewhere: 96 PRNs (spec-vrf.a4), 9R/3W (f2, f3, g12), flop-based (f4), banked 4x64 (f5, f6). The only new content is a storage total that silently assumes VLEN = 256. The non-normative area/timing ruling this entry carried also lives on spec-vrf.f4.
+
+  - id: spec-vrf.b5
+    statement: >
+      The machine must hold at most ``(96 − 32) / 8 = 8`` LMUL=8 groups in flight.
+    retired_because: >
+      The quote is a capability derivation ("at most (96 - 32) / 8 = 8 LMUL=8 groups can be in flight"), which this statement converted into an enforcement duty. The family's own open question records that the spec names nothing that enforces the bound. Arithmetic retained in notes on spec-vrf.a4.
+
+  - id: spec-vrf.b7
+    statement: >
+      The machine must hold at most 4 segmented LMUL=8 ops in flight.
+    retired_because: >
+      Same defect as spec-vrf.b5: a capability derivation ("so at most 4 of those") mined as an enforcement duty with no specified enforcer.
+
+  - id: spec-vrf.b8
+    statement: >
+      The vector-PRN count must be sized against a target memory-level parallelism.
+    retired_because: >
+      A design-process instruction ("Size this against a target memory-level parallelism"), and the spec never states the target, so the requirement has no pass or fail condition.
+
+  - id: spec-vrf.b9
+    statement: >
+      The derived in-flight limit must be stated wherever the vector-PRN parameter is documented.
+    retired_because: >
+      A documentation obligation ("the derived in-flight limit should be stated wherever the parameter is documented"). No RTL can carry this tag.
+
+  - id: spec-vrf.h1
+    statement: >
+      Both coprocessor port figures must be derived from the frozen SV contract rather than chosen in this spec.
+    retired_because: >
+      Provenance about the document ("derived from the frozen SV contract, not chosen here") rather than an obligation on the design. The actionable form is spec-vrf.h2, which requires the host to match tt_cii_caracal_pkg.svh.
+
+  - id: spec-vrf.j9
+    statement: >
+      The coprocessor must decide which source slots to pull.
+    retired_because: >
+      A framing clause ("Because the two fields are separate, the coprocessor decides what to pull") introducing spec-vrf.j10-j12, which carry the content. As an obligation it targets the VPU decoder, which no Caracal RTL can be tagged for.
+
+# All six open questions recorded against this family were resolved on 2026-08-03, along with
+# the two handed over from the agen family (both concerned this family's port table):
+#
+#   stale SV comment / RTL audit -> CLOSED AS MOOT, no requirement. The values in
+#     tt_cii_caracal_pkg.svh are correct; only the inline comment on CII_NUM_SRC_REQ is wrong,
+#     and there is no host-side RTL in the tree to have been written against it. The comment fix
+#     is a change to the tt-cii submodule, which this skill does not edit.
+#   9R/3W vs Medium's W0-only  -> write count binds to lsuWidth; g5/g6/g12 retired,
+#     spec-vrf.g20-g23 issued
+#   what enforces the group bound -> nothing; the free list is the mechanism; spec-vrf.b11
+#   write-port and bank conflicts -> neither can arise; spec-vrf.f13, f14
+#   VLEN scaling of the banking   -> count fixed at 4, width VLEN/4; spec-vrf.f10-f12
+#   which wakeup class VL is in    -> actual completion, on the VL network; spec-vrf.e10.
+#     THIS REVERSED the 2026-07-31 ruling recorded on spec-vrf.e3 — see the notes on e3 and e10.
+#   (from agen) R1 has two readers -> stage 1 does the mask read for every class; spec-vrf.g18,
+#     spec-agen.e12/e13, spec-agen.e3 retired
+#   (from agen) store R4 dual duty -> sufficient, the reads never coincide; spec-vrf.g19,
+#     spec-agen.e14

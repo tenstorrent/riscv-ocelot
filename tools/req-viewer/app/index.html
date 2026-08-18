@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Caracal — spec ⇄ requirement ⇄ RTL</title>
+<link rel="stylesheet" href="/app/app.css" />
+</head>
+<body>
+
+<div id="shell">
+
+  <header id="bar">
+    <div class="brand">Caracal&nbsp;trace</div>
+
+    <label class="field">
+      <span>Spec</span>
+      <select id="doc-select" title="Rendered spec page"></select>
+    </label>
+
+    <label class="field">
+      <span>Section</span>
+      <select id="section-select" title="Jump to a section"></select>
+    </label>
+
+    <label class="field grow">
+      <span>Find</span>
+      <input id="search" type="search" placeholder="requirement id, statement or quote — / to focus" />
+    </label>
+
+    <label class="toggle" title="Fade prose that no requirement cites">
+      <input type="checkbox" id="dim-toggle" /> <span>only cited prose</span>
+    </label>
+
+    <button id="rebuild" class="btn" title="Re-read the rendered docs, requirement YAMLs and //@req- tags">Rebuild</button>
+    <div id="stats" class="stats"></div>
+  </header>
+
+  <!-- ── top: requirements for the hovered / pinned prose ─────────────── -->
+  <section id="reqs-pane" class="pane">
+    <div class="pane-head">
+      <h2>Requirements</h2>
+      <div id="reqs-source" class="pane-sub">Hover any paragraph in the spec below.</div>
+      <div class="pane-tools">
+        <span id="pin-badge" class="badge badge-pin" hidden>pinned</span>
+        <button id="clear" class="btn btn-quiet" title="Clear the pinned selection (Esc)">Clear</button>
+      </div>
+    </div>
+    <div id="reqs-list" class="pane-body reqs-list"></div>
+  </section>
+
+  <div class="splitter splitter-row" id="split-top" title="Drag to resize"></div>
+
+  <!-- ── bottom: spec on the left, implementation on the right ─────────── -->
+  <div id="lower">
+
+    <section id="spec-pane" class="pane">
+      <div class="pane-head">
+        <h2 id="spec-title">Spec</h2>
+        <div class="pane-sub" id="spec-sub"></div>
+        <div class="pane-tools">
+          <span class="legend"><i class="sw sw-cited"></i>cited</span>
+          <span class="legend"><i class="sw sw-hover"></i>hover</span>
+          <span class="legend"><i class="sw sw-pin"></i>pinned</span>
+          <span class="legend"><i class="sw sw-quote"></i>quote</span>
+        </div>
+      </div>
+      <div class="pane-body pane-body-flush">
+        <iframe id="page" title="Rendered spec"></iframe>
+      </div>
+    </section>
+
+    <div class="splitter splitter-col" id="split-mid" title="Drag to resize"></div>
+
+    <div id="right">
+      <section id="nlhdl-pane" class="pane">
+        <div class="pane-head">
+          <h2>NL_HDL</h2>
+          <div class="pane-sub" id="nlhdl-sub">Select a requirement.</div>
+        </div>
+        <div class="pane-body" id="nlhdl-body"></div>
+      </section>
+
+      <div class="splitter splitter-row" id="split-right" title="Drag to resize"></div>
+
+      <section id="rtl-pane" class="pane">
+        <div class="pane-head">
+          <h2>Generated RTL</h2>
+          <div class="pane-sub" id="rtl-sub">Select a requirement.</div>
+        </div>
+        <div class="pane-body" id="rtl-body"></div>
+      </section>
+    </div>
+
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+<script src="/app/app.js"></script>
+</body>
+</html>

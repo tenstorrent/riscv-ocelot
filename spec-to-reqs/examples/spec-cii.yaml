@@ -1,0 +1,221 @@
+# =============================================================================
+# spec-cii.yaml — WORKED EXAMPLE (excerpt)
+# =============================================================================
+# A hand-checked illustration of the format defined in references/schema.md.
+# Every quote below is verbatim from docs_caracal/src/cii.rst and this file passes
+# scripts/validate-reqs.py.
+#
+# It is an EXCERPT: only the "The kill contract" section is actually mined, so the
+# other ten sections carry an honest `skipped:` reason saying so. A real family file
+# would mine them.
+#
+# Note how group `b` splits what the spec writes as prose and table cells into one
+# obligation each — the section yields nine requirements, not one.
+# =============================================================================
+
+family: cii
+description: Vector arithmetic offload over the TT-CII coprocessor interface
+spec_sources:
+  - docs_caracal/src/cii.rst
+
+groups:
+  a: channel structure, credit protocol, and issue
+  b: flush recovery and the kill contract
+  c: operand delivery, writeback, and completion
+
+reqs:
+  - id: spec-cii.b1
+    kind: interface
+    statement: >
+      The CII adapter must trigger kill on rob.io.flush.valid only, and never on
+      brupdate.b2.mispredict.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "The kill contract"
+      quote: >
+        **Trigger — ``rob.io.flush.valid`` only.** Never ``brupdate.b2.mispredict``
+    notes: >
+      The spec requires the mispredict case be asserted unreachable rather than merely
+      assumed: is_br/is_jalr set starts_unsafe, so the PNR can never sweep past an
+      unresolved branch.
+
+  - id: spec-cii.b2
+    kind: function
+    statement: >
+      On a flush the adapter must set killed on every live side-table entry, with no age
+      comparison against the flushing instruction.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "The kill contract"
+      quote: >
+        So on a flush the adapter simply sets ``killed`` on all live side-table entries.
+
+  - id: spec-cii.b3
+    kind: function
+    statement: >
+      The adapter must assert that no in-flight CII tag sets flush_on_commit.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "The kill contract"
+      quote: >
+        Assert that no in-flight CII tag sets ``flush_on_commit``
+    notes: >
+      A tag with flush_on_commit set would make the ROB head itself a survivor of its own
+      flush, which the scope rule in spec-cii.b2 assumes cannot happen.
+
+  - id: spec-cii.b4
+    kind: function
+    statement: >
+      A killed instruction must be allowed to run to completion on junk data rather than
+      being cancelled.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "The kill contract"
+      quote: >
+        The VPU is in-order and the SV has **no kill line**, so a killed instruction must
+        be allowed to *finish* on junk
+
+  - id: spec-cii.b5
+    kind: interface
+    statement: >
+      For a killed tag the host must pop the Src-Request beat, return req_credit, and
+      return a don't-care Src-Data beat.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "The kill contract"
+      quote: >
+        Pop, return ``req_credit``, **and return a don't-care Src-Data beat.**
+    notes: >
+      The Src-Data beat is mandatory and cannot be replaced by returning a credit: credit
+      ownership is asymmetric, so on Src-Data the host is the sender and holds no credit to
+      return. Omitting the beat hangs the VPU permanently behind a tag that never
+      completes.
+
+  - id: spec-cii.b6
+    kind: function
+    statement: >
+      A killed tag's Src-Request must not cause a VRF read.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "The kill contract"
+      quote: >
+        No VRF read (which is the real saving — the read ports stay free).
+
+  - id: spec-cii.b7
+    kind: function
+    statement: >
+      On a killed tag's Writeback beat the host must suppress all four effects: the
+      VRF/INT/FP write, clr_rob, VecGroupDone, and fflags/vxsat accrual.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "The kill contract"
+      quote: >
+        suppress **all four** effects: the VRF/INT/FP write, ``clr_rob``,
+        ``VecGroupDone``, and ``fflags``/``vxsat`` accrual.
+
+  - id: spec-cii.b8
+    kind: function
+    statement: >
+      A killed tag must be freed on its dropped last beat, exactly as a live tag is.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "The kill contract"
+      quote: >
+        A killed tag is freed on its (dropped) ``last`` beat, exactly like a live one.
+
+  - id: spec-cii.b9
+    kind: structure
+    statement: >
+      The killed bit and the side-table state needed to route the drain must survive the
+      flush.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "The kill contract"
+      quote: >
+        The ``killed`` bit and enough side-table state to route the drain must survive the
+        flush
+
+  - id: spec-cii.b10
+    kind: function
+    statement: >
+      A killed tag must not be reallocated before its last beat arrives.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "The kill contract"
+      quote: >
+        the tag must not be reallocated before its ``last`` arrives.
+
+open_questions:
+  - question: >
+      The spec states that a killed tag is freed on its dropped last beat, but does not say
+      what the adapter must do if a flush arrives while a killed tag is already draining —
+      whether killed is idempotent or the second flush is an error.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "The kill contract"
+
+# The ledger covers exactly the seven cii.rst sections that families.yaml assigns to
+# this family — no more, no less. The chapter intro and "The VPU (coprocessor) side" are
+# `unowned:` in families.yaml, and "Segmented load/store" / "Ordering with memory
+# operations" belong to `lsu`, so none of the four appears here.
+coverage:
+  - file: docs_caracal/src/cii.rst
+    heading: "The kill contract"
+    anchor: cii-flush
+    reqs:
+      - spec-cii.b1
+      - spec-cii.b2
+      - spec-cii.b3
+      - spec-cii.b4
+      - spec-cii.b5
+      - spec-cii.b6
+      - spec-cii.b7
+      - spec-cii.b8
+      - spec-cii.b9
+      - spec-cii.b10
+
+  # Owned by cii, but deliberately not mined: the section is pure rationale. This is the
+  # honest use of `skipped:` — a judgement about a section this family owns.
+  - file: docs_caracal/src/cii.rst
+    heading: "Flush recovery: past-PNR is not a commit guarantee"
+    anchor: cii-flush
+    skipped: >
+      Rationale and evidence for the kill contract — establishes that past-PNR is not a
+      commit guarantee by citing rob.scala and lsu.scala behaviour. The obligations it
+      motivates are all stated in the "The kill contract" subsection.
+
+  - file: docs_caracal/src/cii.rst
+    heading: "The interface"
+    anchor: cii
+    skipped: illustrative excerpt — section not mined in this example file
+
+  - file: docs_caracal/src/cii.rst
+    heading: "Host bridge: Chisel ↔ SystemVerilog"
+    anchor: cii
+    skipped: illustrative excerpt — section not mined in this example file
+
+  - file: docs_caracal/src/cii.rst
+    heading: "Issue: from ``IQ_V_ALU`` to the CII"
+    anchor: cii
+    skipped: illustrative excerpt — section not mined in this example file
+
+  - file: docs_caracal/src/cii.rst
+    heading: "Register operand delivery (VRF read ports)"
+    anchor: cii-operands
+    skipped: illustrative excerpt — section not mined in this example file
+
+  - file: docs_caracal/src/cii.rst
+    heading: "Result writeback and completion (VRF write port + group-done)"
+    anchor: cii-operands
+    skipped: illustrative excerpt — section not mined in this example file

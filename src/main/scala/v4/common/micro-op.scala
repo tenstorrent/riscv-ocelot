@@ -15,11 +15,59 @@ import chisel3._
 import chisel3.util._
 
 import freechips.rocketchip.util._
+import freechips.rocketchip.rocket.VType
 import org.chipsalliance.cde.config.Parameters
 
 abstract trait HasBoomUOP extends BoomBundle
 {
   val uop = new MicroOp()
+}
+
+/**
+ * MicroOp for the Debug Harness (whisper-cosim DPI bridge).
+ * vLen-sized fields are kept on the bundle so the harness SV interface stays stable;
+ * they're driven to zero by core.scala until v4 grows a VPU.
+ *
+ * Ported verbatim from `Caracal/addvector` (`v4/common/micro-op.scala:30`) so the
+ * field order and widths keep matching `vsrc/core_harness_wrapper_N.v`, which is a
+ * BlackBox: a reordered or resized field here is a SILENT cosim mismatch, not a
+ * compile error. Deliberately a plain `Bundle` with explicit Int parameters rather
+ * than a `BoomBundle` reading `p` -- `DebugCommitSignals` constructs it with literal
+ * widths (`new DebugCommitSignals(40, N, 64, vlen, 5, 1)` in core.scala) to match
+ * the SV side, and pulling values from `p` instead would let the two drift.
+ *
+ * NOTE: addvector also declares `VConfig` and `VsetWbResp` beside this class. Neither
+ * is ported: v2 carries the vtype snapshot as rocket's `VType` (`MicroOp.vconfig` is
+ * `Option[VType]`), and the vset writeback path is the `ALUUnit`/`Rob` delta's at D3.
+ */
+class DebugMicroOp(val coreMaxAddrBits: Int, val xLen: Int, val vLen: Int, val lregSz: Int) extends Bundle
+{
+  val ldst             = UInt(lregSz.W)
+  val dst_rtype        = UInt(3.W)
+  val debug_pc         = UInt(coreMaxAddrBits.W)
+  val debug_tag        = UInt(64.W)
+  val debug_inst       = UInt(32.W)
+  val debug_wdata      = UInt(xLen.W)
+  val debug_vec_wdata  = UInt((vLen*8).W)
+  val debug_vec_wmask  = UInt(8.W)
+}
+
+// Per-nOP.v element cursor. A vector LDQ/STQ entry carries this in addition
+// to its existing scalar fields simply by virtue of embedding a MicroOp (see
+// HasBoomUOP above) -- it is not declared separately on the queue entries.
+//@req-spec-lsu.f1
+//@req-spec-lsu.f2
+//@req-spec-lsu.f3
+//@req-spec-lsu.f4
+class VecElemCursor(implicit p: Parameters) extends BoomBundle
+{
+  // Width assumption: the spec does not pin a width for this sub-bundle
+  // (unlike every other entry in its interface-delta table). vecVLSz sizes
+  // the sibling v_split_idx/v_split_total cursor fields declared below in
+  // MicroOp, so the same width is used here for the same index/count role.
+  val elem_next  = UInt(vecVLSz.W) // index of the next element to drain
+  val elem_done  = UInt(vecVLSz.W) // count of completed elements
+  val fault_elem = UInt(vecVLSz.W) // index of the oldest faulting element
 }
 
 class MicroOp(implicit p: Parameters) extends BoomBundle
@@ -128,10 +176,182 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val lrs2             = UInt(lregSz.W)
   val lrs3             = UInt(lregSz.W)
 
-  val dst_rtype        = UInt(2.W)
-  val lrs1_rtype       = UInt(2.W)
-  val lrs2_rtype       = UInt(2.W)
+  //@req-spec-decode.c25
+  val dst_rtype        = UInt(3.W)
+  val lrs1_rtype       = UInt(3.W)
+  val lrs2_rtype       = UInt(3.W)
   val frs3_en          = Bool()
+
+  // ==========================================================================
+  // Vector (RVV) fields -- Caracal delta. Every field below is gated on
+  // usingRVV via the Option idiom: with vectors disabled each is `None` and
+  // elaborates to nothing, so the scalar-only bundle stays bit-identical to
+  // pre-Caracal baseline BOOM v4 (no zero-width field, no tied-off field).
+  // ==========================================================================
+
+  //@req-spec-core.c4
+  // An OP.v is an ordinary uop with is_vec set -- not a separate bundle type,
+  // so it flows decode/rename/ROB/issue on the same paths as a scalar uop.
+  val is_vec              = if (usingRVV) Some(Bool()) else None
+  // Segmented load/store forms: needs both the vector LSU and the CII
+  // coprocessor, gating the pvtmp rendezvous allocation and two-half issue.
+  val is_shared            = if (usingRVV) Some(Bool()) else None
+
+  // -- logical vector specifiers (decode -> rename only) --------------------
+  val lvd                  = if (usingRVV) Some(UInt(lregSz.W)) else None
+  val lvs1                 = if (usingRVV) Some(UInt(lregSz.W)) else None
+  val lvs2                 = if (usingRVV) Some(UInt(lregSz.W)) else None
+  val lvs3                 = if (usingRVV) Some(UInt(lregSz.W)) else None
+  val lvm                  = if (usingRVV) Some(UInt(lregSz.W)) else None // mask reg (always v0)
+
+  // -- renamed vector operands: groups, not registers ------------------------
+  //@req-spec-rename.d5
+  val pvdest               = if (usingRVV) Some(Vec(maxVecMembers, UInt(vecPregSz.W))) else None
+  val stale_pvdest         = if (usingRVV) Some(Vec(maxVecMembers, UInt(vecPregSz.W))) else None
+
+  //@req-spec-vrf.j1
+  //@req-spec-vrf.j2
+  //@req-spec-vrf.j4
+  //@req-spec-vrf.j5
+  //@req-spec-vrf.j6
+  // pvs3 names an EXPLICITLY ENCODED third source (e.g. vse.v store data) and
+  // is independent of stale_pvdest above -- they coincide for RMW arithmetic
+  // but diverge for masked non-RMW ops, vslideup's prefix, vcompress's tail,
+  // and must not be merged into one field.
+  val pvs1                 = if (usingRVV) Some(Vec(maxVecMembers, UInt(vecPregSz.W))) else None
+  val pvs2                 = if (usingRVV) Some(Vec(maxVecMembers, UInt(vecPregSz.W))) else None
+  val pvs3                 = if (usingRVV) Some(Vec(maxVecMembers, UInt(vecPregSz.W))) else None
+  val pvm                  = if (usingRVV) Some(UInt(vecPregSz.W)) else None // mask is one register, never a group
+
+  //@req-spec-core.h8
+  //@req-spec-rename.e6
+  // The binding from the abstract pvtmp rendezvous to real PRNs -- there is
+  // no separate table anywhere that records it; the two halves of a shared
+  // instruction find each other by reading this field off the same OP.v.
+  val pvtmp                = if (usingRVV) Some(Vec(maxVecMembers, UInt(vecPregSz.W))) else None
+
+  // One busy bit per OPERAND (group-level, AND-reduced by the busy table),
+  // not per member -- an operand wakes only when its last member is ready.
+  val pvs1_busy            = if (usingRVV) Some(Bool()) else None
+  val pvs2_busy            = if (usingRVV) Some(Bool()) else None
+  val pvs3_busy            = if (usingRVV) Some(Bool()) else None
+  val pvm_busy             = if (usingRVV) Some(Bool()) else None
+  val pvtmp_busy           = if (usingRVV) Some(Bool()) else None
+  val pvl_busy             = if (usingRVV) Some(Bool()) else None
+
+  //@req-spec-rename.h18
+  // Renamed VL. On a VL PRODUCER this is the FRESH PRN the uop WRITES; on every
+  // other uop it is the PRN it reads, which is the same thing seen from the
+  // consumer side. Deliberately no stale_pvl (VL has a single
+  // committed-map-table pointer released at commit, not a per-uop stale
+  // value) and no pvtype (vtype is not renamed).
+  val pvl                  = if (usingRVV) Some(UInt(vlPregSz.W)) else None
+
+  // The VL PRN this uop READS, always -- for a producer that also reads VL it
+  // differs from `pvl`. Only `vle*ff.v` is both: it needs the incoming VL to
+  // size the access and writes a possibly-trimmed VL back. Every vset form
+  // computes VL from AVL instead, so for those and for all consumers this
+  // equals `pvl`. Read-side consumers (VL-RF read address, source busy bit,
+  // issue-slot VL wakeup match) must use THIS field, never `pvl`.
+  val pvl_src              = if (usingRVV) Some(UInt(vlPregSz.W)) else None
+
+  // -- the static access descriptor ------------------------------------------
+  val v_eew                = if (usingRVV) Some(UInt(2.W)) else None // data element width
+  val v_idx_eew            = if (usingRVV) Some(UInt(2.W)) else None // index element width (indexed forms only)
+  val v_emul               = if (usingRVV) Some(UInt((log2Ceil(maxVecMembers) + 1).W)) else None // group member count, 1..8
+  val v_seg_nf             = if (usingRVV) Some(UInt(3.W)) else None // segment field count, segmented access
+
+  // The VL a `vsetivli` configures, COMPUTED ONCE AT DECODE by VConfigUnit and
+  // carried from there to whoever needs it. Meaningful only on a `vsetivli`
+  // lane (`is_vl_producer` with `lrs1_rtype === RT_X`); don't-care elsewhere.
+  //
+  // ===> WHY THE COMPUTED VL AND NOT THE 5-BIT AVL IMMEDIATE. `vsetivli` has TWO
+  //      destinations that must receive the SAME value -- `rd` in the integer RF
+  //      and `pvl` in the VL RF -- and both `min(AVL, VLMAX)` evaluations would
+  //      otherwise be done independently, in VConfigUnit for the VL RF and in
+  //      ALUUnit for `rd`. Carrying the RESULT makes them provably equal instead
+  //      of merely intended to be.
+  //
+  //      This field exists because `vsetivli`-with-`rd` DOES reach an execution
+  //      unit, contrary to what ALUUnit's spec asserted: only an EU has an
+  //      integer writeback port, so `rd` cannot be written from the front end.
+  //      Its AVL is an immediate (`inst(19,15)`), so `lrs1_rtype` is `RT_X` and
+  //      `rs1_data` is a register that was never renamed or read. Reading it
+  //      anyway produced a stale value >= maxVLMax, which saturated to VLMAX --
+  //      `vsetivli x11, 1, e16, m2` wrote 32 instead of 1, caught as a cosim
+  //      Register Mismatch against Whisper at gate (e1).
+  val v_vl_imm             = if (usingRVV) Some(UInt(vecVLSz.W)) else None
+
+  // Decoded sense of the instruction's vm bit. Must be a field, not
+  // re-derived from inst(25): the issue slot, VecMaskStream and VecElemAgen
+  // each need it and none of them re-decodes the instruction word.
+  val v_is_masked          = if (usingRVV) Some(Bool()) else None
+
+  // vtype's vta/vma, inverted to the sense the LSU needs. Carried rather than
+  // re-read at issue: the LSU sees no vtype, and the value must be the one that
+  // was architecturally current at DECODE, not at completion.
+  val v_tail_undist        = if (usingRVV) Some(Bool()) else None
+  val v_mask_undist        = if (usingRVV) Some(Bool()) else None
+
+  // access CLASS -- which agen this op goes to, decoded once by VLSDecode.
+  val v_mop                = if (usingRVV) Some(UInt(2.W)) else None
+  val v_is_unit_stride     = if (usingRVV) Some(Bool()) else None
+  val v_is_strided         = if (usingRVV) Some(Bool()) else None
+  val v_is_indexed         = if (usingRVV) Some(Bool()) else None
+  val v_is_segment         = if (usingRVV) Some(Bool()) else None
+  val v_is_whole_reg       = if (usingRVV) Some(Bool()) else None
+  val v_is_mask            = if (usingRVV) Some(Bool()) else None
+  val v_is_ff              = if (usingRVV) Some(Bool()) else None
+
+  // "does this instruction's FORMAT actually encode this vector source" --
+  // prevents e.g. vadd.vx's unencoded vs1 from waiting forever on a stale or
+  // already-complete group that pvs1 happens to name.
+  val v_uses_vs1           = if (usingRVV) Some(Bool()) else None
+  val v_uses_vs2           = if (usingRVV) Some(Bool()) else None
+  val v_uses_vs3           = if (usingRVV) Some(Bool()) else None
+
+  // -- the vtype snapshot ------------------------------------------------------
+  //@req-spec-vrf.c7
+  //@req-spec-decode.d6
+  // Taken at DECODE from the speculative VCFG mirror; carries VTYPE ONLY --
+  // vstart/vxrm/vxsat are read from the CSR file at execute rather than
+  // snapshotted, and vl is reached via pvl instead. vill doubles as the
+  // mirror's poison flag.
+  val vconfig              = if (usingRVV) Some(new VType) else None
+
+  // -- the dual-destination bit -------------------------------------------------
+  //@req-spec-decode.c18
+  // Orthogonal to dst_rtype: a register-sourced vset has TWO destinations in
+  // TWO independent rename spaces (pdst in the int file, pvl in the VL
+  // file), and dst_rtype is single-valued so it cannot express both.
+  val is_vl_producer       = if (usingRVV) Some(Bool()) else None
+
+  // -- nOP.v-scoped element/segment cursor fields -------------------------------
+  // Inert on the OP.v itself: populated only once it has been through the
+  // vector LS AGEN, don't-care before that, and no consumer outside the
+  // vector LSU may read any field in this group.
+  //@req-spec-core.c11
+  //@req-spec-core.c12
+  val v_split_first        = if (usingRVV) Some(Bool()) else None
+  val v_split_last         = if (usingRVV) Some(Bool()) else None
+  val v_split_idx          = if (usingRVV) Some(UInt(vecVLSz.W)) else None
+  val v_split_total        = if (usingRVV) Some(UInt(vecVLSz.W)) else None
+
+  //@req-spec-agen.a4
+  // Which register the access targets: the destination PRN it will write and
+  // the byte offset within that PRN. A response can return out of order, so
+  // the LCB places it by these two fields alone -- it cannot recover them
+  // from the element index without re-deriving EMUL and the mask.
+  val v_split_dst_prn      = if (usingRVV) Some(UInt(vecPregSz.W)) else None
+  val v_split_dst_byte_off = if (usingRVV) Some(UInt(log2Ceil(vecVLen / 8).W)) else None
+
+  // Identifies which outstanding load beat a D$ response belongs to. The response
+  // carries the request's uop back, so this is what lets the alignment table be
+  // keyed by request instead of by lane -- ll_resp always returns on the last lane.
+  val v_mem_tag             = if (usingRVV) Some(UInt(ldRespTagSz.W)) else None
+
+  // One named sub-bundle (see VecElemCursor above), not three loose fields.
+  val v_elem_cursor        = if (usingRVV) Some(new VecElemCursor) else None
 
   val fcn_dw           = Bool()
   val fcn_op           = UInt(freechips.rocketchip.rocket.ALU.SZ_ALU_FN.W)

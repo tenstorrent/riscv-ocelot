@@ -1,0 +1,2389 @@
+family: lsu
+description: >
+  The vector path through the unified LSU: element and store-data queues, the load
+  coalescing buffer, per-element progress and fault-only-first, D$ arbitration, and
+  squash by pointer rollback.
+spec_sources:
+  - docs_caracal/src/loadstore.rst
+  - docs_caracal/src/case_study.rst
+  - docs_caracal/src/midcore.rst
+
+groups:
+  a: the unified LSU — structure and usingRVV gating
+  b: the SSI element queues and program-order reservation
+  c: the unit-stride queue and just-in-time expansion
+  d: the store data queues
+  e: the load coalescing buffer
+  f: per-element progress and precise exceptions
+  g: fault-only-first (vleff)
+  h: D$, LCAM and TLB arbitration
+  i: squash by pointer rollback
+  j: the vector load and store algorithms
+  k: memory subsystem and the bandwidth ceiling
+  l: segmented load/store — the LSU half
+  m: the VL == 0 group copy
+
+reqs:
+
+  # --- a: the unified LSU -----------------------------------------------------
+
+  - id: spec-lsu.a1
+    kind: structure
+    statement: >
+      The LSU must extend the BOOM load/store unit to support both scalar and vector
+      load/stores.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        A major feature of |caracal| is that it extends the |boom| Load Store Unit to support
+        scalar and vector load stores. We call this the Unified Load Store Unit.
+
+  - id: spec-lsu.a2
+    kind: structure
+    statement: >
+      With usingRVV disabled the underlying BOOM LSU must be left untouched.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        If the ``usingRVV`` parameter is disabled the underlying |boom| LSU is essentially
+        untouched.
+
+  - id: spec-lsu.a3
+    kind: structure
+    statement: >
+      With usingRVV enabled the vector address and data queues must be initialized.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        When enabled, several vector address and data queues are initialized.
+
+  - id: spec-lsu.a4
+    kind: structure
+    statement: >
+      A vector load/store OP.v must be allocated a single entry in the existing LDQ or STQ.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        Vector load/store ``OP.v``'s are still allocated to the existing STQ and LDQ as a
+        **single entry**, using largely the same dispatch-stage logic.
+
+  - id: spec-lsu.a5
+    kind: structure
+    statement: >
+      The design must provide separate vector address and data queues to buffer the effective
+      nOP.v memory operations.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        we allocate separate vector address and data queues to buffer those effective
+        ``nOP.v`` memory operations.
+    notes: >
+      The spec's stated reason is to prevent the primary STQ and LDQ from being polluted by
+      many vector memory operations and impacting scalar load/store performance.
+
+  - id: spec-lsu.a6
+    kind: interface
+    statement: >
+      A vector LDQ or STQ entry must read its effective address or store data from the
+      separate address and data queues rather than from a uOP.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        When a vector LDQ or STQ entry becomes ready for execution, it reads the effective
+        address or store data from the separate address and data queues, rather than from a
+        uOP as is the case with scalar load stores.
+
+  - id: spec-lsu.a7
+    kind: function
+    statement: >
+      The conditions under which a vector LDQ or STQ entry becomes eligible to drain must be
+      the same as for a scalar entry.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        The conditions that allow a vector LDQ or STQ entry to become eligible to drain are
+        the same as scalar.
+
+  - id: spec-lsu.a8
+    kind: function
+    statement: >
+      A draining entry must drain all of the element accesses it owns in program and element
+      order.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        Here **atomic** means an entry drains *all* of the element accesses it owns in program
+        / element order without another op interleaving at that entry.
+
+  - id: spec-lsu.a9
+    kind: function
+    statement: >
+      An entry that is draining must not be interleaved with another op at that entry.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        Here **atomic** means an entry drains *all* of the element accesses it owns in program
+        / element order without another op interleaving at that entry.
+
+  - id: spec-lsu.a10
+    kind: function
+    statement: >
+      A faulting vector load/store must commit no elements.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        It **is** all-or-nothing with respect to architectural state: a faulting load/store
+        commits **no** elements, traps with ``vstart = 0``, and restarts the whole instruction
+        from element 0
+    notes: >
+      This section's warning block records that earlier drafts said the opposite — that a
+      faulting load/store commits the elements before the fault and records vstart. That
+      model is not implementable here: the faulting OP.v's pvdest group is a fresh group a
+      non-committing instruction never installs, and it is reclaimed to the free list on the
+      exception. The trap and restart obligations are spec-lsu.f10 and spec-lsu.f11.
+
+  - id: spec-lsu.a11
+    kind: interface
+    statement: >
+      Element accesses must contend for the shared D$ port through the arbiter.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        The element accesses themselves contend for the shared D$ port through the arbiter in
+        :ref:`dcache-arbiter`, so a vector drain does **not** monopolize the cache.
+
+  - id: spec-lsu.a12
+    kind: structure
+    statement: >
+      On LargeBoomV4Config or MegaBoomV4Config the LSU must allow two memory operations to
+      be issued per cycle.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        For ``LargeBoomV4Config`` or ``MegaBoomV4Config`` we take advantage of the dual-port
+        L1 D$ interface and allow 2 memory operations to be issued per cycle; the vector
+        address and data queues are ``2 x nOP.v`` wide to allow 2 concurrent element accesses.
+
+  - id: spec-lsu.a13
+    kind: structure
+    statement: >
+      On those configurations the vector address and data queues must be 2 x nOP.v wide.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        For ``LargeBoomV4Config`` or ``MegaBoomV4Config`` we take advantage of the dual-port
+        L1 D$ interface and allow 2 memory operations to be issued per cycle; the vector
+        address and data queues are ``2 x nOP.v`` wide to allow 2 concurrent element accesses.
+
+  - id: spec-lsu.a14
+    kind: structure
+    statement: >
+      The vector queues must be named following the {ld,st}_{SSI,US}_{ADDR,DATA}_Q
+      convention.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        Queue-naming convention. Vector queues are named ``{ld,st}_{SSI,US}_{ADDR,DATA}_Q``
+
+  - id: spec-lsu.a15
+    kind: structure
+    statement: >
+      The vector queue set must comprise ld_SSI_ADDR_Q, st_SSI_ADDR_Q, st_SSI_DATA_Q,
+      ld_US_ADDR_Q, st_US_ADDR_Q and st_US_DATA_Q.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: lsu-unified
+      heading: "The Unified Load/Store Unit (LSU)"
+      quote: >
+        ``ld_SSI_ADDR_Q``, ``st_SSI_ADDR_Q``, ``st_SSI_DATA_Q``, ``ld_US_ADDR_Q``,
+        ``st_US_ADDR_Q``, ``st_US_DATA_Q``.
+    notes: >
+      The enumeration has no load data queues, consistent with loads completing through the
+      LCB (spec-lsu.e1) rather than through a data queue.
+
+  # --- b: SSI element queues and program-order reservation --------------------
+
+  - id: spec-lsu.b1
+    kind: structure
+    statement: >
+      The SSI queues must hold the effective addresses calculated for strided, indexed and
+      segmented load/stores.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        This class of vector (SSI) queues holds effective addresses calculated for strided,
+        indexed, and segmented load stores.
+
+  - id: spec-lsu.b2
+    kind: structure
+    statement: >
+      The SSI queues' default parameterized size must be 512 entries.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        Because the SSI queues hold essentially element-wise memory addresses, their default
+        parameterized size is quite big at 512 entries.
+
+  - id: spec-lsu.b3
+    kind: interface
+    statement: >
+      The ld_SSI_ADDR_Q and st_SSI_ADDR_Q must receive calculated effective addresses from
+      the stage 1 vAGENs.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        The ``ld_SSI_ADDR_Q`` and ``st_SSI_ADDR_Q`` receive calculated effective addresses
+        from the stage 1 vAGENs.
+
+  - id: spec-lsu.b4
+    kind: function
+    statement: >
+      SSI queue capacity must be reserved in program order at dispatch.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        **Capacity is reserved in program order at dispatch** (:ref:`vec-queue-reservation`),
+        not claimed opportunistically at execute. That is a correctness requirement, not a
+        tuning choice:
+    notes: >
+      Loads are reserved in program order for a different reason than stores: per this
+      section's note they have no deadlock failure mode, and program-order reservation is
+      what makes the queue squashable by pointer rollback (spec-lsu.i2).
+
+  - id: spec-lsu.b5
+    kind: function
+    statement: >
+      SSI queue capacity must not be claimed opportunistically at execute.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        **Capacity is reserved in program order at dispatch** (:ref:`vec-queue-reservation`),
+        not claimed opportunistically at execute. That is a correctness requirement, not a
+        tuning choice:
+
+  - id: spec-lsu.b6
+    kind: function
+    statement: >
+      A store must hold its full active address set pre-commit.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        **Stores must hold their full active address set pre-commit.**
+
+  - id: spec-lsu.b7
+    kind: function
+    statement: >
+      A store's translated addresses must be retained in st_SSI_ADDR_Q from execute until
+      commit-drain.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        So a store's translated addresses are **retained in ``st_SSI_ADDR_Q`` from execute
+        until commit-drain**
+
+  - id: spec-lsu.b8
+    kind: function
+    statement: >
+      A store's translated addresses must not be streamed or freed mid-instruction.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        they cannot be streamed/freed mid-instruction.
+
+  - id: spec-lsu.b9
+    kind: function
+    statement: >
+      Every element's fault must be detected before the store commits.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        A store cannot write memory until it commits, and every element's fault must be
+        detected *before* commit (precise exceptions).
+
+  - id: spec-lsu.b10
+    kind: function
+    statement: >
+      A load must complete out of the Load Coalescing Buffer without gating on commit.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        A load completes out of the Load Coalescing Buffer (:ref:`load-coalesce`) and does not
+        gate on commit, so it reserves for **squashability**, not deadlock avoidance
+    notes: >
+      Quote refreshed after the loadstore.rst amendment for decisions D9/D10, which split the
+      reservation rule by direction. The obligation is unchanged; the amendment made explicit
+      that this property is WHY a load may under-reserve, where a store may not.
+
+  - id: spec-lsu.b11
+    kind: function
+    statement: >
+      A load whose active element count exceeds its reservation must be streamed through the
+      ld_SSI_ADDR_Q.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        a load whose active element count exceeds that reservation is streamed through
+        ``ld_SSI_ADDR_Q`` in waves.
+    notes: >
+      Quote refreshed after the D9/D10 amendment. NOTE THAT THIS REQUIREMENT WAS PREVIOUSLY
+      UNREACHABLE: under a worst-case reservation for every direction,
+      worstCase = EMUL * VLEN/EEW = LMUL * VLEN/SEW = VLMAX >= VL >= active count, so the
+      precondition could never hold and the streaming path was dead code. The amendment makes
+      loads under-reserve deliberately (see spec-lsu.b18), which is what brings this obligation
+      into force.
+
+  - id: spec-lsu.b18
+    kind: function
+    statement: >
+      A load must reserve min(worstCase, ldResvMembers * VLEN/EEW) element-queue entries at
+      dispatch.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        A load therefore reserves ``min(worstCase, ldResvMembers * VLEN/EEW)`` entries, with
+        ``ldResvMembers`` defaulting to **4**
+    notes: >
+      The default of 4 is stated by the spec, so it is part of the requirement. The quantum is
+      EEW-relative rather than a flat entry count because the AGEN produces one element per
+      cycle while the drain consumes up to lsuWidth per cycle.
+
+  - id: spec-lsu.b19
+    kind: function
+    statement: >
+      A store must reserve its full worst-case active element count at dispatch.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        unlike a store, which has the deadlock exposure described above and must reserve the
+        full worst case.
+    notes: >
+      Previously implicit in spec-issue.b2, which applied one rule to both directions. The
+      amendment states the store half explicitly because the four-step deadlock argument in
+      this section depends on it and does NOT apply to loads.
+
+  - id: spec-lsu.b14
+    kind: function
+    statement: >
+      The SSI queue depth must bound the number of in-flight vector memory ops.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        Because reservation happens at dispatch against the worst-case element count, queue
+        depth directly bounds in-flight vector memory ops
+
+  - id: spec-lsu.b15
+    kind: structure
+    statement: >
+      At the default depth the SSI queues must bound in-flight worst-case vector stores to
+      two.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        512 entries ÷ 256 worst-case elements = **2** worst-case stores in flight.
+    notes: >
+      The worst-case single-instruction element count at VLEN=256 is ~256 element accesses
+      (SEW=8 x LMUL=8 = 256; segmented NF*EMUL <= 8 also caps at 256).
+
+  # Minimum queue depth, resolved 2026-07-31.
+
+  - id: spec-lsu.b16
+    kind: structure
+    statement: >
+      Each element-granular queue must be at least ``VLEN`` elements deep.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        **Minimum depth is a liveness constraint, not a tuning choice.** Each element-granular
+        queue — ``ld_SSI_ADDR_Q``, ``st_SSI_ADDR_Q`` and ``st_SSI_DATA_Q`` — must be at least
+        the worst-case single-instruction active element count, which is ``VLEN`` elements
+        (``SEW=8`` × ``LMUL=8``; segmented ``NF*EMUL ≤ 8`` reaches the same bound).
+    notes: >
+      The queues covered are ld_SSI_ADDR_Q, st_SSI_ADDR_Q and st_SSI_DATA_Q. VLEN elements is
+      the worst-case single-instruction active element count, not a chosen figure. Below the
+      floor a single store can never complete its dispatch reservation, so it never issues,
+      never commits, and nothing behind it frees — the same wedge as the section's danger
+      block, reached by undersizing rather than by opportunistic allocation. The unit-stride
+      queues are exempt because they hold one nOP.v per instruction rather than one per
+      element (spec-lsu.c2); that exemption is a scope statement, not a separate obligation.
+      Distinct from spec-lsu.b2, which states the 512-entry default: this is the floor the
+      default must clear.
+
+  - id: spec-lsu.b17
+    kind: structure
+    statement: >
+      The minimum-depth floor must be checked at elaboration.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: ssi-queues
+      heading: "Strided, Segmented, Indexed Queue"
+      quote: >
+        This is checked at elaboration.
+
+  # --- c: the unit-stride queue ----------------------------------------------
+
+  - id: spec-lsu.c2
+    kind: structure
+    statement: >
+      A separate ld_US_ADDR_Q and st_US_ADDR_Q must hold the unit-stride transactions.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: us-queue
+      heading: "Unit-Strided Queue"
+      quote: >
+        Thus we have a separate ``ld_US_ADDR_Q`` and ``st_US_ADDR_Q`` to hold these
+        transactions.
+
+  - id: spec-lsu.c3
+    kind: function
+    statement: >
+      A unit-stride load/store must generate only a single nOP.v from the stage 1 vAGENs.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: us-queue
+      heading: "Unit-Strided Queue"
+      quote: >
+        Unlike the SSI queues, a unit-stride load/store need only generate a **single**
+        ``nOP.v`` from the stage 1 vAGENs that describes the whole contiguous range
+        ``[base, base + VL*EEW)``.
+    notes: >
+      execution.rst states the same obligation from the generator side; it is mined there as
+      spec-agen.b6.
+
+  - id: spec-lsu.c4
+    kind: interface
+    statement: >
+      That single nOP.v must describe the whole contiguous range [base, base + VL*EEW).
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: us-queue
+      heading: "Unit-Strided Queue"
+      quote: >
+        Unlike the SSI queues, a unit-stride load/store need only generate a **single**
+        ``nOP.v`` from the stage 1 vAGENs that describes the whole contiguous range
+        ``[base, base + VL*EEW)``.
+
+  - id: spec-lsu.c5
+    kind: structure
+    statement: >
+      A second Packer-based AGEN unit must fire when a unit-strided STQ or LDQ entry is
+      activated.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: us-queue
+      heading: "Unit-Strided Queue"
+      quote: >
+        A second Packer-based AGEN unit fires when a unit-strided STQ/LDQ entry is activated
+        and expands that single ``nOP.v`` into per-element D$ accesses *just-in-time*.
+
+  - id: spec-lsu.c6
+    kind: timing
+    statement: >
+      That second AGEN unit must expand the single nOP.v into per-element D$ accesses
+      just-in-time.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: us-queue
+      heading: "Unit-Strided Queue"
+      quote: >
+        A second Packer-based AGEN unit fires when a unit-strided STQ/LDQ entry is activated
+        and expands that single ``nOP.v`` into per-element D$ accesses *just-in-time*.
+    notes: >
+      The one-range-overlap disambiguation this section refers to is stated in full by
+      §"Memory Ordering and Disambiguation" and is mined under spec-memord.
+
+  # --- d: the store data queues ----------------------------------------------
+
+  - id: spec-lsu.d1
+    kind: structure
+    statement: >
+      A separate st_SSI_DATA_Q and st_US_DATA_Q must buffer the vector store data.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: store-data-queue
+      heading: "Store Data Queue"
+      quote: >
+        a separate ``st_SSI_DATA_Q`` and ``st_US_DATA_Q`` buffer the store data.
+
+  - id: spec-lsu.d2
+    kind: structure
+    statement: >
+      Vector store data must not be held in the STQ entry.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: store-data-queue
+      heading: "Store Data Queue"
+      quote: >
+        Instead of holding the store data in the STQ entry, which would not be feasible for
+        vector data, a separate ``st_SSI_DATA_Q`` and ``st_US_DATA_Q`` buffer the store data.
+
+  - id: spec-lsu.d3
+    kind: structure
+    statement: >
+      The st_SSI_DATA_Q entry width must be one element, ELEN or 64 bits.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: store-data-queue
+      heading: "Store Data Queue"
+      quote: >
+        The ``st_SSI_DATA_Q`` entry width is one element (``ELEN``, 64 bits);
+
+  - id: spec-lsu.d4
+    kind: structure
+    statement: >
+      The st_US_DATA_Q entry width must be a full VLEN, 256 bits.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: store-data-queue
+      heading: "Store Data Queue"
+      quote: >
+        the ``st_US_DATA_Q`` entry width is a full ``VLEN`` (256 bits), so a unit-stride store
+        reads its entire source ``vPRN`` in one access and the Packer slices out per-element
+        data at drain.
+
+  - id: spec-lsu.d5
+    kind: function
+    statement: >
+      A unit-stride store must read its entire source vPRN in one access.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: store-data-queue
+      heading: "Store Data Queue"
+      quote: >
+        the ``st_US_DATA_Q`` entry width is a full ``VLEN`` (256 bits), so a unit-stride store
+        reads its entire source ``vPRN`` in one access and the Packer slices out per-element
+        data at drain.
+
+  - id: spec-lsu.d6
+    kind: function
+    statement: >
+      The Packer must slice out the per-element store data at drain.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: store-data-queue
+      heading: "Store Data Queue"
+      quote: >
+        the ``st_US_DATA_Q`` entry width is a full ``VLEN`` (256 bits), so a unit-stride store
+        reads its entire source ``vPRN`` in one access and the Packer slices out per-element
+        data at drain.
+
+  - id: spec-lsu.d7
+    kind: timing
+    statement: >
+      The store data must be read from the source vPRN at DGEN, at execute time.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: store-data-queue
+      heading: "Store Data Queue"
+      quote: >
+        The store data is **read from the source ``vPRN`` at DGEN (execute time)** and held in
+        the data queue until the post-commit drain.
+
+  - id: spec-lsu.d8
+    kind: function
+    statement: >
+      The store data must be held in the data queue until the post-commit drain.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: store-data-queue
+      heading: "Store Data Queue"
+      quote: >
+        The store data is **read from the source ``vPRN`` at DGEN (execute time)** and held in
+        the data queue until the post-commit drain.
+
+  - id: spec-lsu.d9
+    kind: structure
+    statement: >
+      The source vPRN of a vector store must not need a pin.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: store-data-queue
+      heading: "Store Data Queue"
+      quote: >
+        Because the data is captured this early, the source ``vPRN`` needs **no pin** — it
+        frees with the rest of the stale group at commit
+
+  - id: spec-lsu.d10
+    kind: function
+    statement: >
+      The source vPRN must free with the rest of the stale group at commit.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: store-data-queue
+      heading: "Store Data Queue"
+      quote: >
+        Because the data is captured this early, the source ``vPRN`` needs **no pin** — it
+        frees with the rest of the stale group at commit
+    notes: >
+      Safe because a later writer to the same architectural vreg cannot clobber an in-flight
+      store's data, which already lives in the data queue.
+
+  - id: spec-lsu.d11
+    kind: function
+    statement: >
+      The st_SSI_DATA_Q must hold a full store's active element data pre-commit.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: store-data-queue
+      heading: "Store Data Queue"
+      quote: >
+        The cost is that, like the SSI address queue, the ``st_SSI_DATA_Q`` must hold a full
+        store's active element data pre-commit.
+
+  - id: spec-lsu.d12
+    kind: function
+    statement: >
+      The st_SSI_DATA_Q must be reserved in program order at dispatch on the same terms as
+      the address queue.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: store-data-queue
+      heading: "Store Data Queue"
+      quote: >
+        It is therefore **reserved in program order at dispatch on exactly the same terms as
+        the address queue** (:ref:`vec-queue-reservation`) and for the same reason
+
+  - id: spec-lsu.d13
+    kind: function
+    statement: >
+      A vector store must not dispatch until it has reserved capacity in both queues.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: store-data-queue
+      heading: "Store Data Queue"
+      quote: >
+        A vector store reserves capacity in *both* queues or does not dispatch.
+
+  # --- e: the load coalescing buffer ------------------------------------------
+
+  - id: spec-lsu.e1
+    kind: structure
+    statement: >
+      The design must contain a Load Coalescing Buffer in front of the VRF write port.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        To bridge this, |caracal| adds a **Load Coalescing Buffer (LCB)** in front of the VRF
+        write port:
+    notes: >
+      The problem it bridges: a vector load returns at most one element per D$ response, those
+      responses may arrive out of order across MSHRs, and a destination physical register is a
+      full VLEN.
+
+  - id: spec-lsu.e2
+    kind: structure
+    statement: >
+      The LCB must hold VLEN-wide assembly entries, one per destination PRN currently being
+      filled.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        The LCB holds a small number of in-flight ``VLEN``-wide assembly entries, one per
+        destination PRN currently being filled (parameterizable; default a few entries per
+        in-flight vector load).
+
+  - id: spec-lsu.e3
+    kind: structure
+    statement: >
+      The LCB's assembly-entry count must be parameterizable.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        The LCB holds a small number of in-flight ``VLEN``-wide assembly entries, one per
+        destination PRN currently being filled (parameterizable; default a few entries per
+        in-flight vector load).
+
+  - id: spec-lsu.e4
+    kind: function
+    statement: >
+      Each returning element must be written into its byte offset within the assembly entry
+      for its destination PRN.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        Each returning element is written into its byte offset within the assembly entry for
+        its destination PRN, using the element index carried on the ``nOP.v``.
+
+  - id: spec-lsu.e5
+    kind: interface
+    statement: >
+      The byte offset of a returning element must be derived from the element index carried
+      on the nOP.v.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        Each returning element is written into its byte offset within the assembly entry for
+        its destination PRN, using the element index carried on the ``nOP.v``.
+
+  - id: spec-lsu.e6
+    kind: function
+    statement: >
+      The LCB must issue a single VRF write on W0 for a destination PRN once all of its active
+      bytes are present.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        When **all active bytes** of a destination PRN are present (tracked by a per-entry
+        byte-valid bitmap, bounded by the active-element set the load vAGEN selected), the LCB issues a
+        **single** VRF write on ``W0`` for that PRN.
+
+  - id: spec-lsu.e8
+    kind: function
+    statement: >
+      Inactive byte lanes must be filled per vta/vma policy before the VRF write.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        Inactive (masked-off or tail) byte lanes — the complement of that cursor — are filled per
+        ``vta``/``vma`` policy before the write, so the single VRF write leaves no stale bytes.
+
+  - id: spec-lsu.e9
+    kind: function
+    statement: >
+      Under undisturbed policy the inactive-lane data must be pre-loaded from stale_pvdest on
+      VRF read port R2.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        **For undisturbed policy (``vta = 0`` / ``vma = 0``) the inactive-lane data is
+        pre-loaded from ``stale_pvdest`` on VRF read port ``R2``** before the arriving
+        elements are overlaid — see :ref:`old-vd`.
+
+  - id: spec-lsu.e10
+    kind: timing
+    statement: >
+      The stale_pvdest pre-load must happen before the arriving elements are overlaid.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        **For undisturbed policy (``vta = 0`` / ``vma = 0``) the inactive-lane data is
+        pre-loaded from ``stale_pvdest`` on VRF read port ``R2``** before the arriving
+        elements are overlaid — see :ref:`old-vd`.
+
+  - id: spec-lsu.e11
+    kind: function
+    statement: >
+      Only group members that actually contain inactive lanes must be pre-loaded.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        Only members that actually contain inactive lanes are pre-loaded, and the pre-load
+        overlaps the load's memory latency, so it costs no extra latency and preserves one
+        ``W0`` write per PRN.
+
+  - id: spec-lsu.e12
+    kind: timing
+    statement: >
+      The pre-load must overlap the load's memory latency.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        Only members that actually contain inactive lanes are pre-loaded, and the pre-load
+        overlaps the load's memory latency, so it costs no extra latency and preserves one
+        ``W0`` write per PRN.
+
+  - id: spec-lsu.e13
+    kind: structure
+    statement: >
+      The LCB must own the per-group PRN-done count.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        The LCB also owns the **per-group PRN-done count** (target = the destination-group
+        size from ``v_emul``/``v_seg_nf``).
+
+  - id: spec-lsu.e14
+    kind: function
+    statement: >
+      The PRN-done target must be the destination-group size derived from v_emul and
+      v_seg_nf.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        The LCB also owns the **per-group PRN-done count** (target = the destination-group
+        size from ``v_emul``/``v_seg_nf``).
+
+  - id: spec-lsu.e15
+    kind: function
+    statement: >
+      The LCB must emit one group-done when the last destination PRN of the group is written.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        When the **last** destination PRN of the group is written, it emits **one group-done**
+        carrying the group's member-PRN vector.
+
+  - id: spec-lsu.e16
+    kind: interface
+    statement: >
+      That group-done must carry the group's member-PRN vector.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        When the **last** destination PRN of the group is written, it emits **one group-done**
+        carrying the group's member-PRN vector.
+
+  - id: spec-lsu.e17
+    kind: structure
+    statement: >
+      There must be no per-PRN ROB writeback.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        there is no per-PRN ROB writeback or per-PRN vector wakeup.
+
+  - id: spec-lsu.e18
+    kind: structure
+    statement: >
+      There must be no per-PRN vector wakeup.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        there is no per-PRN ROB writeback or per-PRN vector wakeup.
+
+  - id: spec-lsu.e19
+    kind: function
+    statement: >
+      The intermediate per-PRN VRF writes must be visible only to the register file.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        The intermediate per-PRN VRF writes are visible only to the regfile.
+
+  # --- f: per-element progress and precise exceptions -------------------------
+
+  - id: spec-lsu.f1
+    kind: structure
+    statement: >
+      A vector LDQ or STQ entry must carry an element cursor in addition to the scalar fields.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        A vector LDQ/STQ entry owns up to ``VLMAX`` element accesses but is a single entry, so
+        it carries an **element cursor** in addition to the scalar fields:
+
+  - id: spec-lsu.f2
+    kind: structure
+    statement: >
+      The element cursor must carry elem_next, the index of the next element to drain.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        ``elem_next`` — the index of the next element to drain.
+
+  - id: spec-lsu.f3
+    kind: structure
+    statement: >
+      The element cursor must carry elem_done, the count or bitmap of completed elements.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        ``elem_done`` — count (or bitmap) of elements that have completed.
+
+  - id: spec-lsu.f4
+    kind: structure
+    statement: >
+      The element cursor must carry fault_elem, the index of the oldest faulting element.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        ``fault_elem`` — the index of the **oldest** faulting element, latched on the first
+        fault.
+
+  - id: spec-lsu.f5
+    kind: function
+    statement: >
+      fault_elem must be latched on the first fault.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        ``fault_elem`` — the index of the **oldest** faulting element, latched on the first
+        fault.
+
+  - id: spec-lsu.f6
+    kind: function
+    statement: >
+      fault_elem must not be carried to the ROB.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        It is a **stop signal and a debug/perf counter only** — it is *not* carried to the ROB
+        and *not* written to ``vstart``.
+
+  - id: spec-lsu.f7
+    kind: function
+    statement: >
+      fault_elem must not be written to vstart.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        It is a **stop signal and a debug/perf counter only** — it is *not* carried to the ROB
+        and *not* written to ``vstart``.
+
+  - id: spec-lsu.f8
+    kind: function
+    statement: >
+      Element accesses must fire the TLB and LCAM in element order.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        Element accesses **fire** (TLB + LCAM) in element order, so a fault at element ``k``
+        is always detected before any element ``> k`` fires.
+    notes: >
+      Element responses return out of order across MSHRs, so "nothing beyond k has been
+      written" is explicitly not an invariant this design maintains, and does not need to be.
+
+  - id: spec-lsu.f9
+    kind: function
+    statement: >
+      On a fault the entry must stop advancing.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        **On a fault the entry stops advancing and the instruction traps with ``vstart = 0``,
+        restarting from the beginning.**
+
+  - id: spec-lsu.f10
+    kind: function
+    statement: >
+      On a fault the instruction must trap with vstart = 0.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        **On a fault the entry stops advancing and the instruction traps with ``vstart = 0``,
+        restarting from the beginning.**
+
+  - id: spec-lsu.f11
+    kind: function
+    statement: >
+      On a fault the instruction must restart from the beginning.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        **On a fault the entry stops advancing and the instruction traps with ``vstart = 0``,
+        restarting from the beginning.**
+    notes: >
+      Legal because nothing was written architecturally: pvdest is a fresh physical group a
+      non-committing instruction never installs, and stores drain to the cache only
+      post-commit. Loads are idempotent, so the cost is re-draining elements 0..k-1.
+
+  - id: spec-lsu.f12
+    kind: function
+    statement: >
+      A faulting vector load/store must not resume at vstart = k.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        **Do not resume at ``vstart = k``.**
+    notes: >
+      From this section's warning block. Because the faulting instruction's pvdest group is
+      reclaimed to the free list on the exception, elements 0..k-1 are not architecturally
+      visible, so resuming at k would leave them holding pre-instruction values while RVV
+      requires loaded data — silent corruption on any page-crossing gather.
+
+  # Element accesses outstanding when a fault is latched, resolved 2026-07-31.
+
+  - id: spec-lsu.f13
+    kind: function
+    statement: >
+      An element access still outstanding when a fault is latched must be allowed to return.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        **Element accesses still outstanding when the fault is latched need no cancellation.**
+        Because accesses fire in element order, no access beyond ``fault_elem`` was ever
+        issued, so the only outstanding accesses are for elements below it. Those are left to
+        return and are dropped exactly as on a branch squash
+    notes: >
+      No cancellation path is required. The fire-in-element-order invariant (spec-lsu.f8)
+      means nothing beyond fault_elem was ever issued, so the only outstanding accesses are
+      for elements below the stop point.
+
+  - id: spec-lsu.f14
+    kind: function
+    statement: >
+      A trap must invalidate the faulting load's LCB assembly entry by its owning ``ldq_idx``.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        the trap invalidates the load's LCB assembly entry by its owning ``ldq_idx``, so a late
+        response has nowhere to land (:ref:`vec-squash`).
+    notes: >
+      This is the branch-squash mechanism of spec-lsu.i7 reused on the exception path, so the
+      two flush sources share one invalidation rule rather than each having its own.
+
+  - id: spec-lsu.f15
+    kind: function
+    statement: >
+      A late LCB write for a faulting load must be impossible rather than merely harmless.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Per-Element Progress Tracking and Precise Exceptions"
+      quote: >
+        the faulting instruction's ``pvdest`` group is reclaimed to the free list, so a late
+        LCB write must be made **impossible**, not merely harmless.
+    notes: >
+      The PRN-recycling hazard of the vec-squash danger block applies unchanged on the
+      exception path: the reclaimed pvdest group is reallocated within a few cycles, so a late
+      VLEN-wide write would corrupt a live, unrelated destination.
+
+  # --- g: fault-only-first ----------------------------------------------------
+
+  - id: spec-lsu.g1
+    kind: function
+    statement: >
+      A vleff fault on element 0 must be reported as a normal precise trap with vstart = 0.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Fault-only-first (``vleff.v``)"
+      quote: >
+        a fault on **element 0** is reported as a normal precise trap (``vstart = 0``), but a
+        fault on **element ``i > 0``** must **not** trap — instead VL is trimmed to ``i`` and
+        the instruction completes with the elements it did load.
+
+  - id: spec-lsu.g2
+    kind: function
+    statement: >
+      A vleff fault on an element i greater than 0 must not trap.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Fault-only-first (``vleff.v``)"
+      quote: >
+        a fault on **element 0** is reported as a normal precise trap (``vstart = 0``), but a
+        fault on **element ``i > 0``** must **not** trap — instead VL is trimmed to ``i`` and
+        the instruction completes with the elements it did load.
+
+  - id: spec-lsu.g3
+    kind: function
+    statement: >
+      On a vleff fault at element i greater than 0, VL must be trimmed to i.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Fault-only-first (``vleff.v``)"
+      quote: >
+        a fault on **element 0** is reported as a normal precise trap (``vstart = 0``), but a
+        fault on **element ``i > 0``** must **not** trap — instead VL is trimmed to ``i`` and
+        the instruction completes with the elements it did load.
+
+  - id: spec-lsu.g4
+    kind: function
+    statement: >
+      A trimmed vleff must complete with the elements it did load.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Fault-only-first (``vleff.v``)"
+      quote: >
+        a fault on **element 0** is reported as a normal precise trap (``vstart = 0``), but a
+        fault on **element ``i > 0``** must **not** trap — instead VL is trimmed to ``i`` and
+        the instruction completes with the elements it did load.
+
+  - id: spec-lsu.g5
+    kind: function
+    statement: >
+      vleff must not be serialized.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Fault-only-first (``vleff.v``)"
+      quote: >
+        ``vleff`` is **not** serialized — it is an ordinary speculative vector load.
+
+  - id: spec-lsu.g6
+    kind: function
+    statement: >
+      On completion vleff must write the final element count to its VL register-file
+      destination.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Fault-only-first (``vleff.v``)"
+      quote: >
+        It is a **VL producer**: on completion it writes the final element count to its VL
+        register-file destination — the full VL if no fault occurred, or ``i`` if element
+        ``i > 0`` faulted — exactly as a vset writes VL.
+
+  - id: spec-lsu.g7
+    kind: interface
+    statement: >
+      The vleff VL write must wake pvl in dependent vector slots on the VL wakeup network.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Fault-only-first (``vleff.v``)"
+      quote: >
+        That write wakes ``pvl`` in dependent vector slots on the VL wakeup network like any
+        vset, so they pick up the (possibly trimmed) VL through the normal ``pvl`` path
+
+  - id: spec-lsu.g8
+    kind: function
+    statement: >
+      The architectural vl CSR must be updated at commit for a vleff.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Fault-only-first (``vleff.v``)"
+      quote: >
+        and the architectural ``vl`` CSR is updated at commit.
+
+  - id: spec-lsu.g9
+    kind: function
+    statement: >
+      Only a vleff element-0 fault must raise rob_exception.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Fault-only-first (``vleff.v``)"
+      quote: >
+        Only the element-0 fault raises ``rob_exception``; the ``i > 0`` case clears no
+        architectural state beyond trimming VL.
+
+  - id: spec-lsu.g10
+    kind: function
+    statement: >
+      The vleff i greater than 0 case must clear no architectural state beyond trimming VL.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Fault-only-first (``vleff.v``)"
+      quote: >
+        Only the element-0 fault raises ``rob_exception``; the ``i > 0`` case clears no
+        architectural state beyond trimming VL.
+
+  - id: spec-lsu.g11
+    kind: function
+    statement: >
+      vleff must not be marked is_unique.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: elem-progress
+      heading: "Fault-only-first (``vleff.v``)"
+      quote: >
+        **``is_unique`` was removed from ``vleff``.**
+    notes: >
+      Earlier drafts marked it unique so it would be the only in-flight op when it resolves.
+      Both halves of that were wrong: is_unique stalls only the unique uop's own dispatch, and
+      the serialization was never needed because the trimmed VL reaches consumers through pvl.
+      vleff is hot in strlen/memchr-style loops, so serializing it would be a gratuitous cost.
+
+  # --- h: D$, LCAM and TLB arbitration ----------------------------------------
+
+  - id: spec-lsu.h1
+    kind: structure
+    statement: >
+      The unified LSU must share the D$ request lanes among the scalar LSU fire, the vector
+      load drain and the vector store drain.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: dcache-arbiter
+      heading: "D$ Interface Arbiter"
+      quote: >
+        The unified LSU shares the D$ request lane(s) (``dmem.req``, ``lsuWidth`` wide — 1 on
+        Medium, 2 on Large/Mega) among several requestors:
+
+  - id: spec-lsu.h2
+    kind: structure
+    statement: >
+      The D$ request lane count lsuWidth must be 1 on Medium and 2 on Large/Mega.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: dcache-arbiter
+      heading: "D$ Interface Arbiter"
+      quote: >
+        The unified LSU shares the D$ request lane(s) (``dmem.req``, ``lsuWidth`` wide — 1 on
+        Medium, 2 on Large/Mega) among several requestors:
+
+  - id: spec-lsu.h3
+    kind: structure
+    statement: >
+      A priority round-robin arbiter must grant the D$ lanes each cycle.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: dcache-arbiter
+      heading: "D$ Interface Arbiter"
+      quote: >
+        A **priority round-robin arbiter** grants the lane(s) each cycle:
+
+  - id: spec-lsu.h4
+    kind: function
+    statement: >
+      Scalar memory ops must carry a higher base priority than vector drains.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: dcache-arbiter
+      heading: "D$ Interface Arbiter"
+      quote: >
+        **Priority floor.** Scalar memory ops carry a higher base priority than vector drains,
+        so a burst of vector element accesses never indefinitely blocks a scalar load/store.
+
+  - id: spec-lsu.h5
+    kind: function
+    statement: >
+      A burst of vector element accesses must never indefinitely block a scalar load/store.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: dcache-arbiter
+      heading: "D$ Interface Arbiter"
+      quote: >
+        **Priority floor.** Scalar memory ops carry a higher base priority than vector drains,
+        so a burst of vector element accesses never indefinitely blocks a scalar load/store.
+
+  - id: spec-lsu.h6
+    kind: timing
+    statement: >
+      A round-robin pointer must guarantee each contending requestor at least one grant every
+      4 cycles.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: dcache-arbiter
+      heading: "D$ Interface Arbiter"
+      quote: >
+        **Round-robin anti-starvation.** Among requestors of equal priority, and to bound how
+        long a lower-priority requestor can wait, a round-robin pointer guarantees each
+        contending requestor at least one grant every *4* cycles.
+    notes: >
+      Both directions of the guarantee follow from this bound: a long vector drain yields the
+      lane periodically so scalar traffic makes progress, and a steady scalar stream still lets
+      the vector drain advance. The spec left the bound as an unbound *N* until 2026-07-31, when
+      it was fixed at 4 cycles; via spec-lsu.h9 the same policy gates the shared LCAM and TLB
+      ports, so this is the only starvation bound in the family.
+
+  - id: spec-lsu.h7
+    kind: function
+    statement: >
+      With lsuWidth of 2 the arbiter must grant up to two of the pending requests per cycle.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: dcache-arbiter
+      heading: "D$ Interface Arbiter"
+      quote: >
+        The arbiter grants up to 2 of the pending requests per cycle and is work-conserving
+
+  - id: spec-lsu.h8
+    kind: function
+    statement: >
+      The arbiter must be work-conserving.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: dcache-arbiter
+      heading: "D$ Interface Arbiter"
+      quote: >
+        The arbiter grants up to 2 of the pending requests per cycle and is work-conserving
+
+  - id: spec-lsu.h9
+    kind: function
+    statement: >
+      The same arbitration policy must gate the shared LCAM and TLB ports.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: dcache-arbiter
+      heading: "D$ Interface Arbiter"
+      quote: >
+        The same policy gates the **shared LCAM** and **TLB** ports, since a vector element
+        stream consumes those resources at the same rate it consumes D$ bandwidth.
+
+  - id: spec-lsu.h10
+    kind: function
+    statement: >
+      The D$ lane, the LCAM port and the TLB port must all be released back to scalar on the
+      round-robin boundary.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: dcache-arbiter
+      heading: "D$ Interface Arbiter"
+      quote: >
+        All three (D$ lane, LCAM port, TLB port) are released back to scalar on the
+        round-robin boundary so no single vector ``OP.v`` can monopolize disambiguation or
+        translation.
+
+  - id: spec-lsu.h11
+    kind: function
+    statement: >
+      A single vector OP.v must not be able to monopolize disambiguation or translation.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: dcache-arbiter
+      heading: "D$ Interface Arbiter"
+      quote: >
+        All three (D$ lane, LCAM port, TLB port) are released back to scalar on the
+        round-robin boundary so no single vector ``OP.v`` can monopolize disambiguation or
+        translation.
+
+  # --- i: squash by pointer rollback ------------------------------------------
+
+  - id: spec-lsu.i1
+    kind: function
+    statement: >
+      IQ_V_LOAD and IQ_V_STORE must issue speculatively without gating on the PNR.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-squash
+      heading: "Squashing the in-flight vector LSU"
+      quote: >
+        Unlike ``IQ_V_ALU``, ``IQ_V_LOAD``/``IQ_V_STORE`` issue **speculatively** — they do
+        not gate on the PNR — so a vector memory ``OP.v`` can be mid-drain when a branch
+        mispredicts.
+
+  - id: spec-lsu.i2
+    kind: function
+    statement: >
+      On a mispredict each element queue's tail must be rolled back to the branch's
+      reservation index.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-squash
+      heading: "Squashing the in-flight vector LSU"
+      quote: >
+        a mispredict **rolls the tail back to the branch's reservation
+        index**, exactly as |boom| rolls ``stq_tail``.
+
+  - id: spec-lsu.i3
+    kind: structure
+    statement: >
+      Each element queue's occupied region must be program-ordered.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-squash
+      heading: "Squashing the in-flight vector LSU"
+      quote: >
+        because capacity is reserved in **program order** at dispatch
+        (:ref:`vec-queue-reservation`), each queue's occupied region is program-ordered
+
+  - id: spec-lsu.i4
+    kind: function
+    statement: >
+      Killed element-queue entries must vanish with no per-entry compare.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-squash
+      heading: "Squashing the in-flight vector LSU"
+      quote: >
+        Killed entries vanish with no per-entry compare, and the reservations are released in
+        the same event.
+
+  - id: spec-lsu.i5
+    kind: function
+    statement: >
+      The reservations must be released in the same event as the rollback.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-squash
+      heading: "Squashing the in-flight vector LSU"
+      quote: >
+        Killed entries vanish with no per-entry compare, and the reservations are released in
+        the same event.
+
+  - id: spec-lsu.i6
+    kind: function
+    statement: >
+      An in-progress stage-1 vAGEN crack must be killed on brupdate or exception.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-squash
+      heading: "Squashing the in-flight vector LSU"
+      quote: >
+        **Stage-1 vAGEN** — the in-progress crack is killed on ``brupdate``/``exception`` like
+        any pipeline stage.
+
+  - id: spec-lsu.i7
+    kind: function
+    statement: >
+      LCB assembly entries must be invalidated by their owning ldq_idx.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-squash
+      heading: "Squashing the in-flight vector LSU"
+      quote: >
+        **Load Coalescing Buffer** — assembly entries are invalidated by owning ``ldq_idx``;
+
+  - id: spec-lsu.i8
+    kind: function
+    statement: >
+      A late element response for a rolled-back ldq_idx must be dropped.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-squash
+      heading: "Squashing the in-flight vector LSU"
+      quote: >
+        a rolled-back ``ldq_idx`` is dead, so a late element response has nowhere to land and
+        is dropped, the same shape as |boom| dropping a response for an invalidated LDQ entry.
+
+  - id: spec-lsu.i9
+    kind: function
+    statement: >
+      The vector LSU must not use drain-and-discard on a squash.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-squash
+      heading: "Squashing the in-flight vector LSU"
+      quote: >
+        **Drain-and-discard is not an option here**, even though it is exactly what the CII
+        does (:ref:`cii-flush`).
+    notes: >
+      From this section's danger block. On a mispredict the killed load's pvdest group returns
+      to the free list through br_alloc_lists and those PRNs are reallocated within a few
+      cycles, so a late LCB write would land a full VLEN register into a live, unrelated
+      destination. The CII can drain harmlessly only because its tags are not recycled.
+
+  - id: spec-lsu.i10
+    kind: structure
+    statement: >
+      The vector LSU squash must use pointer rollback rather than per-entry br_mask and
+      IsKilledByBranch.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-squash
+      heading: "Squashing the in-flight vector LSU"
+      quote: >
+        |caracal| chooses pointer rollback; the price is that reservation depth now bounds
+        vector-load MLP (:ref:`ssi-queues`).
+    notes: >
+      The alternative the spec rejects is per-entry br_mask + IsKilledByBranch on every
+      element-queue and LCB entry, which preserves free-running load streaming and full MLP
+      but puts maxBrCount bits and kill logic on ~1000 entries.
+
+  # --- j: the vector load and store algorithms --------------------------------
+
+  - id: spec-lsu.j1
+    kind: function
+    statement: >
+      On issue a vector load must drain per-element addresses from the ld_SSI_ADDR_Q.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-load-algo
+      heading: "Vector Loads Algorithm"
+      quote: >
+        when the load issues out of the issue queue it drains addresses from the
+        ``ld_SSI_ADDR_Q`` (per element, precomputed by stage 1 vAGEN)
+
+  - id: spec-lsu.j2
+    kind: function
+    statement: >
+      For a unit-stride load the stage 2 Packer must run over the single ld_US_ADDR_Q nOP.v
+      to generate element addresses.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-load-algo
+      heading: "Vector Loads Algorithm"
+      quote: >
+        or, for unit-stride, runs the
+        stage 2 Packer over the single ``ld_US_ADDR_Q`` ``nOP.v`` to generate element addresses
+        just-in-time.
+
+  - id: spec-lsu.j3
+    kind: function
+    statement: >
+      Each element access fire must perform the TLB, D$ and LCAM lookups together.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-load-algo
+      heading: "Vector Loads Algorithm"
+      quote: >
+        for each element access the arbiter (:ref:`dcache-arbiter`) grants a D$ lane; the fire
+        does TLB + D$ + LCAM together (``will_fire_load_agen_exec``).
+
+  - id: spec-lsu.j4
+    kind: function
+    statement: >
+      elem_done must advance as element responses are assembled.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-load-algo
+      heading: "Vector Loads Algorithm"
+      quote: >
+        ``elem_done`` advances; a fault latches ``fault_elem`` (:ref:`elem-progress`).
+
+  - id: spec-lsu.j5
+    kind: structure
+    statement: >
+      The vector load path must be identical to the scalar load path apart from the vector
+      queue drain, LCB coalescing and per-element progress tracking.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-load-algo
+      heading: "Vector Loads Algorithm"
+      quote: >
+        Identical to scalar **loads** other than draining addresses from the dedicated vector
+        queues, coalescing in the LCB, and per-element progress tracking.
+
+  - id: spec-lsu.j6
+    kind: function
+    statement: >
+      A vector store's surplus reservation must be released at execute once VL is read from
+      the VL RF.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-store-algo
+      heading: "Vector Stores Algorithm"
+      quote: >
+        The surplus is released at execute once ``VL`` is
+        read from the VL RF.
+
+  - id: spec-lsu.j7
+    kind: function
+    statement: >
+      A vector store's execute stage must perform the TLB and LCAM lookups only.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-store-algo
+      heading: "Vector Stores Algorithm"
+      quote: >
+        **Execute (translate + order-check)** — drains addresses from ``st_SSI_ADDR_Q`` /
+        ``st_US_ADDR_Q`` and does **TLB + LCAM** only.
+
+  - id: spec-lsu.j8
+    kind: function
+    statement: >
+      All of a store's active element addresses must be translated pre-commit.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-store-algo
+      heading: "Vector Stores Algorithm"
+      quote: >
+        **All active element addresses are translated
+        pre-commit** so that any page/access fault is detected and reported precisely
+        **before** the store commits
+
+  - id: spec-lsu.j9
+    kind: function
+    statement: >
+      A store must become eligible to drain to the stq_execute_queue only once the ROB
+      retires it.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-store-algo
+      heading: "Vector Stores Algorithm"
+      quote: >
+        **Commit** — when the ROB retires the store its committed flag is set; only then is it
+        eligible to drain to the ``stq_execute_queue``.
+
+  - id: spec-lsu.j10
+    kind: interface
+    statement: >
+      Store data must be taken from the st_US_DATA_Q for unit-stride and from the
+      st_SSI_DATA_Q per element otherwise.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-store-algo
+      heading: "Vector Stores Algorithm"
+      quote: >
+        Store data is taken from ``st_US_DATA_Q`` (whole-``vPRN``, sliced by
+        the Packer) or ``st_SSI_DATA_Q`` (per element).
+
+  - id: spec-lsu.j11
+    kind: structure
+    statement: >
+      The vector store path must be identical to the scalar store path apart from the vector
+      queue drains and the pre-commit translation of the whole active element range.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vec-store-algo
+      heading: "Vector Stores Algorithm"
+      quote: >
+        Identical to scalar stores other than draining address and data from the dedicated
+        vector queues and the pre-commit translation of the whole active element range.
+
+  # --- k: memory subsystem and the bandwidth ceiling --------------------------
+
+  - id: spec-lsu.k1
+    kind: structure
+    statement: >
+      The memory subsystem must remain unchanged from BOOM v4.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-subsystem
+      heading: "Memory SubSystem"
+      quote: >
+        The memory subsystem remains unchanged from BOOMv4 — the D$ Interface Arbiter
+        (:ref:`dcache-arbiter`) sits *outside* the cache and presents the same ``dmem.req``
+        interface.
+
+  - id: spec-lsu.k2
+    kind: structure
+    statement: >
+      The D$ interface arbiter must sit outside the cache.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-subsystem
+      heading: "Memory SubSystem"
+      quote: >
+        The memory subsystem remains unchanged from BOOMv4 — the D$ Interface Arbiter
+        (:ref:`dcache-arbiter`) sits *outside* the cache and presents the same ``dmem.req``
+        interface.
+
+  - id: spec-lsu.k3
+    kind: interface
+    statement: >
+      The D$ interface arbiter must present the same dmem.req interface.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: mem-subsystem
+      heading: "Memory SubSystem"
+      quote: >
+        The memory subsystem remains unchanged from BOOMv4 — the D$ Interface Arbiter
+        (:ref:`dcache-arbiter`) sits *outside* the cache and presents the same ``dmem.req``
+        interface.
+
+  - id: spec-lsu.k5
+    kind: interface
+    statement: >
+      Each dmem.req lane must carry at most one element per cycle.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vector-bw-ceiling
+      heading: "Vector memory bandwidth ceiling"
+      quote: >
+        Each ``dmem.req`` lane carries at most one element
+        (``≤ ELEN`` = 64 bits) per cycle, and there are ``lsuWidth`` lanes — **1 on Medium, 2 on
+        Large/Mega**.
+
+  - id: spec-lsu.k7
+    kind: function
+    statement: >
+      SSI accesses must drain one element per granted lane.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vector-bw-ceiling
+      heading: "Vector memory bandwidth ceiling"
+      quote: >
+        **SSI** (strided / indexed / segmented) accesses drain **one element per granted
+        lane**, and that lane is shared with scalar memory ops through the priority round-robin
+        arbiter
+
+  - id: spec-lsu.k8
+    kind: function
+    statement: >
+      The Packer must coalesce contiguous bytes up to the lane width.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vector-bw-ceiling
+      heading: "Vector memory bandwidth ceiling"
+      quote: >
+        the Packer coalesces contiguous bytes up to the lane width
+        and the LCAM does one range check
+
+  - id: spec-lsu.k10
+    kind: structure
+    statement: >
+      The design must reuse the scalar cache port rather than building a VLEN-wide vector
+      cache interface.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: vector-bw-ceiling
+      heading: "Vector memory bandwidth ceiling"
+      quote: >
+        |caracal| reuses the scalar cache port rather than
+        building a ``VLEN``-wide vector cache interface.
+    notes: >
+      A wider or line-granular vector cache port is explicitly out of scope in this spec and
+      named as the highest-leverage follow-on if vector memory bandwidth proves limiting.
+
+  - id: spec-lsu.l1
+    kind: structure
+    statement: >
+      For a segmented load the pvtmp group must be the destination of the LSU half.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-segmented-load
+      heading: "Segmented Load"
+      quote: >
+        The ``pvtmp`` group is the **destination** of the LSU half and the **source** of the
+        coprocessor half.
+
+  - id: spec-lsu.l2
+    kind: function
+    statement: >
+      The LSU half of a segmented load must issue when its address operands are ready.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-segmented-load
+      heading: "Segmented Load"
+      quote: >
+        The LSU issues when its address operands are ready, reads memory, and writes the
+        loaded data into the ``pvtmp`` group in the VRF (treating ``pvtmp`` as an ordinary
+        vector destination).
+
+  - id: spec-lsu.l3
+    kind: function
+    statement: >
+      The LSU half of a segmented load must write the loaded data into the pvtmp group in the
+      VRF.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-segmented-load
+      heading: "Segmented Load"
+      quote: >
+        The LSU issues when its address operands are ready, reads memory, and writes the
+        loaded data into the ``pvtmp`` group in the VRF (treating ``pvtmp`` as an ordinary
+        vector destination).
+
+  - id: spec-lsu.l4
+    kind: function
+    statement: >
+      The LSU half must treat pvtmp as an ordinary vector destination.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-segmented-load
+      heading: "Segmented Load"
+      quote: >
+        The LSU issues when its address operands are ready, reads memory, and writes the
+        loaded data into the ``pvtmp`` group in the VRF (treating ``pvtmp`` as an ordinary
+        vector destination).
+
+  - id: spec-lsu.l5
+    kind: interface
+    statement: >
+      The pvtmp group-done must wake the coprocessor's IQ slot on the vector wakeup network.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-segmented-load
+      heading: "Segmented Load"
+      quote: >
+        ``pvtmp``'s group-done on the vector wakeup network wakes the coprocessor's IQ slot.
+    notes: >
+      The consumer side — the coprocessor reading pvtmp, transposing, and writing pvdest — is
+      spec-cii's, from midcore.rst §"Segmented Store" and cii.rst.
+
+  - id: spec-lsu.l7
+    kind: function
+    statement: >
+      A segmented load/store must be split into two halves.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-segmented-ls
+      heading: "Segmented Load Stores (Shared Instruction)"
+      quote: >
+        These instructions are marked is_shared, and split into two halves.
+    notes: >
+      The is_shared marking itself is a decode obligation, mined as spec-decode.b1 and
+      spec-decode.b2.
+
+  - id: spec-lsu.l8
+    kind: function
+    statement: >
+      The LSU half of a shared instruction must move the data to or from memory.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-segmented-ls
+      heading: "Segmented Load Stores (Shared Instruction)"
+      quote: >
+        One half is executed by the load store unit to move data to/from memory, and the other
+        half by the co-processor to transpose the data; they hand off through ``pvtmp``.
+
+  - id: spec-lsu.l9
+    kind: interface
+    statement: >
+      The two halves of a shared instruction must hand off through pvtmp.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-segmented-ls
+      heading: "Segmented Load Stores (Shared Instruction)"
+      quote: >
+        One half is executed by the load store unit to move data to/from memory, and the other
+        half by the co-processor to transpose the data; they hand off through ``pvtmp``.
+
+  # --- m: the VL == 0 group copy ----------------------------------------------
+
+  - id: spec-lsu.m1
+    kind: function
+    statement: >
+      For every form other than immediate-AVL a VL = 0 op must reach issue, where pvl
+      resolves to 0.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        For all other forms VL is not known at decode (it is renamed into the VL register
+        file), so a ``VL = 0`` op reaches issue, where ``pvl`` resolves to 0.
+
+  - id: spec-lsu.m2
+    kind: function
+    statement: >
+      With VL = 0 the LSU must not execute any element.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        With ``VL = 0`` **no element is active**, so nothing executes
+
+  - id: spec-lsu.m3
+    kind: function
+    statement: >
+      The freshly-allocated pvdest group must be made architecturally correct before the
+      entry can commit.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        but the freshly-allocated ``pvdest``
+        group still has to be made architecturally correct before the entry can commit, because
+        a new physical group was renamed for it.
+
+  - id: spec-lsu.m4
+    kind: function
+    statement: >
+      With vta = 0 the new destination group must equal the old value of the architectural
+      vreg group.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        **Tail-undisturbed (``vta = 0``).** The new destination group must equal the **old**
+        value of the architectural vreg group.
+
+  - id: spec-lsu.m5
+    kind: function
+    statement: >
+      The OP.v must perform a group copy of pvdest from stale_pvdest, one VLEN-wide copy per
+      group member.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        The ``OP.v`` performs a **group copy** ``pvdest ← stale_pvdest`` —
+        up to ``EMUL`` whole-register ``VLEN``-wide copies, one per group member, reading the
+        stale group and writing the new group.
+
+  - id: spec-lsu.m6
+    kind: structure
+    statement: >
+      The group copy must reuse the Load Unit's VRF ports.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        This reuses the **Load Unit's VRF ports** (``R``/``W`` on the Load
+        path, which are idle when no load is draining), so it adds **no new VRF ports**
+
+  - id: spec-lsu.m7
+    kind: structure
+    statement: >
+      The group copy must add no new VRF ports.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        This reuses the **Load Unit's VRF ports** (``R``/``W`` on the Load
+        path, which are idle when no load is draining), so it adds **no new VRF ports**
+
+  - id: spec-lsu.m8
+    kind: function
+    statement: >
+      The group copy must complete with a single group-done.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        The copy completes with a single **group-done** (:ref:`group-done-wb`), exactly
+        like a real load, so the ROB/Busy-Table/wakeup path is unchanged.
+
+  - id: spec-lsu.m9
+    kind: function
+    statement: >
+      With vta = 1 the VL = 0 entry must take the squash or complete-without-execute path.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        **Tail-agnostic (``vta = 1``).** The tail may hold any value, so no copy is required;
+        the entry takes the squash / complete-without-execute path and emits its group-done
+        immediately.
+
+  - id: spec-lsu.m10
+    kind: function
+    statement: >
+      With vta = 1 the VL = 0 entry must emit its group-done immediately.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        **Tail-agnostic (``vta = 1``).** The tail may hold any value, so no copy is required;
+        the entry takes the squash / complete-without-execute path and emits its group-done
+        immediately.
+
+  - id: spec-lsu.m11
+    kind: function
+    statement: >
+      On every masked or partial-tail vector op the inactive element lanes of the destination
+      must be preserved or filled per vta/vma.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        on every masked or partial-tail vector op the inactive element lanes of the destination
+        must be preserved or filled per ``vta``/``vma``.
+
+  - id: spec-lsu.m12
+    kind: function
+    statement: >
+      The standalone group copy must be used only for the no-execution VL = 0 or
+      fully-inactive vta = 0 case.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        The standalone group
+        copy above is therefore needed only for the no-execution ``VL = 0`` / fully-inactive
+        ``vta = 0`` case.
+    notes: >
+      For loads the LCB already fills inactive byte lanes before its single VRF write
+      (spec-lsu.e8, spec-lsu.e9); for arithmetic the CII coprocessor merges the undisturbed
+      lanes itself, which is spec-cii's.
+
+  # Load Unit VRF port arbitration, resolved 2026-07-31.
+
+  - id: spec-lsu.m13
+    kind: structure
+    statement: >
+      The Load Unit's VRF ports must be arbitrated by a strict-priority mux.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        The Load Unit's VRF ports are arbitrated by a **strict-priority mux**: an active load
+        drain always wins, and the group copy takes the ports only in a cycle when no drain is
+        using them.
+    notes: >
+      Resolved 2026-07-31. The spec states there is no anti-starvation counter, because
+      liveness is structural: the VL = 0 op holds a ROB entry and commit is in program order,
+      so a steady stream of younger loads fills the ROB, dispatch stalls, in-flight drains
+      finish, and the ports fall idle. That absence is not written as a separate requirement,
+      for the same reason the retired spec-lsu.b12 was — no RTL implements the absence of a
+      mechanism. The contrast the spec draws is with the D$ lane (group h), which carries
+      scalar traffic and therefore does need a bounded round-robin guarantee.
+
+  - id: spec-lsu.m14
+    kind: function
+    statement: >
+      An active load drain must always win the Load Unit's VRF ports over the group copy.
+    source:
+      file: docs_caracal/src/case_study.rst
+      anchor: case-vl-zero
+      heading: "VL == 0"
+      quote: >
+        an active load
+        drain always wins, and the group copy takes the ports only in a cycle when no drain is
+        using them.
+
+  - id: spec-lsu.e20
+    kind: structure
+    statement: >
+      The LCB must track byte presence with a per-entry byte-valid bitmap bounded by the
+      active-element set the load vAGEN selected.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        When **all active bytes** of a destination PRN are present (tracked by a per-entry
+        byte-valid bitmap, bounded by the active-element set the load vAGEN selected), the LCB issues a
+        **single** VRF write on ``W0`` for that PRN.
+    notes: >
+      Supersedes the retired spec-lsu.e7, whose bound was an independently evaluated
+      active-element mask.
+
+  - id: spec-lsu.e21
+    kind: function
+    statement: >
+      The LCB must not re-derive which elements are active.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        The LCB **must not re-derive which elements are active**: it
+        consumes the **same mask-derived element cursor** as ``ld_vAGEN_1`` (see :ref:`vector-agen`), so
+        the bytes it waits for are exactly the bytes the AGEN generated accesses for and a masked-off
+        element is never counted as outstanding.
+
+  - id: spec-lsu.e22
+    kind: interface
+    statement: >
+      The LCB must consume the same mask-derived element cursor as ld_vAGEN_1.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        The LCB **must not re-derive which elements are active**: it
+        consumes the **same mask-derived element cursor** as ``ld_vAGEN_1`` (see :ref:`vector-agen`), so
+        the bytes it waits for are exactly the bytes the AGEN generated accesses for and a masked-off
+        element is never counted as outstanding.
+    notes: >
+      The cursor is owned by AGEN (spec-agen.e10) and shared with both consumers
+      (spec-agen.e11); the store-side counterpart is spec-agen.d12.
+
+  - id: spec-lsu.e23
+    kind: function
+    statement: >
+      A masked-off element must never be counted as outstanding by the LCB.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        The LCB **must not re-derive which elements are active**: it
+        consumes the **same mask-derived element cursor** as ``ld_vAGEN_1`` (see :ref:`vector-agen`), so
+        the bytes it waits for are exactly the bytes the AGEN generated accesses for and a masked-off
+        element is never counted as outstanding.
+
+  # LCB entry allocation, resolved 2026-07-31.
+
+  - id: spec-lsu.e24
+    kind: function
+    statement: >
+      An assembly entry must be allocated for a destination PRN before any element access for
+      that PRN is issued to the D$.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        **Entries are allocated before the accesses that fill them.** An assembly entry is
+        allocated for a destination PRN *before* any element access for that PRN is issued to
+        the D$
+    notes: >
+      Allocating ahead of the request is what makes a response for an unallocated PRN
+      unreachable, so the LCB never has to back-pressure a D$ response — which it could not do
+      safely, since a blocked response holds an MSHR against the drain that would free the
+      entry. A consequence, stated by the spec but not a separate obligation, is that LCB depth
+      is a memory-level-parallelism knob rather than a correctness parameter.
+
+  - id: spec-lsu.e25
+    kind: function
+    statement: >
+      The load drain must stall at the arbiter when no assembly entry is free.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: load-coalesce
+      heading: "Load Coalescing Buffer"
+      quote: >
+        if no entry is free the load drain stalls at the arbiter (:ref:`dcache-arbiter`).
+    notes: >
+      The arbiter itself is group h.
+
+coverage:
+
+  # loadstore.rst: the 3 sections owned by memord and the unowned chapter title are not
+  # ledgered here — see the assignments block in families.yaml.
+  - file: docs_caracal/src/loadstore.rst
+    heading: "The Unified Load/Store Unit (LSU)"
+    anchor: lsu-unified
+    reqs: [spec-lsu.a1, spec-lsu.a2, spec-lsu.a3, spec-lsu.a4, spec-lsu.a5, spec-lsu.a6,
+           spec-lsu.a7, spec-lsu.a8, spec-lsu.a9, spec-lsu.a10, spec-lsu.a11, spec-lsu.a12,
+           spec-lsu.a13, spec-lsu.a14, spec-lsu.a15]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Strided, Segmented, Indexed Queue"
+    anchor: ssi-queues
+    reqs: [spec-lsu.b1, spec-lsu.b2, spec-lsu.b3, spec-lsu.b4, spec-lsu.b5, spec-lsu.b6,
+           spec-lsu.b7, spec-lsu.b8, spec-lsu.b9, spec-lsu.b10, spec-lsu.b11,
+           spec-lsu.b14, spec-lsu.b15, spec-lsu.b16, spec-lsu.b17,
+           spec-lsu.b18, spec-lsu.b19]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Unit-Strided Queue"
+    anchor: us-queue
+    reqs: [spec-lsu.c2, spec-lsu.c3, spec-lsu.c4, spec-lsu.c5, spec-lsu.c6]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Store Data Queue"
+    anchor: store-data-queue
+    reqs: [spec-lsu.d1, spec-lsu.d2, spec-lsu.d3, spec-lsu.d4, spec-lsu.d5, spec-lsu.d6,
+           spec-lsu.d7, spec-lsu.d8, spec-lsu.d9, spec-lsu.d10, spec-lsu.d11, spec-lsu.d12,
+           spec-lsu.d13]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Load Coalescing Buffer"
+    anchor: load-coalesce
+    reqs: [spec-lsu.e1, spec-lsu.e2, spec-lsu.e3, spec-lsu.e4, spec-lsu.e5, spec-lsu.e6,
+           spec-lsu.e8, spec-lsu.e9, spec-lsu.e10, spec-lsu.e11, spec-lsu.e12,
+           spec-lsu.e13, spec-lsu.e14, spec-lsu.e15, spec-lsu.e16, spec-lsu.e17,
+           spec-lsu.e18, spec-lsu.e19, spec-lsu.e20, spec-lsu.e21, spec-lsu.e22,
+           spec-lsu.e23, spec-lsu.e24, spec-lsu.e25]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Per-Element Progress Tracking and Precise Exceptions"
+    anchor: elem-progress
+    reqs: [spec-lsu.f1, spec-lsu.f2, spec-lsu.f3, spec-lsu.f4, spec-lsu.f5, spec-lsu.f6,
+           spec-lsu.f7, spec-lsu.f8, spec-lsu.f9, spec-lsu.f10, spec-lsu.f11, spec-lsu.f12,
+           spec-lsu.f13, spec-lsu.f14, spec-lsu.f15]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Fault-only-first (``vleff.v``)"
+    anchor: elem-progress
+    reqs: [spec-lsu.g1, spec-lsu.g2, spec-lsu.g3, spec-lsu.g4, spec-lsu.g5, spec-lsu.g6,
+           spec-lsu.g7, spec-lsu.g8, spec-lsu.g9, spec-lsu.g10, spec-lsu.g11]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "D$ Interface Arbiter"
+    anchor: dcache-arbiter
+    reqs: [spec-lsu.h1, spec-lsu.h2, spec-lsu.h3, spec-lsu.h4, spec-lsu.h5, spec-lsu.h6,
+           spec-lsu.h7, spec-lsu.h8, spec-lsu.h9, spec-lsu.h10, spec-lsu.h11]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Squashing the in-flight vector LSU"
+    anchor: vec-squash
+    reqs: [spec-lsu.i1, spec-lsu.i2, spec-lsu.i3, spec-lsu.i4, spec-lsu.i5, spec-lsu.i6,
+           spec-lsu.i7, spec-lsu.i8, spec-lsu.i9, spec-lsu.i10]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Vector Loads Algorithm"
+    anchor: vec-load-algo
+    reqs: [spec-lsu.j1, spec-lsu.j2, spec-lsu.j3, spec-lsu.j4, spec-lsu.j5]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Vector Stores Algorithm"
+    anchor: vec-store-algo
+    reqs: [spec-lsu.j6, spec-lsu.j7, spec-lsu.j8, spec-lsu.j9, spec-lsu.j10, spec-lsu.j11]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Memory SubSystem"
+    anchor: mem-subsystem
+    reqs: [spec-lsu.k1, spec-lsu.k2, spec-lsu.k3]
+
+  - file: docs_caracal/src/loadstore.rst
+    heading: "Vector memory bandwidth ceiling"
+    anchor: vector-bw-ceiling
+    reqs: [spec-lsu.k5, spec-lsu.k7, spec-lsu.k8,
+           spec-lsu.k10]
+
+  # case_study.rst has no assignments block in families.yaml, so the legacy rule applies and
+  # every section of the file is ledgered here.
+  - file: docs_caracal/src/case_study.rst
+    heading: "Case Study"
+    skipped: >
+      Chapter title. The body is a one-line statement of the chapter's purpose — that it
+      reviews how edge cases and complex instructions are handled — and carries no obligation.
+
+  - file: docs_caracal/src/case_study.rst
+    heading: "Segmented Load Stores (Shared Instruction)"
+    anchor: case-segmented-ls
+    reqs: [spec-lsu.l7, spec-lsu.l8, spec-lsu.l9]
+
+  - file: docs_caracal/src/case_study.rst
+    heading: "VL == 0"
+    anchor: case-vl-zero
+    reqs: [spec-lsu.m1, spec-lsu.m2, spec-lsu.m3, spec-lsu.m4, spec-lsu.m5, spec-lsu.m6,
+           spec-lsu.m7, spec-lsu.m8, spec-lsu.m9, spec-lsu.m10, spec-lsu.m11, spec-lsu.m12,
+           spec-lsu.m13, spec-lsu.m14]
+
+  # midcore.rst: lsu owns exactly one section there.
+  - file: docs_caracal/src/midcore.rst
+    heading: "Segmented Load"
+    anchor: midcore-segmented-load
+    reqs: [spec-lsu.l1, spec-lsu.l2, spec-lsu.l3, spec-lsu.l4, spec-lsu.l5]
+
+retired:
+
+  - id: spec-lsu.b12
+    statement: >
+      Liveness of the vector store path must be provided by the program-order reservation rather than by queue sizing.
+    retired_because: >
+      The argument of the danger block rather than its mandate. What the block mandates is spec-lsu.b4 (reserve in program order at dispatch) and spec-lsu.b5 (do not claim opportunistically at execute); this entry stated only why b4 exists. The four-step deadlock is retained in notes.
+
+  - id: spec-lsu.b13
+    statement: >
+      The SSI queue depth must be treated as a published architectural limit.
+    retired_because: >
+      A documentation obligation ("Depth is now a published architectural limit"), untaggable in RTL. The substance survives as spec-lsu.b2 (512-entry default) and spec-lsu.b14 (depth bounds in-flight ops).
+
+  - id: spec-lsu.c1
+    statement: >
+      Unit-stride address generation must require only a base address, VL and EEW to generate all addresses.
+    retired_because: >
+      A semantic property of the unit-stride access class ("only require a base address, VL, and EEW"), introduced as motivation for the optimisation. The obligations it motivates are spec-lsu.c2, c3 and c4.
+
+  - id: spec-lsu.k11
+    statement: >
+      LargeBoomV4Config or MegaBoomV4Config must be used for acceptable vector throughput.
+    retired_because: >
+      Integrator guidance on which config to instantiate, with an undefined predicate ("acceptable vector throughput"). The config-dependent structural obligations are spec-lsu.a12, a13 and h2.
+
+  - id: spec-lsu.k4
+    statement: >
+      Vector memory bandwidth must be bounded by the scalar D$ port width rather than by VLEN.
+    retired_because: >
+      The conclusion of a sentence beginning "Because the cache and its request interface are unchanged" - entailed by spec-lsu.k1 and k3, with no RTL that can satisfy or violate it. The 64/128 bits-per-cycle figures are retained in notes.
+
+  - id: spec-lsu.k6
+    statement: >
+      A single VLEN of 256 destination register must take at least four D$ beats.
+    retired_because: >
+      Arithmetic (VLEN/ELEN) stated by the spec as a consequence, not an obligation. Nothing implements it.
+
+  - id: spec-lsu.k9
+    statement: >
+      Unit-stride accesses must still be capped at the lsuWidth times ELEN bandwidth.
+    retired_because: >
+      The same bandwidth cap as spec-lsu.k5 restated for one access class, from an explanatory contrast ("the Packer reduces address-generation cost, not cache-port width").
+
+  - id: spec-lsu.l6
+    statement: >
+      Segmented load/store must be the only instruction that uses an intermediate temp vector group in the VRF.
+    retired_because: >
+      The quote says segmented load/store "is the only instruction that currently uses" pvtmp; this statement dropped "currently", converting a scoping observation about today's instruction set into a universal negative no RTL artifact can discharge. The real obligations are spec-lsu.l7 and l9.
+
+  - id: spec-lsu.e7
+    statement: >
+      The LCB must track byte presence with a per-entry byte-valid bitmap bounded by the
+      active-element mask.
+    retired_because: >
+      loadstore.rst §"Load Coalescing Buffer" was amended on 2026-07-31 so the LCB consumes the
+      load vAGEN's mask-derived element cursor instead of evaluating the active-element mask
+      itself, removing the second mask evaluation on the load path. The bitmap is now bounded by
+      the AGEN-selected active-element set. Superseded by spec-lsu.e20.
+
+# All four open questions recorded against this family were resolved on 2026-07-31 and the
+# specs were amended accordingly:
+#
+#   store larger than the queue   -> element-count depth floor; spec-lsu.b16, b17
+#   LCB entry allocation          -> allocate before issue; spec-lsu.e24, e25
+#   in-flight elements on a fault -> ldq_idx invalidation reused; spec-lsu.f13-f15
+#   VL = 0 copy VRF arbitration   -> strict priority; spec-lsu.m13, m14
+#
+# The fourth question cited case_study.rst §"VL == 0" but quoted midcore.rst §"Undisturbed
+# lanes always come from ``stale_pvdest``", which families.yaml assigns to vrf. The normative
+# answer was written into case_study.rst §"VL == 0", which lsu owns, leaving midcore's line as
+# the port-budget cross reference.
+

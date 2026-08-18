@@ -1,0 +1,1874 @@
+family: issue
+description: >
+  Vector dispatch and scheduling: program-order element-queue reservation, the vector
+  issue queues and slots, wakeup networks, and VL delivery to issue.
+spec_sources:
+  - docs_caracal/src/issue.rst
+
+groups:
+  a: the dispatch stage — position, routing, and what changed from BOOM
+  b: vector element-queue reservation at dispatch
+  c: shared (segmented) instruction dispatch and the pvtmp rendezvous
+  d: the segmented-store dependency chain
+  e: issue-queue structure and selection policy
+  f: wakeup-network connectivity
+  g: the vector issue slot
+  h: VL delivery to issue
+  i: single-stage scheduling invariants
+
+reqs:
+
+  # --- a: the dispatch stage --------------------------------------------------
+
+  - id: spec-issue.a1
+    kind: structure
+    statement: >
+      The dispatch stage must sit between rename and the issue queues.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: dispatch-stage
+      heading: "Dispatch Stage"
+      quote: >
+        In |boom|, dispatch is the pipeline stage that sits between rename and the issue queues —
+        it is the last in-order stage before instructions go out-of-order.
+    notes: >
+      Stated of |boom|; this section also states that Caracal's dispatch stage is
+      "essentially unchanged from |boom|" (spec-issue.a5), so the property is inherited.
+
+  - id: spec-issue.a2
+    kind: structure
+    statement: >
+      The dispatch stage must be the last in-order stage before instructions go
+      out-of-order.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: dispatch-stage
+      heading: "Dispatch Stage"
+      quote: >
+        In |boom|, dispatch is the pipeline stage that sits between rename and the issue queues —
+        it is the last in-order stage before instructions go out-of-order.
+    notes: >
+      This is the property the rest of the chapter depends on: program-order element-queue
+      reservation (spec-issue.b3) is possible only in an in-order stage.
+
+  - id: spec-issue.a3
+    kind: function
+    statement: >
+      The dispatch stage must route each instruction into the appropriate issue queue.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: dispatch-stage
+      heading: "Dispatch Stage"
+      quote: >
+        This stage routes the
+        instruction into the appropriate IQ and reserves the LDQ/STQ slot in program order, which
+        only the in-order dispatch stage can do.
+
+  - id: spec-issue.a4
+    kind: function
+    statement: >
+      The dispatch stage must reserve the LDQ/STQ slot in program order.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: dispatch-stage
+      heading: "Dispatch Stage"
+      quote: >
+        This stage routes the
+        instruction into the appropriate IQ and reserves the LDQ/STQ slot in program order, which
+        only the in-order dispatch stage can do.
+
+  - id: spec-issue.a5
+    kind: structure
+    statement: >
+      The dispatch stage must otherwise be unchanged from BOOM.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: dispatch-stage
+      heading: "Dispatch Stage"
+      quote: >
+        The dispatch stage is essentially unchanged from
+        |boom| except modified to support vector op-codes and routing into the new ``IQ_V_*`` queues.
+
+  - id: spec-issue.a6
+    kind: structure
+    statement: >
+      The dispatch stage must be modified to support vector op-codes.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: dispatch-stage
+      heading: "Dispatch Stage"
+      quote: >
+        The dispatch stage is essentially unchanged from
+        |boom| except modified to support vector op-codes and routing into the new ``IQ_V_*`` queues.
+
+  - id: spec-issue.a7
+    kind: function
+    statement: >
+      The dispatch stage must route vector op-codes into the new IQ_V_* queues.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: dispatch-stage
+      heading: "Dispatch Stage"
+      quote: >
+        The dispatch stage is essentially unchanged from
+        |boom| except modified to support vector op-codes and routing into the new ``IQ_V_*`` queues.
+
+  # --- b: vector element-queue reservation at dispatch ------------------------
+
+  - id: spec-issue.b1
+    kind: function
+    statement: >
+      Dispatch must reserve capacity in the vector element queues for a vector memory OP.v
+      alongside the LDQ/STQ slot.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: vec-queue-reservation
+      heading: "Vector element-queue reservation (in program order)"
+      quote: >
+        Dispatch acquires one more thing for a vector memory ``OP.v``: **capacity in the vector element
+        queues**, reserved in program order alongside the LDQ/STQ slot.
+    notes: >
+      The program-order-at-dispatch discipline itself is spec-lsu.b4/b5 (address queue) and
+      spec-lsu.d12 (store-data queue); what this entry records is the issue-side obligation
+      that the element-queue reservation is acquired in the same in-order dispatch action as
+      the LDQ/STQ slot.
+
+  - id: spec-issue.b2
+    kind: function
+    statement: >
+      A vector store must not dispatch unless its address and data queues have room for its
+      worst-case active element count.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: vec-queue-reservation
+      heading: "Vector element-queue reservation (in program order)"
+      quote: >
+        **A vector store** may not dispatch unless its address queue AND its data queue have room
+        for its **worst-case active element count**, computed from ``EMUL`` and ``EEW``
+    notes: >
+      NARROWED TO STORES by decision D9/D10; the load half is now spec-issue.b9. The previous
+      wording applied the worst-case rule to both directions, which made the load-streaming clause
+      spec-lsu.b11 unreachable, since worstCase = EMUL * VLEN/EEW = VLMAX >= VL >= active count.
+      The store rule cannot be relaxed: the four-step deadlock argument in loadstore.rst
+      `ssi-queues` depends on the oldest store already holding its full capacity.
+      The data-queue half is also spec-lsu.d13.
+
+  - id: spec-issue.b3
+    kind: function
+    statement: >
+      Dispatch must compute a vector memory OP.v's worst-case active element count from EMUL
+      and EEW.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: vec-queue-reservation
+      heading: "Vector element-queue reservation (in program order)"
+      quote: >
+        for its **worst-case active element count**, computed from ``EMUL`` and ``EEW`` — both
+        known at decode
+    notes: >
+      Both EMUL and EEW are known at decode, so the count needs no VL. The parenthesised
+      worked example (SEW=8, LMUL=8 at VLEN=256 giving 256 elements) is illustrative; the
+      per-configuration element count itself is spec-lsu.b15.
+
+  - id: spec-issue.b9
+    kind: function
+    statement: >
+      A vector load must reserve min(worstCase, ldResvMembers * VLEN/EEW) element-queue entries at
+      dispatch.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: vec-queue-reservation
+      heading: "Vector element-queue reservation (in program order)"
+      quote: >
+        **A vector load** reserves ``min(worstCase, ldResvMembers * VLEN/EEW)`` entries, with
+        ``ldResvMembers`` defaulting to **4**, and streams the remainder in waves.
+    notes: >
+      Added by decision D9/D10 as the load half of the split described in spec-issue.b2. The
+      default of 4 is stated by the spec, so it is part of the requirement. A load reserves for
+      squashability, not deadlock avoidance — it completes out of the LCB without gating on commit
+      — so it has no deadlock exposure to protect. The same obligation is stated from the LSU side
+      as spec-lsu.b18, and the store counterpart as spec-lsu.b19.
+
+  - id: spec-issue.b4
+    kind: function
+    statement: >
+      The unused portion of a vector memory OP.v's element-queue reservation must be released
+      at execute once VL is read from the VL RF.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: vec-queue-reservation
+      heading: "Vector element-queue reservation (in program order)"
+      quote: >
+        At execute, once ``VL`` is read from the VL RF, the
+        **unused portion of the reservation is released**.
+    notes: >
+      The two properties this section says program-order reservation buys — deadlock freedom
+      for stores and squashability by pointer rollback — are rationale here and are mined in
+      spec-lsu (deadlock freedom under §"Strided, Segmented, Indexed Queue"; pointer rollback,
+      the program-ordered occupied region, and the absence of a per-entry br_mask as
+      spec-lsu.i2/i3 and the pointer-rollback choice).
+
+  # Reconciling the release with the program-ordered tail, resolved 2026-08-01.
+
+  - id: spec-issue.b5
+    kind: function
+    statement: >
+      The Vector AGEN must perform the release of the unused reservation.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: vec-queue-reservation
+      heading: "Vector element-queue reservation (in program order)"
+      quote: >
+        **The release is tail-only.** The Vector AGEN — the stage that reads ``VL`` — may return
+        the unused portion **only while the reserving ``OP.v``'s region is still the youngest in
+        that queue**, in which case the release simply moves the tail pointer back.
+    notes: >
+      Resolved 2026-08-01: the question was both which structure performs the release and how a
+      mid-queue release could coexist with one program-ordered tail. The answer to the first is
+      the Vector AGEN, because it is the stage that reads VL (spec-issue.b4).
+
+  - id: spec-issue.b6
+    kind: function
+    statement: >
+      The unused reservation must be released only while the reserving ``OP.v``'s region is the
+      youngest in that queue.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: vec-queue-reservation
+      heading: "Vector element-queue reservation (in program order)"
+      quote: >
+        may return
+        the unused portion **only while the reserving ``OP.v``'s region is still the youngest in
+        that queue**, in which case the release simply moves the tail pointer back.
+    notes: >
+      The release moves the tail pointer back. The spec records the cost honestly: under a
+      stream of vector memory ops the release usually cannot fire, so the worst-case
+      reservation rather than VL is what bounds in-flight vector memory.
+
+  - id: spec-issue.b7
+    kind: function
+    statement: >
+      Unused entries must stay held and free in order when a younger ``OP.v`` has already
+      reserved past them.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: vec-queue-reservation
+      heading: "Vector element-queue reservation (in program order)"
+      quote: >
+        If any younger ``OP.v`` has already reserved
+        past it, the unused entries stay held and are freed in order with the rest of the region.
+
+  - id: spec-issue.b8
+    kind: function
+    statement: >
+      A mid-queue release must not be permitted.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: vec-queue-reservation
+      heading: "Vector element-queue reservation (in program order)"
+      quote: >
+        A
+        mid-queue release is **not** permitted: it would punch a hole in the occupied region and
+        break the program-ordered-tail invariant
+    notes: >
+      The invariant it would break is squashability by pointer rollback, spec-lsu group i.
+
+  # --- c: shared (segmented) instruction dispatch and the pvtmp rendezvous -----
+
+  - id: spec-issue.c1
+    kind: function
+    statement: >
+      A shared instruction's multiple execution resources must be acquired at dispatch time.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: cii-shared-sched
+      heading: "CII Shared Instruction Scheduling"
+      quote: >
+        In the single-stage scheme this is
+        handled at **dispatch time**: when a segmented load or store is renamed by the vector mapper,
+        it is dispatched to BOTH the CII IQ/coprocessor and its own Load/Store path.
+    notes: >
+      That shared instructions are marked is_shared by the Decoder is spec-decode group b.
+
+  - id: spec-issue.c2
+    kind: function
+    statement: >
+      A segmented load or store must be dispatched to both the CII IQ/coprocessor and its own
+      load/store path.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: cii-shared-sched
+      heading: "CII Shared Instruction Scheduling"
+      quote: >
+        In the single-stage scheme this is
+        handled at **dispatch time**: when a segmented load or store is renamed by the vector mapper,
+        it is dispatched to BOTH the CII IQ/coprocessor and its own Load/Store path.
+
+  - id: spec-issue.c3
+    kind: function
+    statement: >
+      A shared instruction's pvdest and pvtmp groups must be allocated all-or-nothing.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: cii-shared-sched
+      heading: "CII Shared Instruction Scheduling"
+      quote: >
+        Its ``pvdest`` and
+        ``pvtmp`` groups are allocated **all-or-nothing**
+    notes: >
+      Rationale: a partially allocated shared op would hold PRNs it cannot free until commit.
+      The allocation itself is specified by midcore.rst §"CII Shared Instruction Mapping" and
+      belongs to the rename family (not yet extracted); this entry records the dispatch-side
+      gate that issue.rst states.
+
+  - id: spec-issue.c4
+    kind: structure
+    statement: >
+      Shared handling must apply only to vector load/store.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: cii-shared-sched
+      heading: "CII Shared Instruction Scheduling"
+      quote: >
+        A shared vector
+        *arithmetic* instruction does not apply — the coprocessor fully manages its own
+        resources — so shared handling applies only to vector load/store.
+    notes: >
+      Rationale for the exclusion: the coprocessor fully manages its own resources for a
+      vector arithmetic op, so no second execution resource is dispatched.
+
+  - id: spec-issue.c5
+    kind: structure
+    statement: >
+      The two halves of a shared instruction must occupy two issue slots.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: cii-shared-sched
+      heading: "CII Shared Instruction Scheduling"
+      quote: >
+        The two halves occupy two issue slots but share **one ROB entry**, which stays busy until both
+        halves report
+
+  - id: spec-issue.c6
+    kind: structure
+    statement: >
+      The two halves of a shared instruction must share one ROB entry.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: cii-shared-sched
+      heading: "CII Shared Instruction Scheduling"
+      quote: >
+        The two halves occupy two issue slots but share **one ROB entry**, which stays busy until both
+        halves report
+
+  - id: spec-issue.c7
+    kind: function
+    statement: >
+      A shared instruction's ROB entry must stay busy until both halves report.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: cii-shared-sched
+      heading: "CII Shared Instruction Scheduling"
+      quote: >
+        The two halves occupy two issue slots but share **one ROB entry**, which stays busy until both
+        halves report
+
+  - id: spec-issue.c8
+    kind: structure
+    statement: >
+      The other-half-pending state of a shared instruction must be tracked by a 1-bit flag
+      rather than by a counter.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: cii-shared-sched
+      heading: "CII Shared Instruction Scheduling"
+      quote: >
+        tracked by the ROB's **1-bit "other half pending" flag** (see the ROB
+        Completion-tracking section), not a counter.
+    notes: >
+      The flag lives in the ROB and is specified by midcore.rst §"Completion tracking"; that
+      belongs to the rob family (not yet extracted). Mined here because issue.rst states it as
+      part of the dispatch-time shared-instruction scheme.
+
+  - id: spec-issue.c9
+    kind: function
+    statement: >
+      The two halves of a shared instruction must rendezvous on the pvtmp group in the VRF.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: cii-shared-sched
+      heading: "CII Shared Instruction Scheduling"
+      quote: >
+        The halves rendezvous on the ``pvtmp`` group in the
+        VRF (allocated by the vector mapper, see CII Shared Instruction Mapping): the producer writes it as
+        a destination and the consumer reads it as a source, woken by ``pvtmp``'s group-done on the vector
+        wakeup network like any vector operand.
+    notes: >
+      The producer-writes / consumer-reads halves are mined per half elsewhere:
+      spec-lsu.l1/l3/l9 for a segmented load and spec-cii.i8/i11 for a segmented store. The
+      group-done broadcast is spec-lsu.l5 and the slot wakeup is spec-cii.i12.
+
+  - id: spec-issue.c14
+    kind: function
+    statement: >
+      The LSU half of a segmented load must be selected for issue when the scalar base and
+      stride, the index vector for indexed forms, ``pvm`` when masked, and ``pvl`` are ready.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: cii-shared-sched
+      heading: "Segmented Load"
+      quote: >
+        2. The LSU is selected for issue when its **address operands** are ready — the scalar
+           base and stride, the index vector for indexed forms, ``pvm`` when the op is masked,
+           and ``pvl``.
+    notes: >
+      Supersedes the retired spec-issue.c10, whose condition ("all of its vector source
+      operands") was resolved on 2026-08-01 in favour of midcore.rst's narrower address-operand
+      wording. spec-lsu.l2 states the same wakeup generally, from midcore.rst §"Segmented
+      Load"; this requirement adds the operand set, which that section does not enumerate. Step
+      1 of this list — the LSU treating pvtmp as its destination group and writing the loaded
+      data into it — is spec-lsu.l1/l3/l4.
+
+  - id: spec-issue.c11
+    kind: interface
+    statement: >
+      The pvtmp group-done must wake the coprocessor half of a segmented load.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: cii-shared-sched
+      heading: "Segmented Load"
+      quote: >
+        3. ``pvtmp``'s group-done wakes the coprocessor, which reads ``pvtmp``, transposes, and writes
+        ``pvdest``.
+    notes: >
+      The coprocessor-side read, transpose and pvdest write are spec-cii.i1; the group-done
+      broadcast itself is spec-lsu.l5.
+
+  - id: spec-issue.c12
+    kind: interface
+    statement: >
+      The pvtmp group-done must wake the store issue-queue slot's DGEN path.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: cii-shared-sched
+      heading: "Segmented Store"
+      quote: >
+        2. ``pvtmp``'s group-done wakes the store IQ slot's **DGEN** path (not AGEN — see below).
+    notes: >
+      spec-cii.i12 records the same wakeup from midcore.rst without distinguishing DGEN from
+      AGEN; the DGEN-not-AGEN distinction is issue.rst's contribution. Step 1 of this list
+      (the coprocessor writing the transposed data into pvtmp) is spec-cii.i8/i10/i11, and
+      step 3 (the LSU reading pvtmp and writing memory once committed) is spec-lsu.
+
+  - id: spec-issue.c13
+    kind: interface
+    statement: >
+      The pvtmp group-done must not wake the store issue-queue slot's AGEN path.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: cii-shared-sched
+      heading: "Segmented Store"
+      quote: >
+        2. ``pvtmp``'s group-done wakes the store IQ slot's **DGEN** path (not AGEN — see below).
+    notes: >
+      AGEN must already have run before pvtmp exists at all — see the segmented-store
+      dependency chain, spec-issue.d1.
+
+  # --- d: the segmented-store dependency chain --------------------------------
+
+  - id: spec-issue.d1
+    kind: function
+    statement: >
+      The implementation must respect the six-step segmented-store dependency chain.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        The two halves of a segmented store are not independent: the coprocessor half cannot start until the
+        LSU half has *already* run its address path. The full chain is six steps, and it must be respected by
+        the implementation:
+    notes: >
+      The "coprocessor half cannot start until the LSU half has run its address path" half of
+      the quote is spec-cii.i5. d2-d9 below break the chain into its individual steps.
+
+  - id: spec-issue.d2
+    kind: function
+    statement: >
+      The LSU half of a segmented store must run AGEN as the first step of the chain.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        1. LSU half AGEN                (needs base GPR, + index vector, + mask — all from older producers)
+
+  - id: spec-issue.d3
+    kind: function
+    statement: >
+      The LSU half's AGEN must source its base GPR, index vector and mask from producers older
+      than the segmented store.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        every operand step 1 depends on comes
+        from an instruction *older* than the segmented store
+    notes: >
+      "From an older producer" is NOT by itself sufficient for the base GPR, and reading it as
+      sufficient produced a real bug (vector addresses computed from the previous tenant of the
+      base physical register; TLMonitor AcquireBlock to a non-cacheable address on
+      ms3p5_pureload / ms4_vle64 / edge_ls_gen, rob.scala:620 on ms2p5_loadblock / stress_seg).
+      iq_v_load and iq_v_store are NOT past-PNR gated, so an older producer may still be
+      unwritten at the grant: a BYPASSABLE INT wakeup means the producer's integer regfile write
+      has NOT YET LANDED, and it can land after the read response. VecScalarOperandRead therefore
+      holds a hinted lane until it OBSERVES that write on int_wb_snoop, rather than assuming any
+      particular distance -- bypass_hint is a "is the write pending?" predicate, never a latency
+      constant. See the "stale scalar base forward" section of
+      nlhdl/vec/lsu/VecScalarOperandRead.nlhdl.scala and the retraction of VecPipeline decision
+      D4. Checked by VecScalarOperandRead's bypassHintUnhonored assertion.
+
+  - id: spec-issue.d4
+    kind: function
+    statement: >
+      The LSU half of a segmented store must signal group-safe after its AGEN step.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        2. → group-safe / clr_unsafe    (lsu.scala:1443, on do_st_search)
+    notes: >
+      lsu.scala:1443 and do_st_search are cited as the existing BOOM mechanism that carries
+      this step, not as a Caracal-specific structure.
+
+  - id: spec-issue.d5
+    kind: function
+    statement: >
+      The PNR must advance past a segmented store's ROB entry only after its LSU half has
+      signalled group-safe.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        2. → group-safe / clr_unsafe    (lsu.scala:1443, on do_st_search)
+        3. → PNR advances past this ROB entry
+
+  - id: spec-issue.d6
+    kind: function
+    statement: >
+      The coprocessor half of a segmented store must become PNR-eligible in IQ_V_ALU only
+      after the PNR has advanced past its ROB entry.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        3. → PNR advances past this ROB entry
+        4. → coprocessor half becomes PNR-eligible in IQ_V_ALU and is granted
+
+  - id: spec-issue.d7
+    kind: function
+    statement: >
+      The coprocessor half of a segmented store must be granted from IQ_V_ALU once it is
+      PNR-eligible.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        4. → coprocessor half becomes PNR-eligible in IQ_V_ALU and is granted
+
+  - id: spec-issue.d8
+    kind: function
+    statement: >
+      The coprocessor half of a segmented store must emit group-done after writing pvtmp.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        5. → coprocessor transposes, writes pvtmp, emits group-done
+    notes: >
+      The transpose and the pvtmp write themselves are spec-cii.i10 and spec-cii.i11.
+
+  - id: spec-issue.d9
+    kind: function
+    statement: >
+      The LSU half's DGEN must read pvtmp as store data as the last step of the chain.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        6. → LSU half DGEN reads pvtmp as store data
+
+  - id: spec-issue.d10
+    kind: structure
+    statement: >
+      AGEN and DGEN of the same issue slot must be independently grantable.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        **AGEN and DGEN of the same issue slot must be independently grantable, in that order, separated by
+        a long and variable delay** (steps 1 and 6 can be hundreds of cycles apart).
+
+  - id: spec-issue.d11
+    kind: function
+    statement: >
+      AGEN of an issue slot must be granted before DGEN of that slot.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        **AGEN and DGEN of the same issue slot must be independently grantable, in that order, separated by
+        a long and variable delay** (steps 1 and 6 can be hundreds of cycles apart).
+
+  - id: spec-issue.d12
+    kind: timing
+    statement: >
+      An issue slot must tolerate a long and variable delay between its AGEN grant and its
+      DGEN grant.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        **AGEN and DGEN of the same issue slot must be independently grantable, in that order, separated by
+        a long and variable delay** (steps 1 and 6 can be hundreds of cycles apart).
+    notes: >
+      The spec bounds the delay only informally ("hundreds of cycles"), so no cycle count is
+      stated as a requirement.
+
+  - id: spec-issue.d13
+    kind: structure
+    statement: >
+      An issue slot must not treat AGEN and DGEN as a single grant.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        The slot cannot treat
+        AGEN+DGEN as a single grant.
+
+  - id: spec-issue.d14
+    kind: function
+    statement: >
+      The segmented-store dependency chain must contain no circular wait.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        - **There is no circular wait**, so the chain cannot deadlock
+
+  - id: spec-issue.d15
+    kind: function
+    statement: >
+      The coprocessor half's PNR eligibility must depend only on its own store's address
+      translation.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        the coprocessor half's PNR eligibility
+        depends only on its own store's address translation. It is a long serial chain, not a cycle.
+    notes: >
+      This section closes by deriving from the chain that IQ_V_ALU must not be a head-only
+      FIFO; that obligation is already spec-cii.i7 and is not duplicated here.
+
+  # What makes the shared ROB entry pass the PNR, resolved 2026-08-01.
+
+  - id: spec-issue.d16
+    kind: structure
+    statement: >
+      A shared ROB entry must carry one ``rob_unsafe`` bit.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        **What makes the shared ROB entry pass the PNR.** The entry carries **one**
+        ``rob_unsafe`` bit, and the LSU half's first address translation clearing it is
+        **sufficient** — nothing waits on the coprocessor half.
+
+  - id: spec-issue.d17
+    kind: function
+    statement: >
+      The LSU half's first address translation clearing ``rob_unsafe`` must be sufficient to
+      advance the PNR past a shared ROB entry.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        the LSU half's first address translation clearing it is
+        **sufficient** — nothing waits on the coprocessor half.
+    notes: >
+      Resolved 2026-08-01. Gating the PNR on both halves being safe would close the cycle the
+      section denies: the coprocessor half cannot issue until the PNR passes the entry.
+
+  - id: spec-issue.d18
+    kind: function
+    statement: >
+      The PNR must treat a ROB entry with a half still un-issued no differently from any other
+      safe entry.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: shared-store-chain
+      heading: "The segmented-store dependency chain"
+      quote: >
+        The PNR tracks the resolution of *speculation*, not completion, so a ROB entry with
+        a half still un-issued is treated no differently from any other safe entry; completion is
+        what the ROB's "other half pending" flag tracks, separately.
+    notes: >
+      The separation the spec relies on: the PNR tracks resolution of speculation, completion
+      is tracked by the ROB's "other half pending" flag (spec-issue.c8).
+
+  # --- e: issue-queue structure and selection policy ---------------------------
+
+  - id: spec-issue.e1
+    kind: structure
+    statement: >
+      Caracal must use split issue queues.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        Like |boom|, |caracal| uses split issue queues.
+
+  - id: spec-issue.e2
+    kind: structure
+    statement: >
+      The scalar issue queues IQ_MEM, IQ_UNQ, IQ_ALU and IQ_FP must be unchanged from BOOM.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        The scalar queues — ``IQ_MEM``,
+        ``IQ_UNQ``, ``IQ_ALU``, ``IQ_FP`` — are **unchanged** from |boom|.
+
+  - id: spec-issue.e3
+    kind: structure
+    statement: >
+      Caracal must add the three vector issue queues IQ_V_LOAD, IQ_V_STORE and IQ_V_ALU.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        |caracal| adds three
+        vector queues: ``IQ_V_LOAD``, ``IQ_V_STORE``, and ``IQ_V_ALU``. Each vector IQ may hold
+        any datatype.
+    notes: >
+      That each vector IQ *may* hold any datatype is an allowance, not a separate obligation.
+
+  - id: spec-issue.e4
+    kind: structure
+    statement: >
+      All issue queues must issue in a single scheduling stage.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        All queues issue in a **single** scheduling stage; |caracal| does **not** add a second issue
+        stage
+
+  - id: spec-issue.e5
+    kind: structure
+    statement: >
+      Caracal must not add a second issue stage.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        All queues issue in a **single** scheduling stage; |caracal| does **not** add a second issue
+        stage
+
+  - id: spec-issue.e6
+    kind: structure
+    statement: >
+      A non-shared vector OP.v must occupy exactly one issue slot in one queue.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        and a non-shared vector ``OP.v`` occupies exactly one issue slot in one queue and is granted **once**,
+        when all of its operands (scalar feeders and vector registers) are ready.
+
+  - id: spec-issue.e7
+    kind: function
+    statement: >
+      A non-shared vector OP.v must be granted once.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        and a non-shared vector ``OP.v`` occupies exactly one issue slot in one queue and is granted **once**,
+        when all of its operands (scalar feeders and vector registers) are ready.
+
+  - id: spec-issue.e8
+    kind: function
+    statement: >
+      A non-shared vector OP.v must be granted only when all of its scalar-feeder and vector-register
+      operands are ready.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        and a non-shared vector ``OP.v`` occupies exactly one issue slot in one queue and is granted **once**,
+        when all of its operands (scalar feeders and vector registers) are ready.
+
+  - id: spec-issue.e9
+    kind: structure
+    statement: >
+      IQ_MEM, IQ_UNQ, IQ_ALU, IQ_FP, IQ_V_LOAD and IQ_V_STORE must reuse BOOM's age-ordered
+      collapsing issue queue unchanged.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        **``IQ_MEM``/``IQ_UNQ``/``IQ_ALU``/``IQ_FP`` and ``IQ_V_LOAD``/``IQ_V_STORE``** reuse |boom|'s
+        **age-ordered collapsing** Issue Queue and its priority-encoder select unchanged
+
+  - id: spec-issue.e10
+    kind: structure
+    statement: >
+      Those six queues must reuse BOOM's priority-encoder select unchanged.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        **``IQ_MEM``/``IQ_UNQ``/``IQ_ALU``/``IQ_FP`` and ``IQ_V_LOAD``/``IQ_V_STORE``** reuse |boom|'s
+        **age-ordered collapsing** Issue Queue and its priority-encoder select unchanged
+
+  - id: spec-issue.e11
+    kind: function
+    statement: >
+      IQ_V_LOAD and IQ_V_STORE must grant the oldest ready entry.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        they grant the
+        **oldest *ready*** entry and may skip a not-ready older entry (out-of-order issue among ready ops).
+    notes: >
+      Skipping a not-ready older entry is an allowance, not a separate obligation. The spec's
+      justification is that the V-LSU is out-of-order.
+
+  - id: spec-issue.e12
+    kind: function
+    statement: >
+      IQ_V_ALU must grant the oldest ready entry.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        Like the other queues
+        it grants the **oldest *ready*** entry, but an entry is only *eligible* once it is **past the PNR** —
+        its ROB entry is older than ``rob.io.rob_pnr_idx``
+    notes: >
+      IQ_V_ALU being age-ordered collapsing with a per-entry past-PNR gate, entries being
+      eligible only past the PNR, and IQ_V_ALU not being a head-only FIFO are spec-cii.d2,
+      spec-cii.d3 and spec-cii.i7; they are not duplicated here. The stated cost — a vector
+      arithmetic op cannot start until older branches resolve and older loads disambiguate —
+      is rationale.
+
+  - id: spec-issue.e13
+    kind: interface
+    statement: >
+      An IQ_V_ALU entry's past-PNR eligibility must be evaluated by comparing its ROB entry
+      against rob.io.rob_pnr_idx.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        but an entry is only *eligible* once it is **past the PNR** —
+        its ROB entry is older than ``rob.io.rob_pnr_idx``
+
+  - id: spec-issue.e14
+    kind: structure
+    statement: >
+      The vector issue logic must not impose program-order issue on IQ_V_ALU.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Issue/Scheduling Stage"
+      quote: >
+        The VPU being in-order means it processes **one instruction
+        at a time**; it does *not* require **program-order issue**, because rename has already resolved
+        every register dependence before an op crosses the CII.
+    notes: >
+      The note block's three candidate justifications for program order are each shown not to
+      require it: vtype/vl/vstart/vxrm ride the per-instruction issue packet (spec-cii.d9,
+      spec-cii.d10), vxsat/fflags are accumulated at commit in ROB order, and tags are opaque
+      with results already permitted to return out of order (spec-cii.a13). That squashed
+      IQ_V_ALU entries are dropped before they issue is spec-cii.d13, and that ops already
+      accepted by the CII can still be squashed by a ROB-head flush is spec-cii's flush
+      group.
+
+  # --- f: wakeup-network connectivity -----------------------------------------
+
+  - id: spec-issue.f1
+    kind: structure
+    statement: >
+      Caracal must preserve BOOM's partitioning of each issue queue to the wakeup network of
+      its own register space.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        Because each
+        register space has its own physical-register numbering and its own wakeup ports, operand
+        matches across spaces never collide. |caracal| preserves this partitioning:
+
+  - id: spec-issue.f2
+    kind: structure
+    statement: >
+      The scalar queues must connect only to the existing integer and FP wakeup networks.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        The scalar queues (``IQ_MEM``/``IQ_UNQ``/``IQ_ALU``/``IQ_FP``) are **bit-identical** to
+        |boom| — they connect only to the existing integer/FP wakeup networks.
+
+  - id: spec-issue.f3
+    kind: structure
+    statement: >
+      Only the three IQ_V_* queues must connect to the vector wakeup network.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        **Only the three ``IQ_V_*`` queues connect to the vector wakeup network** (driven by
+        **group-done** events
+
+  - id: spec-issue.f4
+    kind: interface
+    statement: >
+      The vector wakeup network must be driven by group-done events.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        (driven by
+        **group-done** events — one per completed destination group, each carrying the completing group's
+        full member-PRN vector; see :ref:`group-done wakeup <group-done>`)
+
+  - id: spec-issue.f5
+    kind: interface
+    statement: >
+      One group-done event must be emitted per completed destination group.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        **group-done** events — one per completed destination group, each carrying the completing group's
+        full member-PRN vector
+
+  - id: spec-issue.f6
+    kind: interface
+    statement: >
+      Each group-done event must carry the completing group's full member-PRN vector.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        **group-done** events — one per completed destination group, each carrying the completing group's
+        full member-PRN vector
+    notes: >
+      The slot-side per-member match against this vector is spec-issue.g15, stated in full in
+      §"The Vector Issue Slot".
+
+  - id: spec-issue.f7
+    kind: structure
+    statement: >
+      Each vector queue must connect to whichever scalar wakeup networks supply its scalar
+      feeders.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        Each queue also connects to whichever scalar networks supply
+        its scalar feeders:
+
+  - id: spec-issue.f8
+    kind: structure
+    statement: >
+      All three vector queues must connect to the integer wakeup network.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        The **integer** network — for the base address, stride, and ``.vx`` scalar operand
+        (GPR-sourced). Needed by **all three** vector queues.
+
+  - id: spec-issue.f9
+    kind: interface
+    statement: >
+      The integer wakeup network must supply the base address, stride and GPR-sourced .vx
+      scalar operand of a vector OP.v.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        The **integer** network — for the base address, stride, and ``.vx`` scalar operand
+        (GPR-sourced). Needed by **all three** vector queues.
+
+  - id: spec-issue.f10
+    kind: structure
+    statement: >
+      All three vector queues must connect to the VL wakeup network.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        The **VL** network — for ``pvl`` (its own register space, see :ref:`vl-vtype-rename`).
+        Needed by **all three** vector queues.
+    notes: >
+      VL living in its own register space, being renamed into the VL RF, pvl being carried as
+      an implicit operand, and the VL wakeup network itself are spec-decode group i. What this
+      entry adds is per-queue connectivity.
+
+  - id: spec-issue.f11
+    kind: function
+    statement: >
+      vtype must not be woken on a wakeup network.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        (``vtype`` is not woken — it rides the ``VConfig``
+        snapshot.)
+
+  - id: spec-issue.f12
+    kind: structure
+    statement: >
+      IQ_V_ALU must connect to the FP wakeup network.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        The **FP** network — for the scalar-FP source of ``.vf`` vector floating-point ops and
+        ``vfmv.*.f``. Needed by **``IQ_V_ALU`` only**
+
+  - id: spec-issue.f13
+    kind: structure
+    statement: >
+      IQ_V_LOAD and IQ_V_STORE must have no FP wakeup network connection.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        ``IQ_V_LOAD``/``IQ_V_STORE`` need no FP
+        network because vector memory addressing uses only GPRs.
+
+  - id: spec-issue.f14
+    kind: function
+    statement: >
+      Vector and scalar operand matches must never collide.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        Vector and scalar operand matches therefore never collide — the same separation |boom|
+        already relies on for int vs FP — and no pure-scalar slot ever pays for vector match ports.
+
+  - id: spec-issue.f15
+    kind: structure
+    statement: >
+      A pure-scalar issue slot must not carry vector match ports.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "Wakeup Networks"
+      quote: >
+        Vector and scalar operand matches therefore never collide — the same separation |boom|
+        already relies on for int vs FP — and no pure-scalar slot ever pays for vector match ports.
+
+  # --- g: the vector issue slot -----------------------------------------------
+
+  - id: spec-issue.g1
+    kind: structure
+    statement: >
+      Only the IQ_V_* issue slots must be extended.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        Only the ``IQ_V_*`` slots are extended; scalar slots are unchanged.
+
+  - id: spec-issue.g2
+    kind: structure
+    statement: >
+      Scalar issue slots must be unchanged.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        Only the ``IQ_V_*`` slots are extended; scalar slots are unchanged.
+
+  - id: spec-issue.g3
+    kind: structure
+    statement: >
+      A vector issue slot must be a superset slot that tracks both operand classes.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        A vector slot is a
+        **superset slot** that tracks both operand classes:
+
+  - id: spec-issue.g4
+    kind: structure
+    statement: >
+      A vector issue slot must reuse the existing prs1 and prs2 operand slots for the base
+      address, stride and .vx integer operand.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        **Scalar feeders**: the base address, stride, and any ``.vx`` integer operand (reusing the
+        existing ``prs1``/``prs2`` operand slots) matched against the **integer** wakeup network
+
+  - id: spec-issue.g5
+    kind: function
+    statement: >
+      A vector issue slot must match its scalar feeders against the integer wakeup network.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        **Scalar feeders**: the base address, stride, and any ``.vx`` integer operand (reusing the
+        existing ``prs1``/``prs2`` operand slots) matched against the **integer** wakeup network
+
+  - id: spec-issue.g6
+    kind: function
+    statement: >
+      A vector issue slot must match pvl against the VL wakeup network.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        plus
+        ``pvl`` matched on the **VL** network (its own register space; ``vtype`` is not an operand —
+        it rides the ``VConfig`` snapshot).
+
+  - id: spec-issue.g7
+    kind: structure
+    statement: >
+      vtype must not be an issue-slot operand.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        ``vtype`` is not an operand —
+        it rides the ``VConfig`` snapshot).
+
+  - id: spec-issue.g8
+    kind: structure
+    statement: >
+      A .vf-form vector floating-point ALU op or vfmv.*.f must source one scalar FP register.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        Vector floating-point ALU ops (``.vf`` forms and
+        ``vfmv.*.f``) additionally source one scalar **FP** register, matched against the **FP** wakeup
+        network; this applies to ``IQ_V_ALU`` only.
+
+  - id: spec-issue.g9
+    kind: function
+    statement: >
+      A vector issue slot must match its scalar-FP source against the FP wakeup network.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        Vector floating-point ALU ops (``.vf`` forms and
+        ``vfmv.*.f``) additionally source one scalar **FP** register, matched against the **FP** wakeup
+        network; this applies to ``IQ_V_ALU`` only.
+
+  - id: spec-issue.g10
+    kind: structure
+    statement: >
+      Only IQ_V_ALU slots must carry the scalar-FP source.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        matched against the **FP** wakeup
+        network; this applies to ``IQ_V_ALU`` only.
+
+  - id: spec-issue.g11
+    kind: structure
+    statement: >
+      A vector issue slot must hold pvs1, pvs2, pvs3 and the mask pvm as its vector operands.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        **Vector operands**, matched against the **vector** wakeup network: ``pvs1``/``pvs2``/
+        ``pvs3`` and the mask ``pvm`` (V0).
+
+  - id: spec-issue.g12
+    kind: function
+    statement: >
+      A vector issue slot must match its vector operands against the vector wakeup network.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        **Vector operands**, matched against the **vector** wakeup network: ``pvs1``/``pvs2``/
+        ``pvs3`` and the mask ``pvm`` (V0).
+
+  - id: spec-issue.g13
+    kind: structure
+    statement: >
+      Each vector source group in an issue slot must hold its member PRNs, up to EMUL of them.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        Each source group holds its **member PRNs** (up to ``EMUL``),
+        each with its own busy bit
+
+  - id: spec-issue.g14
+    kind: structure
+    statement: >
+      Each member PRN of a vector source group must have its own busy bit.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        Each source group holds its **member PRNs** (up to ``EMUL``),
+        each with its own busy bit
+
+  - id: spec-issue.g15
+    kind: function
+    statement: >
+      The vector issue slot must match every source-group member against the group-done's
+      member-PRN vector.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        the slot matches every member against the group-done's member-PRN
+        vector and **AND**\ s them into a per-operand group-ready bit
+
+  - id: spec-issue.g16
+    kind: function
+    statement: >
+      The vector issue slot must AND its per-member matches into a per-operand group-ready
+      bit.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        the slot matches every member against the group-done's member-PRN
+        vector and **AND**\ s them into a per-operand group-ready bit
+
+  - id: spec-issue.g17
+    kind: function
+    statement: >
+      A vector source operand must be woken only when the last member of its group is ready.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        a per-operand group-ready bit, woken only when the last member is
+        ready (see :ref:`group-done wakeup <group-done>`).
+
+  - id: spec-issue.g18
+    kind: structure
+    statement: >
+      The vector issue slot must implement a per-member match rather than a single base
+      comparator.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        This per-member match — not a single
+        base comparator — is the area/timing cost of the vector slot, and is unavoidable because a source
+        group may be a sub-range of, or fragmented across, larger destination groups.
+    notes: >
+      The stated reason a base comparator cannot work is that a source group may be a
+      sub-range of, or fragmented across, larger destination groups.
+
+  - id: spec-issue.g19
+    kind: function
+    statement: >
+      An OP.v must assert request only when all of its scalar and vector operands are ready.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        An ``OP.v`` asserts ``request`` only when **all** of its operands — scalar and vector — are
+        ready:
+
+  - id: spec-issue.g20
+    kind: interface
+    statement: >
+      The request signal must be slot_valid && !iw_issued && scalar_operands_ready &&
+      vector_operands_ready.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        request := slot_valid && !iw_issued && scalar_operands_ready && vector_operands_ready
+
+  - id: spec-issue.g21
+    kind: interface
+    statement: >
+      An IQ_V_ALU entry's eligibility must be request && is_older(rob_idx, rob_pnr_idx).
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        For **``IQ_V_ALU``** each entry additionally gates on being non-speculative (RoCC-style), so its
+        eligibility is ``request && is_older(rob_idx, rob_pnr_idx)`` — a **per-entry** gate, applied to every
+        slot rather than only to the head, see the Issue/Scheduling Stage.
+    notes: >
+      That the gate is per-entry and applied to every slot rather than only to the head is
+      spec-cii.d2 and spec-cii.i7. That IQ_V_LOAD/IQ_V_STORE do not gate on the PNR — vector
+      memory may issue speculatively, with the LSU handling ordering/replay and stores writing
+      memory only post-commit — is spec-lsu.i1.
+
+  - id: spec-issue.g22
+    kind: structure
+    statement: >
+      For vector stores the existing mem-slot AGEN/DGEN split must be extended.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        For vector **stores** the existing mem-slot AGEN/DGEN split is extended: the
+        data-generation (DGEN) path is gated on the vector store-data operand (matched on
+        the vector network) rather than on ``prs2`` as in the scalar mem slot.
+
+  - id: spec-issue.g23
+    kind: function
+    statement: >
+      A vector store slot's DGEN path must be gated on the vector store-data operand matched
+      on the vector wakeup network.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        the
+        data-generation (DGEN) path is gated on the vector store-data operand (matched on
+        the vector network) rather than on ``prs2`` as in the scalar mem slot.
+
+  - id: spec-issue.g24
+    kind: function
+    statement: >
+      A vector store slot's DGEN path must not be gated on prs2.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        the
+        data-generation (DGEN) path is gated on the vector store-data operand (matched on
+        the vector network) rather than on ``prs2`` as in the scalar mem slot.
+
+  - id: spec-issue.g25
+    kind: interface
+    statement: >
+      The DGEN gated operand must be selected by is_shared.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        **The gated operand is
+        selected by ``is_shared``:**
+
+  - id: spec-issue.g26
+    kind: interface
+    statement: >
+      The DGEN operand must be pvtmp when is_shared is set and pvs3 otherwise.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        dgen_operand := Mux(uop.is_shared, uop.pvtmp, uop.pvs3)
+
+  - id: spec-issue.g27
+    kind: function
+    statement: >
+      DGEN must not be gated unconditionally on pvs3.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        Gating DGEN unconditionally on ``pvs3`` is **incorrect for a segmented store**, and earlier drafts
+        did exactly that.
+    notes: >
+      From the section's `.. warning::`. For a segmented store pvs3 is the coprocessor half's
+      source group and is ready long before the transpose has run, so waking DGEN on pvs3
+      reads pvtmp before it is written and stores garbage.
+
+  - id: spec-issue.g28
+    kind: function
+    statement: >
+      DGEN must wake on pvtmp's group-done whenever is_shared is set.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        DGEN must wake on ``pvtmp``'s group-done whenever ``is_shared`` is set.
+    notes: >
+      spec-cii.i6 records the same obligation from cii.rst §"Segmented load/store"; this entry
+      is the slot-side statement, carried by the warning block in issue.rst.
+
+  - id: spec-issue.g29
+    kind: function
+    statement: >
+      The mask pvm's busy bit must participate in request only when the OP.v is masked.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        The mask ``pvm`` is read conditionally — its busy bit only participates in ``request`` when
+        the OP.v is masked (encoded ``vm`` bit clear).
+
+  - id: spec-issue.g30
+    kind: function
+    statement: >
+      An unmasked OP.v must leave pvm don't-care.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        Unmasked ops leave ``pvm`` don't-care so a
+        stale mask preg is never waited on.
+
+  - id: spec-issue.g31
+    kind: function
+    statement: >
+      A stale mask physical register must never be waited on.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        Unmasked ops leave ``pvm`` don't-care so a
+        stale mask preg is never waited on.
+
+  # The deselected DGEN operand, and the match-port budget. Both resolved 2026-08-01.
+
+  - id: spec-issue.g32
+    kind: function
+    statement: >
+      ``pvs3``'s busy bit must be excluded from ``vector_operands_ready`` for the LSU half when
+      ``is_shared`` is set.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        **The deselected operand's busy bit does not participate.** When ``is_shared`` is set,
+        ``pvs3``'s busy bit is **excluded** from ``vector_operands_ready`` for the LSU half —
+        that half never reads ``pvs3``, which is the *coprocessor* half's source group.
+    notes: >
+      Resolved 2026-08-01. Same shape as the pvm rule (spec-issue.g30/g31): the mux selects the
+      operand and only the selected one is waited on. Keeping pvs3 in the readiness term would
+      work today only because it is ready long before the transpose runs, which would turn a
+      timing accident into a correctness dependence.
+
+  - id: spec-issue.g33
+    kind: structure
+    statement: >
+      A vector slot must match each source-group member PRN against all ``numVecWbPorts``
+      group-done ports each cycle.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        **The match-port budget.** A vector slot matches each of its up-to-``EMUL`` member PRNs
+        per source group against **all ``numVecWbPorts`` group-done ports** each cycle, every
+        port carrying up to ``MAX_MEMBERS`` PRNs
+    notes: >
+      Resolved 2026-08-01. The width is not free: the vector wakeup network is numVecWbPorts
+      wide (midcore.rst §"Busy Table", spec-rename.g25), so a slot matching fewer ports could
+      miss a group-done. The resulting comparator count per source group is
+      EMUL x numVecWbPorts x MAX_MEMBERS, which the spec records as the reason the per-member
+      match dominates slot area. No number is asserted here beyond the parameters the spec names.
+
+  - id: spec-issue.g34
+    kind: structure
+    statement: >
+      A vector slot must match ``pvl`` against one VL wakeup port.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        plus **one** VL wakeup port for ``pvl``.
+
+  # --- h: VL delivery to issue -------------------------------------------------
+
+  - id: spec-issue.h1
+    kind: interface
+    statement: >
+      pvl must be woken on the VL wakeup network as a plain readiness wakeup.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-vl-delivery
+      heading: "VL delivery"
+      quote: >
+        ``pvl`` is woken on the **VL** wakeup network like
+        any operand — a plain readiness wakeup, no value capture in the slot
+    notes: >
+      That VL is a source operand in its own register space, always renamed into the VL RF,
+      with no decode-time VL value, is spec-decode group i (i1, i5). That vtype is not an
+      issue operand is spec-issue.g7.
+
+  - id: spec-issue.h2
+    kind: structure
+    statement: >
+      The issue slot must not capture the VL value.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-vl-delivery
+      heading: "VL delivery"
+      quote: >
+        a plain readiness wakeup, no value capture in the slot
+
+  - id: spec-issue.h3
+    kind: function
+    statement: >
+      The VL value must be read from the VL RF at execute, when the Vector AGEN cracks the
+      OP.v into element accesses.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-vl-delivery
+      heading: "VL delivery"
+      quote: >
+        and the value is read from the
+        VL RF at execute, when the Vector AGEN cracks the ``OP.v`` into element accesses.
+    notes: >
+      spec-decode.i7 records the read-at-execute obligation from frontend.rst; what issue.rst
+      adds is that the read happens at Vector AGEN element cracking.
+
+  - id: spec-issue.h4
+    kind: function
+    statement: >
+      For a vsetivli the VCFG must write the VL RF in the front-end.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-vl-delivery
+      heading: "VL delivery"
+      quote: >
+        **vsetivli**: VL is immediate — the VCFG writes the VL RF in the front-end (no EU); ``pvl`` may
+        already be ready when the consumer dispatches.
+    notes: >
+      That pvl *may* already be ready when the consumer dispatches is an allowance. That a
+      vsetivli occupies no back-end issue slot or execution unit is already mined in
+      spec-decode.
+
+  - id: spec-issue.h5
+    kind: interface
+    statement: >
+      The integer ALU's VL writeback must target the VL RF.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-vl-delivery
+      heading: "VL delivery"
+      quote: >
+        the ALU's VL writeback targets the VL RF and wakes ``pvl``.
+    notes: >
+      That vsetvli/vsetvl execute on an integer ALU EU, are woken by rs1/rs2 on the integer
+      network, and that vsetvl is additionally is_unique are all already mined in spec-decode.
+
+  - id: spec-issue.h6
+    kind: interface
+    statement: >
+      The integer ALU's VL writeback must wake pvl.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-vl-delivery
+      heading: "VL delivery"
+      quote: >
+        the ALU's VL writeback targets the VL RF and wakes ``pvl``.
+
+  # --- i: single-stage scheduling invariants ----------------------------------
+
+  - id: spec-issue.g35
+    kind: function
+    statement: >
+      An IQ_V_LOAD or IQ_V_ALU entry must not be granted until its stale_pvdest group is ready.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        An ``IQ_V_LOAD`` or ``IQ_V_ALU`` entry must
+        therefore not be granted until its ``stale_pvdest`` group is ready.
+    notes: >
+      stale_pvdest is an IMPLICIT source: no source field of the instruction names it, but an
+      IQ_V_LOAD reads it for the LCB's R2 undisturbed-lane pre-load under vta=0/vma=0, and an
+      IQ_V_ALU reads it whenever the coprocessor pulls the STALE_VD slot. Age-ordered issue does
+      not make this redundant — the queues grant the oldest READY entry, not the oldest COMPLETE
+      one — and the failure is silent, since the preserved lanes would instead hold whatever the
+      free list last left in that PRN.
+
+  - id: spec-issue.g36
+    kind: interface
+    statement: >
+      A vector issue slot must match stale_pvdest against the vector wakeup network.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        It is matched on the **vector**
+        wakeup network exactly as ``pvs1``/``pvs2``/``pvs3``/``pvm`` are.
+    notes: >
+      No new network is added; stale_pvdest rides the existing vector wakeup network on the same
+      terms as the encoded source groups.
+
+  - id: spec-issue.g37
+    kind: structure
+    statement: >
+      An IQ_V_STORE slot must not carry a stale_pvdest matcher.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        ``IQ_V_STORE`` carries no such
+        matcher: a store has no vector destination, so it has no stale group.
+
+  - id: spec-issue.g38
+    kind: structure
+    statement: >
+      The stale_pvdest readiness match must be per member rather than a single aggregate busy bit.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        A single aggregate busy
+        bit cannot express "waiting on the third of eight", and one group-done cannot clear it
+        correctly.
+    notes: >
+      stale_pvdest may span up to MAX_MEMBERS producers — an LMUL=1 OP.v writing v0 followed by an
+      LMUL=8 OP.v renaming v0-v7 gives a stale group installed by up to eight instructions. Same
+      argument as the per-member matching required for pvs* (spec-issue.g18).
+
+  - id: spec-issue.g39
+    kind: function
+    statement: >
+      Every IQ_V_ALU entry with a vector destination must wait on stale_pvdest readiness.
+    source:
+      file: docs_caracal/src/issue.rst
+      anchor: issue-sched-stage
+      heading: "The Vector Issue Slot"
+      quote: >
+        Every ``IQ_V_ALU`` entry with a
+        vector destination must therefore wait on ``stale_pvdest`` readiness, including the ops that
+        will never pull it.
+    notes: >
+      Deliberately conservative: whether the coprocessor pulls STALE_VD is the VPU decoder's
+      decision, the issue packet carries no hint of it, and no back-channel exists. The host cannot
+      narrow the gate, so it waits for every vector-destination CII op.
+
+coverage:
+
+  # issue.rst has no assignments block in families.yaml, so the legacy rule applies and all
+  # twelve of its sections are ledgered here.
+
+  - file: docs_caracal/src/issue.rst
+    heading: "Issue"
+    anchor: issue-chapter
+    skipped: >
+      Chapter title. The section body holds only the |caracal|/|boom|/|isa| substitution
+      definitions and one `.. figure::` include with a caption; no prose.
+
+  - file: docs_caracal/src/issue.rst
+    heading: "Dispatch Stage"
+    anchor: dispatch-stage
+    reqs: [spec-issue.a1, spec-issue.a2, spec-issue.a3, spec-issue.a4, spec-issue.a5,
+           spec-issue.a6, spec-issue.a7]
+
+  - file: docs_caracal/src/issue.rst
+    heading: "Vector element-queue reservation (in program order)"
+    anchor: vec-queue-reservation
+    reqs: [spec-issue.b1, spec-issue.b2, spec-issue.b3, spec-issue.b4,
+           spec-issue.b5, spec-issue.b6, spec-issue.b7, spec-issue.b8,
+           spec-issue.b9]
+
+  - file: docs_caracal/src/issue.rst
+    heading: "CII Shared Instruction Scheduling"
+    anchor: cii-shared-sched
+    reqs: [spec-issue.c1, spec-issue.c2, spec-issue.c3, spec-issue.c4, spec-issue.c5,
+           spec-issue.c6, spec-issue.c7, spec-issue.c8, spec-issue.c9]
+
+  - file: docs_caracal/src/issue.rst
+    heading: "Segmented Load"
+    anchor: cii-shared-sched
+    reqs: [spec-issue.c14, spec-issue.c11]
+
+  - file: docs_caracal/src/issue.rst
+    heading: "Segmented Store"
+    anchor: cii-shared-sched
+    reqs: [spec-issue.c12, spec-issue.c13]
+
+  - file: docs_caracal/src/issue.rst
+    heading: "The segmented-store dependency chain"
+    anchor: shared-store-chain
+    reqs: [spec-issue.d1, spec-issue.d2, spec-issue.d3, spec-issue.d4, spec-issue.d5,
+           spec-issue.d6, spec-issue.d7, spec-issue.d8, spec-issue.d9, spec-issue.d10,
+           spec-issue.d11, spec-issue.d12, spec-issue.d13, spec-issue.d14, spec-issue.d15,
+           spec-issue.d16, spec-issue.d17, spec-issue.d18]
+
+  - file: docs_caracal/src/issue.rst
+    heading: "The Issue/Scheduling Stage"
+    anchor: issue-sched-stage
+    reqs: [spec-issue.e1, spec-issue.e2, spec-issue.e3, spec-issue.e4, spec-issue.e5,
+           spec-issue.e6, spec-issue.e7, spec-issue.e8, spec-issue.e9, spec-issue.e10,
+           spec-issue.e11, spec-issue.e12, spec-issue.e13, spec-issue.e14]
+
+  - file: docs_caracal/src/issue.rst
+    heading: "Wakeup Networks"
+    anchor: issue-sched-stage
+    reqs: [spec-issue.f1, spec-issue.f2, spec-issue.f3, spec-issue.f4, spec-issue.f5,
+           spec-issue.f6, spec-issue.f7, spec-issue.f8, spec-issue.f9, spec-issue.f10,
+           spec-issue.f11, spec-issue.f12, spec-issue.f13, spec-issue.f14, spec-issue.f15]
+
+  - file: docs_caracal/src/issue.rst
+    heading: "The Vector Issue Slot"
+    anchor: issue-sched-stage
+    reqs: [spec-issue.g1, spec-issue.g2, spec-issue.g3, spec-issue.g4, spec-issue.g5,
+           spec-issue.g6, spec-issue.g7, spec-issue.g8, spec-issue.g9, spec-issue.g10,
+           spec-issue.g11, spec-issue.g12, spec-issue.g13, spec-issue.g14, spec-issue.g15,
+           spec-issue.g16, spec-issue.g17, spec-issue.g18, spec-issue.g19, spec-issue.g20,
+           spec-issue.g21, spec-issue.g22, spec-issue.g23, spec-issue.g24, spec-issue.g25,
+           spec-issue.g26, spec-issue.g27, spec-issue.g28, spec-issue.g29, spec-issue.g30,
+           spec-issue.g31,
+           spec-issue.g32, spec-issue.g33, spec-issue.g34,
+           spec-issue.g35, spec-issue.g36, spec-issue.g37, spec-issue.g38,
+           spec-issue.g39]
+
+  - file: docs_caracal/src/issue.rst
+    heading: "VL delivery"
+    anchor: issue-vl-delivery
+    reqs: [spec-issue.h1, spec-issue.h2, spec-issue.h3, spec-issue.h4, spec-issue.h5,
+           spec-issue.h6]
+
+  - file: docs_caracal/src/issue.rst
+    heading: "Single-Stage Scheduling Key Features"
+    anchor: issue-key-features
+    skipped: >
+      Explicitly a benefits summary — the section opens "The single-stage approach ... offers the
+      following benefits:" and derives every item from obligations stated elsewhere. Each restates
+      a requirement already mined in groups e, f and h or in spec-cii; the three requirements
+      previously mined here are retired (spec-issue.i1, i2, i3).
+
+retired:
+
+  - id: spec-issue.c10
+    statement: >
+      The LSU half of a segmented load must be selected for issue only when all of its vector
+      source operands are available.
+    retired_because: >
+      issue.rst §"Segmented Load" and midcore.rst §"Segmented Load" gave two different wakeup
+      conditions for the same half. Resolved on 2026-08-01 in favour of midcore.rst's address
+      operands, which is narrower: the LSU half never reads pvs3, so gating on all vector
+      sources couples it to an operand it does not use. issue.rst was reworded to name the set.
+      Superseded by spec-issue.c14.
+
+  - id: spec-issue.i1
+    statement: >
+      A vector OP.v must be allocated once.
+    retired_because: >
+      Mined from a section that opens "The single-stage approach offers the following benefits:" - an explicitly non-normative summary. Restates spec-issue.e6 and e7.
+
+  - id: spec-issue.i2
+    statement: >
+      There must be no second priority-encoder select.
+    retired_because: >
+      Same non-normative benefits list; a consequence of spec-issue.e5 ("no second issue stage, so no double allocation, no second priority-encoder select").
+
+  - id: spec-issue.i3
+    statement: >
+      There must be no cross-queue kill/replay to keep consistent.
+    retired_because: >
+      Same non-normative benefits list; a consequence of spec-issue.e5.
+
+# All six open questions recorded against this family were resolved on 2026-08-01:
+#
+#   shared-op issue-slot count -> ALREADY RESOLVED when the question was reviewed. issue.rst
+#     reads "a **non-shared** vector OP.v occupies exactly one issue slot", and spec-issue.e6/e7/e8
+#     already carry that qualifier, so the contradiction with c5 no longer existed. The question
+#     described e6 without the qualifier and was simply stale. No spec edit, no new requirement.
+#   segmented-load wakeup      -> address operands, named explicitly; c10 retired, c14 issued
+#   mid-queue reservation release -> tail-only, by the Vector AGEN; spec-issue.b5-b8
+#   shared ROB entry vs the PNR-> LSU half's clr_unsafe alone suffices; spec-issue.d16-d18
+#   pvs3 in the shared case    -> excluded from readiness; spec-issue.g32
+#   wakeup match-port budget   -> bound to numVecWbPorts; spec-issue.g33, g34

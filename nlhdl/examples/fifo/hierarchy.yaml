@@ -1,0 +1,18 @@
+# hierarchy.yaml — minimal module map for the sync_fifo example.
+# A leaf module has no dependencies, so this is about as small as a map gets.
+
+version: 1
+
+defaults:
+  target: sv
+  reset_polarity: active_low
+  reset_sync: sync
+
+top: sync_fifo
+
+modules:
+  sync_fifo:
+    source: fifo.nlhdl.sv
+    mode: new              # nlhdl owns the whole module; write `output:` fresh
+    output: generated/sync_fifo.sv
+    # No `instantiates:` -> leaf module, nothing else to build.

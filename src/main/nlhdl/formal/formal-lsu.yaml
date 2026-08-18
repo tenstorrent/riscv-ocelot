@@ -1,0 +1,3191 @@
+# =============================================================================
+# formal-lsu.yaml — the formal ledger for the `lsu` requirement family
+# =============================================================================
+# Written by /req-formal-chisel (orchestrator). Read alongside
+# req-formal-chisel/references/schema.md.
+#
+# SCOPE — COMPLETE. `coverage:` covers all 161 live requirements of
+# spec-lsu.yaml, groups a through m, across every module hierarchy.yaml allocates
+# them to. Built in two passes:
+#
+#   pass 1 (store data path): group d, the store half of j, b4-b9/b19, c3-c6, k8
+#           -> formal-lsu.b1-b8, c1-c8, d1-d18, j1-j14, k1
+#   pass 2 (the rest of the family): a, e, f, g, h, i, l, m, the load half of j,
+#           b1-b3/b10-b18, c2, k2-k7/k10
+#           -> formal-lsu.a1-a4, b9-b14, e1-e24, f1-f9, g1-g2, h1-h13, i1-i10,
+#              j15-j19, k2-k3, m1-m16
+#
+# Pass 2 APPENDED: no pass-1 ID, label or `property:` text was renumbered or
+# rewritten. The one pass-1 ledger delta is recorded in VecLsuChecks' notes.
+#
+# notes:
+#   Un-speced obligations found while planning. Each is a seam the store bug
+#   hunt wants asserted, for which NO requirement in spec-lsu.yaml (or any
+#   family assigned to this module set) provides an obligation. They are
+#   recorded here rather than smuggled in as properties with an empty `reqs:`.
+#
+#   1. "The DGEN grant implies the store's vs3/pvtmp source group is not busy."
+#      The DGEN-grant-vs-operand-readiness obligation lives in spec-issue
+#      (g22-g28, g32) and is owned by VecStoreDgenPath, which holds NO spec-lsu
+#      requirement at all. It cannot be ledgered in this family. The nearest
+#      lsu-family property is formal-lsu.d17, which checks only that the DGEN
+#      grant and the uop VecDgen actually reads name the same instruction.
+#      spec-lsu.d7 says WHEN the data is read (at DGEN, execute time) but says
+#      nothing about the source group being written first.
+#   2. "is_write_pass has exactly one driver." No requirement states that the
+#      US and SSI store classes share one pass-state port; it is an as-built
+#      consequence of VecBeatExpander's interface. formal-lsu.j7 asserts the
+#      agreement condition the sharing needs, citing spec-lsu.j7/j9 (the
+#      obligations that break when it is violated), but the single-driver
+#      structure itself is un-speced.
+#   3. "Every store byte written falls inside the op's own reserved footprint."
+#      spec-lsu.b6/d11 give the queue-entry-granular half (asserted as
+#      formal-lsu.b1), and k8 the lane-width half (formal-lsu.k1). There is NO
+#      requirement bounding a beat's byte_en/vaddr by the range's own
+#      [base, base+len) footprint, which is the granularity at which the
+#      observed "dword written past the range" bug lives.
+#   4. The `xlated` bitmap in VecElemQueue (the per-entry translated flag, the
+#      only as-built evidence that spec-lsu.b9's pre-commit fault detection
+#      happened) HAS NO READER: nothing in VecLsu or VecBeatExpander consults
+#      it before a write-pass beat drains the entry. See the b9 coverage row.
+#   5. spec-lsu.d3/d4 fix the store data queue entry widths at ELEN and VLEN.
+#      VecElemQueue only `require(width > 0)`; nothing at elaboration pins
+#      either queue's width to ELEN/VLEN. See the d3/d4 coverage rows.
+#
+#   Findings added by pass 2 (all are RTL findings, not skip excuses):
+#
+#   6. MicroOp DOES carry the spec's per-entry element cursor
+#      (`v_elem_cursor.{elem_next,elem_done,fault_elem}`, micro-op.scala:68-70),
+#      but it is DEAD: VecDecode zeroes all three at decode and asserts they stay
+#      zero (VecDecode.scala:182-184, 325-327), and nothing in the LSU ever
+#      writes them. The live cursor is VecElemAgen's elem_ptr/emit_ctr/
+#      fault_seen/fault_elem and VecLsu's stUsCursor. spec-lsu.f1-f4 are
+#      therefore satisfied structurally by fields nothing uses; the properties
+#      that check the real cursor are formal-lsu.b9/f4/f6/f8.
+#
+#   7. `vstart` appears NOWHERE in rob.scala. spec-lsu.f10/f11/f12 (trap with
+#      vstart = 0, restart from the beginning, never resume at k) have no
+#      as-built signal to sample on the vector exception path. See their
+#      coverage rows.
+#
+#   8. The vleff fault/trim path is UNREACHABLE as built. VecLsu ties
+#      ld_range_agen.io.fault.valid to false.B because VecBeatExpander exposes no
+#      fault port at all (VecLsu.scala:993-998 documents this as a high-severity
+#      spec defect). Every property over spec-lsu.g1-g4/g9/g10 would therefore
+#      have a constant-false antecedent. See those coverage rows.
+#
+#   9. spec-lsu.b11 ("a load whose active element count exceeds its reservation
+#      must be streamed in waves") is NOT implemented: VecElemAgen asserts
+#      `emit_ctr < resv_count` (VecElemAgen.scala:331) instead of streaming.
+#      formal-lsu.b9 mirrors that bound, so the property passes for exactly the
+#      reason the requirement is unmet.
+#
+#  10. spec-lsu.j3 ("each element access fire must perform the TLB, D$ and LCAM
+#      lookups together") does NOT hold literally as built: VecBeatExpander sets
+#      uses_lcam only on the first beat of a range and uses_dcache only on a
+#      store's write pass. A property asserting the triple would fail on correct
+#      RTL, so j3 is ledgered against what the design does do.
+#
+#  12. THE ENTIRE FAULT-REPORT PATH IS DEAD, not just vleff's. Layer 2 of this
+#      pass showed VecElemAgen's four fault properties constant-folding to a
+#      false antecedent in BOTH instances: VecLsu ties ld_elem_agen.io.fault and
+#      st_elem_agen.io.fault to false.B (VecLsu.scala:999-1002) for the same
+#      reason as finding 8 — VecBeatExpander exposes no fault port, so no
+#      drain-side fault report exists anywhere. `fault_seen` can therefore never
+#      set. spec-lsu.f5, f9 and a10 are consequently ledgered unassertable with
+#      this as the reason; formal-lsu.f4/f6 and their covers REMAIN IN THE
+#      CHECKER as armed properties that begin checking the moment a fault report
+#      is wired, and their covers reading zero is the evidence that it is not.
+#
+#  11. UN-SPECED OBLIGATION #3 IS NOW PARTLY CLOSED. Pass 1 found that no
+#      requirement bounds a written byte by its op's own footprint. On the LOAD
+#      side spec-lsu.e20 supplies exactly that obligation at VLEN granularity,
+#      and formal-lsu.e8 asserts it (`byte_valid & ~own_bytes == 0`), with
+#      formal-lsu.e5 bounding the response's byte offset inside the entry. On the
+#      STORE side there is STILL no such requirement: neither group h nor group k
+#      bounds a beat's byte_en/vaddr by the range's [base, base+len), and that is
+#      the granularity the observed store corruption lives at. Findings 1, 2 and
+#      the store half of 3 remain open; 4 and 5 are unchanged.
+# =============================================================================
+
+family: lsu
+description: >
+  Properties for the vector STORE DATA PATH of the unified LSU: the store data
+  queues and their reservation, DGEN's VRF read of the source vPRN, the Packer's
+  just-in-time beat expansion, and the translate/write two-pass store drain.
+  A scoped first pass — see the header for what is deliberately not covered.
+reqs_source: src/main/nlhdl/reqs/spec-lsu.yaml
+layer: BoomSvaLayer
+
+checkers:
+  - name: VecElemQueueChecks
+    file: src/main/scala/v4/vec/formal/VecElemQueueChecks.scala
+    dut: VecElemQueue
+    dut_file: src/main/scala/v4/vec/generated/lsu/VecElemQueue.scala
+    signals:
+      - { name: enqValid,     expr: "io.enq(0).valid",                    kind: bool }
+      - { name: enqInRegion,  expr: "inRegion(io.enq(0).bits.idx)",       kind: bool, internal: true }
+      - { name: claimValid,   expr: "io.resv.claim.valid",                kind: bool }
+      - { name: claimEntries, expr: "io.resv.claim.bits",                 kind: uint }
+      - { name: avail,        expr: "avail_reg",                          kind: uint, internal: true }
+      - { name: freeValid,    expr: "io.resv.free.valid",                 kind: bool }
+      - { name: freeBase,     expr: "io.resv.free.bits.base",             kind: uint }
+      - { name: qHead,        expr: "head",                               kind: uint, internal: true }
+      - { name: updateValid,  expr: "io.update.map(_(0).valid).getOrElse(false.B)",                kind: bool }
+      - { name: updateInRegion, expr: "io.update.map(u => inRegion(u(0).bits.idx)).getOrElse(false.B)", kind: bool, internal: true }
+      - { name: rdReqValid,   expr: "io.rd(0).req.valid",                 kind: bool }
+      - { name: rdFilled,     expr: "io.rd(0).resp.filled",               kind: bool }
+      # pass 2 additions
+      - { name: squashValid,    expr: "io.squash.valid",                      kind: bool }
+      - { name: squashLen,      expr: "wrapSub(tail, io.squash.bits)",         kind: uint, internal: true }
+      - { name: occRegion,      expr: "wrapSub(tail, head)",                  kind: uint, internal: true }
+      - { name: consumeValid,   expr: "io.consume(0).valid",                  kind: bool }
+      - { name: consumeInRegion, expr: "inRegion(io.consume(0).bits)",        kind: bool, internal: true }
+    notes: >
+      ONE definition, SIX instances (ld_SSI_ADDR_Q, st_SSI_ADDR_Q, st_SSI_DATA_Q,
+      ld_US_ADDR_Q, st_US_ADDR_Q, st_US_DATA_Q), each a distinct elaborated
+      module, so each gets its own bind. `inRegion` is the module's own def and
+      `head`/`avail_reg` its own registers, all in scope at the anchor; no port
+      was added. `io.update` is None in the four instances without
+      hasXlatePass, so formal-lsu.j1 constant-folds in those four and is live
+      only in st_SSI_ADDR_Q / st_US_ADDR_Q — which is exactly where the
+      translate pass writes back. That fold is a parameterization artifact, not
+      a misremembered signal; it is reported, not hidden.
+
+  - name: VecDgenChecks
+    file: src/main/scala/v4/vec/formal/VecDgenChecks.scala
+    dut: VecDgen
+    dut_file: src/main/scala/v4/vec/generated/lsu/VecDgen.scala
+    signals:
+      - { name: reqResident,  expr: "req_valid",                                 kind: bool, internal: true }
+      - { name: killed,       expr: "killed",                                    kind: bool, internal: true }
+      - { name: r3ReqValid,   expr: "io.vrf_r3.req.valid",                       kind: bool }
+      - { name: outReqValid,  expr: "outReqValid",                               kind: bool, internal: true }
+      - { name: r3RespValid,  expr: "io.vrf_r3.resp.valid",                      kind: bool }
+      - { name: outReqMbr,    expr: "outReqMbr",                                 kind: uint, internal: true }
+      - { name: membersUsed,  expr: "membersUsed",                               kind: uint, internal: true }
+      - { name: haveData,     expr: "haveData",                                  kind: bool, internal: true }
+      - { name: ssiEnqValid,  expr: "io.ssi_data_enq.valid",                     kind: bool }
+      - { name: usEnqValid,   expr: "io.us_data_enq.valid",                      kind: bool }
+      - { name: usEnqBytes,   expr: "io.us_data_enq.bits.data.valid_bytes",       kind: uint }
+      - { name: vLenBytesLit, expr: "vLenBytes.U",                               kind: uint, internal: true }
+      - { name: isLastMbr,    expr: "isLastMbr",                                 kind: bool, internal: true }
+    notes: >
+      All internals are module-level vals at the end of the body. VecDgen has no
+      visibility of the source group's busy bits (that is VecStoreDgenPath's, a
+      spec-issue obligation) and its cursor input carries no rob_idx, so the
+      "DGEN accepted a cursor stream belonging to a different op" seam is not
+      observable here — see the header notes and the report.
+
+  - name: VecBeatExpanderChecks
+    file: src/main/scala/v4/vec/formal/VecBeatExpanderChecks.scala
+    dut: VecBeatExpander
+    dut_file: src/main/scala/v4/vec/generated/lsu/VecBeatExpander.scala
+    signals:
+      - { name: reqValid,      expr: "io.req(0).valid",           kind: bool }
+      - { name: reqByteEn,     expr: "io.req(0).bits.byte_en",    kind: uint }
+      - { name: usHeadValid,   expr: "io.us_head.valid",          kind: bool }
+      - { name: ssiHeadValid,  expr: "io.ssi_head(0).valid",      kind: bool }
+      - { name: cursorWrValid, expr: "io.us_cursor_wr.valid",     kind: bool }
+      - { name: cursorWrBits,  expr: "io.us_cursor_wr.bits",      kind: uint }
+      - { name: usCursor,      expr: "io.us_cursor",              kind: uint }
+      # pass 2 addition
+      - { name: reqFire,       expr: "io.req(0).fire",            kind: bool }
+    notes: >
+      Direction-agnostic only: this module is instantiated once per direction
+      and every store-only port is an Option, so a store-gated property would
+      constant-fold in the load instance. The store-specific beat properties are
+      therefore in VecLsuChecks, on st_beat's ports, where they elaborate once.
+
+  - name: VecRangeAgenChecks
+    file: src/main/scala/v4/vec/formal/VecRangeAgenChecks.scala
+    dut: VecRangeAgen
+    dut_file: src/main/scala/v4/vec/generated/lsu/VecRangeAgen.scala
+    signals:
+      - { name: rangeValid,   expr: "io.range.valid",       kind: bool }
+      - { name: rangeLen,     expr: "io.range.bits.len",    kind: uint }
+      - { name: rangeEew,     expr: "io.range.bits.eew",    kind: uint }
+      - { name: scalarValid,  expr: "io.scalar.valid",      kind: bool }
+      - { name: scalarVl,     expr: "io.scalar.bits.vl",    kind: uint }
+      - { name: releaseValid, expr: "io.release.valid",     kind: bool }
+      - { name: isWholeReg,   expr: "isWholeReg",           kind: bool, internal: true }
+      - { name: isMaskOp,     expr: "isMaskOp",             kind: bool, internal: true }
+    notes: >
+      Instantiated twice (load/store); every signal above exists in both
+      directions, so no property here folds on direction.
+
+  - name: VecQueueReservationChecks
+    file: src/main/scala/v4/vec/formal/VecQueueReservationChecks.scala
+    dut: VecQueueReservation
+    dut_file: src/main/scala/v4/vec/generated/lsu/VecQueueReservation.scala
+    signals:
+      - { name: laneValid,      expr: "laneValid(0)",                kind: bool, internal: true }
+      - { name: laneUsesStq,    expr: "laneUsesStq(0)",              kind: bool, internal: true }
+      - { name: laneAddrCount,  expr: "laneCount(0)(0)",             kind: uint, internal: true }
+      - { name: laneDataCount,  expr: "laneCount(0)(1)",             kind: uint, internal: true }
+      - { name: resvAddrValid,  expr: "io.resv_out(0)(0).valid",     kind: bool }
+      - { name: resvDataValid,  expr: "io.resv_out(0)(1).valid",     kind: bool }
+      - { name: retireValid,    expr: "io.retire.valid",             kind: bool }
+      - { name: retireRowValid, expr: "io.retire_row_valid",         kind: bool }
+      # pass 2 additions
+      - { name: occSsiAddr,   expr: "occ(0)",                                            kind: uint, internal: true }
+      - { name: ssiDepthLit,  expr: "qDepth(0).U",                                       kind: uint, internal: true }
+      - { name: ldCapLit,     expr: "ldResvCapTbl(io.dis_uops(0).bits.v_eew.get)",        kind: uint, internal: true }
+    notes: >
+      OBSERVABILITY GAP (reported): the per-lane worst-case count, the access
+      class (isUSClass), and every per-row slot field are loop-local vals or
+      table reads inside a `for`, so they are NOT in scope at the end of the
+      module body. Only lane 0's module-level Wire(Vec) entries can be reached.
+      spec-lsu.b19's "full worst case" therefore cannot be compared against the
+      granted count without adding a DUT signal, which is forbidden.
+
+  - name: VecLsuChecks
+    file: src/main/scala/v4/vec/formal/VecLsuChecks.scala
+    dut: VecLsu
+    dut_file: src/main/scala/v4/vec/generated/lsu/VecLsu.scala
+    signals:
+      - { name: stUsWritePass,   expr: "stUsWritePass",                          kind: bool, internal: true }
+      - { name: stSsiPass2Prev,  expr: "stSsiDoPass2Prev",                       kind: bool, internal: true }
+      - { name: stUsCursorWrValid, expr: "st_beat.io.us_cursor_wr.valid",        kind: bool, internal: true }
+      - { name: stUsCursorWrBits,  expr: "st_beat.io.us_cursor_wr.bits",         kind: uint, internal: true }
+      - { name: stUsTotalElems,  expr: "stUsTotalElems",                         kind: uint, internal: true }
+      - { name: stUsUpdateValid, expr: "st_US_ADDR_Q.io.update.get(0).valid",    kind: bool, internal: true }
+      - { name: stBeatReqValid,  expr: "st_beat.io.req(0).valid",                kind: bool, internal: true }
+      - { name: stBeatUsHead,    expr: "st_beat.io.us_head.valid",               kind: bool, internal: true }
+      - { name: stBeatSsiHead,   expr: "st_beat.io.ssi_head(0).valid",           kind: bool, internal: true }
+      - { name: stBeatWritePass, expr: "st_beat.io.is_write_pass.get",           kind: bool, internal: true }
+      - { name: stUsDataValid,   expr: "st_beat.io.st_us_data.get.valid",        kind: bool, internal: true }
+      - { name: stUsDataPop,     expr: "st_beat.io.st_us_data_pop.get",          kind: bool, internal: true }
+      - { name: stSsiDataValid,  expr: "st_beat.io.st_ssi_data.get(0).valid",    kind: bool, internal: true }
+      - { name: dgenReqValid,    expr: "dgen.io.req.valid",                      kind: bool, internal: true }
+      - { name: dgenReqRobIdx,   expr: "dgen.io.req.bits.uop.rob_idx",           kind: uint, internal: true }
+      - { name: issStRobIdx,     expr: "io.iss_st.bits.rob_idx",                 kind: uint }
+      # pass 2 additions
+      - { name: issStAgen,        expr: "issStAgen",                                                 kind: bool, internal: true }
+      - { name: stRowTargetValid, expr: "stRows(GetRealLSQIdx(io.iss_st.bits.stq_idx)).valid",        kind: bool, internal: true }
+      - { name: gcopyLaunchValid, expr: "gcopy.io.launch.valid",                                     kind: bool, internal: true }
+      - { name: ldLcbTrigger,     expr: "ldLcbTrigger",                                              kind: bool, internal: true }
+    notes: >
+      Every `internal: true` entry above is either a module-level val of VecLsu
+      or a port of one of its child instances, all in scope at the end of the
+      body. Child-instance ports are used deliberately: the store-only halves of
+      VecBeatExpander are Options, so binding them in the child would fold in
+      the load instance (see VecBeatExpanderChecks notes).
+      RECONCILIATION (gen pass): `stUsStagedValid` was dropped from this list
+      after the coder reported it unused. It is the same signal as
+      `stBeatUsHead` (VecLsu drives st_beat.io.us_head.valid := stUsStagedValid),
+      so every property that needed it already reads it through the child port.
+      The coder was right; the ledger changed, not the code.
+
+  # ==== pass 2: the rest of the family ======================================
+
+  - name: VecDcacheArbiterChecks
+    file: src/main/scala/v4/vec/formal/VecDcacheArbiterChecks.scala
+    dut: VecDcacheArbiter
+    dut_file: src/main/scala/v4/vec/generated/lsu/VecDcacheArbiter.scala
+    signals:
+      - { name: ldReqValid,  expr: "io.ld_req(0).valid",              kind: bool }
+      - { name: ldReqDcache, expr: "io.ld_req(0).bits.uses_dcache",   kind: bool }
+      - { name: ldWins,      expr: "ldWins(0)",                       kind: bool, internal: true }
+      - { name: stWins,      expr: "stWins(0)",                       kind: bool, internal: true }
+      - { name: ldWinsElev,  expr: "ldWinsElevated(0)",               kind: bool, internal: true }
+      - { name: stWinsElev,  expr: "stWinsElevated(0)",               kind: bool, internal: true }
+      - { name: ldEligible,  expr: "ldEligible(0)",                   kind: bool, internal: true }
+      - { name: vecFireValid, expr: "io.vec_fire(0).valid",           kind: bool }
+      - { name: claimTlb,    expr: "io.vec_claim(0).tlb",             kind: bool }
+      - { name: claimDcache, expr: "io.vec_claim(0).dcache",          kind: bool }
+      - { name: claimLcam,   expr: "io.vec_claim(0).lcam",            kind: bool }
+      - { name: availDcache, expr: "io.scalar_avail(0).dcache",       kind: bool }
+      - { name: rrPtr,       expr: "rr_ptr",                          kind: uint, internal: true }
+      - { name: blockedLd,   expr: "blocked_ld",                      kind: bool, internal: true }
+      - { name: dmemReady,   expr: "io.dmem_req_ready(0)",            kind: bool }
+      - { name: lcbFree,     expr: "io.lcb_free_count",               kind: uint }
+    notes: >
+      Lane 0 only: lsuWidth is 1 on MediumBoomV4VectorConfig, so any reference to
+      lane 1 would not elaborate there. That is why spec-lsu.h7's two-lane clause
+      is ledgered partial rather than asserted. Every internal signal is a
+      module-level Wire(Vec)/Reg; `resourceOk`'s per-lane results (ldOkDefault,
+      ldOkElevated, ...) are loop-local vals and deliberately NOT in this list.
+
+  - name: VecLoadCoalescingBufferChecks
+    file: src/main/scala/v4/vec/formal/VecLoadCoalescingBufferChecks.scala
+    dut: VecLoadCoalescingBuffer
+    dut_file: src/main/scala/v4/vec/generated/lsu/VecLoadCoalescingBuffer.scala
+    signals:
+      - { name: respValid,        expr: "respRegValid(0)",                                      kind: bool, internal: true }
+      - { name: respDstByte,      expr: "respRegBits(0).dst_byte",                              kind: uint, internal: true }
+      - { name: hitVec,           expr: "VecInit(hitMatrix(0)).asUInt",                         kind: uint, internal: true }
+      - { name: vLenBytesLit,     expr: "vLenBytes.U",                                          kind: uint, internal: true }
+      - { name: e0Valid,          expr: "entries(0).valid",                                     kind: bool, internal: true }
+      - { name: e0Prn,            expr: "entries(0).prn",                                       kind: uint, internal: true }
+      - { name: e0LdqIdx,         expr: "entries(0).ldq_idx",                                   kind: uint, internal: true }
+      - { name: e0ByteValid,      expr: "entries(0).byte_valid",                                kind: uint, internal: true }
+      - { name: e0OwnBytes,       expr: "entries(0).own_bytes",                                 kind: uint, internal: true }
+      - { name: e0ActiveBytes,    expr: "entries(0).active_bytes",                              kind: uint, internal: true }
+      - { name: e1Valid,          expr: "entries(1).valid",                                     kind: bool, internal: true }
+      - { name: e1Prn,            expr: "entries(1).prn",                                       kind: uint, internal: true }
+      - { name: e1LdqIdx,         expr: "entries(1).ldq_idx",                                   kind: uint, internal: true }
+      - { name: killHere0,        expr: "killHere(0)",                                          kind: bool, internal: true }
+      - { name: wrValid,          expr: "io.vrf_write(0).valid",                                kind: bool }
+      - { name: wrMask,           expr: "io.vrf_write(0).bits.mask",                            kind: uint }
+      - { name: wrWritten,        expr: "entries(OHToUInt(writeSel(0))).written",               kind: bool, internal: true }
+      - { name: wrActiveCovered,  expr: "activeCovered(OHToUInt(writeSel(0)))",                  kind: bool, internal: true }
+      - { name: wrPreloadPending, expr: "entries(OHToUInt(writeSel(0))).preload_pending",       kind: bool, internal: true }
+      - { name: wrActiveBytes,    expr: "entries(OHToUInt(writeSel(0))).active_bytes",          kind: uint, internal: true }
+      - { name: wrKilled,         expr: "killHere(OHToUInt(writeSel(0)))",                      kind: bool, internal: true }
+      - { name: staleReqValid,    expr: "io.stale_req.valid",                                   kind: bool }
+      - { name: preloadUndisturbed, expr: "entries(preloadIdx).undisturbed",                    kind: bool, internal: true }
+      - { name: groupDoneValid,   expr: "io.group_done.valid",                                  kind: bool }
+      - { name: groupDoneMembers, expr: "io.group_done.bits.members",                           kind: uint }
+      - { name: winnerActiveCovered, expr: "activeCovered(winnerIdx)",                          kind: bool, internal: true }
+      - { name: groupCountWinner, expr: "groupCount(winnerIdx)",                                kind: uint, internal: true }
+      - { name: pvdestAtWinnerMember, expr: "io.group_done.bits.pvdest(entries(winnerIdx).member_idx)", kind: uint }
+      - { name: winnerPrn,        expr: "entries(winnerIdx).prn",                               kind: uint, internal: true }
+      - { name: elemDoneValid,    expr: "io.elem_done(0).valid",                                kind: bool }
+      - { name: elemDoneNelem,    expr: "io.elem_done(0).bits.nelem",                           kind: uint }
+      - { name: vlWbValid,        expr: "io.vl_wb.valid",                                       kind: bool }
+    notes: >
+      `writeSel` is a Seq of one-hot UInts and `OHToUInt(writeSel(0))` names the
+      entry the W0 write is about to target, so the four `wr*` signals are that
+      entry's own fields. `entries`, `killHere`, `activeCovered`, `groupCount`,
+      `preloadIdx`, `winnerIdx`, `respRegValid/Bits` and `hitMatrix` are all
+      module-level vals at the end of the body; nothing was added to reach them.
+      Entries 0 and 1 are sampled by name for the pairwise no-duplicate-PRN
+      property: lcbEntries is required >= maxVecMembers (8), so both exist.
+      NOTE FOR THE READER: VecLsu currently allocates every LCB entry with
+      active_bytes = all ones, inactive_bytes = 0 and undisturbed = false
+      (VecLsu.scala:964-969, a documented simplification), so the undisturbed
+      pre-load path is unexercised in this configuration and formal-lsu.e14/e17's
+      covers are expected to read zero. That is reported, not hidden.
+
+  - name: VecSquashUnitChecks
+    file: src/main/scala/v4/vec/formal/VecSquashUnitChecks.scala
+    dut: VecSquashUnit
+    dut_file: src/main/scala/v4/vec/generated/lsu/VecSquashUnit.scala
+    signals:
+      - { name: branch,        expr: "branch",                        kind: bool, internal: true }
+      - { name: flush,         expr: "flush",                         kind: bool, internal: true }
+      - { name: rollbackLdq,   expr: "io.resv_rollback.bits.ldq_idx",  kind: uint }
+      - { name: brLdqIdx,      expr: "io.brupdate.b2.uop.ldq_idx",     kind: uint }
+      - { name: killLdq,       expr: "io.kill_ldq",                    kind: uint }
+      - { name: kill0,         expr: "io.kill(0)",                     kind: bool }
+      - { name: killUop0Valid, expr: "io.kill_uop(0).valid",           kind: bool }
+
+  - name: VecGroupCopyChecks
+    file: src/main/scala/v4/vec/formal/VecGroupCopyChecks.scala
+    dut: VecGroupCopy
+    dut_file: src/main/scala/v4/vec/generated/lsu/VecGroupCopy.scala
+    signals:
+      - { name: needCopy,      expr: "needCopy",                  kind: bool, internal: true }
+      - { name: noCopyFire,    expr: "noCopyFire",                kind: bool, internal: true }
+      - { name: noCopyValid,   expr: "noCopyValid",               kind: bool, internal: true }
+      - { name: vlZero,        expr: "io.launch.bits.vl_zero",    kind: bool }
+      - { name: allInactive,   expr: "io.launch.bits.all_inactive", kind: bool }
+      - { name: gcFlush,       expr: "io.flush",                  kind: bool }
+      - { name: w0Granted,     expr: "w0Granted",                 kind: bool, internal: true }
+      - { name: stageBDst,     expr: "stageBDst",                 kind: uint, internal: true }
+      - { name: stageBSrc,     expr: "stageBSrc",                 kind: uint, internal: true }
+      - { name: copyDoneValid, expr: "copyDoneValid",             kind: bool, internal: true }
+      - { name: groupDoneValid, expr: "io.group_done.valid",      kind: bool }
+      - { name: lcbR2Valid,    expr: "io.lcb_r2_req.valid",       kind: bool }
+      - { name: lcbR2Bits,     expr: "io.lcb_r2_req.bits",        kind: uint }
+      - { name: vrfR2Bits,     expr: "io.vrf_r2_req.bits",        kind: uint }
+      - { name: lcbW0Valid,    expr: "io.lcb_w0.valid",           kind: bool }
+      - { name: lcbW0Addr,     expr: "io.lcb_w0.bits.addr",       kind: uint }
+      - { name: vrfW0Addr,     expr: "io.vrf_w0.bits.addr",       kind: uint }
+      - { name: vrfW0Mask,     expr: "io.vrf_w0.bits.mask",       kind: uint }
+      - { name: allOnesMask,   expr: "allOnesMask",               kind: uint, internal: true }
+
+  - name: VecElemAgenChecks
+    file: src/main/scala/v4/vec/formal/VecElemAgenChecks.scala
+    dut: VecElemAgen
+    dut_file: src/main/scala/v4/vec/generated/lsu/VecElemAgen.scala
+    signals:
+      - { name: pushValid, expr: "pushValid",         kind: bool, internal: true }
+      - { name: pushFire,  expr: "io.addr_enq.fire",  kind: bool }
+      - { name: emitCtr,   expr: "emit_ctr",          kind: uint, internal: true }
+      - { name: resvCount, expr: "resv_count",        kind: uint, internal: true }
+      - { name: newFault,  expr: "newFault",          kind: bool, internal: true }
+      - { name: faultSeen, expr: "fault_seen",        kind: bool, internal: true }
+    notes: >
+      Instantiated twice (isStore false/true); every signal above exists in both
+      directions. The real per-element cursor of this design lives here
+      (elem_ptr/emit_ctr/fault_seen/fault_elem), not in MicroOp's dead
+      v_elem_cursor — see header finding 6.
+
+  - name: LSUChecks
+    file: src/main/scala/v4/vec/formal/LSUChecks.scala
+    dut: LSU
+    dut_file: src/main/scala/v4/lsu/lsu.scala
+    signals:
+      - { name: stqExecEnqValid, expr: "stq_execute_queue.io.enq.valid", kind: bool, internal: true }
+      - { name: stqEnqCommitted, expr: "stq_enq_e.bits.committed",       kind: bool, internal: true }
+      - { name: stqEnqIsAmo,     expr: "stq_enq_e.bits.uop.is_amo",      kind: bool, internal: true }
+      - { name: stqEnqAddrValid, expr: "stq_enq_e.bits.addr.valid",      kind: bool, internal: true }
+      - { name: stqEnqDataValid, expr: "stq_enq_e.bits.data.valid",      kind: bool, internal: true }
+    notes: >
+      THE ONE SHARED SCALAR FILE TOUCHED BY THIS FAMILY. src/main/scala/v4/lsu/
+      lsu.scala is `mode: edit_existing` in hierarchy.yaml and elaborates for
+      NON-VECTOR BOOM configs too, so every signal above is deliberately one that
+      exists unconditionally: no `usingRVV`-gated Option and no `.get`. Reaching
+      for io.core.lsu_vec.get or uop.is_vec.get here would break every scalar
+      config in the tree. The anchor goes at the end of `class LSU`'s body only.
+
+assertions:
+
+  # ---- group b: store retention and the program-order reservation ------------
+
+  - id: formal-lsu.b1
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_enq_in_reserved_region
+    kind: assert
+    reqs: [spec-lsu.b6, spec-lsu.d11]
+    statement: >
+      A fill presented to an element queue must target an entry inside the
+      queue's currently occupied (reserved) region.
+    property: >
+      enqValid |-> enqInRegion
+    reachability: formal-lsu.b2
+    notes: >
+      `ready` is `inRegion && !filled`, so this is a check on the PRODUCER: an
+      agen or DGEN presenting an index outside the op's reserved footprint is
+      the queue-granular form of "a store wrote outside its own footprint".
+
+  - id: formal-lsu.b2
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_enq_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.b1
+    statement: >
+      A fill is presented to an element queue.
+    property: >
+      enqValid
+
+  - id: formal-lsu.b3
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_free_base_is_head
+    kind: assert
+    reqs: [spec-lsu.b7, spec-lsu.d8]
+    statement: >
+      A region free must start at the queue's head, so a store's retained
+      entries are released only as the whole head region at commit-drain.
+    property: >
+      freeValid |-> Sequence.BoolSequence(freeBase === qHead)
+    reachability: formal-lsu.b4
+    notes: >
+      The free base comes from VecQueueReservation's row bookkeeping and the
+      head from the queue's own pointer — two independently maintained cones.
+      A mismatch frees somebody else's entries mid-instruction.
+
+  - id: formal-lsu.b4
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_free_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.b3
+    statement: >
+      A queue region is freed at retire.
+    property: >
+      freeValid
+
+  - id: formal-lsu.b5
+    checker: VecQueueReservationChecks
+    label: vec_resv_store_count_nonzero
+    kind: assert
+    reqs: [spec-lsu.b19]
+    statement: >
+      A dispatching vector store must request a non-zero number of entries in
+      both its address and its data queue.
+    property: >
+      (laneValid && laneUsesStq) |-> Sequence.BoolSequence((laneAddrCount =/= 0.U) && (laneDataCount =/= 0.U))
+    reachability: formal-lsu.b6
+    notes: >
+      VL is unknown at dispatch, so the store must reserve worst case; the
+      checkable clause here is only that the request is non-empty. The worst-case
+      VALUE is loop-local and unreachable at the anchor — see the checker note.
+
+  - id: formal-lsu.b6
+    checker: VecQueueReservationChecks
+    label: vec_resv_store_dispatch_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.b5
+    statement: >
+      A vector store is presented at dispatch lane 0.
+    property: >
+      laneValid && laneUsesStq
+
+  - id: formal-lsu.b7
+    checker: VecQueueReservationChecks
+    label: vec_resv_retire_row_live
+    kind: assert
+    reqs: [spec-lsu.b4, spec-lsu.b5]
+    statement: >
+      Capacity may be reclaimed only against a reservation row that was actually
+      claimed at dispatch.
+    property: >
+      retireValid |-> retireRowValid
+    reachability: formal-lsu.b8
+    notes: >
+      The head-side half of "reserved in program order at dispatch, never
+      claimed opportunistically at execute": the retire walk is driven by
+      ldq_head/stq_head in VecLsu, so retiring against an empty row means the
+      program-order correspondence between the LSQ and the reservation table has
+      broken.
+
+  - id: formal-lsu.b8
+    checker: VecQueueReservationChecks
+    label: vec_resv_retire_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.b7
+    statement: >
+      A reservation retire is presented.
+    property: >
+      retireValid
+
+  # ---- group c: the unit-stride range and the just-in-time Packer ------------
+
+  - id: formal-lsu.c1
+    checker: VecBeatExpanderChecks
+    label: vec_beat_expander_beat_needs_head
+    kind: assert
+    reqs: [spec-lsu.c5]
+    statement: >
+      The Packer must present a D$ access only while a queue entry is staged for
+      it to expand.
+    property: >
+      reqValid |-> Sequence.BoolSequence(usHeadValid || ssiHeadValid)
+    reachability: formal-lsu.c2
+
+  - id: formal-lsu.c2
+    checker: VecBeatExpanderChecks
+    label: vec_beat_expander_beat_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.c1
+    statement: >
+      The beat expander presents a D$ access on lane 0.
+    property: >
+      reqValid
+
+  - id: formal-lsu.c3
+    checker: VecBeatExpanderChecks
+    label: vec_beat_expander_cursor_advances
+    kind: assert
+    reqs: [spec-lsu.c6]
+    statement: >
+      A just-in-time expansion step must advance the element cursor.
+    property: >
+      cursorWrValid |-> Sequence.BoolSequence(cursorWrBits > usCursor)
+    reachability: formal-lsu.c4
+    notes: >
+      A cursor write that does not advance is the just-in-time expansion failing
+      to make progress — the shape of the observed store hang.
+
+  - id: formal-lsu.c4
+    checker: VecBeatExpanderChecks
+    label: vec_beat_expander_cursor_write_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.c3
+    statement: >
+      The expander writes back an advanced element cursor.
+    property: >
+      cursorWrValid
+
+  - id: formal-lsu.c5
+    checker: VecRangeAgenChecks
+    label: vec_range_agen_one_range_per_activation
+    kind: assert
+    reqs: [spec-lsu.c3]
+    statement: >
+      A unit-stride access must push only a single range entry: the push must not
+      persist into the following cycle.
+    property: >
+      rangeValid |=> Sequence.BoolSequence(!rangeValid)
+    reachability: formal-lsu.c6
+    notes: >
+      VecRangeAgen is stateless and pushes whenever io.req.valid holds, so a
+      two-cycle activation pulse in VecLsu would push the same range twice into
+      one reserved slot.
+
+  - id: formal-lsu.c6
+    checker: VecRangeAgenChecks
+    label: vec_range_agen_range_push_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.c5
+    statement: >
+      A range entry is pushed.
+    property: >
+      rangeValid
+
+  - id: formal-lsu.c7
+    checker: VecRangeAgenChecks
+    label: vec_range_agen_len_is_vl_times_eew
+    kind: assert
+    reqs: [spec-lsu.c4]
+    statement: >
+      For a plain unit-stride access the pushed range must describe exactly
+      VL * EEW bytes.
+    property: >
+      (rangeValid && !isWholeReg && !isMaskOp) |-> Sequence.BoolSequence((rangeLen >> rangeEew) === scalarVl)
+    reachability: formal-lsu.c8
+
+  - id: formal-lsu.c8
+    checker: VecRangeAgenChecks
+    label: vec_range_agen_us_range_push_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.c7
+    statement: >
+      A plain unit-stride (not whole-register, not mask) range is pushed.
+    property: >
+      rangeValid && !isWholeReg && !isMaskOp
+
+  # ---- group d: the store data queues ---------------------------------------
+
+  - id: formal-lsu.d1
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_claim_fits_avail
+    kind: assert
+    reqs: [spec-lsu.d13]
+    statement: >
+      A dispatch-time claim presented to a queue must fit in that queue's
+      available capacity.
+    property: >
+      claimValid |-> Sequence.BoolSequence(claimEntries <= avail)
+    reachability: formal-lsu.d2
+    notes: >
+      The queue-side half of "reserves capacity in BOTH queues or does not
+      dispatch": if a claim can exceed avail then dispatch went ahead without the
+      capacity it claimed.
+
+  - id: formal-lsu.d2
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_claim_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.d1
+    statement: >
+      A claim is presented to an element queue.
+    property: >
+      claimValid
+
+  - id: formal-lsu.d3
+    checker: VecDgenChecks
+    label: vec_dgen_r3_read_only_while_resident
+    kind: assert
+    reqs: [spec-lsu.d9, spec-lsu.d10]
+    statement: >
+      DGEN must issue a VRF R3 read only while its store is resident and
+      unkilled.
+    property: >
+      r3ReqValid |-> Sequence.BoolSequence(reqResident && !killed)
+    reachability: formal-lsu.d4
+    notes: >
+      This is the condition that makes "the source vPRN needs no pin" safe: the
+      capture window is inside the op's own residency, so a read can never land
+      after the group was reclaimed to the free list.
+
+  - id: formal-lsu.d4
+    checker: VecDgenChecks
+    label: vec_dgen_r3_read_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.d3
+    statement: >
+      DGEN issues a VRF R3 read.
+    property: >
+      r3ReqValid
+
+  - id: formal-lsu.d5
+    checker: VecDgenChecks
+    label: vec_dgen_r3_resp_member_in_range
+    kind: assert
+    reqs: [spec-lsu.d7]
+    statement: >
+      An R3 read response consumed by DGEN must belong to a group member inside
+      the op's used-member count.
+    property: >
+      (outReqValid && r3RespValid) |-> Sequence.BoolSequence(outReqMbr < membersUsed)
+    reachability: formal-lsu.d6
+
+  - id: formal-lsu.d6
+    checker: VecDgenChecks
+    label: vec_dgen_r3_resp_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.d5
+    statement: >
+      An outstanding R3 read returns.
+    property: >
+      outReqValid && r3RespValid
+
+  - id: formal-lsu.d7
+    checker: VecDgenChecks
+    label: vec_dgen_enq_data_from_vrf_read
+    kind: assert
+    reqs: [spec-lsu.d7]
+    statement: >
+      DGEN must not enqueue store data unless the member's VRF read data is
+      buffered.
+    property: >
+      Sequence.BoolSequence(ssiEnqValid || usEnqValid) |-> haveData
+    reachability: formal-lsu.d8
+
+  - id: formal-lsu.d8
+    checker: VecDgenChecks
+    label: vec_dgen_data_enq_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.d7
+    statement: >
+      DGEN enqueues store data into one of the two data queues.
+    property: >
+      ssiEnqValid || usEnqValid
+
+  - id: formal-lsu.d9
+    checker: VecDgenChecks
+    label: vec_dgen_us_push_is_whole_member
+    kind: assert
+    reqs: [spec-lsu.d5]
+    statement: >
+      Every unit-stride store data push must carry a whole VLEN-wide member,
+      except the op's final (possibly partial) member.
+    property: >
+      usEnqValid |-> Sequence.BoolSequence((usEnqBytes === vLenBytesLit) || isLastMbr)
+    reachability: formal-lsu.d10
+    notes: >
+      "Reads its entire source vPRN in one access" stated on the push side. A
+      short non-final push is the phantom/partial-member bug class.
+
+  - id: formal-lsu.d10
+    checker: VecDgenChecks
+    label: vec_dgen_us_push_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.d9
+    statement: >
+      A unit-stride store data push occurs.
+    property: >
+      usEnqValid
+
+  - id: formal-lsu.d11
+    checker: VecQueueReservationChecks
+    label: vec_resv_store_claims_both_queues
+    kind: assert
+    reqs: [spec-lsu.d12, spec-lsu.d13]
+    statement: >
+      A granted vector store reservation must claim its data-queue slot in the
+      same cycle it claims its address-queue slot.
+    property: >
+      (resvAddrValid && laneUsesStq) |-> resvDataValid
+    reachability: formal-lsu.d12
+
+  - id: formal-lsu.d12
+    checker: VecQueueReservationChecks
+    label: vec_resv_store_grant_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.d11
+    statement: >
+      A vector store's address-queue reservation is granted.
+    property: >
+      resvAddrValid && laneUsesStq
+
+  - id: formal-lsu.d13
+    checker: VecLsuChecks
+    label: vec_lsu_st_us_write_beat_has_data
+    kind: assert
+    reqs: [spec-lsu.d6, spec-lsu.j10]
+    statement: >
+      A unit-stride store write-pass beat must not leave the expander before its
+      st_US_DATA_Q read has landed.
+    property: >
+      (stBeatReqValid && stBeatUsHead && stUsWritePass) |-> stUsDataValid
+    reachability: formal-lsu.d14
+    notes: >
+      The data-queue read has a cycle of latency, so a beat composed before it
+      lands sends stale bytes to the D$ silently. The SSI lane can drive the same
+      req port without the US data gate, which is how this can fail.
+
+  - id: formal-lsu.d14
+    checker: VecLsuChecks
+    label: vec_lsu_st_us_write_beat_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.d13
+    statement: >
+      A unit-stride store write-pass beat is presented.
+    property: >
+      stBeatReqValid && stBeatUsHead && stUsWritePass
+
+  - id: formal-lsu.d15
+    checker: VecLsuChecks
+    label: vec_lsu_st_us_data_pop_only_on_write_pass
+    kind: assert
+    reqs: [spec-lsu.d8]
+    statement: >
+      The unit-stride store data queue must be popped only on the write pass, so
+      the data is held until the post-commit drain.
+    property: >
+      stUsDataPop |-> Sequence.BoolSequence(stUsWritePass)
+    reachability: formal-lsu.d16
+
+  - id: formal-lsu.d16
+    checker: VecLsuChecks
+    label: vec_lsu_st_us_data_pop_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.d15
+    statement: >
+      A unit-stride store data queue entry is popped.
+    property: >
+      stUsDataPop
+
+  - id: formal-lsu.d17
+    checker: VecLsuChecks
+    label: vec_lsu_dgen_request_matches_granted_store
+    kind: assert
+    reqs: [spec-lsu.d7]
+    statement: >
+      The uop DGEN reads its source vPRN from must be the same instruction as the
+      store the issue unit granted the DGEN pass to.
+    property: >
+      dgenReqValid |-> Sequence.BoolSequence(dgenReqRobIdx === issStRobIdx)
+    reachability: formal-lsu.d18
+    notes: >
+      dgen.io.req.bits.uop comes from the held st_opnd output while
+      dgen.io.req.valid comes from the DGEN grant — two independent cones. A
+      mismatch means the store data is read from another instruction's pvs3.
+
+  - id: formal-lsu.d18
+    checker: VecLsuChecks
+    label: vec_lsu_dgen_grant_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.d17
+    statement: >
+      A DGEN pass is granted to VecDgen.
+    property: >
+      dgenReqValid
+
+  # ---- group j: the vector store algorithm ----------------------------------
+
+  - id: formal-lsu.j1
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_xlate_update_in_region
+    kind: assert
+    reqs: [spec-lsu.j8]
+    statement: >
+      A translate-pass write-back must target an entry inside the queue's
+      occupied region.
+    property: >
+      updateValid |-> updateInRegion
+    reachability: formal-lsu.j2
+    notes: >
+      A physical address written back outside the occupied region has translated
+      an entry this store no longer owns — the pre-commit translation did not
+      land on the entry the write pass will drain.
+
+  - id: formal-lsu.j2
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_xlate_update_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.j1
+    statement: >
+      A translate-pass write-back is presented to a store address queue.
+    property: >
+      updateValid
+
+  - id: formal-lsu.j3
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_no_filled_resp_without_req
+    kind: assert
+    reqs: [spec-lsu.j10]
+    statement: >
+      A queue must not report a filled read response for a cycle in which no
+      read was requested.
+    property: >
+      Sequence.BoolSequence(!rdReqValid) |=> Sequence.BoolSequence(!rdFilled)
+    reachability: formal-lsu.j4
+    notes: >
+      The drain takes store data from the data queue's read port, and treats
+      `filled` as "this data is real". A filled response for an unasked read
+      would let the drain use whatever the read port happened to hold.
+
+  - id: formal-lsu.j4
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_rd_idle_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.j3
+    statement: >
+      The queue's drain read port is idle for a cycle.
+    property: >
+      !rdReqValid
+
+  - id: formal-lsu.j5
+    checker: VecRangeAgenChecks
+    label: vec_range_agen_release_needs_vl
+    kind: assert
+    reqs: [spec-lsu.j6]
+    statement: >
+      The surplus-reservation release must be presented only while the resolved
+      VL operand bundle is valid.
+    property: >
+      releaseValid |-> scalarValid
+    reachability: formal-lsu.j6
+    notes: >
+      "The surplus is released at execute once VL is read from the VL RF" — the
+      release count is computed from io.scalar.bits.vl, so releasing while that
+      bundle is invalid trims against a stale VL.
+
+  - id: formal-lsu.j6
+    checker: VecRangeAgenChecks
+    label: vec_range_agen_release_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.j5
+    statement: >
+      A surplus release is presented to the reservation unit.
+    property: >
+      releaseValid
+
+  - id: formal-lsu.j7
+    checker: VecLsuChecks
+    label: vec_lsu_pass_state_agrees_across_classes
+    kind: assert
+    reqs: [spec-lsu.j7, spec-lsu.j9]
+    statement: >
+      When a unit-stride and an SSI store entry are staged in the same cycle,
+      their pass states must agree, because both classes share one
+      is_write_pass port.
+    property: >
+      Sequence.BoolSequence(stBeatUsHead && stBeatSsiHead) |-> Sequence.BoolSequence(stUsWritePass === stSsiPass2Prev)
+    reachability: formal-lsu.j8
+    notes: >
+      is_write_pass is Mux(stUsStagedValid, stUsWritePass, stSsiDoPass2Prev), so
+      a staged US entry forces its own pass state onto a co-staged SSI beat. If
+      they disagree, either an uncommitted store's beat performs the D$ write
+      (violating j9's commit gate) or a committed store's beat performs only the
+      translate pass and never writes.
+
+  - id: formal-lsu.j8
+    checker: VecLsuChecks
+    label: vec_lsu_both_classes_staged_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.j7
+    statement: >
+      A unit-stride store entry and an SSI store entry are staged in the same
+      cycle.
+    property: >
+      stBeatUsHead && stBeatSsiHead
+
+  - id: formal-lsu.j9
+    checker: VecLsuChecks
+    label: vec_lsu_st_us_paddr_writeback_before_write_pass
+    kind: assert
+    reqs: [spec-lsu.j8]
+    statement: >
+      The unit-stride store's translated-address write-back must land before the
+      write pass starts.
+    property: >
+      stUsUpdateValid |-> Sequence.BoolSequence(!stUsWritePass)
+    reachability: formal-lsu.j10
+    notes: >
+      The write-back is RegNext-delayed off the first beat's translate fire. For
+      a single-beat range the pass flips in the same cycle the write-back lands,
+      so the write pass composes its beat from the untranslated base. Invisible
+      under an identity page mapping, wrong under any real one.
+
+  - id: formal-lsu.j10
+    checker: VecLsuChecks
+    label: vec_lsu_st_us_paddr_writeback_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.j9
+    statement: >
+      A translated address is written back into the unit-stride store's range
+      entry.
+    property: >
+      stUsUpdateValid
+
+  - id: formal-lsu.j11
+    checker: VecLsuChecks
+    label: vec_lsu_st_us_write_pass_follows_translate
+    kind: assert
+    reqs: [spec-lsu.j8, spec-lsu.j11]
+    statement: >
+      Completing the translate pass over a unit-stride store's range must enter
+      the write pass on the next cycle.
+    property: >
+      Sequence.BoolSequence(stUsCursorWrValid && !stUsWritePass && (stUsCursorWrBits >= stUsTotalElems)) |=> stUsWritePass
+    reachability: formal-lsu.j12
+    notes: >
+      The two-pass drain is the whole of "pre-commit translation of the whole
+      active element range": if translate completion does not hand over to the
+      write pass, the store never writes memory at all.
+
+  - id: formal-lsu.j12
+    checker: VecLsuChecks
+    label: vec_lsu_st_us_translate_complete_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.j11
+    statement: >
+      A unit-stride store's translate pass reaches the end of its range.
+    property: >
+      stUsCursorWrValid && !stUsWritePass && (stUsCursorWrBits >= stUsTotalElems)
+
+  - id: formal-lsu.j13
+    checker: VecLsuChecks
+    label: vec_lsu_st_ssi_write_beat_has_data
+    kind: assert
+    reqs: [spec-lsu.j10]
+    statement: >
+      An SSI store write-pass beat must not leave the expander before its
+      st_SSI_DATA_Q read has landed.
+    property: >
+      Sequence.BoolSequence(stBeatReqValid && stBeatSsiHead && !stBeatUsHead && stBeatWritePass) |-> stSsiDataValid
+    reachability: formal-lsu.j14
+    notes: >
+      The SSI store lane's fire condition is ssi_head.valid && lcb credit only —
+      unlike the unit-stride lane it does NOT consult its data queue's staged
+      validity. If this fires, an SSI store is writing whatever the data read
+      port held.
+
+  - id: formal-lsu.j14
+    checker: VecLsuChecks
+    label: vec_lsu_st_ssi_write_beat_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.j13
+    statement: >
+      An SSI store write-pass beat is presented with no unit-stride entry
+      staged.
+    property: >
+      stBeatReqValid && stBeatSsiHead && !stBeatUsHead && stBeatWritePass
+
+  # ---- group k: the Packer's byte coalescing --------------------------------
+
+  - id: formal-lsu.k1
+    checker: VecBeatExpanderChecks
+    label: vec_beat_expander_beat_has_enabled_bytes
+    kind: assert
+    reqs: [spec-lsu.k8]
+    statement: >
+      Every D$ access the Packer presents must enable at least one byte.
+    property: >
+      reqValid |-> Sequence.BoolSequence(reqByteEn =/= 0.U)
+    reachability: formal-lsu.c2
+    notes: >
+      byte_en is derived from the coalesced run length and the address
+      alignment; a zero mask is a beat that writes nothing, which for a store is
+      silent data loss rather than a hang.
+
+  # ==========================================================================
+  # ==== pass 2 assertions ===================================================
+  # ==========================================================================
+
+  # ---- group a: the unified LSU ---------------------------------------------
+
+  - id: formal-lsu.a1
+    checker: LSUChecks
+    label: lsu_stq_execute_enq_has_addr_and_data
+    kind: assert
+    reqs: [spec-lsu.a6]
+    statement: >
+      An entry may only be handed to the store-execute queue once both its
+      address and its data are marked present.
+    property: >
+      stqExecEnqValid |-> Sequence.BoolSequence(stqEnqAddrValid && stqEnqDataValid)
+    reachability: formal-lsu.a2
+    notes: >
+      For a VECTOR store those two flags are set by VecLsu's st_pass_done rather
+      than by a uop payload, which is the substance of a6: the entry becomes
+      drainable off the separate queues' progress, not off its own uop.
+
+  - id: formal-lsu.a2
+    checker: LSUChecks
+    label: lsu_stq_execute_enq_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.a1
+    statement: >
+      An entry is enqueued into the store-execute queue.
+    property: >
+      stqExecEnqValid
+
+  - id: formal-lsu.a3
+    checker: VecLsuChecks
+    label: vec_lsu_store_grant_into_free_pending_row
+    kind: assert
+    reqs: [spec-lsu.a8, spec-lsu.a9]
+    statement: >
+      A store's AGEN grant must land in a pending-descriptor row that is not
+      already occupied.
+    property: >
+      issStAgen |-> Sequence.BoolSequence(!stRowTargetValid)
+    reachability: formal-lsu.a4
+    notes: >
+      One row per STQ index, so a second grant into a live row is exactly another
+      op interleaving at that entry while it drains.
+
+  - id: formal-lsu.a4
+    checker: VecLsuChecks
+    label: vec_lsu_store_agen_grant_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.a3
+    statement: >
+      A vector store's AGEN pass is granted.
+    property: >
+      issStAgen
+
+  # ---- group b: the element queues and the reservation (pass 2 half) --------
+
+  - id: formal-lsu.b9
+    checker: VecElemAgenChecks
+    label: vec_elem_agen_emit_within_reservation
+    kind: assert
+    reqs: [spec-lsu.b11, spec-lsu.j1]
+    statement: >
+      Every element address the stage-1 agen emits must fall inside the
+      reservation it claimed at dispatch.
+    property: >
+      pushValid |-> Sequence.BoolSequence(emitCtr < resvCount)
+    reachability: formal-lsu.b10
+
+  - id: formal-lsu.b10
+    checker: VecElemAgenChecks
+    label: vec_elem_agen_emit_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.b9
+    statement: >
+      The element agen presents an element address.
+    property: >
+      pushValid
+
+  - id: formal-lsu.b11
+    checker: VecQueueReservationChecks
+    label: vec_resv_occupancy_within_depth
+    kind: assert
+    reqs: [spec-lsu.b14, spec-lsu.b15]
+    statement: >
+      A queue's reserved occupancy must never exceed its depth.
+    property: >
+      Sequence.BoolSequence(occSsiAddr <= ssiDepthLit)
+    notes: >
+      Bare invariant, no antecedent, so no reachability cover. Occupancy is what
+      bounds in-flight vector memory ops; an occupancy above the depth is the
+      accounting failure behind the ssi-queues deadlock.
+
+  - id: formal-lsu.b12
+    checker: VecQueueReservationChecks
+    label: vec_resv_load_count_within_cap
+    kind: assert
+    reqs: [spec-lsu.b18]
+    statement: >
+      A dispatching vector load must not reserve more than
+      ldResvMembers * VLEN/EEW element-queue entries.
+    property: >
+      Sequence.BoolSequence(laneValid && !laneUsesStq) |-> Sequence.BoolSequence(laneAddrCount <= ldCapLit)
+    reachability: formal-lsu.b13
+    notes: >
+      The upper half of min(worstCase, cap). The other half (never MORE than
+      worstCase) is the same table lookup and would fold.
+
+  - id: formal-lsu.b13
+    checker: VecQueueReservationChecks
+    label: vec_resv_load_dispatch_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.b12
+    statement: >
+      A vector load is presented at dispatch lane 0.
+    property: >
+      laneValid && !laneUsesStq
+
+  # ---- group e: the load coalescing buffer ----------------------------------
+
+  - id: formal-lsu.e1
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_load_grant_has_lcb_credit
+    kind: assert
+    reqs: [spec-lsu.e24]
+    statement: >
+      A load element access must not be granted a D$ lane unless an LCB assembly
+      entry is free to receive its response.
+    property: >
+      ldWins |-> Sequence.BoolSequence(lcbFree =/= 0.U)
+    reachability: formal-lsu.e2
+    notes: >
+      "Entries are allocated before the accesses that fill them" enforced at the
+      arbiter, which is where the credit is consulted.
+
+  - id: formal-lsu.e2
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_load_grant_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.e1
+    statement: >
+      A vector load element access wins a D$ lane.
+    property: >
+      ldWins
+
+  - id: formal-lsu.e3
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_load_stalls_without_lcb_entry
+    kind: assert
+    reqs: [spec-lsu.e25]
+    statement: >
+      With no free LCB entry a pending load drain must not be granted.
+    property: >
+      Sequence.BoolSequence(ldReqValid && (lcbFree === 0.U)) |-> Sequence.BoolSequence(!ldWins)
+    reachability: formal-lsu.e4
+
+  - id: formal-lsu.e4
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_load_pending_without_credit_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.e3
+    statement: >
+      A load drain is pending while the LCB has no free entry.
+    property: >
+      ldReqValid && (lcbFree === 0.U)
+
+  - id: formal-lsu.e5
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_resp_byte_offset_in_entry
+    kind: assert
+    reqs: [spec-lsu.e5]
+    statement: >
+      A returning element's destination byte offset must lie inside the
+      VLEN-wide assembly entry.
+    property: >
+      respValid |-> Sequence.BoolSequence(respDstByte < vLenBytesLit)
+    reachability: formal-lsu.e6
+    notes: >
+      The offset is derived from the element index carried on the nOP.v; an
+      offset at or beyond VLEN/8 is a write past the destination register.
+
+  - id: formal-lsu.e6
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_resp_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.e5
+    statement: >
+      An element response is presented to the LCB.
+    property: >
+      respValid
+
+  - id: formal-lsu.e7
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_resp_matches_at_most_one_entry
+    kind: assert
+    reqs: [spec-lsu.e4]
+    statement: >
+      A returning element must match at most one assembly entry.
+    property: >
+      respValid |-> Sequence.BoolSequence(PopCount(hitVec) <= 1.U)
+    reachability: formal-lsu.e6
+
+  - id: formal-lsu.e8
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_byte_valid_within_own_bytes
+    kind: assert
+    reqs: [spec-lsu.e20]
+    statement: >
+      No byte outside an entry's own footprint may ever be marked valid.
+    property: >
+      e0Valid |-> Sequence.BoolSequence((e0ByteValid & ~e0OwnBytes) === 0.U)
+    reachability: formal-lsu.e9
+    notes: >
+      The byte-valid bitmap is bounded by the AGEN-selected active set. This is
+      the load-side form of the footprint bound that pass 1 found missing on the
+      store side (header finding 11).
+
+  - id: formal-lsu.e9
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_entry_live_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.e8
+    statement: >
+      LCB entry 0 is live.
+    property: >
+      e0Valid
+
+  - id: formal-lsu.e10
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_active_within_own_bytes
+    kind: assert
+    reqs: [spec-lsu.e21, spec-lsu.e22, spec-lsu.e23]
+    statement: >
+      An entry's active-byte set must stay inside the footprint it was allocated
+      with.
+    property: >
+      e0Valid |-> Sequence.BoolSequence((e0ActiveBytes & ~e0OwnBytes) === 0.U)
+    reachability: formal-lsu.e9
+    notes: >
+      The LCB never re-derives which elements are active: active_bytes arrives at
+      allocation and only shrinks (on a vleff trim). A byte becoming active that
+      the AGEN never selected would be a masked-off element counted as
+      outstanding.
+
+  - id: formal-lsu.e11
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_write_needs_active_bytes_present
+    kind: assert
+    reqs: [spec-lsu.e6]
+    statement: >
+      The VRF write for a destination PRN must not issue until all of that
+      entry's active bytes are present.
+    property: >
+      wrValid |-> wrActiveCovered
+    reachability: formal-lsu.e12
+
+  - id: formal-lsu.e12
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_vrf_write_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.e11
+    statement: >
+      The LCB issues a VRF write on W0.
+    property: >
+      wrValid
+
+  - id: formal-lsu.e13
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_write_only_once_per_entry
+    kind: assert
+    reqs: [spec-lsu.e19]
+    statement: >
+      An assembly entry must not be written to the VRF twice.
+    property: >
+      wrValid |-> Sequence.BoolSequence(!wrWritten)
+    reachability: formal-lsu.e12
+    notes: >
+      One W0 write per destination PRN: the intermediate write is visible only to
+      the register file precisely because there is exactly one of them.
+
+  - id: formal-lsu.e14
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_write_after_preload
+    kind: assert
+    reqs: [spec-lsu.e9, spec-lsu.e10]
+    statement: >
+      An entry with an outstanding undisturbed pre-load must not be written to
+      the VRF.
+    property: >
+      wrValid |-> Sequence.BoolSequence(!wrPreloadPending)
+    reachability: formal-lsu.e12
+
+  - id: formal-lsu.e15
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_write_mask_covers_active
+    kind: assert
+    reqs: [spec-lsu.e8]
+    statement: >
+      The VRF write mask must cover every active byte of the entry.
+    property: >
+      wrValid |-> Sequence.BoolSequence((wrMask & wrActiveBytes) === wrActiveBytes)
+    reachability: formal-lsu.e12
+    notes: >
+      The mask is own_bytes = active | inactive, so a mask that fails to cover
+      active means the inactive-lane accounting has diverged and the single write
+      would leave stale bytes.
+
+  - id: formal-lsu.e16
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_preload_only_undisturbed
+    kind: assert
+    reqs: [spec-lsu.e11]
+    statement: >
+      Only an entry marked undisturbed may request a stale_pvdest pre-load.
+    property: >
+      staleReqValid |-> preloadUndisturbed
+    reachability: formal-lsu.e17
+
+  - id: formal-lsu.e17
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_preload_request_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.e16
+    statement: >
+      The LCB requests a stale_pvdest pre-load on R2.
+    property: >
+      staleReqValid
+
+  - id: formal-lsu.e18
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_group_done_last_member_complete
+    kind: assert
+    reqs: [spec-lsu.e15]
+    statement: >
+      A group-done must not be emitted while the winning member's active bytes
+      are still incomplete.
+    property: >
+      groupDoneValid |-> winnerActiveCovered
+    reachability: formal-lsu.e19
+
+  - id: formal-lsu.e19
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_group_done_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.e18
+    statement: >
+      The LCB emits a group-done.
+    property: >
+      groupDoneValid
+
+  - id: formal-lsu.e20
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_group_done_count_matches_target
+    kind: assert
+    reqs: [spec-lsu.e13, spec-lsu.e14]
+    statement: >
+      The per-group PRN-done count must equal the destination-group size the
+      group-done reports.
+    property: >
+      groupDoneValid |-> Sequence.BoolSequence(groupCountWinner === groupDoneMembers)
+    reachability: formal-lsu.e19
+
+  - id: formal-lsu.e21
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_group_done_pvdest_matches_entry
+    kind: assert
+    reqs: [spec-lsu.e16, spec-lsu.l1, spec-lsu.l3, spec-lsu.l4, spec-lsu.l8, spec-lsu.l9]
+    statement: >
+      The group-done's member-PRN vector must name, at the winning entry's own
+      member index, that entry's physical register.
+    property: >
+      groupDoneValid |-> Sequence.BoolSequence(pvdestAtWinnerMember === winnerPrn)
+    reachability: formal-lsu.e19
+    notes: >
+      Also the segmented-load obligation: the LSU half fills whichever group it
+      was allocated with (pvtmp for a shared op, pvdest otherwise) and completes
+      it through this one path, with no special case.
+
+  - id: formal-lsu.e22
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_no_duplicate_prn
+    kind: assert
+    reqs: [spec-lsu.e2]
+    statement: >
+      Two live assembly entries must not be filling the same destination PRN of
+      the same load.
+    property: >
+      Sequence.BoolSequence(e0Valid && e1Valid) |-> Sequence.BoolSequence((e0Prn =/= e1Prn) || (e0LdqIdx =/= e1LdqIdx))
+    reachability: formal-lsu.e23
+    notes: >
+      "One entry per destination PRN currently being filled", sampled on the
+      entry pair 0/1. A duplicate would double-count bytes and complete early.
+
+  - id: formal-lsu.e23
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_two_entries_live_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.e22
+    statement: >
+      Two LCB entries are live at once.
+    property: >
+      e0Valid && e1Valid
+
+  # ---- group f: per-element progress ----------------------------------------
+
+  - id: formal-lsu.f1
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_killed_entry_never_written
+    kind: assert
+    reqs: [spec-lsu.f15, spec-lsu.i8]
+    statement: >
+      An assembly entry whose owning ldq_idx has been killed must never be
+      written to the VRF.
+    property: >
+      wrValid |-> Sequence.BoolSequence(!wrKilled)
+    reachability: formal-lsu.e12
+    notes: >
+      The reclaimed pvdest group is reallocated within a few cycles, so a late
+      VLEN-wide write must be impossible rather than merely harmless. Also the
+      drop rule for a late response on a rolled-back ldq_idx.
+
+  - id: formal-lsu.f2
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_kill_clears_entry
+    kind: assert
+    reqs: [spec-lsu.f14, spec-lsu.i7]
+    statement: >
+      A killed assembly entry must be invalid on the next cycle.
+    property: >
+      killHere0 |=> Sequence.BoolSequence(!e0Valid)
+    reachability: formal-lsu.f3
+
+  - id: formal-lsu.f3
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_entry_killed_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.f2
+    statement: >
+      An assembly entry is killed by its owning ldq_idx.
+    property: >
+      killHere0
+
+  - id: formal-lsu.f4
+    checker: VecElemAgenChecks
+    label: vec_elem_agen_fault_latches_seen
+    kind: assert
+    reqs: [spec-lsu.f5]
+    statement: >
+      The first fault of a walk must latch the fault-seen state.
+    property: >
+      newFault |=> faultSeen
+    reachability: formal-lsu.f5
+
+  - id: formal-lsu.f5
+    checker: VecElemAgenChecks
+    label: vec_elem_agen_new_fault_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.f4
+    statement: >
+      A first fault is reported to the element agen.
+    property: >
+      newFault
+
+  - id: formal-lsu.f6
+    checker: VecElemAgenChecks
+    label: vec_elem_agen_no_emit_after_fault
+    kind: assert
+    reqs: [spec-lsu.f9, spec-lsu.a10]
+    statement: >
+      Once a fault is latched the walk must stop emitting element accesses.
+    property: >
+      faultSeen |-> Sequence.BoolSequence(!pushValid)
+    reachability: formal-lsu.f7
+
+  - id: formal-lsu.f7
+    checker: VecElemAgenChecks
+    label: vec_elem_agen_fault_seen_state
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.f6
+    statement: >
+      The element agen is in its fault-stopped state.
+    property: >
+      faultSeen
+
+  - id: formal-lsu.f8
+    checker: VecElemAgenChecks
+    label: vec_elem_agen_emit_counter_advances
+    kind: assert
+    reqs: [spec-lsu.f8]
+    statement: >
+      Each emitted element access must advance the emission counter, so accesses
+      leave in element order.
+    property: >
+      pushFire |=> Sequence.BoolSequence(emitCtr =/= 0.U)
+    reachability: formal-lsu.f9
+
+  - id: formal-lsu.f9
+    checker: VecElemAgenChecks
+    label: vec_elem_agen_push_fire_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.f8
+    statement: >
+      An element address is accepted into the address queue.
+    property: >
+      pushFire
+
+  # ---- group g: fault-only-first (only the VL producer half is reachable) ----
+
+  - id: formal-lsu.g1
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_vl_wb_with_group_done
+    kind: assert
+    reqs: [spec-lsu.g7, spec-lsu.g6]
+    statement: >
+      A vleff VL write-back must ride the same completion event as the group-done
+      that carries it onto the wakeup network.
+    property: >
+      vlWbValid |-> groupDoneValid
+    reachability: formal-lsu.g2
+
+  - id: formal-lsu.g2
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_vl_wb_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.g1
+    statement: >
+      The LCB writes back a trimmed VL.
+    property: >
+      vlWbValid
+
+  # ---- group h: D$, LCAM and TLB arbitration --------------------------------
+
+  - id: formal-lsu.h1
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_lane_exclusive
+    kind: assert
+    reqs: [spec-lsu.h1, spec-lsu.k5, spec-lsu.a11]
+    statement: >
+      A D$ lane must never be granted to the load drain and the store drain in
+      the same cycle.
+    property: >
+      Sequence.BoolSequence(!(ldWins && stWins))
+    notes: >
+      Bare invariant, no antecedent, so no reachability cover. This is what makes
+      the lane carry at most one element per cycle, and it is the shared-lane
+      contract every element access goes through.
+
+  - id: formal-lsu.h2
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_rr_pointer_rotates
+    kind: assert
+    reqs: [spec-lsu.h3]
+    statement: >
+      The round-robin phase pointer must advance every cycle.
+    property: >
+      Sequence.BoolSequence(rrPtr === 0.U) |=> Sequence.BoolSequence(rrPtr === 1.U)
+    reachability: formal-lsu.h3
+    notes: >
+      KNOWN FALSE POSITIVE — DO NOT TRUST A FAILURE OF THIS PROPERTY AT 783 ns.
+      Layer 3 fired it once per run at exactly 783000ps -> 785000ps in all three
+      tests, including the two that PASS, and never again in ~1450 enabled
+      cycles. 783 ns is the first cycle after the boom tile's reset domain
+      releases (the first 391 of 1843 sampled cycles are disabled), and
+      VecDcacheArbiter.sv:842-863 both RANDOMIZEs rr_ptr at time 0 and resets it
+      synchronously, so the first enabled sample straddles the reset release.
+      The property text is exactly as planned — firtool bound the consequent to
+      the DUT's own `_elevateLoad_T` (`rr_ptr == 2'h1`) wire, so there is no CSE
+      hazard and no tautology — but the OBLIGATION needs a steady-state
+      qualification (e.g. require one prior observed rotation) before a failure
+      of it means anything. NOT weakened here: that is the RTL/spec owner's
+      call, and a silent relaxation would hide the next real rotation stall.
+
+  - id: formal-lsu.h3
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_phase_zero_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.h2
+    statement: >
+      The arbiter is in round-robin phase 0.
+    property: >
+      rrPtr === 0.U
+
+  - id: formal-lsu.h4
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_default_grant_respects_scalar
+    kind: assert
+    reqs: [spec-lsu.h4]
+    statement: >
+      Outside an elevation phase a vector load may only take the D$ if the scalar
+      side left it available.
+    property: >
+      Sequence.BoolSequence(ldWins && !ldWinsElev && ldReqDcache) |-> availDcache
+    reachability: formal-lsu.h5
+    notes: >
+      The priority floor: scalar memory ops outrank vector drains except in the
+      anti-starvation phase.
+
+  - id: formal-lsu.h5
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_default_load_dcache_grant_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.h4
+    statement: >
+      A load grant takes the D$ outside an elevation phase.
+    property: >
+      ldWins && !ldWinsElev && ldReqDcache
+
+  - id: formal-lsu.h6
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_elevation_grants_blocked_load
+    kind: assert
+    reqs: [spec-lsu.h6]
+    statement: >
+      In its elevation phase a blocked, eligible load drain whose D$ is ready
+      must be granted.
+    property: >
+      Sequence.BoolSequence((rrPtr === 1.U) && blockedLd && ldEligible && (!ldReqDcache || dmemReady)) |-> ldWins
+    reachability: formal-lsu.h7
+    notes: >
+      The mechanism behind the every-4-cycles bound: phase 1 belongs to a blocked
+      load and ignores scalar availability.
+
+  - id: formal-lsu.h7
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_load_elevation_phase_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.h6
+    statement: >
+      A blocked, eligible load reaches its elevation phase.
+    property: >
+      (rrPtr === 1.U) && blockedLd && ldEligible
+
+  - id: formal-lsu.h8
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_claim_only_on_elevation
+    kind: assert
+    reqs: [spec-lsu.h9, spec-lsu.h5, spec-lsu.h11]
+    statement: >
+      The vector side may claim a shared TLB, D$ or LCAM port only as part of an
+      elevation grant.
+    property: >
+      Sequence.BoolSequence(claimTlb || claimDcache || claimLcam) |-> Sequence.BoolSequence(ldWinsElev || stWinsElev)
+    reachability: formal-lsu.h9
+    notes: >
+      One policy for all three resources, and the reason a vector burst cannot
+      indefinitely hold any of them: outside elevation the vector side takes only
+      what scalar left free and claims nothing.
+
+  - id: formal-lsu.h9
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_resource_claim_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.h8
+    statement: >
+      The vector side claims a shared resource.
+    property: >
+      claimTlb || claimDcache || claimLcam
+
+  - id: formal-lsu.h10
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_claim_only_in_elevation_phase
+    kind: assert
+    reqs: [spec-lsu.h10]
+    statement: >
+      A shared-resource claim may only occur in one of the two elevation phases,
+      so all three resources return to scalar on the round-robin boundary.
+    property: >
+      Sequence.BoolSequence(claimTlb || claimDcache || claimLcam) |-> Sequence.BoolSequence((rrPtr === 1.U) || (rrPtr === 2.U))
+    reachability: formal-lsu.h9
+
+  - id: formal-lsu.h11
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_grant_presents_fire
+    kind: assert
+    reqs: [spec-lsu.h8, spec-lsu.h7]
+    statement: >
+      A granted lane must present a fire in the same cycle, so no granted
+      bandwidth is left unused.
+    property: >
+      Sequence.BoolSequence(ldWins || stWins) |-> vecFireValid
+    reachability: formal-lsu.h12
+
+  - id: formal-lsu.h12
+    checker: VecDcacheArbiterChecks
+    label: vec_dcache_arb_any_grant_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.h11
+    statement: >
+      The arbiter grants a lane to either drain.
+    property: >
+      ldWins || stWins
+
+  # ---- group i: squash by pointer rollback ----------------------------------
+
+  - id: formal-lsu.i1
+    checker: VecSquashUnitChecks
+    label: vec_squash_branch_pivot_is_branch_ldq
+    kind: assert
+    reqs: [spec-lsu.i2]
+    statement: >
+      On a mispredict the rollback pivot must be the branch's own LDQ index.
+    property: >
+      branch |-> Sequence.BoolSequence(rollbackLdq === brLdqIdx)
+    reachability: formal-lsu.i2
+    notes: >
+      Rolling back to anything else either strands surviving reservations or
+      frees entries a younger-than-the-branch op still owns.
+
+  - id: formal-lsu.i2
+    checker: VecSquashUnitChecks
+    label: vec_squash_branch_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.i1
+    statement: >
+      A branch mispredict squashes the vector LSU.
+    property: >
+      branch
+
+  - id: formal-lsu.i3
+    checker: VecSquashUnitChecks
+    label: vec_squash_no_kill_without_event
+    kind: assert
+    reqs: [spec-lsu.i7]
+    statement: >
+      No LCB entry may be invalidated except on a branch or flush event.
+    property: >
+      Sequence.BoolSequence(!branch && !flush) |-> Sequence.BoolSequence(killLdq === 0.U)
+    reachability: formal-lsu.i4
+
+  - id: formal-lsu.i4
+    checker: VecSquashUnitChecks
+    label: vec_squash_quiet_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.i3
+    statement: >
+      A cycle with neither a branch squash nor a flush.
+    property: >
+      !branch && !flush
+
+  - id: formal-lsu.i5
+    checker: VecSquashUnitChecks
+    label: vec_squash_flush_kills_every_entry
+    kind: assert
+    reqs: [spec-lsu.i4]
+    statement: >
+      A flush must kill every LDQ index in one event.
+    property: >
+      flush |-> Sequence.BoolSequence(killLdq.andR)
+    reachability: formal-lsu.i6
+    notes: >
+      One event, no per-entry compare: the kill vector is produced whole rather
+      than walked.
+
+  - id: formal-lsu.i6
+    checker: VecSquashUnitChecks
+    label: vec_squash_flush_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.i5
+    statement: >
+      A ROB flush squashes the vector LSU.
+    property: >
+      flush
+
+  - id: formal-lsu.i7
+    checker: VecSquashUnitChecks
+    label: vec_squash_kill_requires_uop
+    kind: assert
+    reqs: [spec-lsu.i6]
+    statement: >
+      A per-stage kill must not be raised for a client with no uop in flight.
+    property: >
+      kill0 |-> killUop0Valid
+    reachability: formal-lsu.i8
+
+  - id: formal-lsu.i8
+    checker: VecSquashUnitChecks
+    label: vec_squash_stage_kill_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.i7
+    statement: >
+      A pipeline stage is killed.
+    property: >
+      kill0
+
+  - id: formal-lsu.i9
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_squash_within_region
+    kind: assert
+    reqs: [spec-lsu.i3, spec-lsu.i5]
+    statement: >
+      A squash must roll the tail back to a point inside the queue's occupied
+      region.
+    property: >
+      squashValid |-> Sequence.BoolSequence(squashLen <= occRegion)
+    reachability: formal-lsu.i10
+    notes: >
+      The occupied region is program-ordered, so a rollback beyond it would move
+      the tail past the head and release reservations that were never claimed by
+      the killed ops.
+
+  - id: formal-lsu.i10
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_squash_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.i9
+    statement: >
+      A queue is squashed by pointer rollback.
+    property: >
+      squashValid
+
+  # ---- group j: the load half of the algorithms -----------------------------
+
+  - id: formal-lsu.j15
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_elem_done_nonzero_elements
+    kind: assert
+    reqs: [spec-lsu.j4]
+    statement: >
+      An elem_done report must account for at least one element.
+    property: >
+      elemDoneValid |-> Sequence.BoolSequence(elemDoneNelem =/= 0.U)
+    reachability: formal-lsu.j16
+    notes: >
+      elem_done advances the entry's progress; a zero-element report is progress
+      that never happened, which stalls the drain.
+
+  - id: formal-lsu.j16
+    checker: VecLoadCoalescingBufferChecks
+    label: vec_lcb_elem_done_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.j15
+    statement: >
+      The LCB reports an element as done.
+    property: >
+      elemDoneValid
+
+  - id: formal-lsu.j17
+    checker: LSUChecks
+    label: lsu_stq_execute_enq_is_committed
+    kind: assert
+    reqs: [spec-lsu.j9]
+    statement: >
+      A store becomes eligible to drain to the store-execute queue only once it
+      is committed.
+    property: >
+      stqExecEnqValid |-> Sequence.BoolSequence(stqEnqCommitted || stqEnqIsAmo)
+    reachability: formal-lsu.a2
+    notes: >
+      The AMO disjunct is the pre-existing scalar exemption in
+      can_enq_store_execute, not a weakening added here.
+
+  - id: formal-lsu.j18
+    checker: VecBeatExpanderChecks
+    label: vec_beat_expander_us_beat_advances_cursor
+    kind: assert
+    reqs: [spec-lsu.j2]
+    statement: >
+      A granted beat generated from a unit-stride range entry must advance that
+      range's element cursor.
+    property: >
+      Sequence.BoolSequence(reqFire && usHeadValid && !ssiHeadValid) |-> cursorWrValid
+    reachability: formal-lsu.j19
+    notes: >
+      The stage-2 Packer runs over the single US nOP.v; a granted beat that does
+      not move the cursor re-sends the same element for ever.
+
+  - id: formal-lsu.j19
+    checker: VecBeatExpanderChecks
+    label: vec_beat_expander_us_beat_granted_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.j18
+    statement: >
+      A unit-stride beat is granted with no SSI entry staged.
+    property: >
+      reqFire && usHeadValid && !ssiHeadValid
+
+  # ---- group k: the bandwidth ceiling --------------------------------------
+
+  - id: formal-lsu.k2
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_consume_in_region
+    kind: assert
+    reqs: [spec-lsu.k7, spec-lsu.b10]
+    statement: >
+      A drain consume must name an entry inside the queue's occupied region.
+    property: >
+      consumeValid |-> consumeInRegion
+    reachability: formal-lsu.k3
+    notes: >
+      One element per granted lane, freed from the region it was filled into. A
+      consume outside the region frees an entry the queue does not own, which is
+      how a streamed load loses a wave.
+
+  - id: formal-lsu.k3
+    checker: VecElemQueueChecks
+    label: vec_elem_queue_consume_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.k2
+    statement: >
+      A queue entry is consumed by the drain.
+    property: >
+      consumeValid
+
+  # ---- group m: the VL == 0 group copy --------------------------------------
+
+  - id: formal-lsu.m1
+    checker: VecGroupCopyChecks
+    label: vec_gcopy_copy_only_for_no_execution
+    kind: assert
+    reqs: [spec-lsu.m12, spec-lsu.m3]
+    statement: >
+      A standalone group copy may only be started for a VL = 0 or fully-inactive
+      op.
+    property: >
+      needCopy |-> Sequence.BoolSequence(vlZero || allInactive)
+    reachability: formal-lsu.m2
+    notes: >
+      The copy is the mechanism that makes a freshly-renamed pvdest group
+      architecturally correct when nothing executes; starting one for an
+      executing op would race the real write.
+
+  - id: formal-lsu.m2
+    checker: VecGroupCopyChecks
+    label: vec_gcopy_copy_start_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.m1
+    statement: >
+      A group copy is started.
+    property: >
+      needCopy
+
+  - id: formal-lsu.m3
+    checker: VecGroupCopyChecks
+    label: vec_gcopy_member_copy_between_distinct_prns
+    kind: assert
+    reqs: [spec-lsu.m5]
+    statement: >
+      Each member write of a group copy must move data between two distinct
+      physical registers.
+    property: >
+      w0Granted |-> Sequence.BoolSequence(stageBDst =/= stageBSrc)
+    reachability: formal-lsu.m4
+    notes: >
+      pvdest and stale_pvdest are different physical groups by construction; a
+      member copying onto itself means the rename pairing has collapsed and the
+      old value was never actually preserved.
+
+  - id: formal-lsu.m4
+    checker: VecGroupCopyChecks
+    label: vec_gcopy_member_write_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.m3
+    statement: >
+      A group-copy member write is granted W0.
+    property: >
+      w0Granted
+
+  - id: formal-lsu.m5
+    checker: VecGroupCopyChecks
+    label: vec_gcopy_single_group_done
+    kind: assert
+    reqs: [spec-lsu.m8]
+    statement: >
+      The copy path and the no-copy path must never present a group-done in the
+      same cycle.
+    property: >
+      groupDoneValid |-> Sequence.BoolSequence(!(noCopyValid && copyDoneValid))
+    reachability: formal-lsu.m6
+    notes: >
+      One group_done port: two completions colliding in one cycle silently lose
+      one instruction's completion, which hangs the ROB.
+
+  - id: formal-lsu.m6
+    checker: VecGroupCopyChecks
+    label: vec_gcopy_group_done_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.m5
+    statement: >
+      The group copy unit emits a group-done.
+    property: >
+      groupDoneValid
+
+  - id: formal-lsu.m7
+    checker: VecGroupCopyChecks
+    label: vec_gcopy_no_copy_path_completes_next_cycle
+    kind: assert
+    reqs: [spec-lsu.m9, spec-lsu.m10]
+    statement: >
+      An unflushed no-copy launch must present its group-done on the next cycle.
+    property: >
+      Sequence.BoolSequence(noCopyFire && !gcFlush) |=> noCopyValid
+    reachability: formal-lsu.m8
+    notes: >
+      Tail-agnostic VL = 0 takes the complete-without-execute path and emits
+      immediately; the !flush guard is required because a flush retires the ROB
+      entry this pulse would clear.
+
+  - id: formal-lsu.m8
+    checker: VecGroupCopyChecks
+    label: vec_gcopy_no_copy_launch_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.m7
+    statement: >
+      A no-copy (tail-agnostic or shared) launch fires.
+    property: >
+      noCopyFire && !gcFlush
+
+  - id: formal-lsu.m9
+    checker: VecGroupCopyChecks
+    label: vec_gcopy_lcb_wins_r2
+    kind: assert
+    reqs: [spec-lsu.m13]
+    statement: >
+      When the LCB requests VRF read port R2 the port must carry the LCB's
+      address, not the group copy's.
+    property: >
+      lcbR2Valid |-> Sequence.BoolSequence(vrfR2Bits === lcbR2Bits)
+    reachability: formal-lsu.m10
+
+  - id: formal-lsu.m10
+    checker: VecGroupCopyChecks
+    label: vec_gcopy_lcb_r2_request_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.m9
+    statement: >
+      The LCB requests R2 while the group copy unit is arbitrating.
+    property: >
+      lcbR2Valid
+
+  - id: formal-lsu.m11
+    checker: VecGroupCopyChecks
+    label: vec_gcopy_lcb_wins_w0
+    kind: assert
+    reqs: [spec-lsu.m14]
+    statement: >
+      When the LCB writes W0 the port must carry the LCB's destination, not the
+      group copy's.
+    property: >
+      lcbW0Valid |-> Sequence.BoolSequence(vrfW0Addr === lcbW0Addr)
+    reachability: formal-lsu.m12
+    notes: >
+      Strict priority: an active load drain always wins, and the copy takes the
+      ports only in a cycle when no drain is using them.
+
+  - id: formal-lsu.m12
+    checker: VecGroupCopyChecks
+    label: vec_gcopy_lcb_w0_write_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.m11
+    statement: >
+      The LCB writes W0 while the group copy unit is arbitrating.
+    property: >
+      lcbW0Valid
+
+  - id: formal-lsu.m13
+    checker: VecGroupCopyChecks
+    label: vec_gcopy_write_mask_is_whole_register
+    kind: assert
+    reqs: [spec-lsu.m11]
+    statement: >
+      A group-copy member write must write the whole register.
+    property: >
+      w0Granted |-> Sequence.BoolSequence(vrfW0Mask === allOnesMask)
+    reachability: formal-lsu.m4
+    notes: >
+      The inactive lanes of a fully-inactive destination are preserved by copying
+      every byte of the stale member, so a partial mask would leave stale bytes
+      from the freshly-allocated register.
+
+  - id: formal-lsu.m15
+    checker: VecLsuChecks
+    label: vec_lsu_group_copy_excludes_memory_path
+    kind: assert
+    reqs: [spec-lsu.m2, spec-lsu.m1]
+    statement: >
+      An op launched into the group-copy path must not also trigger the load
+      drain's LCB allocation.
+    property: >
+      gcopyLaunchValid |-> Sequence.BoolSequence(!ldLcbTrigger)
+    reachability: formal-lsu.m16
+    notes: >
+      With VL = 0 no element is active, so nothing executes: the two paths are
+      exact complements and an overlap would both copy and load into the same
+      group.
+
+  - id: formal-lsu.m16
+    checker: VecLsuChecks
+    label: vec_lsu_group_copy_launch_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-lsu.m15
+    statement: >
+      A VL = 0 or fully-inactive op is launched into the group-copy path.
+    property: >
+      gcopyLaunchValid
+
+coverage:
+
+  # --- group b (store retention and reservation; the load half is out of scope)
+  - req: spec-lsu.b4
+    assertions: [formal-lsu.b7]
+    partial: >
+      Checks only the head-side correspondence (capacity is reclaimed only
+      against a row claimed at dispatch). The program-ORDER of the claims
+      themselves is a prefix-sum over dispatch lanes whose per-lane bases are
+      loop-local and not in scope at the anchor.
+  - req: spec-lsu.b5
+    assertions: [formal-lsu.b7]
+    partial: >
+      The negative half ("not claimed opportunistically at execute") is checked
+      only in that the sole reclamation path is the dispatch-claimed row. No
+      property can observe the absence of an execute-time claim path; that
+      absence is structural.
+  - req: spec-lsu.b6
+    assertions: [formal-lsu.b1]
+    partial: >
+      Checks that every fill lands inside the reserved region, i.e. the store's
+      address set stays within what it holds. It does not check that the set is
+      COMPLETE (that every active element was filled before commit) — the queue
+      has no per-op element count to compare against.
+  - req: spec-lsu.b7
+    assertions: [formal-lsu.b3]
+    partial: >
+      Checks that release happens only as a whole head region (the commit-drain
+      shape). The retention interval itself — execute until commit-drain — is
+      enforced structurally by consume_mask being forced to 0 for stores, which
+      no runtime property can observe (see spec-lsu.b8).
+  - req: spec-lsu.b8
+    unassertable: >
+      Discharged structurally, not at runtime: VecElemQueue forces consume_mask
+      to 0.U for every isStore instance (a Scala `if`, so the mid-instruction
+      free path does not exist in the emitted RTL), and VecLsu additionally ties
+      all four store queues' consume ports to false. There is no signal whose
+      value could differ between a conforming and a violating design, so any
+      property here would constant-fold. A violation would be a source change,
+      caught by review and by formal-lsu.b3, not by a property.
+  - req: spec-lsu.b9
+    unassertable: >
+      NOT a legitimate-by-default skip — this is an RTL finding. The only
+      as-built evidence that an element was translated before commit is
+      VecElemQueue's `xlated` bitmap, and that bitmap HAS NO READER: neither
+      VecLsu nor VecBeatExpander consults it before a write-pass beat drains an
+      entry, so there is no signal that distinguishes "fault detection completed
+      for this element" from "it did not". Asserting the obligation needs a
+      consumer of `xlated` (or an equivalent per-entry translated flag on the
+      drain path) to exist first; adding one is an RTL decision, not this
+      skill's. formal-lsu.j1/j9/j11 check the translate pass's placement and
+      ordering, which is as close as the present signal set allows.
+  - req: spec-lsu.b19
+    assertions: [formal-lsu.b5]
+    partial: >
+      Checks only that a store's two reservation requests are non-empty. The
+      "full worst case" VALUE (worstCaseTbl(eew)(emul_total)) is a loop-local
+      val in VecQueueReservation and is not in scope at the anchor, so the
+      granted count cannot be compared against it without adding a DUT signal.
+
+  # --- group c (the unit-stride range and the Packer) -------------------------
+  - req: spec-lsu.c3
+    assertions: [formal-lsu.c5]
+    partial: >
+      Checks single-push-per-activation in time (the push does not persist into
+      the next cycle). It does not check that a whole-register or mask access
+      also produces exactly one entry per instruction across a longer gap.
+  - req: spec-lsu.c4
+    assertions: [formal-lsu.c7]
+    partial: >
+      Checks the LENGTH clause (VL * EEW) for plain unit-stride accesses. The
+      BASE clause (the range starts at the scalar base) is the direct assignment
+      io.range.bits.base := scalar.base and would constant-fold. Whole-register
+      and mask accesses are excluded by the antecedent: their lengths are
+      EMUL*VLEN and ceil(VL/8), which spec-lsu.c4's formula does not describe.
+  - req: spec-lsu.c5
+    assertions: [formal-lsu.c1]
+    partial: >
+      Checks that no beat is presented without a staged entry to expand ("fires
+      when an entry is activated", the necessary direction). That the second
+      Packer-based AGEN unit EXISTS is structural, discharged by
+      VecBeatExpander being instantiated per direction in VecLsu.
+  - req: spec-lsu.c6
+    assertions: [formal-lsu.c3]
+    partial: >
+      Checks that each expansion step advances the cursor, which is the
+      observable content of "just-in-time": the expansion is driven from queue
+      state one step at a time. The absence of an eager pre-expansion buffer is
+      structural.
+
+  # --- group d (the store data queues) ---------------------------------------
+  - req: spec-lsu.d1
+    unassertable: >
+      Structure: the two data queues exist. Discharged by elaboration —
+      VecLsu.scala instantiates st_SSI_DATA_Q and st_US_DATA_Q as named
+      VecElemQueue instances. A "this thing exists" obligation has no runtime
+      property (schema.md §5.2).
+  - req: spec-lsu.d2
+    unassertable: >
+      Structure stated as an absence ("store data must NOT be held in the STQ
+      entry"). The scalar STQ in src/main/scala/v4/lsu/lsu.scala has no vector
+      data field to observe; nothing in the emitted RTL can be sampled to
+      distinguish compliance from violation.
+  - req: spec-lsu.d3
+    unassertable: >
+      Width obligation — a compile-time fact, per schema.md §5.2 an elaboration
+      `require`, not SVA. FINDING: the only width check in VecElemQueue is
+      `require(width > 0)`; nothing pins st_SSI_DATA_Q's entry width to ELEN.
+      VecLsu sizes it to (new VecDgenSsiPayload).getWidth, whose data field is
+      vecELen wide, so the obligation is met by construction but is not checked
+      anywhere. A `require` naming ELEN would discharge it properly.
+  - req: spec-lsu.d4
+    unassertable: >
+      Same as spec-lsu.d3 for st_US_DATA_Q and VLEN: met by construction
+      ((new VecDgenUsPayload).getWidth carries a vecVLen data field) but pinned
+      by no `require`.
+  - req: spec-lsu.d5
+    assertions: [formal-lsu.d9]
+    partial: >
+      Checks the push side: every unit-stride data push carries a whole
+      VLEN-wide member except the final one. That each member was fetched in ONE
+      R3 access (rather than reassembled from several) is checked indirectly by
+      formal-lsu.d5's member-range property, not directly.
+  - req: spec-lsu.d6
+    assertions: [formal-lsu.d13]
+    partial: >
+      Checks that a write-pass beat has its whole-member data available before
+      it leaves (the precondition for slicing). The slice ITSELF —
+      extract(st_us_data, memberOff, beatBytes) — is a direct expression whose
+      property would constant-fold; comparing the sliced bytes against the
+      member would require re-implementing the slice inside the checker.
+  - req: spec-lsu.d7
+    assertions: [formal-lsu.d5, formal-lsu.d7, formal-lsu.d17]
+    partial: >
+      Checks that the data DGEN enqueues came from a buffered VRF read
+      (formal-lsu.d7), that the consumed read belongs to a member of this op
+      (formal-lsu.d5), and that the uop supplying the source group is the
+      instruction the DGEN pass was granted to (formal-lsu.d17). Not checked:
+      that the R3 address literally equals dgen_operand(member) — that is the
+      assignment itself and folds — and that the source group was WRITTEN before
+      the read, which is a spec-issue obligation on VecStoreDgenPath (see the
+      header notes).
+  - req: spec-lsu.d8
+    assertions: [formal-lsu.b3, formal-lsu.d15]
+    partial: >
+      Checks that the data queue is popped only on the write pass and that its
+      entries are freed only as a whole head region. "Post-commit" itself is
+      checked only via formal-lsu.j7's pass-state agreement; the per-lane SSI
+      commit comparison is computed inside a `for` in VecLsu and is not in scope
+      at the anchor (observability gap, reported).
+  - req: spec-lsu.d9
+    assertions: [formal-lsu.d3]
+    partial: >
+      Checks the condition that makes the absence of a pin safe (the read
+      happens inside the op's residency). The absence of the pin itself is
+      structural: no pin mechanism exists in VecDgen to observe.
+  - req: spec-lsu.d10
+    assertions: [formal-lsu.d3]
+    partial: >
+      The freeing of the stale group at commit is VecFreeList's/rename's, not
+      this module's; what is checked here is the LSU-side precondition — the
+      capture completed while the op was resident.
+  - req: spec-lsu.d11
+    assertions: [formal-lsu.b1]
+    partial: >
+      Checks that every data fill lands inside the reserved region. That the
+      region is large enough to hold the FULL active element set pre-commit is
+      the reservation's obligation (spec-lsu.b19, formal-lsu.b5), which is itself
+      only partially checkable here.
+  - req: spec-lsu.d12
+    assertions: [formal-lsu.d11]
+    partial: >
+      Checks that the data-queue slot is claimed in the same cycle as the
+      address-queue slot ("on exactly the same terms"). That both are claimed in
+      program order is covered only as far as formal-lsu.b7 goes.
+  - req: spec-lsu.d13
+    assertions: [formal-lsu.d11, formal-lsu.d1]
+    partial: >
+      Checks both halves as far as the signals allow: a granted store claims
+      both slots, and a claim never exceeds the target queue's available
+      capacity. The dispatch-denial path (dis_ok low when either queue cannot
+      fit) is a combinational function of the same loop-local terms and folds.
+
+  # --- group j (the store half of the load/store algorithms) -----------------
+  - req: spec-lsu.j6
+    assertions: [formal-lsu.j5]
+    partial: >
+      Checks that the release is presented only with a valid resolved-VL bundle.
+      The released COUNT (reserved minus used) is computed from loop-local row
+      fields inside VecQueueReservation and cannot be compared at the anchor.
+  - req: spec-lsu.j7
+    assertions: [formal-lsu.j7]
+    partial: >
+      Checks the pass-state agreement that keeps the execute pass from turning
+      into a D$ write (the failure this requirement guards). The positive clause
+      — that the execute pass performs TLB and LCAM — cannot be asserted:
+      uses_dcache is literally `is_write_pass` and uses_tlb is literally
+      `true.B` in VecBeatExpander, so both properties constant-fold.
+  - req: spec-lsu.j8
+    assertions: [formal-lsu.j9, formal-lsu.j11, formal-lsu.j1]
+    partial: >
+      Checks that translation write-backs land before the write pass starts, in
+      the right entry, and that translate completion hands over to the write
+      pass. Not checked: that EVERY active element was translated — the drain
+      keeps no per-element translated count and the `xlated` bitmap has no
+      reader (see spec-lsu.b9).
+  - req: spec-lsu.j9
+    assertions: [formal-lsu.j7]
+    partial: >
+      Owned by the scalar LSU (src/main/scala/v4/lsu/lsu.scala) in
+      hierarchy.yaml; no anchor was placed there in this pass. What is checked
+      is the vector-side consequence: the shared pass state must not let an
+      uncommitted store's beat take the write pass. The direct commit gate
+      (stUsStagedValid folds in stUsCommitted) cannot be asserted without
+      restating the staging expression, and the SSI per-lane commit compare is
+      loop-local.
+  - req: spec-lsu.j10
+    assertions: [formal-lsu.j13, formal-lsu.d13, formal-lsu.j3]
+    partial: >
+      Checks that a beat of either class only leaves with its own data queue's
+      staged read valid, and that the queue never reports a filled response for
+      an unasked read. Which of the two queues supplies the data is selected by
+      access class in a direct Mux and folds.
+  - req: spec-lsu.j11
+    assertions: [formal-lsu.j11]
+    partial: >
+      "Identical to scalar stores other than the vector queue drains and the
+      pre-commit translation of the whole active element range" is a
+      provenance/equivalence claim over two code paths. Only the named
+      difference — the two-pass translate/write drain — is asserted here; the
+      "identical otherwise" half is a review obligation, not a property.
+
+  # --- group k (only the Packer's byte coalescing is in scope) ---------------
+  - req: spec-lsu.k8
+    assertions: [formal-lsu.k1]
+    partial: >
+      Checks that every presented beat enables at least one byte. That the run
+      is MAXIMAL up to the lane width (the coalescing being as wide as it could
+      be) is a performance clause with no failure signature the checker can see;
+      the minBytes reduction that computes it would have to be re-implemented in
+      the property to compare against.
+
+  # ==========================================================================
+  # ==== pass 2 coverage: groups a, e, f, g, h, i, l, m and the remainders ====
+  # ==========================================================================
+
+  # --- group a: the unified LSU (structure and provenance, mostly) -----------
+  - req: spec-lsu.a1
+    unassertable: >
+      Structure/provenance: "the LSU must extend the BOOM load/store unit to
+      support scalar and vector". Discharged by src/main/scala/v4/lsu/lsu.scala
+      being the BOOM v4 LSU with the vector hooks added in place (LSUCoreIO gains
+      lsu_vec/vec_lsu_empty under usingRVV) rather than a second unit. No signal
+      distinguishes "extended" from "replaced".
+  - req: spec-lsu.a2
+    unassertable: >
+      Provenance claim about the source, not about any signal: "with usingRVV
+      disabled the underlying BOOM LSU is untouched". Enforced by the gate-(f)
+      diff flow (a usingRVV=false elaboration must be bit-identical to the
+      rebaselined manifest), which is where a regression here would be caught.
+      The Scala shape that makes it true is that every vector addition in
+      lsu.scala sits behind `if (usingRVV)` or an Option port.
+  - req: spec-lsu.a3
+    unassertable: >
+      Structure: "with usingRVV enabled the vector address and data queues must
+      be initialized". An elaboration-time fact — VecLsu instantiates the six
+      VecElemQueues unconditionally and VecLsu itself `require(usingRVV)`s. There
+      is no runtime signal for "was initialized".
+  - req: spec-lsu.a4
+    unassertable: >
+      Structure: one LDQ/STQ entry per vector OP.v. Discharged by dispatch
+      allocating exactly one entry (the placeholder) and by VecLsu keeping the
+      cracked element accesses in its own queues; the absence of extra LSQ
+      allocations cannot be sampled.
+  - req: spec-lsu.a5
+    unassertable: >
+      Structure: separate address and data queues exist to buffer the effective
+      nOP.v operations. Six named VecElemQueue instances in VecLsu.scala; a
+      "these exist" obligation has no runtime property (schema.md §5.2).
+  - req: spec-lsu.a6
+    assertions: [formal-lsu.a1]
+    partial: >
+      Checks that an entry only becomes drainable once its address and data are
+      both marked present, which for a vector store is what VecLsu's st_pass_done
+      signals off the separate queues. That the values THEMSELVES come from the
+      queues rather than a uop payload is a data-path fact in lsu.scala's
+      stq_addr/stq_data write, not observable at the enq handshake.
+  - req: spec-lsu.a7
+    unassertable: >
+      Equivalence claim: "the conditions that allow a vector entry to become
+      eligible to drain are the same as scalar". The as-built shares one
+      expression (canEnqStoreExecuteScalar) between both, so the claim is
+      discharged by the code being common, not by a property; a property could
+      only restate the shared expression.
+  - req: spec-lsu.a8
+    assertions: [formal-lsu.a3]
+    partial: >
+      Checks the atomicity precondition — a store's grant never lands in a
+      pending row that is still occupied, so one op owns the entry while it
+      drains. That the drain covers ALL of its element accesses is the agen's
+      completion accounting (formal-lsu.b9, and VecDgen's total-bytes asserts).
+  - req: spec-lsu.a9
+    assertions: [formal-lsu.a3]
+    partial: >
+      The no-interleaving half of the same obligation. Only the AGEN-grant path
+      is checked; the DGEN pass shares the row by construction (VecLsu drives
+      dgen off the same descriptor).
+  - req: spec-lsu.a10
+    unassertable: >
+      The LSU-side half ("a faulting walk stops emitting") is formal-lsu.f6,
+      which per header finding 12 has a constant-false antecedent because no
+      fault report reaches the agen; the architectural half (the ROB not
+      committing) is spec-rob's and per finding 7 has no vstart write to observe.
+      Neither half is checkable today, so this row claims nothing.
+  - req: spec-lsu.a11
+    assertions: [formal-lsu.h1]
+    partial: >
+      Checks that element accesses go through the arbiter's single-grant-per-lane
+      contract. That EVERY element access is routed through the arbiter (rather
+      than some bypass) is structural: VecLsu wires both beat expanders only to
+      arb.
+  - req: spec-lsu.a12
+    unassertable: >
+      Configuration structure, owned by BoomConfigMixins: Large/Mega set
+      lsuWidth = 2. Discharged at elaboration, and cross-checked by
+      `require((dcacheArbiterMode == "single" && lsuWidth == 1) || ...)` in both
+      VecLsu and VecDcacheArbiter.
+  - req: spec-lsu.a13
+    unassertable: >
+      Structure: the queues are 2 x nOP.v wide on those configs. A parameter
+      obligation discharged by the same `require` pair as spec-lsu.a12 plus the
+      queuePorts = lsuWidth wiring; not a runtime property.
+  - req: spec-lsu.a14
+    unassertable: >
+      Naming convention ({ld,st}_{SSI,US}_{ADDR,DATA}_Q). The names are Scala
+      instance names and the queueName string passed to each VecElemQueue; a
+      naming obligation has no signal at all.
+  - req: spec-lsu.a15
+    unassertable: >
+      Structure: the queue SET is exactly those six. Discharged by VecQueueId's
+      enumeration (and `require(nQueues == queueEnum.length)` in VecSquashUnit,
+      which fails if the set changes size) plus the six instances in VecLsu.
+
+  # --- group b: the remaining SSI-queue and reservation requirements ---------
+  - req: spec-lsu.b1
+    unassertable: >
+      Structure/content: the SSI queues hold effective addresses for strided,
+      indexed and segmented accesses. Discharged by the queue payload type — the
+      SSI address queues are sized to (new VecElemAccess).getWidth and the agen
+      enqueues that bundle. A property could only re-read the same field.
+  - req: spec-lsu.b2
+    unassertable: >
+      Parameter default (512 entries), owned by VectorParams. An elaboration
+      fact; the depth appears in the emitted RTL only as an address width.
+  - req: spec-lsu.b3
+    unassertable: >
+      Wiring fact: the SSI address queues' enq ports are driven by
+      ld_elem_agen/st_elem_agen in VecLsu.scala:582-590. Nothing sampled at the
+      queue can tell which module drives its input.
+  - req: spec-lsu.b10
+    assertions: [formal-lsu.k2]
+    partial: >
+      Checks the streaming mechanism a load uses to complete without gating on
+      commit: entries are consumed (freed) from inside the occupied region as the
+      drain advances, which stores never do. That completion is via the LCB
+      rather than commit is checked on the LCB side by formal-lsu.e18/e20.
+  - req: spec-lsu.b11
+    assertions: [formal-lsu.b9]
+    partial: >
+      FINDING (header 9): the streaming-in-waves behaviour this requirement asks
+      for is NOT implemented. VecElemAgen asserts emit_ctr < resv_count instead of
+      streaming past the reservation, and formal-lsu.b9 mirrors that bound. The
+      property therefore holds precisely because the requirement is unmet; it will
+      fire the day a load legitimately needs a second wave.
+  - req: spec-lsu.b14
+    assertions: [formal-lsu.b11]
+  - req: spec-lsu.b15
+    assertions: [formal-lsu.b11]
+    partial: >
+      Checks the occupancy bound that produces the in-flight limit. The specific
+      arithmetic (512 / 256 = 2 worst-case stores) is a consequence of the depth
+      parameter, not a separate runtime fact.
+  - req: spec-lsu.b16
+    unassertable: >
+      Minimum-depth floor (>= VLEN elements per element-granular queue) — a
+      compile-time obligation. FINDING: the only depth `require` in VecElemQueue
+      is isPow2(entries); I found no elaboration check tying ssiQueueEntries to
+      the VLEN-element floor. A `require(entries >= vecVLen)` on the three
+      element-granular instances would discharge b16/b17 properly.
+  - req: spec-lsu.b17
+    unassertable: >
+      "The minimum-depth floor must be checked at elaboration" — a claim about a
+      `require` existing, which is exactly what the previous row reports is
+      missing. Untaggable as SVA either way.
+  - req: spec-lsu.b18
+    assertions: [formal-lsu.b12]
+
+  # --- group c: the remaining unit-stride queue requirement ------------------
+  - req: spec-lsu.c2
+    unassertable: >
+      Structure: a separate ld_US_ADDR_Q and st_US_ADDR_Q hold the unit-stride
+      transactions. Two named instances in VecLsu.scala; "these exist" has no
+      runtime property.
+
+  # --- group e: the load coalescing buffer -----------------------------------
+  - req: spec-lsu.e1
+    unassertable: >
+      Structure: an LCB exists in front of the VRF write port. Discharged by
+      VecLoadCoalescingBuffer being instantiated in VecLsu and owning W0; every
+      functional consequence is checked by the e-group properties below.
+  - req: spec-lsu.e2
+    assertions: [formal-lsu.e22]
+    partial: >
+      Checks the one-entry-per-destination-PRN invariant on the entry pair 0/1.
+      Entry WIDTH being a full VLEN is a type fact (LcbEntry.data is vecVLen
+      wide), and the pairwise sample does not cover all lcbEntries pairs — a full
+      pairwise reduction would build a large comparator tree inside the bind.
+  - req: spec-lsu.e3
+    unassertable: >
+      Parameterizability of the entry count: a Scala parameter (lcbEntries) with
+      `require(lcbEntries >= maxVecMembers)`. Compile-time.
+  - req: spec-lsu.e4
+    assertions: [formal-lsu.e7]
+    partial: >
+      Checks that a returning element lands in at most one assembly entry. That
+      it lands at the RIGHT byte offset is formal-lsu.e5 (bounded) and
+      formal-lsu.e8 (inside own_bytes); the exact placement expression would fold.
+  - req: spec-lsu.e5
+    assertions: [formal-lsu.e5]
+    partial: >
+      Checks that the carried offset lands inside the entry. That the offset was
+      DERIVED from the element index is a provenance fact about the nOP.v the
+      AGEN stamped (spec-agen's v_split_dst_byte_off).
+  - req: spec-lsu.e6
+    assertions: [formal-lsu.e11]
+    partial: >
+      Checks the "all active bytes present" precondition. The "single write on
+      W0" clause is formal-lsu.e13.
+  - req: spec-lsu.e8
+    assertions: [formal-lsu.e15]
+    partial: >
+      Checks that the write mask covers every active byte, so the single write
+      leaves no stale byte inside the active set. The vta/vma FILL VALUE for
+      inactive lanes is not checked, and note that VecLsu currently allocates
+      every entry with inactive_bytes = 0 (VecLsu.scala:964-969), so the
+      inactive-lane path is unexercised in this configuration.
+  - req: spec-lsu.e9
+    assertions: [formal-lsu.e14]
+    partial: >
+      Checks that an entry with an outstanding pre-load is never written. That
+      the pre-load DATA comes from stale_pvdest on R2 is the stale_req/stale_resp
+      wiring; a property would re-read the same port. Unexercised in this config
+      (undisturbed is hardcoded false at allocation).
+  - req: spec-lsu.e10
+    assertions: [formal-lsu.e14]
+  - req: spec-lsu.e11
+    assertions: [formal-lsu.e16]
+    partial: >
+      Checks that only an undisturbed entry requests a pre-load. The "only
+      members that actually contain inactive lanes" clause is the
+      inactive_bytes.orR half of allocPreloadPending, which folds against the
+      same expression.
+  - req: spec-lsu.e12
+    unassertable: >
+      Performance claim ("the pre-load overlaps the load's memory latency, so it
+      costs no extra latency"). Nothing in the emitted RTL distinguishes an
+      overlapping pre-load from a serialized one — both satisfy every functional
+      property, and the LCB has no latency counter. The functional half (the
+      write waits for the pre-load) is formal-lsu.e14.
+  - req: spec-lsu.e13
+    assertions: [formal-lsu.e20]
+    partial: >
+      Checks that the count the LCB owns agrees with the group size it reports.
+      That the count is OWNED here rather than elsewhere is structural.
+  - req: spec-lsu.e14
+    assertions: [formal-lsu.e20]
+  - req: spec-lsu.e15
+    assertions: [formal-lsu.e18]
+    partial: >
+      Checks that a group-done is not emitted while the winning member is still
+      incomplete. "Exactly one group-done per group" is enforced by the entries
+      freeing in the same event (freeThisGroup) and is not separately asserted.
+  - req: spec-lsu.e16
+    assertions: [formal-lsu.e21]
+  - req: spec-lsu.e17
+    unassertable: >
+      Absence of a mechanism: there is no per-PRN ROB writeback port on the LCB's
+      interface to sample. The positive counterpart — one group-done carrying the
+      whole member vector — is formal-lsu.e18/e20/e21.
+  - req: spec-lsu.e18
+    unassertable: >
+      Absence of a mechanism, as spec-lsu.e17: no per-PRN wakeup port exists.
+      Vector wakeup rides the group-done only.
+  - req: spec-lsu.e19
+    assertions: [formal-lsu.e13]
+    partial: >
+      Checks that each entry produces exactly one VRF write, which is what makes
+      the intermediate writes invisible to anything but the register file. That
+      no OTHER consumer observes them is structural (no port carries them).
+  - req: spec-lsu.e20
+    assertions: [formal-lsu.e8]
+  - req: spec-lsu.e21
+    assertions: [formal-lsu.e10]
+    partial: >
+      Checks that the active set never grows beyond the footprint the AGEN
+      selected, which is the observable consequence of not re-deriving it. That
+      the LCB contains no second mask evaluator is structural.
+  - req: spec-lsu.e22
+    assertions: [formal-lsu.e10]
+    partial: >
+      The cursor's PROVENANCE (that it is the same one ld_vAGEN_1 consumed) is a
+      wiring fact between VecLsu, the agen and the LCB alloc port; what is
+      checked here is that the LCB honours the set it was given.
+  - req: spec-lsu.e23
+    assertions: [formal-lsu.e10]
+    partial: >
+      A masked-off element is never counted as outstanding because completion is
+      measured against active_bytes only, and active_bytes cannot grow. Note that
+      with active_bytes hardcoded to all-ones in this configuration the masked
+      case is not exercised.
+  - req: spec-lsu.e24
+    assertions: [formal-lsu.e1]
+    partial: >
+      Checks the allocation-before-issue rule where it is enforceable — at the
+      arbiter, which refuses a load grant without an LCB credit. The per-PRN
+      pairing (this access's own entry) is not checked; the credit is a count.
+  - req: spec-lsu.e25
+    assertions: [formal-lsu.e3]
+
+  # --- group f: per-element progress and precise exceptions -----------------
+  - req: spec-lsu.f1
+    unassertable: >
+      Structure: the entry carries an element cursor. MicroOp DOES declare
+      v_elem_cursor (micro-op.scala:66-70), so the obligation is met by a Bundle
+      field, which is not an SVA-checkable object. FINDING (header 6): those
+      fields are DEAD — VecDecode zeroes them and asserts they stay zero, and
+      nothing in the LSU writes them. The live cursor is VecElemAgen's
+      elem_ptr/emit_ctr (formal-lsu.b9/f8) and VecLsu's stUsCursor.
+  - req: spec-lsu.f2
+    unassertable: >
+      Field existence (elem_next), as spec-lsu.f1, and dead for the same reason.
+      The as-built equivalent is VecElemAgen's elem_ptr.
+  - req: spec-lsu.f3
+    unassertable: >
+      Field existence (elem_done), as spec-lsu.f1. The as-built equivalent is the
+      LCB's per-entry byte_valid plus io.elem_done, checked by formal-lsu.j15.
+  - req: spec-lsu.f4
+    unassertable: >
+      Field existence (fault_elem), as spec-lsu.f1. The as-built equivalent is
+      VecElemAgen's fault_elem register, whose latch is checked by formal-lsu.f4.
+  - req: spec-lsu.f5
+    unassertable: >
+      FINDING (header 12): no fault report reaches VecElemAgen — VecLsu ties both
+      agens' io.fault.valid to false.B because no drain-side fault port exists —
+      so `newFault` and `fault_seen` are constant zero and formal-lsu.f4's
+      antecedent constant-folds. An armed-but-vacuous property is not coverage,
+      so this row does not claim it. formal-lsu.f4 stays in the checker and will
+      check the latch the moment a fault report is wired.
+  - req: spec-lsu.f6
+    unassertable: >
+      Absence of a path: fault_elem must NOT be carried to the ROB. Nothing in
+      VecElemAgen's or VecSquashUnit's interface carries it, so there is no signal
+      whose value could reveal a violation. A violation would be a new port,
+      caught by review.
+  - req: spec-lsu.f7
+    unassertable: >
+      Absence of a path: fault_elem must NOT be written to vstart. FINDING
+      (header 7): `vstart` does not appear in rob.scala at all, so neither the
+      prohibited write nor the required one exists to sample.
+  - req: spec-lsu.f8
+    assertions: [formal-lsu.f8]
+    partial: >
+      Checks that emission advances a single monotonic counter, which is what
+      makes accesses fire in element order. That the TLB and LCAM see them in
+      that same order additionally depends on the arbiter's per-lane ordering,
+      which is not asserted (the arbiter has no notion of element index).
+  - req: spec-lsu.f9
+    unassertable: >
+      Same as spec-lsu.f5 (header finding 12): with fault_seen constant zero,
+      formal-lsu.f6's antecedent constant-folds, so "on a fault the entry stops
+      advancing" is armed but unchecked. The property remains in the checker.
+  - req: spec-lsu.f10
+    unassertable: >
+      FINDING (header 7): `vstart` is never written by the vector exception path
+      (no occurrence in rob.scala), so "traps with vstart = 0" has no as-built
+      signal. This is a gap in the RTL, not a limitation of SVA: the property
+      becomes writable the day the ROB gains the vstart write.
+  - req: spec-lsu.f11
+    unassertable: >
+      Same as spec-lsu.f10: "restarts from the beginning" is the redirect the ROB
+      takes on the exception, and with no vstart state there is nothing that
+      distinguishes restarting from resuming.
+  - req: spec-lsu.f12
+    unassertable: >
+      Same as spec-lsu.f10, stated negatively ("do not resume at vstart = k").
+      Prohibiting a write that no RTL performs cannot be sampled.
+  - req: spec-lsu.f13
+    unassertable: >
+      "An element access still outstanding when a fault is latched must be
+      allowed to return." Discharged by the ABSENCE of a cancellation path — and
+      VecLsu ties VecBeatExpander's io.stop to false.B, so any stop-gated
+      property would have a constant-false antecedent and constant-fold. The
+      related positive obligation (the walk stops emitting) is formal-lsu.f6.
+  - req: spec-lsu.f14
+    assertions: [formal-lsu.f2]
+  - req: spec-lsu.f15
+    assertions: [formal-lsu.f1]
+
+  # --- group g: fault-only-first --------------------------------------------
+  - req: spec-lsu.g1
+    unassertable: >
+      FINDING (header 8): the vleff fault path is unreachable as built. VecLsu
+      ties ld_range_agen.io.fault.valid to false.B because VecBeatExpander exposes
+      no fault port (VecLsu.scala:993-998, flagged there as a high-severity spec
+      defect). Every property over the element-0-trap policy would have a
+      constant-false antecedent and constant-fold to a vacuous pass. Writable as
+      soon as a drain-side fault report exists.
+  - req: spec-lsu.g2
+    unassertable: >
+      Same as spec-lsu.g1: no fault ever reaches the range agen, so "a fault at
+      i > 0 must not trap" cannot be exercised or checked.
+  - req: spec-lsu.g3
+    unassertable: >
+      Same as spec-lsu.g1 for the VL-trim value. The trim PLUMBING that would
+      carry it (io.ff_trim -> lcb.io.trim -> vl_wb) exists and its completion leg
+      is checked by formal-lsu.g1; the trigger does not.
+  - req: spec-lsu.g4
+    unassertable: >
+      Same as spec-lsu.g1: completing with the elements already loaded is the
+      consequence of a trim that can never fire.
+  - req: spec-lsu.g5
+    unassertable: >
+      Absence: "vleff is not serialized". VLSDecode decodes is_ff
+      (VLSDecode.scala:125) and never sets any serialization flag on it, so there
+      is no signal that could show serialization. Discharged by the absence,
+      cross-checked by spec-lsu.g11 below.
+  - req: spec-lsu.g6
+    assertions: [formal-lsu.g1]
+    partial: >
+      Checks that the VL write-back accompanies the completion event, i.e. that
+      the op acts as a VL producer on completion. The VALUE written (full VL, or
+      i on a fault) depends on the trim that cannot fire (header finding 8).
+  - req: spec-lsu.g7
+    assertions: [formal-lsu.g1]
+  - req: spec-lsu.g8
+    unassertable: >
+      "The architectural vl CSR is updated at commit." The commit-side read port
+      exists (VlRegFile.io.r_commit) but the CSR write itself is in csr.scala,
+      which hierarchy.yaml does not allocate to any module of this family. Out of
+      this family's module set, not merely unwritten.
+  - req: spec-lsu.g9
+    unassertable: >
+      Same as spec-lsu.g1: only the element-0 fault raises rob_exception, and no
+      fault reaches the unit that would make that distinction.
+  - req: spec-lsu.g10
+    unassertable: >
+      Same as spec-lsu.g1, stated as an absence ("clears no architectural state
+      beyond trimming VL") on a path that never activates.
+  - req: spec-lsu.g11
+    unassertable: >
+      Absence: is_unique was REMOVED from vleff. There is no `is_unique :=` in
+      VLSDecode at all, so nothing can be sampled; a regression would be a new
+      assignment, caught by review and by the decode family's own properties.
+
+  # --- group h: D$, LCAM and TLB arbitration --------------------------------
+  - req: spec-lsu.h1
+    assertions: [formal-lsu.h1]
+    partial: >
+      Checks the exclusivity that makes one lane serve several requestors. That
+      the SCALAR fire is the third requestor on the same lane is expressed
+      through scalar_avail/vec_claim rather than a request port here, and is
+      checked by formal-lsu.h4/h8.
+  - req: spec-lsu.h2
+    unassertable: >
+      Parameter obligation (lsuWidth 1 on Medium, 2 on Large/Mega), owned by
+      BoomConfigMixins and cross-checked by the dcacheArbiterMode `require` in
+      VecDcacheArbiter and VecLsu. Compile-time.
+  - req: spec-lsu.h3
+    assertions: [formal-lsu.h2]
+    partial: >
+      Checks that the round-robin phase pointer really rotates (phase 0 -> 1).
+      The PRIORITY half of "priority round-robin" is formal-lsu.h4; the remaining
+      phase transitions are the same increment.
+  - req: spec-lsu.h4
+    assertions: [formal-lsu.h4]
+    partial: >
+      Checks the D$ resource on lane 0 outside elevation. The TLB and LCAM
+      resources take the same expression shape (resourceOk) and are checked
+      indirectly through formal-lsu.h8's claim rule.
+  - req: spec-lsu.h5
+    assertions: [formal-lsu.h8]
+    partial: >
+      Checks the mechanism that bounds blocking: outside its elevation phase the
+      vector side claims nothing and can only take what scalar left free.
+      "Never indefinitely" is a liveness statement over scalar progress, which
+      this module cannot observe (it has no scalar-progress input).
+  - req: spec-lsu.h6
+    assertions: [formal-lsu.h6]
+    partial: >
+      Checks that the elevation phase does grant a blocked, eligible requestor.
+      The literal every-4-cycles BOUND is not asserted as a bounded-delay
+      property because a requestor that withdraws its request mid-window would
+      make such a property fire on correct RTL.
+  - req: spec-lsu.h7
+    assertions: [formal-lsu.h11]
+    partial: >
+      The work-conserving per-lane obligation is checked on lane 0. The
+      two-grants-per-cycle clause needs lsuWidth = 2, which only elaborates on
+      Large/Mega; this run elaborates Medium, where lane 1 does not exist.
+  - req: spec-lsu.h8
+    assertions: [formal-lsu.h11]
+  - req: spec-lsu.h9
+    assertions: [formal-lsu.h8]
+  - req: spec-lsu.h10
+    assertions: [formal-lsu.h10]
+  - req: spec-lsu.h11
+    assertions: [formal-lsu.h8]
+    partial: >
+      Checks that no vector OP.v holds a shared resource outside its elevation
+      phase, which is what prevents monopolizing disambiguation or translation.
+      The per-OP.v accounting (that it is one op rather than a stream) is not
+      distinguished by the arbiter, which sees only per-lane requests.
+
+  # --- group i: squash by pointer rollback ----------------------------------
+  - req: spec-lsu.i1
+    unassertable: >
+      The obligation is on the ISSUE unit's grant condition (IQ_V_LOAD/IQ_V_STORE
+      must not gate on the PNR), which is spec-issue's and lives in
+      VecIssueUnit/VecIssueSlot; no PNR signal reaches any module in this
+      family's set. What can be shown here is only that a squash of an in-flight
+      drain happens at all, which is a cover (formal-lsu.i2), not coverage.
+  - req: spec-lsu.i2
+    assertions: [formal-lsu.i1]
+    partial: >
+      Checks that the rollback pivot is the branch's own index. That each queue's
+      TAIL then lands on that reservation index is VecQueueReservation's
+      rollback_tail computation, whose per-row selection is loop-local.
+  - req: spec-lsu.i3
+    assertions: [formal-lsu.i9]
+    partial: >
+      Checks that a rollback target lies inside the occupied region, which is the
+      observable consequence of the region being program-ordered. Program order
+      itself is established at dispatch (formal-lsu.b7).
+  - req: spec-lsu.i4
+    assertions: [formal-lsu.i5]
+    partial: >
+      Checks that a flush kills the whole LCB index space in one event, i.e. that
+      killing is a whole-vector operation rather than a walk. The ABSENCE of a
+      per-entry br_mask compare is structural (see spec-lsu.i10).
+  - req: spec-lsu.i5
+    assertions: [formal-lsu.i9]
+    partial: >
+      Checks the queue-side half: the same squash event that rolls the tail also
+      bounds the released region. That resv's row invalidation happens in that
+      same cycle is asserted inside VecQueueReservation by its own Chisel assert
+      on rollbackValidPrev, not by an SVA property here.
+  - req: spec-lsu.i6
+    assertions: [formal-lsu.i7]
+    partial: >
+      Checks that a stage kill is never raised without a uop behind it. The
+      positive direction (every killed-by-branch uop IS killed) is the assignment
+      itself — io.kill(c) := valid && IsKilledByBranch(...) — and would fold.
+  - req: spec-lsu.i7
+    assertions: [formal-lsu.f2, formal-lsu.i3]
+  - req: spec-lsu.i8
+    assertions: [formal-lsu.f1]
+  - req: spec-lsu.i9
+    unassertable: >
+      Absence of a mechanism: the vector LSU must NOT drain-and-discard. There is
+      no drain-and-discard path in the emitted RTL to sample; the positive
+      alternative (invalidate by ldq_idx so a late response lands nowhere) is
+      checked by formal-lsu.f1/f2/i3.
+  - req: spec-lsu.i10
+    unassertable: >
+      Design-choice absence: pointer rollback INSTEAD OF per-entry br_mask +
+      IsKilledByBranch on ~1000 entries. VecElemQueue has no br_mask field, so
+      there is nothing to sample; the positive half (rollback works) is
+      formal-lsu.i1/i9.
+
+  # --- group j: the load half of the algorithms ------------------------------
+  - req: spec-lsu.j1
+    assertions: [formal-lsu.b9]
+    partial: >
+      Checks that the per-element addresses the load drains were emitted into its
+      own reserved region of ld_SSI_ADDR_Q. The drain-side read of that region is
+      VecLsu's ldSsiBase walk, which has no separate property.
+  - req: spec-lsu.j2
+    assertions: [formal-lsu.j18]
+  - req: spec-lsu.j3
+    unassertable: >
+      FINDING (header 10): as built the triple does NOT happen together. In
+      VecBeatExpander uses_tlb is always true, uses_lcam only on the first beat of
+      a range, and uses_dcache only on a store's write pass. A property asserting
+      "TLB and D$ and LCAM together" would fail on correct RTL, and weakening it
+      to match the code would assert nothing. The requirement needs restating
+      against the as-built per-class policy before it can be checked.
+  - req: spec-lsu.j4
+    assertions: [formal-lsu.j15]
+    partial: >
+      Checks that each progress report accounts for at least one element. The
+      cumulative "elem_done advances" accounting is the LCB's byte_valid merge,
+      checked structurally by formal-lsu.e8.
+  - req: spec-lsu.j5
+    unassertable: >
+      Equivalence claim: the vector load path is identical to the scalar load
+      path apart from three named differences. A claim over two code paths, not a
+      signal; the three differences themselves are checked by the e-group (LCB),
+      formal-lsu.b9/k2 (queue drain) and formal-lsu.j15 (progress).
+
+  # --- group k: memory subsystem and the bandwidth ceiling ------------------
+  - req: spec-lsu.k1
+    unassertable: >
+      Provenance: "the memory subsystem remains unchanged from BOOM v4".
+      PLAN FINDING: this requirement is allocated to NO module in
+      hierarchy.yaml — it is the only spec-lsu requirement with no owner. Nothing
+      implements it because it is a statement about what was not changed;
+      enforced, like spec-lsu.a2, by the gate-(f) diff rather than by RTL.
+  - req: spec-lsu.k2
+    unassertable: >
+      Structure: the arbiter sits OUTSIDE the cache. Discharged by
+      VecDcacheArbiter being instantiated in VecLsu and presenting dmem.req
+      through the host LSU; module topology is not sampleable.
+  - req: spec-lsu.k3
+    unassertable: >
+      Interface provenance: the same dmem.req interface is presented. Discharged
+      by lsu.scala still driving io.dmem.req with the unchanged BoomDCacheReq
+      bundle; a property could only re-read that bundle.
+  - req: spec-lsu.k5
+    assertions: [formal-lsu.h1]
+    partial: >
+      Checks that a lane serves at most one requestor per cycle, so it carries at
+      most one element. The <= ELEN WIDTH of that element is a bundle-width fact
+      (VecMemAccess.data), not a runtime property.
+  - req: spec-lsu.k7
+    assertions: [formal-lsu.k2]
+    partial: >
+      Checks that an SSI drain frees exactly the entries it consumed from its own
+      region — one element per granted lane. The sharing of that lane with scalar
+      traffic is the h-group's.
+  - req: spec-lsu.k10
+    unassertable: >
+      Structure/design choice: reuse the scalar cache port rather than build a
+      VLEN-wide vector interface. Discharged by the absence of a wide port; the
+      consequence (the bandwidth ceiling) is spec-lsu.k5/k7.
+
+  # --- group l: segmented load/store, the LSU half --------------------------
+  - req: spec-lsu.l1
+    assertions: [formal-lsu.e21]
+    partial: >
+      Checks that the completion names the physical registers of the group the
+      LSU half actually filled, which for a shared op is the pvtmp group VecLsu
+      allocated from. The SELECTION of pvtmp over pvdest is a direct Mux in
+      VecLsu's LCB alloc walk and would fold.
+  - req: spec-lsu.l2
+    unassertable: >
+      The LSU half's issue condition is the vector issue slot's operand-readiness
+      grant, which spec-issue.g29-g32 states and VecIssueSlot implements. A
+      property here would be a second copy of an issue-family assertion rather
+      than an lsu-family check; it belongs to `/req-formal-chisel run issue`.
+  - req: spec-lsu.l3
+    assertions: [formal-lsu.e21]
+    partial: >
+      Checks that the loaded data completes into the allocated group. The write
+      itself (data into pvtmp in the VRF) is the same W0 path every load uses and
+      is checked by formal-lsu.e11/e13/e15.
+  - req: spec-lsu.l4
+    assertions: [formal-lsu.e21]
+    partial: >
+      "Treated as an ordinary vector destination" is checked in the sense that
+      pvtmp takes the identical allocate/fill/write/complete path with no
+      special-casing; the absence of a special case is structural.
+  - req: spec-lsu.l5
+    unassertable: >
+      The pvtmp group-done waking the coprocessor's IQ slot is the vector wakeup
+      match, owned by VecGroupReady/VecIssueSlot and stated by
+      spec-issue.g12-g18. Asserting it here would duplicate an issue-family
+      property; recommended for `/req-formal-chisel run issue`.
+  - req: spec-lsu.l7
+    unassertable: >
+      The two-halves split is a DECODE obligation (the is_shared marking), mined
+      as spec-decode.b1/b2 and implemented in VecDecode; nothing in the LSU can
+      observe whether an instruction was split, only that it carries is_shared.
+  - req: spec-lsu.l8
+    assertions: [formal-lsu.e21]
+    partial: >
+      Checks that the LSU half's memory-side work completes into the handoff
+      group. That the OTHER half is the coprocessor's transpose is spec-cii's.
+  - req: spec-lsu.l9
+    assertions: [formal-lsu.e21]
+    partial: >
+      Checks the LSU-half end of the pvtmp rendezvous. The consumer end (the
+      coprocessor reading pvtmp) is spec-cii's; VecDgen's shared-operand select
+      is checked from the store side by formal-lsu.d17.
+
+  # --- group m: the VL == 0 group copy --------------------------------------
+  - req: spec-lsu.m1
+    assertions: [formal-lsu.m15]
+    partial: >
+      Checks that a VL = 0 op does reach the LSU and is routed to the no-execution
+      path there (rather than being dropped earlier). That pvl RESOLVES to 0 at
+      issue is VecScalarOperandRead's vl_zero := (vl === 0), which folds against
+      its own definition.
+  - req: spec-lsu.m2
+    assertions: [formal-lsu.m15]
+  - req: spec-lsu.m3
+    assertions: [formal-lsu.m1]
+    partial: >
+      Checks that the mechanism which makes the fresh group correct is started
+      exactly for the no-execution cases. That it COMPLETES before commit is
+      formal-lsu.m5/m7 plus the ROB's own completion accounting.
+  - req: spec-lsu.m4
+    unassertable: >
+      "The new destination group must equal the OLD value of the architectural
+      vreg group" is an equality between VRF contents across two physical groups.
+      VecGroupCopy stages one member at a time through a single register and
+      retains neither operand for comparison, so no property in this module can
+      observe the equality. OBSERVABILITY GAP, reported: closing it would need a
+      VRF-level property (spec-vrf's) or a DUT signal, which this flow may not
+      add. The mechanism that produces the equality is checked by formal-lsu.m3
+      (distinct source and destination) and formal-lsu.m13 (whole-register mask).
+  - req: spec-lsu.m5
+    assertions: [formal-lsu.m3]
+    partial: >
+      Checks that each member write moves between two distinct physical
+      registers. That the number of member writes equals EMUL is the expansion
+      cursor's own arithmetic (expandCursor vs expandCount), which folds.
+  - req: spec-lsu.m6
+    unassertable: >
+      Structure: the copy reuses the Load Unit's VRF ports. Discharged by
+      VecGroupCopy taking R2/W0 through the same mux as the LCB (its io.vrf_r2_req
+      / io.vrf_w0 are VecLsu's only R2/W0 drivers); the reuse is topology.
+  - req: spec-lsu.m7
+    unassertable: >
+      "Adds no new VRF ports" — an absence, and a port-budget fact owned by
+      VecRegFile (9R/3W is fixed there). Discharged at elaboration by the port
+      list, not by a property.
+  - req: spec-lsu.m8
+    assertions: [formal-lsu.m5]
+    partial: >
+      Checks that the two completion paths never collide on the single group_done
+      port. "Exactly one per copy" additionally relies on stageBLast, which is
+      the expansion cursor's own last-member flag.
+  - req: spec-lsu.m9
+    assertions: [formal-lsu.m7]
+    partial: >
+      Checks the complete-without-execute path fires and completes. That it is
+      the SQUASH path variant (as opposed to a distinct third path) is structural
+      — there is one noCopy path serving both.
+  - req: spec-lsu.m10
+    assertions: [formal-lsu.m7]
+  - req: spec-lsu.m11
+    assertions: [formal-lsu.m13]
+    partial: >
+      Checks the whole-register mask on the copy path, which is how inactive
+      lanes are preserved when nothing executes. The executing cases are covered
+      elsewhere: loads by formal-lsu.e15 (LCB fill), arithmetic by spec-cii.
+  - req: spec-lsu.m12
+    assertions: [formal-lsu.m1]
+  - req: spec-lsu.m13
+    assertions: [formal-lsu.m9]
+    partial: >
+      Checks the R2 half of the strict-priority mux. The W0 half is
+      formal-lsu.m11; the absence of an anti-starvation counter is deliberate per
+      the requirement's own notes and is structural.
+  - req: spec-lsu.m14
+    assertions: [formal-lsu.m11]

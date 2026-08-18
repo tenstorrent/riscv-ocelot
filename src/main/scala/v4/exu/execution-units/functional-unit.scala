@@ -29,6 +29,7 @@ import freechips.rocketchip.rocket.ALU._
 import boom.v4.common._
 import boom.v4.ifu._
 import boom.v4.util._
+import boom.v4.vec.generated.VtypeTable
 
 
 
@@ -282,11 +283,144 @@ class ALUUnit(dataWidth: Int)(implicit p: Parameters)
 //   val reg_data = Reg(outType = Bits(width = xLen))
 //   reg_data := alu.io.out
 //   io.resp.bits.data := reg_data
-  val alu_out = Mux(io.req.bits.uop.is_sfb_shadow && io.req.bits.pred_data,
+  // ---- Caracal RVV: register-sourced vset (vsetvli/vsetvl) on the ALU ------
+  // A `vset` is recognised by `is_vl_producer` (vsetivli is front-end only;
+  // vleff never sets FC_ALU). VL (and, for vsetvl, VTYPE) is resolved here
+  // and driven off the EXISTING result bus below. Wrapped in a Scala
+  // `if (usingRVV)` so `usingRVV = false` elaborates with no added wire,
+  // comparator, or reference to a vector MicroOp field.
+  //@req-spec-decode.c14
+  //@req-spec-decode.c15
+  val vsetWires = if (usingRVV) {
+    val is_vset = uop.is_vl_producer.get
+
+    // Only vsetvl renames a second integer source, so lrs2_rtype is RT_FIX
+    // for vsetvl and not for vsetvli. NOT decoded from uop.inst.
+    //@req-spec-decode.c11
+    val vset_vtype_from_rs2 = uop.lrs2_rtype === RT_FIX
+    val vset_vtype_bits = Mux(vset_vtype_from_rs2, io.req.bits.rs2_data,
+      uop.vconfig.get.asUInt)
+    // The one shared legality resolution both forms go through, so vsetvli and
+    // vsetvl cannot disagree about whether a config is legal. This is
+    // `VtypeTable.resolve`, NOT `VtypeTable.decode`: `decode` returns the
+    // `{vlmax, emul, vill, vta, vma}` digest, and the only field of it this
+    // unit ever read was `vill` -- the full bundle is what a vsetvl must write
+    // onto `vconfig`, and VLMAX is re-derived inside `computeVL` from the same
+    // raw bits. Both entry points delegate to rocket's `VType.fromUInt`, so
+    // taking legality from `resolve().vill` is the same disjunction `decode`
+    // would have reported.
+
+    // rs1 == x0 (VLMAX request) cannot be inferred from rs1_data alone: a
+    // GPR holding 0 is indistinguishable by value from x0.
+    //@req-spec-decode.i10
+    val vset_use_max = uop.lrs1_rtype === RT_ZERO
+
+    // ===> `vsetivli` DOES REACH THIS UNIT, AND ITS AVL IS NOT IN A REGISTER.
+    //      This node's spec says "vsetivli is front-end only and never gets an
+    //      issue slot or an EU". That is the STALE half of a contradiction:
+    //      VsetDecode routes `vsetivli` with `rd != x0` to IQ_ALU/FC_ALU, and
+    //      VecDecode states why -- "rd needs an integer-RF write the front end
+    //      has no port for". Only an EU has that port, so the instruction must
+    //      arrive here.
+    //
+    //      Its AVL is the immediate `inst(19,15)`, so VsetDecode deliberately
+    //      sets `lrs1_rtype := RT_X` ("not a register", so rename does not stall
+    //      on a PRN it will never consume) and `imm_sel := IS_N`. `rs1_data` is
+    //      therefore a register that was never renamed OR read. Reading it anyway
+    //      yielded a stale value >= maxVLMax, which saturated to VLMAX:
+    //      `vsetivli x11, 1, e16, m2` wrote 32 where the correct vl is
+    //      min(1, 32) = 1. Caught as a cosim Register Mismatch against Whisper.
+    //
+    //      RT_X is the discriminator, and it is exact rather than incidental: of
+    //      the three shapes that reach this unit, only `vsetivli` has no rs1
+    //      register at all (`vsetvli`/`vsetvl` are RT_FIX, or RT_ZERO for the
+    //      `rs1 == x0` VLMAX request that `vset_use_max` above handles).
+    val is_vsetivli = uop.lrs1_rtype === RT_X
+
+    // VL = min(AVL, VLMAX), delegated whole to rocket's VType.vl(...). AVL
+    // is passed at its FULL xLen width -- narrowing it before this call
+    // wraps a large AVL instead of saturating it at VLMAX (the addvector
+    // regression: AVL=2048 produced vl=0).
+    //@req-spec-decode.c10
+    val vset_vl_computed = VtypeTable.computeVL(
+      avl          = io.req.bits.rs1_data,
+      bits         = vset_vtype_bits,
+      currentVL    = 0.U,
+      useCurrentVL = false.B,
+      useMax       = vset_use_max,
+      useZero      = false.B)
+
+    // For `vsetivli`, take the VL VConfigUnit already computed at decode
+    // (`MicroOp.v_vl_imm`) rather than recomputing it here. Carrying the result
+    // instead of the AVL is what makes `rd` and `pvl` provably the same value:
+    // the VL RF is written at rename from that same single computation, so a
+    // second evaluation in this unit could only introduce a way for them to
+    // disagree.
+    val vset_vl = Mux(is_vsetivli, uop.v_vl_imm.get, vset_vl_computed)
+    val vset_vl_zext = vset_vl.pad(dataWidth)
+
+    // The resolved VTYPE for a vsetvl (part 7 below), from VtypeTable.resolve
+    // -- i.e. rocket's own VType.fromUInt, reached through the one entry point
+    // this node's edit scope sanctions.
+    //
+    // NOT hand-built by reinterpreting the raw bits with `.asTypeOf` and
+    // overriding vill/reserved: RVV 1.0 requires that when `vill` is set,
+    // EVERY other vtype field reads as ZERO, and `.asTypeOf` would instead
+    // leave vsew/vlmul_*/vta/vma holding whatever rs2 contained. A `csrr
+    // vtype` after an illegal vset would then return garbage in the DUT and
+    // zero in the Whisper reference -- a cosim mismatch with no elaboration
+    // error anywhere. `resolve` gets the zeroing for free because
+    // `VType.fromUInt` starts from a zeroed wire and assigns only on the
+    // legal path. Its `vill` is the same disjunction `decode()` reports, so
+    // the two cannot disagree about legality.
+    val vset_resolved_vtype = VtypeTable.resolve(vset_vtype_bits)
+
+    // A vset must never be silently reinterpreted by the SFB/mov muxes.
+    assert(!io.req.valid || !is_vset ||
+      (!uop.is_sfb_br && !uop.is_sfb_shadow && !uop.is_mov),
+      "ALUUnit: a vset uOP must never be is_sfb_br/is_sfb_shadow/is_mov")
+
+    Some((is_vset, vset_vtype_from_rs2, vset_vl_zext, vset_resolved_vtype))
+  } else None
+
+  val alu_out = if (usingRVV) {
+    val (is_vset, _, vset_vl_zext, _) = vsetWires.get
+    // rd (existing dst_rtype===RT_FIX gating) and pvl (existing
+    // is_vl_producer gating, both untouched downstream) take the SAME new
+    // VL value off this one result bus -- no second result path, no
+    // arbiter, no extra write port.
+    //@req-spec-decode.c12
+    //@req-spec-decode.c17
+    //@req-spec-decode.c19
+    //@req-spec-decode.c20
+    //@req-spec-vrf.c2
+    //@req-spec-vrf.c3
+    //@req-spec-issue.h5
+    //@req-spec-issue.h6
+    Mux(is_vset, vset_vl_zext,
+      Mux(io.req.bits.uop.is_sfb_shadow && io.req.bits.pred_data,
+        Mux(io.req.bits.uop.ldst_is_rs1, io.req.bits.rs1_data, io.req.bits.rs2_data),
+        Mux(io.req.bits.uop.is_mov, io.req.bits.rs2_data, alu.io.out)))
+  } else {
+    Mux(io.req.bits.uop.is_sfb_shadow && io.req.bits.pred_data,
       Mux(io.req.bits.uop.ldst_is_rs1, io.req.bits.rs1_data, io.req.bits.rs2_data),
       Mux(io.req.bits.uop.is_mov, io.req.bits.rs2_data, alu.io.out))
+  }
   io.resp.valid := io.req.valid
   io.resp.bits.uop := io.req.bits.uop
+  if (usingRVV) {
+    val (is_vset, from_rs2, _, resolved_vtype) = vsetWires.get
+    // Only a vsetvl overwrites the decode-time vconfig snapshot (vsetvli's
+    // snapshot already holds its new vtype). Drives the Rob's
+    // committed-shadow carrier ONLY -- never the speculative VCFG mirror,
+    // toward which this unit has no port (part 8: KNOWN SPEC DEFECT --
+    // overview.rst:158 says the ALU writes the mirror at execute;
+    // frontend.rst `vector-rvv-decode` and plan v2 contradict it and win).
+    //@req-spec-decode.e5
+    when (is_vset && from_rs2) {
+      io.resp.bits.uop.vconfig.get := resolved_vtype
+    }
+  }
   io.resp.bits.data := Mux(io.req.bits.uop.is_sfb_br, pc_sel === PC_BRJMP, alu_out)
   io.resp.bits.predicated := io.req.bits.uop.is_sfb_shadow && io.req.bits.pred_data
   assert(io.resp.ready)

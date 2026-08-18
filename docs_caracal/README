@@ -1,0 +1,15 @@
+## Getting Started
+
+### Prerequisites
+- Python 3.8+
+- AsciiDoc or Asciidoctor for documentation generation
+
+
+### Building Documentation
+```bash
+# Generate HTML documentation from AsciiDoc sources
+asciidoc caracal-architecture.adoc
+
+# Generate all specifications
+make docs
+```

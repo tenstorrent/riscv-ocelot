@@ -1,0 +1,253 @@
+# families.yaml — the curated family registry and the requirement-ID namespace.
+#
+# One family = one architectural boundary, NOT one spec file. A family draws from as
+# many spec files as it needs; a spec file feeds as many families as it needs, and the
+# `assignments:` block below states once which family owns which section so that each
+# family ledgers only what it owns.
+#
+# IDs are `spec-<family>.<group><n>` and are immutable forever. Renaming a family here
+# invalidates every `//@req-spec-<family>.*` tag already in the RTL, so treat the keys
+# below as permanent.
+#
+# Boundaries were chosen to line up with both the spec chapters and the module names in
+# src/main/nlhdl/hierarchy.yaml, so that a family maps to code someone can actually own.
+
+spec_corpus:
+  - docs_caracal/src/*.rst
+
+excluded_sources:
+
+  - file: docs_caracal/src/usage.rst
+    reason: >
+      Every section is a bare TODO placeholder (configs, Chipyard integration, debugging,
+      counters, verification, PPA). Revisit once it has prose.
+
+  - file: docs_caracal/src/diagrams.rst
+    reason: >
+      Figure includes only — each section is a `.. figure::` directive with a caption and
+      no normative prose.
+
+  - file: docs_caracal/src/boom-v4-architecture.md
+    reason: >
+      Stock BOOM v4 background. Describes the machine Caracal forked from, not what
+      Caracal must do; obligations that survive the fork are restated in overview.rst.
+
+  - file: docs_caracal/caracal-milestone1-plan.md
+    reason: >
+      Implementation plan, not specification — sequencing and staging of the work.
+
+  - file: docs_caracal/caracal-milestone2-plan.md
+    reason: >
+      Implementation plan, not specification — sequencing and staging of the work.
+
+  - file: docs_caracal/caracal-milestone-plan-v2.md
+    reason: >
+      Implementation plan, not specification — sequencing and staging of the work.
+
+  - file: docs_caracal/step11a2-lsu-mechanism.md
+    reason: >
+      Working note on the vector LSU mechanism, superseded by loadstore.rst.
+
+families:
+
+  core:
+    description: >
+      Machine-wide invariants: the usingRVV gate and BOOM-v4 equivalence, the uOP model
+      (one uOP per instruction, no cracking), and the vector-CSR delegation boundary.
+    sources:
+      - docs_caracal/src/overview.rst
+      - docs_caracal/src/glossary.rst
+      - docs_caracal/src/execution.rst
+
+  decode:
+    description: >
+      The frontend: fetch-stage equivalence to BOOM v4, RVV opcode decode, vset handling,
+      the speculative VCFG vtype mirror and its recovery, VL renaming and delivery, and
+      vector-CSR access legality.
+    sources:
+      - docs_caracal/src/frontend.rst
+
+  rename:
+    description: >
+      Vector and VL renaming: map tables, free lists, busy tables, branch snapshots, and
+      pvtmp allocation for shared instructions.
+    sources:
+      - docs_caracal/src/midcore.rst
+
+  rob:
+    description: >
+      ROB participation of vector uops: group-done completion tracking, commit, and
+      precise vector exception behaviour.
+    sources:
+      - docs_caracal/src/midcore.rst
+
+  vrf:
+    description: >
+      Vector and VL register files: port assignment and budget, bypass network,
+      speculative wakeups, and undisturbed-lane sourcing from stale_pvdest.
+    sources:
+      - docs_caracal/src/midcore.rst
+
+  issue:
+    description: >
+      Vector dispatch and scheduling: program-order element-queue reservation, the vector
+      issue queues and slots, wakeup networks, and VL delivery to issue.
+    sources:
+      - docs_caracal/src/issue.rst
+
+  agen:
+    description: >
+      Vector address and store-data generation: OP.v to nOP.v cracking, packer, skipper,
+      walker, index and mask streams, and DGEN.
+    sources:
+      - docs_caracal/src/execution.rst
+
+  cii:
+    description: >
+      Vector arithmetic offload over the TT-CII coprocessor interface: channels and
+      credits, the host bridge, issue, the flush/kill contract, operand delivery, and
+      result writeback.
+    sources:
+      - docs_caracal/src/cii.rst
+      - docs_caracal/src/execution.rst
+      - docs_caracal/src/midcore.rst
+
+  lsu:
+    description: >
+      The vector path through the unified LSU: element and store-data queues, the load
+      coalescing buffer, per-element progress and fault-only-first, D$ arbitration, and
+      squash by pointer rollback.
+    sources:
+      - docs_caracal/src/loadstore.rst
+      - docs_caracal/src/case_study.rst
+      - docs_caracal/src/midcore.rst
+
+  memord:
+    description: >
+      Memory ordering between the vector and scalar paths: bidirectional cross-queue
+      disambiguation, ordering-violation replay, and fences.
+    sources:
+      - docs_caracal/src/loadstore.rst
+
+# Section→family assignment. Only files listed here are governed by it; a source file
+# with no block falls back to the legacy rule, where every family sourcing it must ledger
+# all of its sections. The eight files below frontend.rst therefore still need
+# `curate assign` before their families are extracted — without it `rename`, `rob` and
+# `vrf` would each have to ledger all 22 sections of midcore.rst.
+assignments:
+
+  - file: docs_caracal/src/frontend.rst
+    owned:
+      decode:
+        - "The Frontend Stages"
+        - "Instruction Fetch"
+        - "Vector (RVV) Decode"
+        - "CII Shared Instruction Decoding"
+        - "VSET Special Handling"
+        - "Explicit vector-CSR accesses"
+        - "Vector architectural state: ownership boundary"
+        - "VCFG Mirror Recovery (speculative vtype)"
+        - "VL delivery — VL lives in its own register file"
+    unowned:
+      "Frontend": >
+        Chapter title. The section body holds only the |caracal|/|boom|/|isa| substitution
+        definitions and no prose.
+
+  # midcore.rst is the three-way file: the mapper (rename), the single-entry-per-OP.v ROB
+  # (rob), and the register files and their ports (vrf). Two sections are assigned across
+  # chapter lines to the family that implements them rather than the family whose parent
+  # section they sit under — see the comments below.
+  - file: docs_caracal/src/midcore.rst
+    owned:
+      rename:
+        - "The Rename Stage"
+        - "Single-stage rename: reservation and dispatch-group atomicity"
+        - "Rename Map Table (RMT)"
+        - "CII Shared Instruction Mapping"
+        - "Free List"
+        - "Busy Table"
+        - "VL Rename"
+        - "Checkpoint RMT Snapshots"
+      rob:
+        - "Reorder Buffer (ROB)"
+        - "Completion tracking"
+        - "Commit"
+        - "Precise exceptions for vector ops"
+        - "Segmented Load/Store (Shared Instruction)"
+      vrf:
+        - "The Register Files and Bypass Network"
+        - "Vector Bypass Network"
+        - "Speculative Wakeups"
+        - "The Vector Register File"
+        - "Port assignment (canonical, 0-based)"
+        - "Undisturbed lanes always come from ``stale_pvdest``"
+      # §"Segmented Load" and §"Segmented Store" sit under the Register Files parent, but
+      # each describes one half of the pvtmp rendezvous end to end. They are assigned to the
+      # family owning the producer half, so the obligation is mined beside the code that
+      # implements it: the LSU writes pvtmp for a segmented load, the coprocessor writes it
+      # for a segmented store. This is why lsu and cii declare midcore.rst as a source.
+      lsu:
+        - "Segmented Load"
+      cii:
+        - "Segmented Store"
+    unowned:
+      "Midcore": >
+        Chapter title. The section body holds only the |caracal|/|boom|/|isa| substitution
+        definitions and no prose.
+
+  # loadstore.rst splits two ways: the vector memory path itself (lsu) and the ordering
+  # rules between the vector and scalar paths (memord). The dividing line is whether the
+  # obligation is about moving the data or about what a scalar op may observe while it moves.
+  - file: docs_caracal/src/loadstore.rst
+    owned:
+      lsu:
+        - "The Unified Load/Store Unit (LSU)"
+        - "Strided, Segmented, Indexed Queue"
+        - "Unit-Strided Queue"
+        - "Store Data Queue"
+        - "Load Coalescing Buffer"
+        - "Per-Element Progress Tracking and Precise Exceptions"
+        - "Fault-only-first (``vleff.v``)"
+        - "D$ Interface Arbiter"
+        - "Squashing the in-flight vector LSU"
+        - "Vector Loads Algorithm"
+        - "Vector Stores Algorithm"
+        - "Memory SubSystem"
+        - "Vector memory bandwidth ceiling"
+      memord:
+        - "Memory Ordering and Disambiguation"
+        - "Ordering-Violation Replay"
+        - "Fences"
+    unowned:
+      "Loadstore": >
+        Chapter title. The section body holds only the |caracal|/|boom|/|isa| substitution
+        definitions and no prose.
+
+  # execution.rst splits at line 117: everything above is the vector memory address/data
+  # generation path (agen), everything below is the coprocessor attach (cii). The chapter's
+  # opening section is neither — it states machine-wide execution invariants, so core owns
+  # it and declares execution.rst as a source for that one section.
+  - file: docs_caracal/src/execution.rst
+    owned:
+      core:
+        - "The Execution Pipelines"
+      agen:
+        - "Vector LS AGEN stage"
+        - "Vector AGEN"
+        - "Packer"
+        - "Skipper"
+        - "Walker"
+        - "Vector DGEN"
+      cii:
+        - "CII Vector Co-processor"
+        - "Performance: in-order vector arithmetic is a deliberate trade-off"
+        - "Tenstorrent Custom Instruction Interface (tt_CII)"
+        - "Channel overview"
+        - "What the host provides"
+        - "What the coprocessor provides"
+        - "Physical vs. architectural registers: the coprocessor sees neither"
+        - "Instruction issue packet"
+    unowned:
+      "Execution": >
+        Chapter title. The section body holds only the |caracal|/|boom|/|isa| substitution
+        definitions and no prose.

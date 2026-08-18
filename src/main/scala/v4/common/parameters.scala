@@ -18,6 +18,7 @@ import freechips.rocketchip.devices.tilelink.{BootROMParams, CLINTParams, PLICPa
 import boom.v4.ifu._
 import boom.v4.exu._
 import boom.v4.lsu._
+import boom.v4.vec.generated.{VectorParams, HasVectorParams}
 
 /**
  * Default BOOM core parameters
@@ -120,11 +121,27 @@ case class BoomCoreParams(
   enableCommitLogPrintf: Boolean = false,
   enableBranchPrintf: Boolean = false,
   enableMemtracePrintf: Boolean = false,
+  enableDebugHarness: Boolean = false,
 
   /* enableConservativeSNI: speculative non-interference */
   enableConservativeSNI: Boolean = false,
 
   enableTraceCoreIngress: Boolean = false,
+
+  /* vector (Caracal) */
+  //@req-spec-core.a8
+  // Master switch for every vector feature. Defaults false, so every
+  // existing config keeps exactly today's machine (gate (f): vectors off
+  // elaborates bit-identical to stock BOOM v4).
+  enableVector: Boolean = false,
+  // Vector sizing. Separate from `enableVector` because `enableVector=true`
+  // with `vector=None` means "vectors enabled with default sizing" (see
+  // `vectorParams` below); `Option[VectorParams]` alone can't express that.
+  vector: Option[VectorParams] = None,
+  // Attaches the CII coprocessor and enables the IQ_V_ALU grant path.
+  enableVectorArith: Boolean = false,
+  // Enables bidirectional cross-LSU (scalar<->vector) disambiguation.
+  vecScalarSnoopEnable: Boolean = false,
 
 // DOC include end: BOOM Parameters
 ) extends freechips.rocketchip.tile.CoreParams
@@ -144,6 +161,20 @@ case class BoomCoreParams(
   val useZba = true
   val useZbb = true
   val useZbs = true
+
+  // Vector (Caracal) rocket-chip CoreParams overrides, derived from
+  // `vector` so a config can't set vLen/eLen inconsistently with it.
+  // NOTE: hasV is rocket's misa.V gate, NOT Caracal's `usingRVV` (below) --
+  // never conflate them. Default hasV needs vfLen>=64, which Caracal never
+  // has (vfLen describes a rocket vector-FP unit; Caracal's vector FP lives
+  // in the VPU behind the CII), so it must be overridden directly.
+  override def hasV: Boolean = enableVector
+  // `useVector` is a `val` in rocket's CoreParams, not a `def`, so it must be
+  // overridden as a stable value. It gates rocket's architectural vector CSR
+  // state (ground rule 9), which is why it tracks enableVector exactly.
+  override val useVector: Boolean = enableVector
+  override def vLen: Int = if (enableVector) vector.getOrElse(VectorParams()).vLen else 0
+  override def eLen: Int = if (enableVector) vector.getOrElse(VectorParams()).eLen else 0
 
   override def customCSRs(implicit p: Parameters) = new BoomCustomCSRs
 }
@@ -272,6 +303,14 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   require(memWidth >= 2)
   require(memWidth >= lsuWidth)
 
+  // Here rather than in BoomCore because four vec/lsu and vec/cii modules need the
+  // INT writeback-port count and cannot be handed a constructor argument.
+  // `def`, NOT `val`: `usingRVV` is declared further down this trait, and a `val` here
+  // would read it before initialization -- silently 0 write ports with vectors ON.
+  def numVecIrfWritePorts: Int = if (usingRVV) 1 else 0
+  def numVecIrfReadPorts:  Int = if (usingRVV) 5 else 0
+  def numIrfWritePorts:    Int = aluWidth + lsuWidth + 1 + numVecIrfWritePorts
+
   issueParams.map(x => require(x.dispatchWidth <= coreWidth && x.dispatchWidth > 0))
 
   //************************************
@@ -289,6 +328,72 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
 
   val enablePrefetching = boomParams.enablePrefetching
   val nLBEntries = dcacheParams.nMSHRs
+
+  //************************************
+  // Vector (Caracal)
+
+  //@req-spec-core.a7
+  // THIS is the gate every vector feature conditions on -- never
+  // `boomParams.enableVector` directly, and never rocket's `usingVector`
+  // (architectural-CSR gate; set together here but not synonyms).
+  val usingRVV: Boolean = boomParams.enableVector
+
+  // Resolves `boomParams.vector`, defaulting when `usingRVV` is true and
+  // `vector` is None. Fails loudly if read with `usingRVV` false -- that's
+  // a gating bug elsewhere, not a missing default.
+  lazy val vectorParams: VectorParams = {
+    require(usingRVV, "vectorParams accessed with usingRVV=false")
+    boomParams.vector.getOrElse(VectorParams())
+  }
+
+  // HasVectorParams's derived values, bound to `vectorParams`. Kept as a
+  // private lazy val (not mixed into this trait) so nothing is forced --
+  // and `vectorParams` stays untouched -- unless a re-export below is read.
+  private lazy val hvp: HasVectorParams = {
+    val vp = vectorParams
+    new HasVectorParams { val vectorParams = vp }
+  }
+
+  // Re-exported sizes, so no module reaches through `boomParams.vector.get`.
+  def numVecPhysRegs: Int = vectorParams.numVecPhysRegisters
+  def vecPregSz: Int = hvp.vecPregSz
+  def numVlPhysRegs: Int = vectorParams.numVlPhysRegisters
+  def vlPregSz: Int = hvp.vlPregSz
+  def vecVLen: Int = vectorParams.vLen
+  def vecELen: Int = vectorParams.eLen
+  def maxVecVL: Int = hvp.maxVecVL
+  def vecVLSz: Int = hvp.vecVLSz
+  def maxVecMembers: Int = vectorParams.maxMembers
+  def ldRespTags: Int = vectorParams.ldRespTags
+  def ldRespTagSz: Int = hvp.ldRespTagSz
+  def stallReportCycles: Int = vectorParams.stallReportCycles
+  def ciiTagBits: Int = vectorParams.ciiTagBits
+  def ciiNumSrcSlots: Int = vectorParams.ciiNumSrcSlots
+  def ssiQueueEntries: Int = vectorParams.ssiQueueEntries
+  def usQueueEntries: Int = vectorParams.usQueueEntries
+  def lcbEntries: Int = vectorParams.lcbEntries
+  def dcacheArbiterMode: String = vectorParams.dcacheArbiterMode
+  def resvPtrSz: Int = hvp.resvPtrSz
+  def enableVecCosimCheck: Boolean = vectorParams.enableVecCosimCheck
+
+  // Delegated from VectorParams (A2): needs aluWidth/coreWidth/lsuWidth,
+  // which a zero-dependency VectorParams can't see. Not new obligations --
+  // only their location moved.
+  val numVlWakeupPorts: Int = if (usingRVV) aluWidth + 1 else 0
+
+  if (usingRVV) {
+    require(numVlPhysRegs >= 1 + coreWidth,
+      s"numVlPhysRegs ($numVlPhysRegs) must be >= 1 + coreWidth ($coreWidth)")
+    require(vectorParams.ldResvMembers * vecVLen / 8 >= lsuWidth * 2,
+      s"ldResvMembers * vecVLen / 8 (${vectorParams.ldResvMembers * vecVLen / 8}) must be " +
+      s">= lsuWidth * 2 (${lsuWidth * 2})")
+  }
+
+  // Sub-flags, so tracks can land independently.
+  val enableVectorArith: Boolean = boomParams.enableVectorArith
+  val vecScalarSnoopEnable: Boolean = boomParams.vecScalarSnoopEnable
+  require(!enableVectorArith || usingRVV, "enableVectorArith requires enableVector")
+  require(!vecScalarSnoopEnable || usingRVV, "vecScalarSnoopEnable requires enableVector")
 
   //************************************
   // Branch Prediction
@@ -357,6 +462,7 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   val COMMIT_LOG_PRINTF   = boomParams.enableCommitLogPrintf // dump commit state, for comparision against ISA sim
   val BRANCH_PRINTF       = boomParams.enableBranchPrintf // dump branch predictor results
   val MEMTRACE_PRINTF     = boomParams.enableMemtracePrintf // dump trace of memory accesses to L1D for debugging
+  val DEBUG_HARNESS       = boomParams.enableDebugHarness // attach BoomCoreHarnessWrapper BlackBox for whisper-cosim DPI bridge
 
   //************************************
   // Other Non/Should-not-be sythesizable modules

@@ -29,7 +29,9 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
   val fpIssueParams = issueParams.find(_.iqType == IQ_FP).get
   val dispatchWidth = fpIssueParams.dispatchWidth
   val numLlPorts = lsuWidth
-  val numWakeupPorts = fpIssueParams.issueWidth + numLlPorts
+  // Caracal (D7): +1 wakeup slot under usingRVV for the vector pipeline's
+  // dedicated scalar-FP writeback (see the added write port/wakeup slot below).
+  val numWakeupPorts = fpIssueParams.issueWidth + numLlPorts + (if (usingRVV) 1 else 0)
   val fpPregSz = log2Ceil(numFpPhysRegs)
 
   val io = IO(new Bundle {
@@ -49,6 +51,14 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
     val wakeups          = Vec(numWakeupPorts, Valid(new Wakeup))
     val wb               = Vec(numWakeupPorts, Valid(new ExeUnitResp(fLen+1)))
 
+    // Caracal: the vector pipeline's single dedicated FP RF read port --
+    // sole driver is VecCiiIssue's `.vf` scalar-FP operand capture -- and its
+    // dedicated scalar-FP destination write port (D7: `vfmv.f.s` and any CII
+    // op with an FP scalar destination). Both usingRVV-gated, absent otherwise.
+    val vec_frf_read_req = if (usingRVV) Some(Input(UInt(maxPregSz.W))) else None
+    val vec_frf_read_rsp = if (usingRVV) Some(Output(UInt(xLen.W))) else None
+    val vec_fp_wb        = if (usingRVV) Some(Input(Valid(new ExeUnitResp(xLen)))) else None
+
     val debug_tsc_reg    = Input(UInt(width=xLen.W))
   })
 
@@ -62,8 +72,21 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
     )).suggestName(s"fp_exe_unit_${w}")
   }
   require (numFrfReadPorts >= 3)
-  val numFrfLogicalReadPorts = fpWidth * 3
-  val numFrfWritePorts = fpWidth + lsuWidth
+  // Caracal: the share of logical FP RF read ports the FPExeUnits themselves
+  // own -- naming it is what lets the two `require(rd_idx == ...)` checks
+  // below keep their current meaning once a non-exe-unit (vector) port exists.
+  val numFrfExeReadPorts = fpWidth * 3
+  val numFrfLogicalReadPorts = numFrfExeReadPorts + (if (usingRVV) 1 else 0)
+  if (usingRVV) {
+    //@req-spec-core.b4
+    // The added vector FP read port must be UNDENIABLE by PartiallyPortedRF's
+    // ascending-logical-index physical-port allocation -- the vec_pipeline_io
+    // seam carries no `ready`, so a denial would be silent. This is what keeps
+    // every existing FPExeUnit's read-port grant, and the `io_squash_iss`
+    // replay it drives, exactly as it behaves in the vectors-off baseline.
+    require(numFrfReadPorts + 1 >= numFrfLogicalReadPorts)
+  }
+  val numFrfWritePorts = fpWidth + lsuWidth + (if (usingRVV) 1 else 0)
 
   val issue_unit     = IssueUnit(fpIssueParams, numWakeupPorts, false, false)
   issue_unit.suggestName("fp_issue_unit")
@@ -76,7 +99,7 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
     numFrfLogicalReadPorts,
     numFpPhysRegs,
     numFrfLogicalReadPorts,
-    numFrfReadPorts,
+    numFrfReadPorts + (if (usingRVV) 1 else 0),
     numFrfWritePorts,
     fregfileBankedWriteArray,
     "Floating Point"
@@ -137,7 +160,18 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
       rd_idx += 1
     }
   }
-  require(rd_idx == numFrfLogicalReadPorts)
+  require(rd_idx == numFrfExeReadPorts)
+  if (usingRVV) {
+    // Caracal: the vector pipeline's dedicated, unarbitrated FP read port --
+    // sole consumer is VecCiiIssue's `.vf` operand capture. Appended LAST
+    // (index numFrfExeReadPorts) so it can never take a physical port away
+    // from an FPExeUnit: PartiallyPortedRF allocates in ascending logical
+    // index order. `valid` is tied true.B because the seam carries no valid
+    // bit -- this is a dedicated, unarbitrated port, not a shared one.
+    fregfile.io.arb_read_reqs(numFrfExeReadPorts).valid := true.B
+    fregfile.io.arb_read_reqs(numFrfExeReadPorts).bits  := io.vec_frf_read_req.get
+    assert(fregfile.io.arb_read_reqs(numFrfExeReadPorts).ready)
+  }
 
   //-------------------------------------------------------------
   // **** Register Read Stage ****
@@ -151,7 +185,27 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
       rd_idx += 1
     }
   }
-  require(rd_idx == numFrfLogicalReadPorts)
+  require(rd_idx == numFrfExeReadPorts)
+  if (usingRVV) {
+    // Caracal: response-cycle forward for the added read port. `fregfile`
+    // bottoms out in a `Mem` read of a `RegNext`-ed address with NO
+    // read-during-write forwarding; `fp_bypasses` covers that gap only for
+    // the exe units (`unit.io_rrd_frf_bypasses`), so this delta builds the
+    // forward locally for its own consumer instead. A write presented in the
+    // address cycle is already reflected in the response (it lands at the
+    // intervening clock edge); a write presented in the response cycle is
+    // not, and that is the case forwarded here.
+    val vec_frf_rd_addr  = RegNext(io.vec_frf_read_req.get)
+    val vec_frf_wr_hits  = fregfile.io.write_ports.map(w => w.valid && w.bits.addr === vec_frf_rd_addr)
+    assert(PopCount(vec_frf_wr_hits) <= 1.U)
+    val vec_frf_fwd_data = Mux1H(vec_frf_wr_hits, fregfile.io.write_ports.map(_.bits.data))
+    val vec_frf_resp     = Mux(vec_frf_wr_hits.reduce(_||_), vec_frf_fwd_data,
+                                fregfile.io.rrd_read_resps(numFrfExeReadPorts))
+    // `fregfile` stores hardfloat-recoded values; the vec_pipeline_io seam's
+    // stated convention is architectural (IEEE-754) data, so unrecode once,
+    // after the forward mux.
+    io.vec_frf_read_rsp.get := ieee(vec_frf_resp)
+  }
 
 
   //-------------------------------------------------------------
@@ -209,6 +263,23 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
     fregfile.io.write_ports(w_cnt).bits.data := eu.io_fpu_resp.bits.data
     w_cnt += 1
   }
+  if (usingRVV) {
+    // Caracal (D7): dedicated scalar-FP destination write port for the vector
+    // pipeline's CII writeback (`vfmv.f.s`, and any CII op whose destination
+    // is an FP scalar register). No arbitration: VecCiiWriteback drives this
+    // beat fire-and-forget with no back-pressure, and an Arbiter input can be
+    // denied with no provable bound -- see the amended reject list in
+    // FpPipeline.nlhdl.scala. No RegNext: the CII beat has already crossed a
+    // queue and a registered writeback stage inside VecCiiWriteback.
+    // `v_eew` is the recode tag (SEW-derived; a vfmv.f.s result is SEW wide),
+    // the same shape the long-latency path derives from `mem_size`.
+    fregfile.io.write_ports(w_cnt).valid     := io.vec_fp_wb.get.valid &&
+                                                 io.vec_fp_wb.get.bits.uop.dst_rtype === RT_FLT
+    fregfile.io.write_ports(w_cnt).bits.addr := io.vec_fp_wb.get.bits.uop.pdst
+    fregfile.io.write_ports(w_cnt).bits.data := recode(io.vec_fp_wb.get.bits.data,
+                                                        io.vec_fp_wb.get.bits.uop.v_eew.get =/= 2.U)
+    w_cnt += 1
+  }
   for (w <- 0 until fpWidth) {
     fp_bypasses(w).valid := exe_units(w).io_fpu_resp.valid && exe_units(w).io_fpu_resp.bits.uop.dst_rtype === RT_FLT
     fp_bypasses(w).bits  := exe_units(w).io_fpu_resp.bits
@@ -259,6 +330,29 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
       RegNext(io.ll_wports(i).bits.data),
       RegNext(io.ll_wports(i).bits.uop.mem_size =/= 2.U)
     )
+    idx += 1
+  }
+  if (usingRVV) {
+    //@req-spec-vrf.e4
+    // Caracal (D7): the wakeup slot that goes with the added write port above,
+    // appended LAST so no existing wakeup/io.wb index is renumbered. This
+    // slot IS the FP-network tap: `.vf` scalar feeders of a vector issue slot
+    // wake on this same, unmodified `fp_wakeups`/`io.wakeups` wire -- no
+    // second wakeup network is added, here or anywhere else in this file.
+    // Same-cycle wakeup-and-write (no RegNext) is what makes
+    // `bypassable := false` correct: the earliest a consumer woken at T can
+    // present a read address is T+1, and the RF reads RegNext-ed addresses,
+    // so data returns at T+2 -- strictly after this write has landed.
+    fp_wakeups(idx).valid    := io.vec_fp_wb.get.valid &&
+                                 io.vec_fp_wb.get.bits.uop.dst_rtype === RT_FLT
+    fp_wakeups(idx).bits.uop := io.vec_fp_wb.get.bits.uop
+    fp_wakeups(idx).bits.speculative_mask := 0.U
+    fp_wakeups(idx).bits.bypassable := false.B
+    fp_wakeups(idx).bits.rebusy := false.B
+
+    io.wb(idx) := io.vec_fp_wb.get
+    io.wb(idx).bits.data := recode(io.vec_fp_wb.get.bits.data,
+                                   io.vec_fp_wb.get.bits.uop.v_eew.get =/= 2.U)
     idx += 1
   }
   require (idx == numWakeupPorts)
