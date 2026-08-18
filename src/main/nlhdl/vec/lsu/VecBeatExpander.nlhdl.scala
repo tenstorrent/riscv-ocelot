@@ -359,6 +359,159 @@ from Tenstorrent Inc.
   passes belongs to VecLsu, which owns the committed flag; this module only ever
   advances a cursor.
 
+  ---- THE LCAM PRESENTATION IS A PROPERTY OF THE RANGE, NOT OF A BEAT ----
+
+  //@req-spec-lsu.j3
+  This paragraph was ABSENT, and its absence is the direct cause of a suite-wide
+  defect: the sentence above says "on its FIRST beat only" and nothing said WHICH
+  lane holds the first beat, or what happens if that lane does not fire. It was
+  implemented as `(i == 0).B && (us_cursor === 0.U)` — the duty pinned to lane
+  INDEX 0 while the cursor is advanced by ANY lane. At `nLanes = 2` that is a
+  coin flip on the first cycle of every unit-stride vector store. Measured on
+  `ms4p9_vl`: at 3735000 both store lanes are refused and both load lanes
+  granted; at 3737000 LANE 1's grant advances the shared cursor; at 3739000
+  `isFirstBeat` has fallen, so lane 0 is finally granted carrying `uses_lcam=0`.
+  The presentation is lost forever.
+  **Lane 0 alone can discharge the duty; lane 1 can destroy the opportunity; and
+  nothing remembers the duty was owed.**
+
+  THE RULE. The presentation duty belongs to the RANGE. Exactly one GRANTED
+  pass-1 beat per range carries `uses_lcam`, and it must be the first beat that
+  actually FIRES, not the beat held by a particular lane index. Two corollaries,
+  both of which the old form violated:
+    - the duty must be expressible per lane. Identify beat 0 by THIS LANE'S OWN
+      start element (`usStartElem(i)`, already computed as the serial-prefix
+      input to lane `i`), never by the lane index. At most one FIRING lane can
+      start at element 0: if lane 0 fires it advances, so lane 1 starts above 0;
+      if lane 0 does not fire, lane 1 inherits 0 and correctly owns the duty.
+    - a shared cursor advanced by any lane must not retract another lane's
+      pending presentation.
+
+  ⚠ THIS PARAGRAPH WAS CORRECT AND THE IMPLEMENTATION DEVIATED FROM IT. When the
+  duty moved off `usStartElem(i)` onto the latch plus a serial-prefix accumulator,
+  the "beat that actually FIRES" requirement was silently dropped: the accumulator
+  suppressed the later lane on `dutyThisLane`, which is built from `laneWillReq`
+  and carries NO `req.ready` term. That expresses "this lane was CHOSEN", not
+  "this lane carried it". Lane 0 refused + lane 1 granted ⇒ lane 0 holds the duty
+  and presents nothing, lane 1 is suppressed and fires anyway, and pass 1 ends
+  still owing. Fired `:1658` on five rows (`ms2p5_loadblock`, `ms4p5_vle64_2`,
+  `ms4p6_vle32_2`, `ms4p6_vle32_8`, `ms4p9_vl`).
+  ⇒ ANY implementation of this rule -- `usStartElem`, latch+accumulator, or a
+  priority encoder -- MUST couple the suppression to `io.req(i).fire`, not to the
+  selection. `usStartElem(i)` satisfied this only incidentally, because a
+  non-firing lane 0 does not advance the cursor and so lane 1 inherits element 0;
+  any form that keys off a CHOICE has to state the coupling explicitly.
+  ⇒ AND THIS IS WHY THE `PriorityEncoder` FOLLOW-UP WAS REJECTED rather than
+  deferred: it picks the lane from mask state, that lane can still be refused, so
+  it needs the same fire-coupling -- which reintroduces the `req.ready` dependence
+  it was proposed to remove. Uniqueness-by-inspection is worth less than
+  correctness-by-coupling. Do not re-propose it as a free improvement.
+
+  ⇒ **AND THEREFORE THE PRESENTED ADDRESS MUST COME FROM THE RANGE, NEVER FROM
+  THE BEAT CARRYING IT.** This is the invariant the old lane-0 pin preserved BY
+  ACCIDENT, and it is the trap waiting for anyone who makes the duty mobile
+  without noticing. `VecLsu` sets the candidate's `paddr` from the granted
+  beat's `vaddr`, which equals the range base ONLY when the duty rides element 0.
+  Let it ride a later beat and `dwordBounds(paddr, len)` describes a window
+  shifted forward by the elements already consumed: it MISSES loads to the low
+  part of the range and FALSELY MATCHES past its end. That is worse than losing
+  the presentation, because a lost presentation is silent absence while this is a
+  confident wrong answer. Take the base from the staged `VecRangeEntry.base`,
+  which is the range's own effective base address and is already in hand at that
+  seam.
+
+  ⚠ AND NOTE WHAT THE STAGED BASE ACTUALLY CONTAINS, because it is NOT one thing.
+  `VecLsu` REWRITES the staged range entry's `base` to the translated PHYSICAL
+  address once the first pass-1 beat's `xlate_resp` returns. So the base is
+  VIRTUAL before that point and PHYSICAL after it, and which one a presentation
+  sees depends on WHICH BEAT carried the duty — element 0's beat sees virtual, a
+  later beat (the skip case) may see physical. An earlier note here said "virtual,
+  exactly as the beat's `vaddr` was"; that is only half true and is corrected
+  here. It is benign today because these tests are bare-mode with VA == PA, and
+  the physical one is arguably the more correct of the two, but a value whose
+  address space depends on arbitration timing is not something a later reader can
+  reason about. This SHARPENS the untranslated-`paddr` open item rather than
+  belonging to it: the real resolution is to present the range base AFTER
+  translation, which is the same design question — a presentation that must wait
+  for `xlate_resp` is a RETRYABLE PRESENTATION, the exact shape deliberately
+  removed from this fix — and it must be decided as one.
+  ⇒ **AND THAT IS THE TRAP: it must NOT be decided piecemeal by whoever next
+  touches `cand.paddr`.** The change looks local and one-line from where that
+  code sits — swap the base for the translated one — and it silently
+  reintroduces a retry path into a seam whose whole design rests on the
+  presentation never needing one. Anyone reaching for that edit is holding one
+  end of an open architectural question, not fixing an oversight. Decide the
+  retryable-presentation question first, in one place, then change `cand.paddr`
+  as a consequence of the decision.
+
+  AND A SKIP CAN STILL STEAL IT, WHICH IS WHY A LATCH IS REQUIRED AND NOT ONLY A
+  PER-LANE TERM. `advOk = laneSel && Mux(isSkip, true, req.fire)` — a SKIPPED
+  element advances the cursor with NO request and therefore NO presentation. A
+  masked unit-stride store whose element 0 is inactive loses the duty even under
+  the corrected per-lane term. So the range carries an `lcamOwed` latch: set when
+  the US range is staged for pass 1, ANDed into `uses_lcam` on any firing pass-1
+  beat, cleared when the candidate fires, and re-armed on `rob_flush`/branch kill
+  so a squashed store cannot strand it. Reset value is OWED, which is also the
+  safe direction for any state the design cannot account for.
+
+  ONE BIT PER DIRECTION, NOT ONE PER STQ ROW. `VecLsu` stages exactly one US
+  range per direction — `st_US_ADDR_Q.io.rd(0)` at `stUsDrainPtr`, which advances
+  only at `us_pop`, and `us_pop` for a store requires the write pass. Pass 1 of
+  range N therefore strictly precedes pass 2 of range N, which strictly precedes
+  the staging of range N+1, so two US ranges can never be in pass 1 together and
+  back-to-back stores are already serialized by the drain pointer. A per-row
+  array would spend `numStqEntries` bits re-encoding a mutual exclusion one
+  pointer already guarantees. If the drain pointer is ever allowed to run ahead,
+  this is the decision to revisit, and `lcamOwedSingleRange` is the assertion
+  that will catch it.
+
+  ⚠ THE LATCH SELECTS WHICH BEAT CARRIES THE DUTY. IT MUST NOT BLOCK ANYTHING.
+  An earlier design for this made the latch an INTERLOCK — "the write pass may
+  not be entered while a presentation is owed". IT WAS REJECTED FOR TWO
+  INDEPENDENT REASONS, AND EITHER ALONE IS SUFFICIENT: it DEADLOCKS (below), and
+  it COSTS A STALL on every unit-stride vector store even when it does not.
+  A spec correction is required to leave the design FASTER, not merely correct;
+  the selector form adds one comparison and one AND term, stalls nothing, and
+  refuses no grant, while the interlock held a pass and added a starvation door
+  that then needed arbiter anti-starvation priority to reopen. When two forms are
+  both correct, that difference decides it — and here only one of them is even
+  correct.
+
+  THE DEADLOCK, precisely, because it must not be re-derived. `VecLsu.scala:802` promotes to the write pass
+  when the cursor reaches the end of the range; block that and the cursor is
+  parked at the end with the write pass still false, and a lane fires only while
+  bytes remain (`res.fire`), so NO further pass-1 beat is ever produced. The
+  retry has nothing left to ride: the store never drains, `stq_head` never
+  advances, commit blocks. On a single-beat range that is one cycle from staging
+  to wedged. **A liveness argument must show an opportunity still EXISTS, not
+  merely that nothing blocks it — the interlock satisfied the second and failed
+  the first.**
+  ⇒ THE GENERAL LESSON, WORTH MORE THAN THIS DEFECT: **where a duty rides a
+  FINITE EVENT STREAM, an interlock that stalls the stream can never be the
+  enforcement mechanism** — stalling the stream removes the very opportunity the
+  duty needs, so the interlock destroys what it was meant to protect. DETECT, DO
+  NOT BLOCK. Keep the safety property as an ASSERTION on the state the interlock
+  would have gated (`!(write_pass && lcam_owed)`): it catches exactly the same
+  violation, at the same instant, and cannot wedge.
+
+  ARM BY IDENTITY, NOT BY EVENT, AND TAG THE LATCH. Key the arm on the staged
+  entry's `stq_idx`/`ldq_idx` CHANGING, never on one retire event: a range
+  retired by any other path (a trimmed `vleff` retires without a `us_pop`) would
+  otherwise leave the next range stranded with a CLEAR latch, silently
+  reintroducing the lane-0 defect for every range after the first. Arm
+  unconditionally on an identity change, never `when (!owed)`. Carry the tag and
+  assert at the clear that the firing candidate's `stq_idx` matches it, so a
+  presentation can never discharge a different range's duty.
+
+  With the latch as a pure selector, termination is trivial and needs no
+  arbiter anti-starvation and no write-pass coupling: if pass 1 has at least one
+  firing beat, the duty rides the first one; an arbiter refusal means no fire
+  hence no advance, so the range re-offers the duty next cycle by construction.
+  If pass 1 has NO firing beat, every element was skipped, the store touches no
+  memory and owes no ordering — clear `lcamOwed` at `us_pop` and assert the range
+  had no active bytes. `lcamOwedWatchdog` (4096 default, `0` disables and emits
+  no register) is the tripwire on that last piece of reasoning.
+
   ---- Faults ----
 
   //@req-spec-lsu.f13
@@ -407,8 +560,18 @@ beat n+1's descriptor while beat n is being granted (a one-deep registered
 look-ahead, invalidated on `kill` or a head change) rather than inserting a stall
 state. Second, `nLanes = 2` computes the two lanes as a serial prefix over the
 same cursor, lane 1 starting where lane 0 ended; that adder chain is the only
-cross-lane dependency and must not become an arbitration, since both lanes are
-the same drain.
+cross-lane dependency in the ADDRESS COMPOSITION and must not become an
+arbitration there.
+
+===> CORRECTION: the premise "since both lanes are the same drain" is FALSE, and
+believing it is what made a lane-0-pinned duty look safe. The two lanes are the
+same drain in the sense that they share one cursor, but they are NOT granted
+together: `VecDcacheArbiter` has independent per-lane `ready`, and it is
+MEASURED that lane 1 was granted while lane 0 was refused in the same cycle
+(`ms4p9_vl`, 3737000). Any reasoning of the form "lane 0 will get its turn
+because the lanes move together" is therefore unsound. The lanes share STATE and
+are arbitrated INDEPENDENTLY, which is the worst combination and the reason the
+lane-discipline rule below exists.
 
 The critical path is queue-head read to `dmem.req`: mask priority encode, a 5-way
 min over byte counts bounded by `vLenBytes`, one add, and for stores a

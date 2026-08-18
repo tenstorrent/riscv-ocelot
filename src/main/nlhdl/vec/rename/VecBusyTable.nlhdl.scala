@@ -276,6 +276,31 @@ from Tenstorrent Inc.
   ---- 5. Source reads and per-operand aggregation ----
 
   //@req-spec-rename.g11
+  ===> EVERY SOURCE READ SEES THIS CYCLE'S CLEARS **AND THIS CYCLE'S OLDER-LANE
+       SETS**. Lane `i` reads `busy_table_clr | (OR of the set masks of lanes
+       0..i-1)`, never `busy_table` or `busy_table_clr` alone.
+       The reason is the RAW dependency INSIDE one rename group: lane `i`'s source
+       may be produced by an older lane of the SAME group, whose set has not
+       reached the register yet. The map table already bypasses that producer's
+       `pvdest` into this lane's `pvs*`, so the PRN is right — and reading the
+       table alone then answers "not busy" for a physical register NOTHING HAS
+       WRITTEN. The consumer issues immediately and reads the previous tenant's
+       data. Nothing downstream can catch it: the PRN is legal, the group is
+       complete, and the value is simply the wrong instruction's.
+       BOOM's scalar `RenameBusyTable` carries exactly this bypass
+       (`prs1_was_bypassed`, by architectural name); this module needs it too, and
+       compares PHYSICAL PRNs instead, which is exact — a lane's set mask already
+       names precisely the PRNs it is claiming, group members and `pvtmp` included.
+       ⚠ OLDER LANES ONLY. Folding in a lane's OWN set makes every op read its own
+       freshly-allocated destination as a busy source. And the precedence is the
+       same SET-BEATS-CLEAR of part 4: a PRN woken and re-allocated in one cycle
+       reads BUSY, because it belongs to the new tenant.
+       Measured on `conv1d-vector` (MegaBoom): `vl2re32.v v14` and its consumer
+       `vmacc.vv v10,v14,v12` renamed in one group; the vmacc read `pvs1_busy=0`,
+       issued ~350 cycles before that load's `group_done`, and multiplied a stale
+       v14 — while its other source, renamed in an earlier group, was correctly
+       held busy. One operand stale, one correct, from one missing bypass.
+
   Per lane `i` and per source group, read the busy bit of EACH MEMBER:
   `busy_table(io.ren_uops(i).pvs1(j))` for every `j` in `pvs1`, likewise `pvs2`,
   `pvs3`, and the mask `pvm` — which is a single register, never a group, so it

@@ -194,7 +194,9 @@ class VecRangeAgen(val isStore: Boolean = false)(implicit p: Parameters) extends
   when (io.range.valid) {
     VecTrace.trace("VecRangeAgen", "range_push", req,
       Seq(("base", scalar.base), ("len", totalBytes), ("eew", req.v_eew.get),
-          ("v_emul", req.v_emul.get), ("mask_pop", PopCount(io.mask.bits))))
+          ("v_emul", req.v_emul.get), ("mask_pop", PopCount(io.mask.bits)),
+          ("q_idx", GetRealLSQIdx(if (isStore) req.stq_idx else req.ldq_idx)),
+          ("resv_base", io.resv_resp(0).base)))
   }
   when (io.req.valid && !killed && zeroLen) {
     VecTrace.trace("VecRangeAgen", "zero_length", req, Seq(("vl", scalar.vl)))

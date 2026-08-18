@@ -136,6 +136,21 @@ class VecIssueSlot(
 
   val active_valid: Bool = io.in_uop.valid || slot_valid
 
+  //@req-spec-issue.g17
+  // THE READINESS TRACKERS FOLLOW THE REGISTER OCCUPANT, NOT `active_uop`.
+  // `request`, `iss_uop` and `scalar_operands_ready` are all `slot_uop`, so the
+  // vector readiness that gates them must be `slot_uop` too; feeding the trackers
+  // `active_uop` made them describe the INCOMING occupant on every collapse-shift
+  // cycle and let an op issue against the next op's operand state (see
+  // VecGroupReady's gate comment for the conv1d-vector measurement).
+  // Nothing is lost by dropping the incoming uop here: on the fill cycle the
+  // tracker loads `io.in_member_rdy`, which the source slot exported WITH its own
+  // same-cycle hits folded in, and from the next cycle `slot_uop` IS that uop, so
+  // its PRNs are compared from then on. A slot taking a FRESH DISPATCH has
+  // `slot_valid` low that cycle, so `used` is false and `request` was already low.
+  val track_uop: MicroOp = slot_uop
+  val track_valid: Bool  = slot_valid
+
   // =========================================================================
   // ---- 2. Scalar feeders: baseline comparators, verbatim per network ----
   // =========================================================================
@@ -210,6 +225,41 @@ class VecIssueSlot(
   //@req-spec-rename.g2
   val scalar_operands_ready = !slot_uop.prs1_busy && !slot_uop.prs2_busy && !slot_uop.pvl_busy.get
 
+  //@req-spec-issue.g17
+  // ⚠ DO NOT ISSUE ON A CYCLE THIS SLOT IS BEING RE-FILLED. `request`, `iss_uop`
+  // and `scalar_operands_ready` all describe the REGISTER occupant (`slot_uop`),
+  // but every VECTOR readiness bit describes `active_uop` -- which is the INCOMING
+  // occupant whenever `io.in_uop.valid`, because the five VecGroupReady instances
+  // take their `prns`, `members` and `used` from it (they must: those inputs set up
+  // NEXT cycle's tracking) and because `group_all_rdy` reads `member_rdy_next`,
+  // which on a load cycle IS the incoming occupant's readiness.
+  // So on a collapse-shift cycle the outgoing occupant can be granted on the
+  // strength of the INCOMING occupant's operands. Measured on conv1d-vector
+  // (MegaBoom): `vmacc.vv v10,v14,v12` was granted with `vs3_mem=1` while its own
+  // `emul=2` -- the incoming uop's member count -- so the AND-reduce ignored
+  // members 1..7, and it read a `pvs3` whose member 0 was still busy, ~3000 trace
+  // lines before its producer's writeback. The result was arithmetically perfect
+  // over a stale old-dest, which is why nothing downstream could catch it.
+  // VecGroupReady already documents the mirror image of this hazard for its
+  // `out_member_rdy` EXPORT (":103") and fixes it there; the ISSUE GATE was left
+  // reading the incoming occupant.
+  // ⚠ AND THE ONE-LINE FIX DOES NOT WORK. Gating `request` on `!io.in_uop.valid`
+  // (tried, measured) moves conv1d-vector's first failure EARLIER, to step 8142 on
+  // VecScalarOperandRead's `lateWritebackObserved` assertion: delaying a grant by
+  // the shift cycle lands the base-GPR read in the window that module's forward
+  // logic is explicitly NOT calibrated for (see its :100 block). So this needs the
+  // REGISTER/INCOMING SPLIT done properly instead:
+  //   - `member_hit` must be compared against the REGISTER occupant's prns for the
+  //     gate and the current occupant's update, and against the INCOMING prns for
+  //     the readiness arriving this cycle -- two comparator sets, which is what
+  //     collapsing everything onto `active_uop` was avoiding;
+  //   - `group_all_rdy` must use `members`/`used` of the REGISTER occupant;
+  //   - and note the related hole in VecGroupReady:103, where `out_member_rdy`
+  //     drops `member_hit` on a load cycle (`&& !io.load`), so a wakeup arriving
+  //     for the OUTGOING occupant on a shift cycle is observed by nobody -- a lost
+  //     group_done pulse, i.e. a stuck slot, not a wrong value.
+  // That is a design change with an nlhdl spec update, not a one-line guard.
+
   // ---- 3. Vector operands: five matchers, one bit each ----
   //@req-spec-issue.g11
   val rdy_vs1 = Module(new VecGroupReady(isMask = false))
@@ -233,16 +283,16 @@ class VecIssueSlot(
   rdy_vm.io.load  := io.in_uop.valid
   rdy_vold.foreach(_.io.load := io.in_uop.valid)
 
-  rdy_vs1.io.prns    := active_uop.pvs1.get
-  rdy_vs1.io.members.get := active_uop.v_emul.get
-  rdy_vs2.io.prns    := active_uop.pvs2.get
-  rdy_vs2.io.members.get := active_uop.v_emul.get
-  rdy_vm.io.prns     := VecInit(active_uop.pvm.get)
+  rdy_vs1.io.prns    := track_uop.pvs1.get
+  rdy_vs1.io.members.get := track_uop.v_emul.get
+  rdy_vs2.io.prns    := track_uop.pvs2.get
+  rdy_vs2.io.members.get := track_uop.v_emul.get
+  rdy_vm.io.prns     := VecInit(track_uop.pvm.get)
 
   //@req-spec-issue.g29
   //@req-spec-issue.g30
   //@req-spec-issue.g31
-  rdy_vm.io.used := active_valid && active_uop.v_is_masked.get
+  rdy_vm.io.used := track_valid && track_uop.v_is_masked.get
 
   rdy_vs1.io.in_member_rdy := io.in_member_rdy.vs1_rdy
   rdy_vs2.io.in_member_rdy := io.in_member_rdy.vs2_rdy
@@ -255,28 +305,28 @@ class VecIssueSlot(
   //@req-spec-issue.g32
   //@req-spec-issue.c14
   //@req-spec-lsu.l2
-  rdy_vs1.io.used := active_valid && active_uop.v_uses_vs1.get
-  rdy_vs2.io.used := active_valid && active_uop.v_uses_vs2.get
+  rdy_vs1.io.used := track_valid && track_uop.v_uses_vs1.get
+  rdy_vs2.io.used := track_valid && track_uop.v_uses_vs2.get
 
   // ---- 7. pvtmp: how the consumer half of a shared op wakes ----
   //@req-spec-issue.c11
   //@req-spec-rob.d12
   //@req-spec-lsu.l5
-  val vs3_selects_tmp = if (isAluSlot) active_uop.is_shared.get && active_uop.uses_ldq else false.B
+  val vs3_selects_tmp = if (isAluSlot) track_uop.is_shared.get && track_uop.uses_ldq else false.B
   if (isAluSlot) {
-    rdy_vs3.io.prns := Mux(vs3_selects_tmp, active_uop.pvtmp.get, active_uop.pvs3.get)
-    rdy_vs3.io.members.get := active_uop.v_emul.get
+    rdy_vs3.io.prns := Mux(vs3_selects_tmp, track_uop.pvtmp.get, track_uop.pvs3.get)
+    rdy_vs3.io.members.get := track_uop.v_emul.get
     //@req-spec-issue.g32
-    rdy_vs3.io.used := active_valid && (vs3_selects_tmp || active_uop.v_uses_vs3.get)
+    rdy_vs3.io.used := track_valid && (vs3_selects_tmp || track_uop.v_uses_vs3.get)
 
     rdy_vs3.io.in_member_rdy := Mux(vs3_selects_tmp, io.in_member_rdy.vtmp_rdy, io.in_member_rdy.vs3_rdy)
     io.out_member_rdy.vs3_rdy  := Mux(vs3_selects_tmp, io.in_member_rdy.vs3_rdy, rdy_vs3.io.out_member_rdy)
     io.out_member_rdy.vtmp_rdy := Mux(vs3_selects_tmp, rdy_vs3.io.out_member_rdy, io.in_member_rdy.vtmp_rdy)
   } else if (isLoadSlot) {
-    rdy_vs3.io.prns    := active_uop.pvs3.get
-    rdy_vs3.io.members.get := active_uop.v_emul.get
+    rdy_vs3.io.prns    := track_uop.pvs3.get
+    rdy_vs3.io.members.get := track_uop.v_emul.get
     //@req-spec-issue.g32
-    rdy_vs3.io.used := active_valid && active_uop.v_uses_vs3.get && !active_uop.is_shared.get
+    rdy_vs3.io.used := track_valid && track_uop.v_uses_vs3.get && !track_uop.is_shared.get
     rdy_vs3.io.in_member_rdy := io.in_member_rdy.vs3_rdy
     io.out_member_rdy.vs3_rdy  := rdy_vs3.io.out_member_rdy
     io.out_member_rdy.vtmp_rdy := io.in_member_rdy.vtmp_rdy
@@ -298,10 +348,10 @@ class VecIssueSlot(
   // ---- 4. rdy_vold: `used`, and part 11's conservative gate ----
   //@req-spec-issue.g38
   rdy_vold.foreach { m =>
-    m.io.prns    := active_uop.stale_pvdest.get
-    m.io.members.get := active_uop.v_emul.get
+    m.io.prns    := track_uop.stale_pvdest.get
+    m.io.members.get := track_uop.v_emul.get
     //@req-spec-issue.g39
-    m.io.used := active_valid && active_uop.dst_rtype === RT_VEC
+    m.io.used := track_valid && track_uop.dst_rtype === RT_VEC
     m.io.in_member_rdy := io.in_member_rdy.vold_rdy
     io.out_member_rdy.vold_rdy := m.io.out_member_rdy
   }
@@ -310,7 +360,7 @@ class VecIssueSlot(
   }
 
   rdy_vold.foreach { m =>
-    assert(!m.io.used || (active_uop.v_emul.get >= 1.U && active_uop.v_emul.get <= maxVecMembers.U),
+    assert(!m.io.used || (track_uop.v_emul.get >= 1.U && track_uop.v_emul.get <= maxVecMembers.U),
       "VecIssueSlot: rdy_vold used but v_emul out of range 1..maxVecMembers")
   }
 
@@ -399,6 +449,19 @@ class VecIssueSlot(
     val vector_operands_ready =
       rdy_vs1.io.ready && rdy_vs2.io.ready && rdy_vs3.io.ready && rdy_vm.io.ready && rdy_vold.get.io.ready
     request := slot_valid && !slot_uop.iw_issued && scalar_operands_ready && vector_operands_ready
+
+    // Why this op was allowed to issue. An operand that reads ready with a busy
+    // producer is either (a) woken -- see VecGroupReady's `wake` -- or (b) never
+    // tracked at all, because `used` was false or `members` collapsed the
+    // AND-reduce. This line separates those without another build.
+    when (io.grant) {
+      VecTrace.trace("VecIssueSlot", "grant_rdy", slot_uop, Seq(
+        ("vs1", rdy_vs1.io.ready), ("vs2", rdy_vs2.io.ready), ("vs3", rdy_vs3.io.ready),
+        ("vm", rdy_vm.io.ready), ("vold", rdy_vold.get.io.ready),
+        ("vs3_used", rdy_vs3.io.used), ("vs3_mem", rdy_vs3.io.members.get),
+        ("uses_vs3", slot_uop.v_uses_vs3.get), ("emul", slot_uop.v_emul.get),
+        ("vs3_rdy_mask", rdy_vs3.io.out_member_rdy.asUInt)))
+    }
 
     io.iss_uop := slot_uop
 

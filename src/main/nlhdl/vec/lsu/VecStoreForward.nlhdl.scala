@@ -148,6 +148,44 @@ from Tenstorrent Inc.
   fully forward". Reuses the LSU's existing suppression (`io.dmem.s1_kill`,
   `ldq_executed` left clear); no new replay mechanism.
 
+  ⇒ `data_filled` BELONGS TO THE FORWARD POOL ONLY, NEVER THE ADDRESS POOL, AND
+  THE TWO POOLS DIFFERING IS HOW `io.replay` IS NORMALLY PRODUCED. This is the
+  consumer side of the principle stated in `VecCrossLsuSnoop.nlhdl` para 2:
+  publishing an address for ORDERING is a different duty from reading data for
+  FORWARDING. Concretely — `candValidBits`, which feeds the ADDRESS pool, is
+  UNGATED by `data_filled`; only forward-pool membership is gated. An older store
+  whose data half is not yet in `st_*_DATA_Q` then produces
+  `matchFound && !forwarderFound`, which is exactly `!sameWinner` ->
+  `!attemptForward` -> `io.replay`, while `vst_match` still kills the D$ access.
+  Nothing new is required: this is the "match, but come back later" answer that a
+  retracted paragraph of `VecCrossLsuSnoop.nlhdl` claimed did not exist, and it
+  has been wired here all along.
+
+  ⚠ "COME BACK LATER" HAS NO BOUND, AND THAT IS DELIBERATE, SO IT MUST BE
+  DETECTED. The scalar arm of replay-eligibility is unconditionally true while
+  forward-pool membership requires `data_filled`, so a scalar load matching a store
+  whose data half NEVER fills replays forever. Measured: 1365 replays of one
+  `ldq_idx`, ending only when the simulation died, with no assertion anywhere — the
+  cause was upstream (a store stuck in its write pass, so its data was never
+  enqueued), and the load was doing exactly what this paragraph specifies.
+  **Do NOT bound the replay and do NOT relax the `data_filled` gate.** A cap would
+  convert an unbounded stall into a wrong result or a different failure and would
+  paper over the upstream defect; dropping the gate would trade a livelock for
+  silent wrong data, which is the worse direction — a livelock at least stops.
+  Instead carry a WATCHDOG that counts REPEAT replays of the same `ldq_idx` (not
+  consecutive cycles: the load re-enters through the LSU every few cycles, so a
+  cycle counter resets and never fires), default 4096, `0` disabling it and emitting
+  no register. It changes no behaviour. A detector that never fires is the intended
+  outcome — its value is that the failure it names was previously invisible, and it
+  points the reader upstream at the store's fill state rather than at the load.
+
+  AND `data_filled` MUST BE READ LIVE, AT THE SEARCH. It means "filled NOW", not
+  "was filled when the candidate was granted". A value sampled at grant to
+  protect a read that happens many cycles later is the frozen-vs-live confusion
+  that produced the ordering loss on the publishing side; `fwdCandFilledIsLive`
+  asserts the candidate's bit still equals the queue's own `filled_vec` at the
+  cycle of the search.
+
   `io.known_overlap` — Valid out, the overlapped store's `stq_idx` and
   `is_unit_stride`: the KNOWN classification of paragraph 2, published for
   VecOrderHold so the hold and the forward run off ONE match rather than two
@@ -169,8 +207,23 @@ from Tenstorrent Inc.
 
   Two cycles wide, reusing baseline BOOM's forward timing exactly. In the SEARCH
   cycle it takes `io.ld_search` and `io.snoop_cand`, selects the winning store,
-  decides forwardability, and issues the data-queue read — the read index comes
-  combinationally from the winner's `queue_idx`, so no cycle is spent finding it.
+  decides forwardability, and issues the data-queue read — the read index is
+  derived combinationally, so no cycle is spent finding it.
+
+  THE READ INDEX IS PER-CLASS AND `queue_idx` IS THE SSI FORM ONLY. An SSI forward
+  reads at the winner's `queue_idx`; a US forward reads at `us_data_base + member`
+  (§4). `queue_idx` on a range entry addresses the ADDRESS queue and is meaningless
+  as a `st_US_DATA_Q` index, so a shared consumer taking `queue_idx` for both is
+  always right for SSI and always wrong for US. An earlier revision of this
+  paragraph named `queue_idx` unconditionally while §4 stated the US form
+  correctly, and the RTL implemented this paragraph: the two halves of one spec
+  disagreed and the wrong half was the one a reader could act on in a single line.
+  State the class split HERE, at the site that issues the read, not only in §4.
+
+  The member index and the intra-member byte offset are the SAME subtraction split
+  at `log2(vLenBytes)` — member above, byte offset below — computed once and shared
+  with the straddle check, so the forward read and the coverage test cannot drift
+  onto different members.
   In the RESPONSE cycle the payload returns, is aligned, and drives `io.fwd_resp`
   or `io.fwd_beat` in the same cycle baseline BOOM drives `wb_ldst_forward_valid`
   and its `LoadGen`. The registers between are the pipelined search context only —
@@ -302,9 +355,22 @@ from Tenstorrent Inc.
     - US store: `st_US_DATA_Q` holds `members` full `vLen`-wide entries for the one
       range entry, so the member holding the load's bytes is
       `(paddr - range_base) >> log2(vLenBytes)` and the read index is
-      `us_data_base + member`.
+      `us_data_base + member`, wrapped modulo the queue depth. NEVER `queue_idx`
+      (§1). The derived member must lie inside the winner's group: assert
+      `member < members` on every US forward rather than trusting the coverage
+      checks to have excluded it, since the previous defect produced an
+      out-of-group read with no observable symptom.
   Alignment into the load's result reuses rocket's `StoreGen`/`LoadGen` pair on the
   load's own `mem_size` and `mem_signed`, exactly as the scalar forward does.
+
+  EACH CLASS'S `filled` IS CHECKABLE ONLY FOR ITS OWN CLASS. A US forward issues no
+  SSI read, so `st_SSI_DATA_Q`'s `resp.filled` is false for it BY CONSTRUCTION, and
+  vice versa. So the two "read an unfilled entry" checks must each be scoped by
+  `is_unit_stride` — and scoped by a REAL predicate, not by sitting in the arm of the
+  select that chooses between the two data paths: an assertion inside a select arm is
+  unconditional, because both arms are evaluated and the selector predicates neither.
+  Only a genuine conditional scope predicates a check. Both checks stay; neither is
+  deleted to silence the spurious one.
 
   ---- 5. Mask qualification, and the asymmetry with ordering ----
 

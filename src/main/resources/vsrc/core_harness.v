@@ -112,6 +112,14 @@ module BoomCoreHarness
               end
             end
             vec_mask = dut_harness.commit.uops[port_ix].debug_vec_wmask;
+            // What the COSIM is actually handed, sampled where it samples it. A
+            // vector mismatch is otherwise unattributable between "the DUT computed
+            // the wrong value" and "the harness sampled the right register at the
+            // wrong time" -- the two print identically on the cosim side.
+            if (tracer)
+              info($sformatf("<%0d> VRDBG: Addr=%0d mask=0x%0x m0=[0x%0x 0x%0x] m1=[0x%0x 0x%0x]",
+                             cycle, addr, vec_mask, vec_wdata[0], vec_wdata[1],
+                             vec_wdata[vLen/64], vec_wdata[vLen/64+1]));
             monitor_vr("mon_instr", hart, cycle, addr, vec_wdata, vec_mask);
           end
         end

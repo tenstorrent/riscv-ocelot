@@ -470,7 +470,8 @@ class VecPipeline(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
 
   //@req-spec-vrf.c11
   vrf.io.trace_en    := io.vec_trace_en
-  io.debug_vrf_read  := vrf.io.debug_vrf_read
+  vrf.io.debug_read_addr := io.debug_read_addr
+  io.debug_read_data     := vrf.io.debug_read_data
 
   // ===========================================================================
   // ---- PART 9. The VL-RF ruling: the ALU writeback and the commit read ----

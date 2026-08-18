@@ -437,6 +437,43 @@ from Tenstorrent Inc.
   tail)`; a fill onto a filled entry when `isStore`; a `free` whose base is not
   `head`; a `release_tail` or `squash` that would move `tail` behind `head`.
 
+  ---- ⚠ THE OUT-OF-REGION FILL ASSERTION FIRED BY LUCK, AND THAT GENERALISES ----
+
+  Read this before trusting any of the assertions above to be the thing that
+  catches a bad producer. The out-of-region fill assertion DID catch a real
+  defect (a masked unit-stride store latching `data_base = 0`), and it caught it
+  for a reason that had nothing to do with the property it states.
+
+  Measured: the bad enqueue presented `idx = 0` and sat with `ready = 0` for
+  **50 clocks**, the whole time INSIDE `[head, tail)` and therefore violating
+  NOTHING. It was refused only by the `filled` bit of an unrelated older store.
+  The assertion fired at the far end of those 50 clocks, when that older store
+  RETIRED and `head` moved past index 0 — i.e. it was tripped by a retirement,
+  not by the producer, and it named the moment of exposure rather than the moment
+  of error.
+
+  Three consequences, and the third is the one that matters:
+    - reorder the retirement slightly and the SAME defect trips the
+      fill-onto-filled assertion instead, with a different message and a
+      different apparent culprit;
+    - the report points at the queue and at `head`, ~50 clocks downstream of the
+      module that actually computed the wrong index;
+    - **if the stale index had landed in-region AND unfilled, NO ASSERTION WOULD
+      HAVE FIRED AT ALL and the store would have written wrong bytes to memory.**
+      The `filled` bit is the only thing that converted silent corruption into a
+      deterministic failure, and it is not a property anyone designed for that.
+
+  ⇒ SO THE REGION ASSERTIONS ARE A BACKSTOP, NOT A DETECTOR. Two requirements
+  follow. First, SPLIT the merged out-of-region check into `enq_not_below_head`
+  and `enq_not_at_or_past_tail`, carrying `idx`/`head`/`tail` in the message: the
+  two directions have entirely different causes — a stale or zero index from a
+  capture that read a dead lane, versus an over-running producer — and the merged
+  message names neither, which has cost a re-run every time it has appeared.
+  Second, and more useful than either, add a SUSTAINED `enq.valid && !enq.ready`
+  WATCHDOG reporting `idx`/`head`/`tail`/`filled`. That fires at the PRODUCER, at
+  the start of the 50 clocks instead of the end, and it is the only one of these
+  properties that is still present in the variant where nothing else fires.
+
   ===> THE "commit-drain read of an entry whose `xlated` bit is clear" ASSERTION IS
   NOT THIS MODULE'S, corrected at E2. `io.rd` is one anonymous indexed-read array
   and nothing on it distinguishes an EXECUTE-time translate read, which is supposed

@@ -515,6 +515,19 @@ reqs:
       quote: >
         every operand step 1 depends on comes
         from an instruction *older* than the segmented store
+    notes: >
+      "From an older producer" is NOT by itself sufficient for the base GPR, and reading it as
+      sufficient produced a real bug (vector addresses computed from the previous tenant of the
+      base physical register; TLMonitor AcquireBlock to a non-cacheable address on
+      ms3p5_pureload / ms4_vle64 / edge_ls_gen, rob.scala:620 on ms2p5_loadblock / stress_seg).
+      iq_v_load and iq_v_store are NOT past-PNR gated, so an older producer may still be
+      unwritten at the grant: a BYPASSABLE INT wakeup means the producer's integer regfile write
+      has NOT YET LANDED, and it can land after the read response. VecScalarOperandRead therefore
+      holds a hinted lane until it OBSERVES that write on int_wb_snoop, rather than assuming any
+      particular distance -- bypass_hint is a "is the write pending?" predicate, never a latency
+      constant. See the "stale scalar base forward" section of
+      nlhdl/vec/lsu/VecScalarOperandRead.nlhdl.scala and the retraction of VecPipeline decision
+      D4. Checked by VecScalarOperandRead's bypassHintUnhonored assertion.
 
   - id: spec-issue.d4
     kind: function

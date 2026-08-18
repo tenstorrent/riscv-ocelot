@@ -175,6 +175,12 @@ class VecCiiIssue(
   io.tag_alloc.bits.pvs2_grp         := s1_uop.pvs2.get
   io.tag_alloc.bits.pvs3_grp         := s1_uop.pvs3.get
   io.tag_alloc.bits.pvm              := s1_uop.pvm.get
+  //@req-spec-cii.f11
+  // The PREDICATES, not just the values. Copying the five PRN groups without
+  // these left the tag table unable to say which of them exist.
+  io.tag_alloc.bits.uses_vs1         := s1_uop.v_uses_vs1.get
+  io.tag_alloc.bits.uses_vs2         := s1_uop.v_uses_vs2.get
+  io.tag_alloc.bits.uses_vs3         := s1_uop.v_uses_vs3.get
   io.tag_alloc.bits.stale_pvdest_grp := s1_uop.stale_pvdest.get
   io.tag_alloc.bits.pdst             := s1_uop.pdst
 
@@ -191,7 +197,21 @@ class VecCiiIssue(
     "VecCiiIssue: multiple int_wb_snoop ports hit the same stage-registered scalar PRN")
   val intScalarFwd = Mux(hits.asUInt.orR, Mux1H(hits, io.int_wb_snoop.map(_.bits.data)), io.int_scalar_read_rsp)
   val s1IsFpScalar = s1_uop.lrs1_rtype === RT_FLT
-  io.tag_alloc.bits.scalar_operands := Mux(s1IsFpScalar, io.fp_scalar_read_rsp, intScalarFwd)
+  //@req-spec-cii.f24
+  // x0 IS NOT A REGISTER READ. Rename maps `x0` to p0 and NOTHING EVER WRITES
+  // p0, so the integer register file returns that entry's leftover contents --
+  // BOOM's scalar register-read stage forces the zero itself for exactly this
+  // reason, and this path is that stage for the CII. Without it `vmv.s.x vd, x0`
+  // -- the idiomatic way to clear an accumulator, emitted by every reduction
+  // kernel -- writes garbage into element 0: measured on conv1d-vector, DUT
+  // 0x0000000080002a88 against an architectural 0.
+  // Keyed on the register TYPE, which VecDecode/VDecode already resolve to
+  // RT_ZERO when the rs1 field is 0, and not on `prs1 === 0`: p0 is a legal
+  // physical register number for a real source only if the free list could hand
+  // it out, and reading the type is what the scalar path does.
+  val s1IsZeroScalar = s1_uop.lrs1_rtype === RT_ZERO
+  io.tag_alloc.bits.scalar_operands := Mux(s1IsFpScalar, io.fp_scalar_read_rsp,
+    Mux(s1IsZeroScalar, 0.U, intScalarFwd))
 
   io.alloc_br_mask         := s1_uop.br_mask
   io.alloc_flush_on_commit := s1_uop.flush_on_commit

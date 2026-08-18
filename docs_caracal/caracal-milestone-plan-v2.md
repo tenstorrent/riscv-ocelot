@@ -938,6 +938,12 @@ serializing it would be a large and gratuitous cost.
 | **H3** | docs | Fill the as-built section of this plan per phase: bugs found, deviations, known gaps. |
 | **H4** | review | Confirm rule 6 by inspection: **grep the whole `vec/lsu` tree for any `busy`-style output reaching an issue unit.** Structural check, independent of measured performance. |
 
+
+- ms4p8_vlm ? real mask-load defect (active byte 0x00 vs required 0x0d); I'd just reached VecRangeAgen:136, where mask ops force an all-ones element mask.
+- DGEN commit-kill (§0i), the br_mask speculation hole, and ms4_vle64's reservation-lifecycle split ? all measured, none patched.
+- ~4?5 mismatches are likely checker artifacts, ~8?9 real. That split is a heuristic, not a count ? we demonstrated the bias landing in both direc
+
+
 ---
 
 ## 9. Non-goals (deferred beyond v2)

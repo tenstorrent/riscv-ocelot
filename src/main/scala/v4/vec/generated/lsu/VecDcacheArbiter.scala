@@ -45,6 +45,13 @@ class VecDcacheArbiterIO(implicit p: Parameters) extends BoomBundle
   val st_req = Vec(lsuWidth, Flipped(Decoupled(new VecMemAccess)))
 
   val scalar_demand  = Input(Vec(lsuWidth, new LsuResourceClaim))
+  //@req-spec-lsu.h4
+  // An `agen` is being presented on this lane THIS CYCLE. Separate from
+  // `scalar_demand`, which carries only the resource-claim triple: this one bit is
+  // not a claim to be arbitrated but a HARD DEADLINE -- BOOM's scalar LSU asserts
+  // that a presented agen fires in the cycle it arrives (`lsu.scala:782`), so an
+  // ELEVATED vector grant, which bypasses `scalar_avail`, must stand down for it.
+  val scalar_agen_incoming = Input(Vec(lsuWidth, Bool()))
   val scalar_avail   = Input(Vec(lsuWidth, new LsuResourceClaim))
   val vec_claim      = Output(Vec(lsuWidth, new LsuResourceClaim))
   val vec_fire       = Output(Vec(lsuWidth, Valid(new VecMemAccess)))
@@ -118,12 +125,28 @@ class VecDcacheArbiter(implicit p: Parameters) extends BoomModule
     ldEligible(w) := io.ld_req(w).valid && !ldSuppressedHold(w) && !ldSuppressedCredit(w)
     stEligible(w) := io.st_req(w).valid
 
-    val ldOkElevated = ldEligible(w) &&
+    //@req-spec-lsu.h4
+    // ⚠ ELEVATION MUST YIELD TO AN INCOMING SCALAR AGEN. An elevated grant takes the
+    // TLB and LCAM ports WITHOUT consulting `scalar_avail` -- that is the whole point
+    // of the anti-starvation path -- but BOOM's scalar LSU holds an invariant this
+    // breaks: `lsu.scala:782` asserts that an `agen` presented THIS CYCLE always
+    // fires (`will_fire_load_agen_exec || will_fire_load_agen || will_fire_store_agen`).
+    // A scalar agen has nowhere to wait: it arrives from the EXE stage and is gone.
+    // `scalar_demand(w).agen_incoming` is driven for exactly this (`lsu.scala:806`)
+    // and was NEVER READ here, so an elevation landing in the same cycle as an agen
+    // trips that assertion -- which is the `lsu.scala:782` row in the post-Phase-F
+    // triage table. Surfaced on conv1d-vector the moment the issue-readiness fix
+    // changed WHEN vector ops present, so it is a timing-exposed hole, not a new one.
+    // Starvation is still bounded: an agen occupies its lane for one cycle, the
+    // `blocked_*` latch keeps the elevation pending, and `rr_ptr` brings the phase
+    // back around.
+    val agenIncoming = io.scalar_agen_incoming(w)
+    val ldOkElevated = ldEligible(w) && !agenIncoming &&
       resourceOk(io.ld_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), true)
     val stOkFallback = stEligible(w) &&
       resourceOk(io.st_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), false) && !ldOkElevated
 
-    val stOkElevated = stEligible(w) &&
+    val stOkElevated = stEligible(w) && !agenIncoming &&
       resourceOk(io.st_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), true)
     val ldOkFallback = ldEligible(w) &&
       resourceOk(io.ld_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), false) && !stOkElevated

@@ -376,9 +376,355 @@ from Tenstorrent Inc.
   So, in each lane's response cycle, compare every valid `int_wb_snoop` port's
   `addr` against the STAGE-REGISTERED `rr_uop.prs1` and `rr_uop.prs2`
   independently and on a hit substitute that port's `data` for the corresponding
-  `int_rf_read_rsp` entry before it is captured into `rr_data`. The window is
-  exactly that lane's response cycle: a cycle earlier is redundant, a cycle later
-  is too late.
+  `int_rf_read_rsp` entry before it is captured into `rr_data`.
+
+  ===> A LANE WHOSE REGISTER TYPE IS `RT_ZERO` PRESENTS A LITERAL ZERO, and no
+       amount of forwarding substitutes for it. Rename maps `x0` to p0, nothing
+       ever writes p0, and the register file therefore returns that entry's
+       leftover contents — BOOM's scalar register-read stage forces the zero
+       itself, and this module is that stage for the vector LS. It matters on lane
+       1: a `vlse`/`vsse` whose stride register is `x0` is architecturally a ZERO
+       stride, the idiom for broadcasting one element, and would otherwise walk
+       memory from whatever p0 last held. Key it on the type, which decode already
+       resolves to `RT_ZERO` for an rs field of 0, and apply it to the PRESENTED
+       value rather than to `rr_data`, so the forward and the wait logic stay
+       written in terms of what the register file actually returned.
+
+  ===> RETRACTED, AND IT MANDATED A BUG. An earlier revision of this paragraph
+  ended: "The window is exactly that lane's response cycle: a cycle earlier is
+  redundant, A CYCLE LATER IS TOO LATE." That sentence is WRONG and the RTL
+  generated from it computed vector addresses from the previous tenant of the
+  base physical register. It enumerated only two cases -- write at the FIRE
+  cycle (already reflected) and write at the RESPONSE cycle (forwarded) -- and
+  silently assumed no third. There is a third, and it is the common one:
+
+    - a wakeup that arrives with `iw_p*_bypass_hint` SET fires one cycle BEFORE
+      the producer's regfile write. The slot is granted at T, the read fires at
+      T, the response arrives at T+1 -- and the producer's write is presented on
+      `int_wb_snoop` at T+2. BOTH the read AND the response-cycle forward miss.
+      "A cycle later" is not too late; a cycle later is exactly where the data
+      is.
+
+  Measured on `ms2p5_loadblock` (2000 ps clock) -- every number in this
+  paragraph is from `regr_G_full/bringup_tests/ms2p5_loadblock/ms2p5_loadblock.fsdb`,
+  so cite that file and not one of the other four failures: T=3729000 `iss_valid=1`,
+  `prs1=0x33`, `iw_p1_bypass_hint=1`, read fires; T+1=3731000 response
+  `0xa5d7d000` -- the stale prior tenant of p51 -- and the snoop carries addr
+  `0x14`, so the forward MISSES; T+2=3733000 the snoop carries addr `0x33`,
+  data `0x80002010`. Rename was CORRECT throughout: the iregfile word for the
+  renamed PRN holds the right value at T+2. This is a bypass-window RAW hazard,
+  not a stale architectural read. `ms4_vle64` at t=3735000 shows it in one
+  cycle across two lanes: lane0 `addr=0x0080002010 is_vec=0` (the scalar `ld`,
+  which HAS a bypass network) and lane1 `addr=0x00a5d7d000 is_vec=1` (this
+  module, which does not).
+
+  THE WINDOW, CORRECTLY STATED. A lane's forward window OPENS at that lane's
+  response cycle and STAYS OPEN until the write it is waiting for has been
+  observed. Concretely: arm a per-lane `rr_wb_wait` bit at the grant; while that
+  bit is set do not capture the regfile response into `rr_data` and do not
+  present `out.valid`; clear it, and capture `Mux1H(hits, int_wb_snoop.data)`
+  into `rr_data`, on the cycle the awaited write appears on the snoop. Watch the
+  snoop whether or not that lane's read has fired yet -- a lane denied at grant
+  may see the write first, and both orders leave `rr_data` correct. A branch
+  kill or flush clears the wait bits with the rest of the stage state.
+
+  ---- WHAT ARMS THE WAIT: THE GRANT-CYCLE HINT ----
+
+  Arm from `iss.bits.iw_p1_bypass_hint` / `iw_p2_bypass_hint`, latched per lane
+  at the grant.
+
+  WHY ONE WAIT-CYCLE IS ENOUGH, AND WHAT WOULD BREAK IT. The wait is armed from
+  the grant-cycle hint, which is set for exactly one cycle. That is sufficient
+  only because every bypassable integer producer presents its register-file write
+  at the SAME distance from the hint -- measured `H+2` on `ms2p5_loadblock` for
+  an ALU producer. **This bound is enforced, not observed.** For both producer
+  classes the bypass network and the write port are driven from one node in one
+  cycle -- the load from `RegNext(io.lsu.iresp)` (`core.scala:965` and `:969`),
+  the ALU from `unit.io_alu_resp` (`core.scala:1058` and `:1050`) -- and
+  `execution-unit.scala:136`/`:141` assert that any uop reaching RRD with
+  `iw_p*_bypass_hint` set MUST hit the bypass. Hint implies bypass-available;
+  bypass-available IS write-presented; therefore the distance is uniform.
+
+  **The load wakeup is bypassable too** (`lsu.scala:1164` and `:1727`, both
+  settings of `enableFastLoadUse`), so a load-produced base is covered by the
+  same bound and needs no extra machinery. An earlier review believed only the
+  1-cycle ALU was marked bypassable; that is FALSE, and the fix survives the
+  correction only because of the uniformity above. Do not restate the narrower
+  claim.
+
+  ---- AND ON THE MISS PATH: THE WINDOW EXISTS, AND `int_squash_grant` CLOSES IT ----
+
+  A load that misses retracts its speculative wakeup, and there IS a one-cycle
+  exposure. At X+2 (= H+1) `slot_uop.prs1_busy` is still 0 -- the re-busy does
+  not land until X+3 -- while the hint has already fallen to 0. A grant taken in
+  that cycle arms nothing.
+
+  What closes it is `int_squash_grant`: the retraction is broadcast on
+  `iwakeups` in EXACTLY that cycle, and `VecIssueUnit.scala:403-406` kills the
+  grant COMBINATIONALLY, same cycle. And it is not luck -- the hint falling and
+  the retraction firing both derive from the same term, `w2.valid` at X+2, so
+  they are locked together by construction, on ALL FIVE TIERS and not only on
+  the one that sets `enableFastLoadUse`. (`int_squash_grant` reads `.bits.rebusy`
+  without qualifying on `.valid`; that is X-safe because the arbiter's fallback
+  carries a constant false and all four slow-wakeup sites drive
+  `rebusy := false.B`.)
+
+  ⇒ **SCOPE THE CLAIM PER CYCLE, AND DO NOT SAY EITHER TERM IS UNNECESSARY.**
+  The re-busy does NOT close X+2 -- it lands at X+3, because
+  `scalar_operands_ready` reads the REGISTERED `prs1_busy`. The combinational
+  `int_squash_grant` closes X+2. The re-busy is nonetheless REQUIRED from X+3
+  onward. **Neither term is redundant; deleting either reopens a different set of
+  cycles:**
+
+    | cycle       | what holds the line        | if you delete it                    |
+    |-------------|----------------------------|-------------------------------------|
+    | X+2         | `int_squash_grant` (comb.) | X+2 reopens -- the original bug     |
+    | X+3 onward  | slot re-busy (`prs1_busy`) | the slot grants with hint=0 AND     |
+    |             |                            | prs1_busy=0 while the miss is still |
+    |             |                            | outstanding, and NOTHING catches it |
+
+  An earlier revision of this paragraph said flatly that the re-busy explanation
+  "is FALSE". RETRACTED as written: it is false ONLY for X+2, and stating it
+  unscoped reads as "the re-busy is not needed" -- which would license deleting
+  exactly the term that owns X+3 onward. Naming which cycles each term owns is
+  what makes this paragraph unusable as a licence to delete either one.
+
+  ⇒ Separately, and NOT in conflict with the above: `int_squash_grant`
+  suppresses only SAME-CYCLE grants. A retraction arriving after this module has
+  already been granted does not reach it, so an armed lane's wait can legitimately
+  last a miss plus a refill. That is the post-grant case and it is what sizes
+  `wbWaitWatchdog`; see that paragraph.
+
+  **THE LOAD-BEARING ASSUMPTION, STATED SO IT CAN BE CHECKED:** every bypassable
+  integer producer's regfile write lands no later than the second cycle after the
+  hint. A producer that violates it would break `execution-unit.scala:136` in the
+  scalar path first, which is the reason no sticky per-source wait bit is carried
+  here. If that scalar assertion is ever weakened or removed, THIS paragraph is
+  the dependent and the wait must become sticky -- set on the bypassable wakeup,
+  cleared on the observed `int_wb_snoop` hit -- which requires routing the
+  write-port addresses into every vector issue slot. `lateWritebackObserved` and
+  `staleCaptureCheck` are the detectors that make the violation loud rather than
+  silent in the meantime.
+
+  **`bypass_hint` may be used as a "is the write pending?" predicate, never as a
+  latency constant.**
+
+  IF THE STICKY FORM IS EVER NEEDED, BUILD IT HERE, NOT IN THE SLOT. The sentence
+  above says the sticky bit "requires routing the write-port addresses into every
+  vector issue slot" -- that is the obvious construction and it is the WORSE one:
+  it roughly doubles the comparator array each slot already pays for
+  `int_prs1_matches`, and it re-opens the `pnrGate` scoping question by putting
+  vector-only state in a module shared with `iq_v_alu`. There is a better place.
+  `VecPipeline` is the ONLY scope that already holds BOTH the integer wakeup
+  network (`io.int_wakeups`, which it fans to the three queues) and the writeback
+  snoop (`io.int_wb_snoop`). Build one `Vec(numIntPhysRegs, Bool)` register there
+  -- SET on a bypassable INT wakeup naming that PRN, CLEARED when that PRN's
+  write is seen on the snoop, all bits cleared on `rob_flush` -- and fan it
+  through a `VecLsu` port to `ld_opnd` and `st_opnd`, which then arm from
+  `pending(prn)` instead of the hint. One array for the whole vector pipeline,
+  no new comparators in any slot, no `pnrGate` interaction. This construction was
+  built and elaborated cleanly before C1 was withdrawn; it is recorded so the
+  next person does not re-derive the slot-based version.
+
+  AND HERE IS ITS PRICE, MEASURED, SO THE TRADE CAN BE MADE WITH A NUMBER RATHER
+  THAN RE-DERIVED: at `MegaBoomV4VectorConfig` the scoreboard is 144 bits of
+  state in `VecPipeline` plus `io_int_wb_pending_0..143` on BOTH
+  `VecScalarOperandRead` instances -- 288 wires of fanout. That was judged too
+  much to spend defending a bound that already has an enforcing assertion one
+  level down, and it is the whole reason the hint-armed form ships. If the
+  enforcement goes away the number stops being an argument against it.
+
+  DO NOT ARM FOR A WRITE THAT LANDS IN THE GRANT CYCLE. Such a write takes effect
+  at the intervening clock edge and is already reflected in that lane's response
+  (the first case above). Suppress arming on a grant-cycle `int_wb_snoop` hit
+  against the granted PRN, or the lane waits for a second write to a physical
+  register that only ever gets one.
+
+  RE-QUALIFY BY SOURCE TYPE -- AND THIS IS A DEFECT MITIGATION, NOT
+  BELT-AND-BRACES. AND the arming predicate with `lrs1_rtype`/`lrs2_rtype ===
+  RT_FIX`. An operand that is genuinely `RT_ZERO` or absent takes no INT wakeup
+  at all, so this never suppresses a wait that was needed.
+  ⇒ THE REASON IT IS REQUIRED LIVES IN ANOTHER FILE, WHICH IS WHY IT READS AS
+  OPTIONAL HERE AND WILL BE DELETED BY SOMEONE TIDYING. `VecIssueSlot` has a live
+  OPEN DEFECT: its `prs2` wakeup arm (`:178`) and `iw_p2_speculative_child` set
+  (`:180`) are UNGATED while the matching rebusy/clear (`:183`) IS gated on
+  `lrs2_rtype === RT_FIX`. So on a form with no stride, lane 1's hint can be
+  raised off a leftover rename number by an unrelated wakeup that nothing will
+  ever retract. This qualification is the LOCAL MITIGATION for that defect and
+  must stay until `VecIssueSlot:178`/`:180` are gated. See the open-defect entry
+  in `VecIssueSlot.nlhdl`.
+
+  KEEP THE ONE-CYCLE SNOOP FORWARD AT THE RESPONSE CYCLE. It is not made
+  redundant by the wait and must not be "simplified" away: it is the mechanism
+  the wait itself uses to observe the write, and it is what covers a write
+  arriving at exactly the response cycle on an UNARMED lane.
+
+  ASSERT THE CONTRACT: `bypassHintUnhonored`. Per lane, never present with
+  `out.valid` while that lane's grant carried a hint and the producer's write
+  has not been observed. Phrase it over a latched `rr_hint` and a latched
+  `rr_wb_seen` rather than over the `rr_wb_wait` gate itself, so that any path
+  which clears the gate WITHOUT the write having been seen still trips it.
+  It fires at grant+1 in the module that erred; the bug it names surfaced
+  instead as a TLMonitor A-channel `AcquireBlock` complaint two hierarchy
+  levels away, about a diplomatic parameter, roughly ten cycles later. One
+  assertion here is the difference between a five-minute fix and a campaign.
+
+  ASSERT THE CALIBRATION ITSELF: `lateWritebackObserved`. The two PASSIVE cases
+  -- a lane granted one cycle after the hint (covered by the response-cycle
+  forward) and two cycles after it (covered by the register file) -- both rest on
+  every bypassable INT producer sharing ONE wakeup-to-writeback distance, the
+  invariant `execution-unit.scala:136`/`:141` assert in the scalar path. An FU
+  added later, marked bypassable with a DIFFERENT calibration, breaks both
+  silently, and `bypassHintUnhonored` cannot see it because `rr_hint` is already
+  false by then. So watch for the tell: a snoop hit on the PRN a lane just
+  CONSUMED from the register file means that producer's write is further out than
+  the calibration assumes. Compare against a REGISTERED address, not `heldAddr`,
+  so an intervening grant cannot alias the compare.
+
+  ITS WINDOW RUNS FROM THE CONSUMING READ UNTIL THE OP LEAVES, AND THAT IS
+  DELIBERATELY WIDER THAN `staleCaptureCheck`'s TWO CYCLES. The two bounds differ
+  for a reason, so do not "harmonise" them:
+    - this one terminates while the op is still LIVE, and a PRN cannot be freed
+      and reallocated while a live consumer still holds it as a source -- so the
+      no-benign-aliasing argument holds across the whole window and there is no
+      false-positive path;
+    - `staleCaptureCheck`'s can OUTLIVE the op, so past a couple of cycles it
+      would compare against a reallocated register and fire falsely.
+  A one-cycle peephole here would catch only a producer late by exactly one,
+  which is useless against an FU whose calibration is by definition unknown --
+  and one cycle late is very nearly the ONLY distance this assertion does not
+  need to catch, because the response-cycle forward already covers a write at
+  H+1. A peephole aims the tripwire at the one case that is already handled and
+  misses every case it exists for.
+
+  ⇒ **QUALIFY BOTH DETECTORS BY SOURCE TYPE, AND THE SOUNDNESS ARGUMENT IS WHY.**
+  An earlier revision stated the no-aliasing bound as: "a write to that PRN after
+  we read it can only be our own producer writing late, because the PRN cannot be
+  freed and reallocated while a live consumer holds it as a source." RETRACTED AS
+  WRITTEN -- it is FALSE for an operand the consumer DOES NOT USE. A unit-stride
+  access uses `prs1` only; lane 1's `prs2` is a leftover rename number that the op
+  does not hold, so it CAN be freed and reallocated while the op is live, and an
+  unrelated instruction writes it legitimately.
+  This was not hypothetical: `lateWritebackObserved` fired on lane 1 of
+  `ms11a2_pure_vle`, `ms11a3_vle_lmul2` and `ms2_vse64` -- all unit-stride, all
+  previously PASSING, all correct behaviour.
+  CORRECT STATEMENT: the PRN cannot be freed while a live consumer holds it as A
+  SOURCE IT ACTUALLY USES. Hence both `lateWritebackObserved` and
+  `staleCaptureCheck` are qualified by the HELD `lrs*_rtype === RT_FIX` -- the
+  held form, not the grant-cycle one, because the check spans the op's life. That
+  qualifier is not noise-filtering; it is the precondition the soundness argument
+  requires, and removing it re-breaks the property.
+  `staleCaptureCheck` had the IDENTICAL hole and is fixed in the same change even
+  though it never fired: it also compares against `rr_uop.prs*`, and its window is
+  merely smaller (two cycles versus the op's life), so it is the same defect with
+  a smaller target. Fixing only the one that fired would have left a latent false
+  positive to surface on an unrelated future run.
+
+  WHY THE QUALIFIED WINDOW IS SAFE, DERIVED RATHER THAN ASSERTED. A physical
+  register is freed only when the NEXT WRITER of the same architectural register
+  COMMITS, and that instruction is younger than our consumer -- which has not even
+  executed yet. So the span in which the PRN cannot be reallocated runs to our
+  consumer's COMMIT, and it STRICTLY CONTAINS this assertion's window. That is
+  margin, not a tight fit.
+
+  ⇒ **`killedNow` IN THE `consumedValid` CLEAR IS LOAD-BEARING, NOT HYGIENE.**
+  There is exactly ONE way to leave the safe span above, and it is a squash: on
+  a flush, rollback returns the register to the free list and it can be
+  reallocated on the correct path, at which point a still-held `consumedValid`
+  would fire on a perfectly legitimate write to the NEW tenant. `killedNow` is
+  what keeps the assertion sound. It is called out here because "cleared on
+  kill" reads like boilerplate and is precisely the term a future simplifier
+  deletes.
+
+  WAIT ON THE EVENT, NOT ON A COUNT. The obvious alternative -- age the wakeup
+  by a constant `intAluWbDelay` -- is REJECTED: it bakes the integer ALU's
+  writeback depth into the vector path, where it cannot be checked and can be
+  mis-sized silently by any change to the INT pipeline. The event is observable
+  on a port this module already has.
+
+  THE HOLD CREATES ONE NEW STATE, AND THE GRANT GUARD MUST BE WIDENED TO SEE IT.
+  The pre-existing "grant landed on a still-unfired hold" assertion tests
+  `rr_need` ONLY. `rr_need` goes to 0 as soon as the read fires, so once only the
+  writeback wait is outstanding that guard sees nothing -- and the `iss.valid`
+  branch would then overwrite `rr_uop`, `rr_wb_wait`, `rr_hint` and `rr_wb_seen`,
+  silently discarding the wait and re-arming against a different op. Widen it to
+  `rr_need(0) || rr_need(1) || rr_wb_wait(0) || rr_wb_wait(1)`.
+  This is reachable BECAUSE of the hold, which is why it is asserted rather than
+  argued: on a grant at X+1 for a load that then misses, the wait arms and holds
+  correctly, but `VecIssueSlot.scala:389-390`/`:409-410` keep the slot valid and
+  clear `iw_issued` on the rebusy, so the refill's slow wakeup can grant THE SAME
+  OP a second time while this stage is still waiting from the first grant. Static
+  reading says the outcome is probably correct; the margin is one cycle and the
+  reading is inferred, not measured, and this state did not exist before the
+  hold. An earlier note advised against extending the guard to `rr_wb_wait` on
+  the grounds that the squash-and-regrant path is legitimate; that advice is
+  SUPERSEDED -- the second-grant path above is a different one and is not
+  obviously legitimate. If the widened guard fires on a benign case, that is a
+  cheap thing to learn from one regression instead of arguing about.
+
+  IT COSTS A CYCLE, AND ONLY ON THE HINTED PATH. An unhinted wakeup is already
+  written back, `rr_wb_wait` is never set, and the timing is bit-identical to
+  before. Do not "optimise" the hinted path back to the response cycle.
+
+  THE FAILURE MODE INVERTS, WHICH IS THE POINT. Because the hold waits on an
+  event, a producer write that never reaches a snoop port now HANGS instead of
+  quietly presenting garbage. `wbWaitWatchdog` (default 4096, `0` disables and
+  emits no register, following `VecCiiFlush.drainWatchdog`) names that failure
+  with the lane, the held PRNs and the `rob_idx`.
+
+  IT IS A BACKSTOP, NOT A LOAD-BEARING GUARANTEE -- AND ITS NUMBER IS STILL NOT A
+  PIPELINE DEPTH. An earlier revision of this paragraph called the watchdog
+  load-bearing, on the theory that an awaited write might never arrive. RETRACTED:
+  it cannot. The only way to lose the write is a producer squashed while its
+  consumer survives, and that cannot happen here -- the consumer is younger and
+  carries a same-or-superset `br_mask`, so any kill that takes the producer also
+  takes us, and `killedNow` clears the wait. An OVERSTATED rationale is the same
+  defect class as an understated one, in the other direction; hence this
+  correction.
+  What remains true, and is what actually sizes the number: `int_squash_grant`
+  (`core.scala:1441-1444`, which ORs `io.lsu.iwakeups.map(_.bits.rebusy)`) reaches
+  `VecIssueUnit` and kills `iss_uops.valid` in the SAME cycle as the retraction --
+  so it protects a grant colliding with a rebusy, and NOTHING MORE. A rebusy
+  arriving after this module has already been granted does not reach it:
+  `ld_opnd`/`st_opnd` have no kill input beyond `brupdate` and `rob_flush`. On a
+  mis-speculated base the wait therefore legitimately lasts a D$ miss plus refill.
+  Size for that, not for the ALU's two cycles, and do not tighten it.
+  (The silver lining stands: under this form such an op WAITS for the real write
+  instead of computing addresses from a mis-speculated base, which is what it did
+  before.)
+
+  ASSERT IT INDEPENDENTLY TOO: `staleCaptureCheck`. Every other property here
+  trusts the readiness logic. This one does not: it compares the value PRESENTED
+  against the value the integer register file turned out to hold -- a write to a
+  presented lane's PRN landing in the presentation cycle or the next one with
+  different data means the capture was stale, whatever mechanism was supposed to
+  prevent it. Bound it at two cycles: beyond that a PRN can have been freed and
+  reallocated and the comparison stops meaning anything.
+  IT IS PARTIAL BY CONSTRUCTION, AND ITS SILENCE PROVES NOTHING. Because it
+  compares a late `int_wb_snoop` hit on `rr_uop.prs*` against a value already
+  presented, it only fires while the operand is still held. A SHORT overshoot
+  trips it; a LONG one may not. Do not read its silence as evidence that a
+  writeback arrived on time -- that is what `lateWritebackObserved` is for.
+
+  BOUNDED AT TWO CYCLES, AND IT MUST STAY BOUNDED. The partiality above reads
+  like a weakness to be fixed, and the obvious "improvement" -- widen the window,
+  or drop the bound entirely and compare against every later write to that PRN --
+  IS WRONG AND WILL FIRE FALSELY. Beyond a couple of cycles the physical register
+  can have been freed and reallocated, at which point the write being compared
+  belongs to a DIFFERENT instruction and disagreeing with our value is correct
+  behaviour, not a defect. Bounded partial detection is the honest form of this
+  property. Widen the coverage with `lateWritebackObserved`, which keys off the
+  PRN a lane just consumed and is sound for exactly the reason this one is not:
+  a PRN cannot be freed and reallocated while a live consumer still holds it as
+  a source.
+
+  THE HOLD IS SAFE AT THE VecLsu SEAM. `VecLsu`'s `ldAwaitingPulse` and
+  `stAwaitingPulse` are LEVEL handshakes -- a register set by `ldPresent`/
+  `stPresent`, cleared on `out.valid` -- and `ldStreamerBusy`/`stStreamerBusy`
+  block the next `present` until `msk.io.done`, which is itself launched from
+  the op pulse. Arbitrary extra hold cycles were already tolerated (the existing
+  `rr_need` hold path relies on the same property), and a register cannot
+  false-pulse on a sticky `out.valid` left over from the previous op.
 
   THE WINDOW IS PER LANE, NOT PER GRANT, AND D5 IS WHY. With `Decoupled` reads
   the two lanes may fire in different cycles, so "the response cycle" is no
@@ -399,6 +745,14 @@ from Tenstorrent Inc.
   naturally emit, so it will NOT surface casually — its absence must be
   positively demonstrated (the forward-hit trace line below, in a directed
   back-to-back test), never assumed.
+  THAT DEMAND WAS RIGHT AND WAS NOT MET. The directed back-to-back tests exist:
+  `ms3p5_pureload`, `ms4_vle64` and `edge_ls_gen` each overwrite the base GPR
+  immediately before the vector access. All three FAILED — an AcquireBlock to a
+  non-cacheable address, because the address was the previous tenant of the
+  base PRN — and `ms2p5_loadblock` and `stress_seg` failed downstream of the
+  same read. The single-cycle window this paragraph specified was demonstrated
+  INSUFFICIENT, not demonstrated present. Any future narrowing of the window
+  must re-run those five.
   If BoomCore's read port ever becomes a fully registered SyncReadMem read,
   or gains a stage between request and response, THIS WINDOW MOVES WITH IT.
 

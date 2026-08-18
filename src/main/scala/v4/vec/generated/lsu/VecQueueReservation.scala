@@ -517,6 +517,20 @@ class VecQueueReservation(implicit p: Parameters) extends BoomModule
     for (q <- 0 until nQueues) {
       VecTrace.traceStruct("VecQueueReservation", "resv_rollback", Seq(("queue", q.U), ("new_tail", rollbackTailNext(q))))
     }
+    // Per-row rollback verdict: which ldq rows the age sweep judged killed vs
+    // surviving, and each row's reserved region. A lost queue entry shows up here
+    // as a SURVIVING row whose region ends above the new tail, or as a row killed
+    // by the index sweep that the br_mask path still considers live.
+    for (i <- 0 until numLdqEntries) {
+      when (ldqTable(i).valid) {
+        VecTrace.traceId("VecQueueReservation", "rollback_row", ldqTable(i).rob_idx, Seq(
+          ("row", i.U), ("full_idx", ldqTable(i).full_idx), ("pivot", ldqPivot),
+          ("ldq_head", io.ldq_head), ("released", ldqTable(i).released.asUInt),
+          ("q0", ldqTable(i).slots(0).queue), ("base0", ldqTable(i).slots(0).base),
+          ("cnt0", ldqTable(i).slots(0).count),
+          ("older", IsOlderLSU(ldqTable(i).full_idx, ldqPivot, io.ldq_head).asUInt)))
+      }
+    }
   }
 
   val rollbackValidPrev = RegNext(io.rollback.valid, false.B)

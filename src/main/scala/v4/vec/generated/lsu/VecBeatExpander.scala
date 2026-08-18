@@ -71,6 +71,15 @@ class VecBeatExpander(
     val st_ssi_data_pop = if (isStore) Some(Output(Vec(nLanes, Bool())))                else None
     val is_write_pass   = if (isStore) Some(Input(Bool()))                              else None
 
+    //@req-spec-lsu.j3
+    // The staged range still owes its ONE LCAM presentation. Driven by VecLsu,
+    // which owns the staged range and sees the candidate fire. A pure DUTY
+    // SELECTOR: it chooses which beat carries `uses_lcam` and gates NOTHING
+    // else. It must never be allowed to block a pass -- an interlock here
+    // deadlocks, because promotion to the write pass is what ends the supply of
+    // pass-1 beats the duty needs to ride. See VecBeatExpander.nlhdl.
+    val us_lcam_owed    = Input(Bool())
+
     // Bare Decoupled, not Output(Decoupled(...)): the wrapper would force `ready` to
     // be an output too, and it is the arbiter's grant coming back.
     val req = Vec(nLanes, Decoupled(new VecMemAccess))
@@ -200,6 +209,14 @@ class VecBeatExpander(
 
   private var elemAcc: UInt = io.us_cursor
   private var byteAcc: UInt = usInitByte
+  //@req-spec-lsu.j3
+  // Threaded through the same serial prefix as elemAcc/byteAcc: "an earlier lane
+  // in THIS cycle has already taken the range's single LCAM presentation duty."
+  // Arbitration, not reduction -- see the lane-discipline rule: clause (a)
+  // forbids collapsing N per-lane EVENTS into one, because that loses events;
+  // assigning ONE singular duty to one of N lanes is a different operation, and
+  // the latch makes a bad choice recoverable rather than lost.
+  private var dutyTaken: Bool = false.B
   private val usAdvOk  = new Array[Bool](nLanes)
   private val usMemEnd = new Array[Bool](nLanes)
   private val usIsSkip = new Array[Bool](nLanes)
@@ -219,7 +236,13 @@ class VecBeatExpander(
     val memberIdx = (res.curByte >> memberIdxW)(log2Ceil(maxVecMembers) - 1, 0)
     val byteOff   = res.curByte(memberIdxW - 1, 0)
     //@req-spec-lsu.j3
-    val isFirstBeat = (i == 0).B && (io.us_cursor === 0.U)
+    // `first` keeps its ELEMENT-0 meaning, now computed PER LANE. NOT the lane
+    // index: the cursor is advanced by ANY lane, so a lane-0-pinned term is
+    // destroyed by a sibling grant (measured, ms4p9_vl 3735000-3739000 -- lane 1
+    // consumed element 0 and advanced the cursor, then lane 0 was granted with
+    // the duty already fallen). `usStartElem(i)` is this lane's own serial-prefix
+    // input and is assigned three lines above.
+    val isFirstBeat = usStartElem(i) === 0.U
 
     val lanePayload = Wire(new VecMemAccess)
     lanePayload := DontCare
@@ -243,10 +266,32 @@ class VecBeatExpander(
     lanePayload.data           := 0.U
     lanePayload.uses_tlb        := true.B
     lanePayload.uses_dcache     := true.B
-    lanePayload.uses_lcam       := isFirstBeat
-    lanePayload.lcam_range_len := Mux(isFirstBeat, head.len, 0.U)
+    //@req-spec-lsu.j3
+    // THE DUTY NEEDS *TWO* PROPERTIES, AND AN EARLIER REVISION SUPPLIED ONLY ONE.
+    //   LATCHED  -- `us_lcam_owed` picks the CYCLE, so the duty survives a
+    //               skipped element 0 (a skip advances the cursor with NO
+    //               request) and survives an arbiter refusal.
+    //   ARBITRATED -- this term picks the LANE, so two lanes firing in one cycle
+    //               cannot both carry it.
+    // `isFirstBeat` used to supply both at once, being per-lane AND unique.
+    // Replacing it with the latch alone fixed the skip hole and opened a
+    // DUPLICATION hole: `us_lcam_owed` is one shared value that every lane reads
+    // identically, so both lanes published the same range to the LCAM. Caught by
+    // `lcamOfferUnique` on ld_beat at 3055000 ps in ms11a2_vse, first test run.
+    //
+    // Recovery is why arbitrating is safe: if the chosen lane is refused it does
+    // not advance (`advOk` needs `req.fire`), the latch stays set, and the duty
+    // is re-offered next cycle. A bad choice costs a cycle, never the duty.
+    //
+    // ONE assignment, not a default plus a store-branch override -- that shape
+    // is what previously left the LOAD instance with half the fix.
+    val laneWillReq  = laneSel && !res.isSkip
+    val dutyThisLane = io.us_lcam_owed && laneWillReq && !dutyTaken &&
+                       (if (isStore) !io.is_write_pass.get else true.B)
+    lanePayload.uses_lcam      := dutyThisLane
+    lanePayload.lcam_range_len := Mux(dutyThisLane, head.len, 0.U)
 
-    val reqValid = laneSel && !res.isSkip
+    val reqValid = laneWillReq
     var advOk: Bool  = false.B
     var nextElem: UInt = elemAcc
     var nextByte: UInt = byteAcc
@@ -297,8 +342,11 @@ class VecBeatExpander(
       lanePayload.last     := res.fire && !res.isSkip && (composeNextByte >= head.len)
       lanePayload.data           := rotated
       lanePayload.uses_dcache     := writePass
-      lanePayload.uses_lcam       := isFirstBeat && !writePass
-      lanePayload.lcam_range_len := Mux(isFirstBeat && !writePass, head.len, 0.U)
+      // uses_lcam / lcam_range_len are NOT re-assigned here. They are set ONCE
+      // above, with the `!is_write_pass` term folded in, so the store and load
+      // paths cannot drift apart -- a shared default overridden on only one
+      // branch is exactly what previously shipped the load instance without the
+      // latch.
 
       advOk    = laneSel && Mux(res.isSkip, true.B, io.req(i).fire)
       nextElem = Mux(advOk, Mux(res.isSkip, res.nextElem, composeNextElem), elemAcc)
@@ -313,10 +361,47 @@ class VecBeatExpander(
 
     elemAcc = nextElem
     byteAcc = nextByte
+    //@req-spec-lsu.j3
+    // COUPLED TO THE FIRE, NOT TO THE SELECTION. `dutyThisLane` is built from
+    // `laneWillReq`, which has NO `req.ready` term -- so it says "this lane was
+    // CHOSEN to carry the duty", not "this lane carried it". Suppressing the
+    // later lane on the choice alone loses the duty outright whenever lane 0 is
+    // refused and lane 1 is granted: lane 0 holds the duty and presents nothing,
+    // lane 1 is suppressed, carries uses_lcam=0, and FIRES -- advancing the
+    // cursor past the element. Pass 1 then ends still owing (`:1658`).
+    // Both lanes sit on the SAME element in that case (lane 1's `elemAcc` is
+    // unchanged when `advOk_0` is low), so letting lane 1 carry it publishes the
+    // same range on the beat that actually happened. `lcamOfferUnique` still
+    // holds: it is asserted over FIRING lanes, and at most one fires with it.
+    //
+    // THIRD INSTANCE OF ONE SHAPE IN THIS MODULE -- a term that selects
+    // correctly but is not coupled to whether the selected thing happened:
+    //   1. duty pinned to the lane INDEX rather than the firing beat;
+    //   2. the latch armed by an edge-detect on identity rather than by identity;
+    //   3. this -- suppression keyed on the choice rather than on the grant.
+    // Adds no new dependency class: `dutyThisLane_1` gains `ready(0)`, the same
+    // edge `laneWillReq_1` already carries via `advOk_0`, and that chain is
+    // acyclic (`ready(0) -> bits(1) -> ready(1)` terminates).
+    dutyTaken = dutyTaken || (dutyThisLane && io.req(i).fire)
     usAdvOk(i)  = advOk
     usMemEnd(i) = memberEndOk
     usIsSkip(i) = res.isSkip
   }
+
+  //@req-spec-lsu.j3
+  // lcamOfferUnique. Asserted over FIRING lanes, never over asserted payloads:
+  // when lane 0 is refused, both lanes legitimately offer the duty for the same
+  // beat and only one fires, so a payload-level check would trip on every
+  // correct refusal. Same trap that bit VecOrderHold's age assertion in Phase G
+  // -- assert over what HAPPENED, not over what was OFFERED.
+  // SCOPED TO US RANGE BEATS. `lcam_range_len =/= 0` is the same discriminator
+  // VecLsu uses to tell a US range candidate from an SSI element one. Without
+  // it this fires on every correct 2-lane SSI cycle: every SSI element beat
+  // legitimately carries uses_lcam, because an SSI access presents PER ELEMENT
+  // rather than once per range, so two firing SSI lanes are normal.
+  assert(PopCount((0 until nLanes).map(i =>
+           io.req(i).fire && io.req(i).bits.uses_lcam && io.req(i).bits.lcam_range_len =/= 0.U)) <= 1.U,
+    "VecBeatExpander: more than one FIRING beat carried the US range's uses_lcam duty")
 
   //@req-spec-lsu.k8
   val usAnyAdvance = usAdvOk.reduce(_ || _)

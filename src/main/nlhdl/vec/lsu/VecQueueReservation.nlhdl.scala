@@ -167,6 +167,24 @@ from Tenstorrent Inc.
   base and it is not derivable from slot 0's (logic section 2); a load simply
   ignores slot 1.
 
+  ⚠ **`resv_resp` IS ZERO OUTSIDE ITS LANE'S VALID WINDOW — NOT HELD, AND NOT
+  DON'T-CARE.** The echo is gated by `l.valid && row.valid && row.slots(k).valid`
+  and returns `0.U` on the else arm. A reader that samples a lane on a cycle when
+  that lane's `resv_lookup.valid` is low does not get the last value and does not
+  get an X; it gets a base of ZERO, which is **a legal-looking index at the
+  BOTTOM of the queue**. That is the difference between a defect that announces
+  itself and one that does not: it produced a plausible pointer, the fill side
+  then wrote at index 0 while the drain side used the true base, and the only
+  reason it ever surfaced was an unrelated `filled` bit refusing the enqueue ~50
+  clocks later, in a different module, after an unrelated retirement moved
+  `head` past it. Had the stale index landed in-region and unfilled, there would
+  have been no assertion at all and wrong bytes in memory.
+  ⇒ EVERY reader of `resv_resp` must therefore sample it ON ITS OWN LANE'S VALID
+  CYCLE, and that cycle is a property of the lane, not of the op — see the
+  range-agen timing paragraph in `VecLsu.nlhdl` ¶(k2b). Returning zero was chosen
+  so the echo needs no storage; that choice is retained, and this paragraph is
+  the obligation it puts on readers.
+
   `release` — input, `Vec(4, Valid({ is_store: Bool, q_idx: UInt, used_count:
   Vec(2, UInt) }))`, with `release_ok` — output, `Vec(4, Bool)`: the surplus-return
   request and its grant. `used_count` is PER QUEUE SLOT for the same reason

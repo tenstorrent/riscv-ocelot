@@ -342,8 +342,15 @@ from Tenstorrent Inc.
   the register file — and the combinational path is split in two by it: address
   resolve up to the VRF in cycle t, and one narrow mux after it in cycle t+1.
 
-  ===> THIS MODULE DECLARES NO `vLen`-WIDE PAYLOAD REGISTER, AND ADDING ONE IS A
-       CORRECTNESS BUG, NOT AN AREA COST. VecPipeline's ruling puts the read flop
+  ===> THIS MODULE DECLARES NO `vLen`-WIDE PAYLOAD REGISTER AND NO ADDRESS
+       REGISTER, AND ADDING EITHER IS A CORRECTNESS BUG, NOT AN AREA COST.
+       MEASURED: a generated revision latched the resolved PRN into a
+       `vrfAddrReg` before driving `vrf_read_addr`. Observable latency became 2
+       while `srcReadLatency` still said 1, so every Src-Data beat carried the
+       PREVIOUS request's operand. On `axpy-vector` (LMUL=8) that silently
+       corrupted MEMBER 0 of every `vfmacc` group and nothing else -- members 1-7
+       were also shifted by one beat but their operands happened to be equal, so
+       the whole class of bug showed up as one wrong register. VecPipeline's ruling puts the read flop
        inside `VecRegFile` for all of R0-R8; a second flop here makes observable
        latency 2 while `srcReadLatency` still says 1, and the positional Src-Data
        channel is then offset by exactly one beat FOREVER — every surviving

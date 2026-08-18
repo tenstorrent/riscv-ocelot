@@ -76,7 +76,7 @@ class VecVrfWrite(implicit p: Parameters) extends BoomBundle
   val rob_idx = Valid(UInt(robAddrSz.W)) // TRACE-ONLY, see VecVrfReadReq doc.
 }
 
-class VecRegFileIO(numReadPorts: Int, numWritePorts: Int)(implicit p: Parameters) extends BoomBundle
+class VecRegFileIO(numReadPorts: Int, numWritePorts: Int, numDebugReadPorts: Int)(implicit p: Parameters) extends BoomBundle
 {
   //@req-spec-vrf.f2
   //@req-spec-vrf.g15
@@ -89,7 +89,10 @@ class VecRegFileIO(numReadPorts: Int, numWritePorts: Int)(implicit p: Parameters
   //@req-spec-vrf.g16
   val write          = Vec(numWritePorts, Flipped(Valid(new VecVrfWrite)))
 
-  val debug_vrf_read = Vec(coreWidth, Output(UInt(vecVLen.W)))
+  // COMMIT-TIME architectural read, for the Whisper cosim vector compare. Address
+  // per (commit port, member); `numDebugReadPorts == 0` emits no ports at all.
+  val debug_read_addr = Vec(numDebugReadPorts, Input(UInt(vecPregSz.W)))
+  val debug_read_data = Vec(numDebugReadPorts, Output(UInt(vecVLen.W)))
 
   val trace_en       = Input(Bool())
 }
@@ -115,7 +118,12 @@ class VecRegFile(implicit p: Parameters) extends BoomModule
   val bankWidth = vecVLen / numBanks
   val bankBytes = bankWidth / 8
 
-  val io = IO(new VecRegFileIO(numReadPorts, numWritePorts))
+  // One address per (commit port, group member). Gated off entirely for a physical
+  // build; on for every simulation config, because a checker that is off by default
+  // is the failure this facility exists to remove.
+  val numDebugReadPorts: Int = if (enableVecCosimCheck) coreWidth * maxVecMembers else 0
+
+  val io = IO(new VecRegFileIO(numReadPorts, numWritePorts, numDebugReadPorts))
 
   // ---- 1. Structure: four banks, sliced by width ----
   //
@@ -127,7 +135,8 @@ class VecRegFile(implicit p: Parameters) extends BoomModule
       bankId        = b,
       numBanks      = numBanks,
       numReadPorts  = numReadPorts,
-      numWritePorts = numWritePorts))
+      numWritePorts = numWritePorts,
+      numDebugReadPorts = numDebugReadPorts))
   }
 
   // ---- 2. Why a static partition is sound: no arbitration is required ----
@@ -214,7 +223,12 @@ class VecRegFile(implicit p: Parameters) extends BoomModule
 
   // ---- Debug ----
   //
-  for (i <- 0 until coreWidth) {
-    io.debug_vrf_read(i) := io.read_data(i)
+  // Combinational, NOT RegNext: the cosim compare happens in the commit cycle, so
+  // this path is deliberately one cycle shorter than the functional reads above.
+  for (p <- 0 until numDebugReadPorts) {
+    for (b <- 0 until numBanks) {
+      bank(b).io.debug_read_addr(p) := io.debug_read_addr(p)
+    }
+    io.debug_read_data(p) := Cat((0 until numBanks).reverse.map(b => bank(b).io.debug_read_data(p)))
   }
 }

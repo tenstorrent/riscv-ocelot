@@ -33,7 +33,7 @@ from Tenstorrent Inc.
   write merge, read-during-write forwarding). This file owns the canonical port
   partition from midcore.rst `vrf-ports`, the fan-out of a `vLen`-wide write into
   four bank slices, the concatenation of four read slices back into a `vLen`-wide
-  result, the per-access trace lines and `debug_vrf_read`. It owns NO
+  result, the per-access trace lines and the commit-time debug read ports. It owns NO
   multiplexing at all: after A16 every port here has exactly one driver, and the
   only strict-priority mux in the vector register path lives in `VecGroupCopy`.
 
@@ -125,7 +125,8 @@ from Tenstorrent Inc.
   of a write mask. `numBanks` is 4 and `bankWidth = vLen / numBanks`,
   `bankBytes = bankWidth / 8`; those three are the bank's parameters, restated
   here only because this node does the slicing and must use the same values.
-  `coreWidth` sizes `debug_vrf_read`, and `robAddrSz` sizes the trace side-band.
+  `coreWidth * maxMembers` sizes the debug read ports (zero when the vector-cosim-check
+  parameter is clear), and `robAddrSz` sizes the trace side-band.
   <|end_parameters|>
 
   <|begin_ports|>
@@ -275,11 +276,22 @@ from Tenstorrent Inc.
 
   ---- Debug ----
 
-  `io.debug_vrf_read : Vec(coreWidth, Output(UInt(vLen.W)))`, the `debug_vrf_read`
-  member of the `vec_pipeline_io` interface. It is built from the ORDINARY read
-  ports and has no address of its own: lane `i` is `io.read_data(i)`. A private
-  debug address port would be a thirteenth port on the array, which the table
-  forbids, and the bank correctly declares none. `io.trace_en` (`Input(Bool())`,
+  `io.debug_read_addr` / `io.debug_read_data`, one entry per (commit port, group
+  member), sized `coreWidth * maxMembers` when the vector-cosim-check parameter is
+  set and **zero-length otherwise**, so a physical build carries none of it.
+
+  THIS REPLACES A STUB THAT WAS NOT A FACILITY. The former `debug_vrf_read` was
+  `io.read_data(i)` — a mirror of whatever the FUNCTIONAL port `i` happened to be
+  reading — so it could never read a nominated register, and the commit-time
+  comparison it was documented as serving was impossible through it. **A port whose
+  name promises an addressable read and whose body mirrors another port is worse
+  than no port: it stops the next reader from building the real one.** The debug
+  read takes its own address, and it is COMBINATIONAL — deliberately one cycle
+  shorter than the registered functional reads — because the compare happens in the
+  commit cycle. That is a distinct timing path and it is accepted only because the
+  facility is parameter-gated off for physical builds.
+
+  `io.trace_en` (`Input(Bool())`,
   the `vec_trace_en` member of the same interface) is ANDed into the trace gate.
   <|end_ports|>
 
@@ -512,9 +524,10 @@ from Tenstorrent Inc.
   trace that catches a group copy making no progress belongs to `VecGroupCopy`,
   which is where the losing request now exists.
 
-  `io.debug_vrf_read` is a plain wire off the registered response, lane `i` from
-  `io.read_data(i)`, independent of the trace gate — an observation of ports that
-  already exist, feeding nothing inside the design.
+  `io.debug_read_data(p)` is the four banks' debug slices concatenated, from
+  `io.debug_read_addr(p)` broadcast to every bank — NOT off the registered
+  response, and independent of the trace gate. It feeds nothing inside the design;
+  its only consumer is the cosim harness's commit-time vector compare.
 
   Removing every trace call site and the debug output must leave behaviour
   bit-identical: no functional register, no counter, no wire functional logic reads.

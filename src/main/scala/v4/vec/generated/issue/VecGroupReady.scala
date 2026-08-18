@@ -23,7 +23,7 @@ import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 
 import boom.v4.common.{BoomBundle, BoomModule}
-import boom.v4.vec.generated.VecGroupDone
+import boom.v4.vec.generated.{VecGroupDone, VecTrace}
 
 // GENERATED from src/main/nlhdl/vec/issue/VecGroupReady.nlhdl.scala. Do not
 // hand-edit; regenerate via the nlhdl gen-rtl flow instead.
@@ -98,21 +98,60 @@ class VecGroupReady(isMask: Boolean = false)(implicit p: Parameters) extends Boo
 
   //@req-spec-issue.g17
   // The collapse chain pairs this with the slot's out_uop, which is the REGISTER
-  // occupant -- so this must be too. Exporting member_rdy_next hands the slot below
-  // the INCOMING occupant's readiness while it takes the outgoing occupant's uop.
+  // occupant -- so this must be too. Exporting member_rdy_next would hand the slot
+  // below the INCOMING occupant's readiness while it takes the outgoing occupant's
+  // uop.
+  //
+  // `member_hit` is included UNCONDITIONALLY, load cycle or not. `io.prns` names the
+  // REGISTER occupant (the slot drives them from `slot_uop`, not from the incoming
+  // uop), so a hit is always this occupant's wakeup and the slot below is exactly
+  // who needs it. The old `&& !io.load` DROPPED it on a shift cycle: a `group_done`
+  // is a ONE-CYCLE PULSE, the outgoing occupant had already left the register, and
+  // nobody else was comparing its PRNs -- so that wakeup was lost outright and the
+  // op could sit ready-less forever. Including it here is also what lets the
+  // consumer of `in_member_rdy` skip comparing against the INCOMING prns: the
+  // exporter has already folded this cycle's hit in.
   for (i <- 0 until groupMembers) {
-    io.out_member_rdy(i) := member_rdy(i) || (member_hit(i) && !io.load)
+    io.out_member_rdy(i) := member_rdy(i) || member_hit(i)
+  }
+
+  // Who woke this member. A member that goes ready with no legitimate producer
+  // completion is the shape of an early issue, and the only way to tell a real
+  // wakeup from a spurious PRN match is to name the group_done that matched.
+  for (i <- 0 until groupMembers) {
+    for (w <- 0 until vectorParams.numVecWbPorts) {
+      for (j <- 0 until maxVecMembers) {
+        val hit = io.group_done(w).valid && (j.U < io.group_done(w).bits.members) &&
+                  (io.group_done(w).bits.pvdest(j) === io.prns(i)) && io.used
+        when (hit && !member_rdy(i)) {
+          VecTrace.traceId("VecGroupReady", "wake", io.group_done(w).bits.rob_idx, Seq(
+            ("port", w.U), ("gd_member", j.U), ("my_member", i.U),
+            ("prn", io.prns(i)), ("gd_members", io.group_done(w).bits.members),
+            ("load", io.load.asUInt)))
+        }
+      }
+    }
   }
 
   // ---- AND-reduce to one bit, and conditional participation ----
 
   //@req-spec-rename.g13
   //@req-spec-issue.g16
+  // THE ISSUE GATE IS THE REGISTER OCCUPANT'S, AND `member_rdy_next` IS NOT IT.
+  // On a load cycle `member_rdy_next` is the INCOMING occupant's readiness, while
+  // the slot's `request`/`iss_uop` still name the outgoing one -- so gating on it
+  // let a slot grant its occupant on the strength of the NEXT occupant's operands.
+  // Measured on conv1d-vector (MegaBoom): `vmacc.vv v10,v14,v12` was granted with
+  // `members = 1` (the incoming uop's count) against its own `emul = 2`, which
+  // collapsed this AND-reduce for members 1..7, and it read a `pvs3` whose member 0
+  // was still busy. `member_rdy | member_hit` is the register occupant's own state,
+  // including a wakeup landing this cycle.
+  val member_rdy_now = (0 until groupMembers).map(i => member_rdy(i) || member_hit(i))
   val group_all_rdy: Bool = if (isMask) {
-    member_rdy_next(0)
+    member_rdy_now(0)
   } else {
     (0 until groupMembers)
-      .map(i => member_rdy_next(i) || (i.U >= io.members.get))
+      .map(i => member_rdy_now(i) || (i.U >= io.members.get))
       .reduce(_ && _)
   }
   io.ready := !io.used || group_all_rdy

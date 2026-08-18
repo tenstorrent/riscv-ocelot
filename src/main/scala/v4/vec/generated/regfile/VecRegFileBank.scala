@@ -35,7 +35,7 @@ class VecRegFileBankWritePort(bankWidth: Int, bankBytes: Int)(implicit p: Parame
   val mask = UInt(bankBytes.W)
 }
 
-class VecRegFileBankIO(bankWidth: Int, bankBytes: Int, numReadPorts: Int, numWritePorts: Int)(implicit p: Parameters) extends BoomBundle
+class VecRegFileBankIO(bankWidth: Int, bankBytes: Int, numReadPorts: Int, numWritePorts: Int, numDebugReadPorts: Int)(implicit p: Parameters) extends BoomBundle
 {
   // Read ports: no handshake
   val read_addr   = Vec(numReadPorts, Input(UInt(vecPregSz.W)))
@@ -43,13 +43,19 @@ class VecRegFileBankIO(bankWidth: Int, bankBytes: Int, numReadPorts: Int, numWri
 
   // Write ports
   val write_ports = Vec(numWritePorts, Flipped(Valid(new VecRegFileBankWritePort(bankWidth, bankBytes))))
+
+  // Debug reads: storage is a register array, so these are muxes and cannot
+  // contend with the functional ports. Zero ports emits no hardware.
+  val debug_read_addr = Vec(numDebugReadPorts, Input(UInt(vecPregSz.W)))
+  val debug_read_data = Vec(numDebugReadPorts, Output(UInt(bankWidth.W)))
 }
 
 class VecRegFileBank(
   val bankId:        Int,
   val numBanks:      Int = 4,
   val numReadPorts:  Int = 9,
-  val numWritePorts: Int = 3
+  val numWritePorts: Int = 3,
+  val numDebugReadPorts: Int = 0
 )(implicit p: Parameters) extends BoomModule
 {
   require(usingRVV, s"VecRegFileBank (bankId=$bankId) instantiated with usingRVV=false")
@@ -70,7 +76,7 @@ class VecRegFileBank(
   val bankWidth = vecVLen / numBanks
   val bankBytes = bankWidth / 8
 
-  val io = IO(new VecRegFileBankIO(bankWidth, bankBytes, numReadPorts, numWritePorts))
+  val io = IO(new VecRegFileBankIO(bankWidth, bankBytes, numReadPorts, numWritePorts, numDebugReadPorts))
 
   // ---- Storage ----
 
@@ -116,24 +122,32 @@ class VecRegFileBank(
 
   val read_forwards = Wire(Vec(numReadPorts, Bool()))
 
-  for (p <- 0 until numReadPorts) {
-    //@req-spec-vrf.f7
-    //@req-spec-vrf.f14
-    val arrayData = vrf_bank(io.read_addr(p))
-
-    //@req-spec-vrf.f8
-    val fwdHits = io.write_ports.map(wp => wp.valid && wp.bits.addr === io.read_addr(p))
+  //@req-spec-vrf.f7
+  //@req-spec-vrf.f8
+  //@req-spec-vrf.f14
+  private def readAt(addr: UInt): (UInt, Bool) = {
+    val arrayData = vrf_bank(addr)
+    val fwdHits = io.write_ports.map(wp => wp.valid && wp.bits.addr === addr)
     val fwdEnable = io.write_ports.zip(fwdHits).map { case (wp, hit) =>
       Mux(hit, expandByteMask(wp.bits.mask), 0.U(bankWidth.W))
     }.reduce(_ | _)
     val fwdData = io.write_ports.zip(fwdHits).map { case (wp, hit) =>
       Mux(hit, wp.bits.data & expandByteMask(wp.bits.mask), 0.U(bankWidth.W))
     }.reduce(_ | _)
+    ((arrayData & ~fwdEnable) | fwdData, fwdHits.reduce(_ || _))
+  }
 
-    //@req-spec-vrf.f8
-    io.read_data(p) := (arrayData & ~fwdEnable) | fwdData
+  for (p <- 0 until numReadPorts) {
+    val (data, fwd) = readAt(io.read_addr(p))
+    io.read_data(p)  := data
+    read_forwards(p) := fwd
+  }
 
-    read_forwards(p) := fwdHits.reduce(_ || _)
+  // Debug reads share `readAt` so a debug read of a PRN can never disagree with a
+  // functional read of it. Not traced: a commit-time compare must not perturb the
+  // read-forward trace the functional ports own.
+  for (p <- 0 until numDebugReadPorts) {
+    io.debug_read_data(p) := readAt(io.debug_read_addr(p))._1
   }
 
   // ---- Tracing ----

@@ -1478,7 +1478,13 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     csr.io.vector.get.set_vxsat              := rob.io.com_vxsat.get
     csr.io.vector.get.set_vs_dirty           := v.io.csr_vs_dirty
     // Caracal never writes a non-zero vstart; clear it at retirement.
-    csr.io.vector.get.set_vstart.valid       := commitVlProducerAny
+    // Also clear it ONCE, when vector state is first enabled: rocket's reg_vstart is
+    // a `Reg`, not a `RegInit`, so until then it holds power-on garbage.
+    val vstartInitDone = RegInit(false.B)
+    val vstartInitNow  = !vstartInitDone && csr.io.status.vs > 0.U
+    val setVstartValid = commitVlProducerAny || vstartInitNow
+    when (setVstartValid) { vstartInitDone := true.B }
+    csr.io.vector.get.set_vstart.valid       := setVstartValid
     csr.io.vector.get.set_vstart.bits        := 0.U
 
     assert(v.io.commit_vl.valid === commitVlProducerAny,
@@ -1490,7 +1496,6 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     io.lsu.vec_lsu_empty.get := v.io.lsu_fencei_rdy_vec
 
     v.io.vec_trace_en := VecTrace.traceEnabled
-    dontTouch(v.io.debug_vrf_read)
 
     // Cheap end of A23: no RT_VEC uop reaches rob.io.enq_uops unnamed in a vector queue.
     for (w <- 0 until coreWidth) {
@@ -1742,6 +1747,50 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   // **** Connect debugging harness for DV COSIM bridge ****
   //-------------------------------------------------------------
   //-------------------------------------------------------------
+  // Commit-time vector state for the cosim compare. `debug_vec_wmask` is what
+  // arms core_harness.v's rtype==4 branch: while it was 0 the harness compared no
+  // vector register at all, so a garbage VRF was invisible unless it reached a GPR.
+  val dbgVecLen = coreParams.vLen.max(64)
+  val dbg_vec_wdata = Wire(Vec(coreWidth, UInt((dbgVecLen * 8).W)))
+  val dbg_vec_wmask = Wire(Vec(coreWidth, UInt(8.W)))
+  if (usingRVV && enableVecCosimCheck) {
+    val MM = maxVecMembers
+    for (w <- 0 until coreWidth) {
+      val cuop = rob.io.commit.uops(w)
+      // pvdest, not stale_pvdest: the architectural value of v[ldst] AFTER this
+      // instruction is the register it wrote. Reading the whole PRN also yields the
+      // already-merged value, so masked / tail-undisturbed writes need no rebuild.
+      for (m <- 0 until MM) {
+        vec.get.io.debug_read_addr(w * MM + m) := cuop.pvdest.get(m)
+      }
+      // Member m at [vLen*m +: vLen], matching core_harness.v's
+      // debug_vec_wdata[(vLen*lmul + 64*i) +: 64] unpack.
+      dbg_vec_wdata(w) := Cat((0 until MM).reverse.map(m =>
+        vec.get.io.debug_read_data(w * MM + m))).pad(dbgVecLen * 8)
+      // One bit per group member, and zero for any uop without a vector
+      // destination -- otherwise the harness compares a register it never wrote.
+      dbg_vec_wmask(w) := Mux(cuop.dst_rtype === RT_VEC,
+        ((1.U << cuop.v_emul.get) - 1.U)(MM - 1, 0), 0.U)
+
+      // Exactly what the cosim harness compares, at the cycle it compares it: the
+      // PRN it read and the low element it got back. A cosim vector mismatch is
+      // otherwise unattributable -- a wrong result, a wrong PRN and a wrong read
+      // all print the same way on the harness side.
+      when (rob.io.commit.arch_valids(w) && cuop.dst_rtype === RT_VEC) {
+        VecTrace.traceId("Rob", "commit_vec_dbg", cuop.rob_idx, Seq(
+          ("lane", w.U), ("ldst", cuop.ldst), ("v_emul", cuop.v_emul.get),
+          ("pv0", cuop.pvdest.get(0)), ("pv1", cuop.pvdest.get(1)),
+          ("d0", vec.get.io.debug_read_data(w * MM)(31, 0)),
+          ("d1", vec.get.io.debug_read_data(w * MM)(63, 32))))
+      }
+    }
+  } else {
+    for (w <- 0 until coreWidth) {
+      dbg_vec_wdata(w) := 0.U
+      dbg_vec_wmask(w) := 0.U
+    }
+  }
+
   if (DEBUG_HARNESS) {
      if (coreParams.retireWidth == 1) {
        val harness_1 = Module(new BoomCoreHarnessWrapper_1(coreParams.vLen.max(64)))  // safe min for no-VPU configs
@@ -1763,8 +1812,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
           harness_1.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
           harness_1.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
           harness_1.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
-          harness_1.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU yet
-          harness_1.io.commit.uops(w).debug_vec_wmask := 0.U
+          harness_1.io.commit.uops(w).debug_vec_wdata := dbg_vec_wdata(w)
+          harness_1.io.commit.uops(w).debug_vec_wmask := dbg_vec_wmask(w)
        }
      } else if (coreParams.retireWidth == 2) {
        val harness_2 = Module(new BoomCoreHarnessWrapper_2(coreParams.vLen.max(64)))  // safe min for no-VPU configs
@@ -1786,8 +1835,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
           harness_2.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
           harness_2.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
           harness_2.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
-          harness_2.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU yet
-          harness_2.io.commit.uops(w).debug_vec_wmask := 0.U
+          harness_2.io.commit.uops(w).debug_vec_wdata := dbg_vec_wdata(w)
+          harness_2.io.commit.uops(w).debug_vec_wmask := dbg_vec_wmask(w)
        }
      } else if (coreParams.retireWidth == 3) {
        val harness_3 = Module(new BoomCoreHarnessWrapper_3(coreParams.vLen.max(64)))  // safe min for no-VPU configs
@@ -1809,8 +1858,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
           harness_3.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
           harness_3.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
           harness_3.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
-          harness_3.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU yet
-          harness_3.io.commit.uops(w).debug_vec_wmask := 0.U
+          harness_3.io.commit.uops(w).debug_vec_wdata := dbg_vec_wdata(w)
+          harness_3.io.commit.uops(w).debug_vec_wmask := dbg_vec_wmask(w)
        }
      } else if (coreParams.retireWidth == 4) {
        val harness_4 = Module(new BoomCoreHarnessWrapper_4(coreParams.vLen.max(64)))  // safe min for no-VPU configs
@@ -1832,8 +1881,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
           harness_4.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
           harness_4.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
           harness_4.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
-          harness_4.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU yet
-          harness_4.io.commit.uops(w).debug_vec_wmask := 0.U
+          harness_4.io.commit.uops(w).debug_vec_wdata := dbg_vec_wdata(w)
+          harness_4.io.commit.uops(w).debug_vec_wmask := dbg_vec_wmask(w)
        }
      } else if (coreParams.retireWidth == 6) {
        val harness_6 = Module(new BoomCoreHarnessWrapper_6(coreParams.vLen.max(64)))  // safe min for no-VPU configs
@@ -1855,8 +1904,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
           harness_6.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
           harness_6.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
           harness_6.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
-          harness_6.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU yet
-          harness_6.io.commit.uops(w).debug_vec_wmask := 0.U
+          harness_6.io.commit.uops(w).debug_vec_wdata := dbg_vec_wdata(w)
+          harness_6.io.commit.uops(w).debug_vec_wmask := dbg_vec_wmask(w)
        }
      } else if (coreParams.retireWidth == 8) {
        val harness_8 = Module(new BoomCoreHarnessWrapper_8(coreParams.vLen.max(64)))  // safe min for no-VPU configs
@@ -1878,8 +1927,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
           harness_8.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
           harness_8.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
           harness_8.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
-          harness_8.io.commit.uops(w).debug_vec_wdata := 0.U  // no VPU yet
-          harness_8.io.commit.uops(w).debug_vec_wmask := 0.U
+          harness_8.io.commit.uops(w).debug_vec_wdata := dbg_vec_wdata(w)
+          harness_8.io.commit.uops(w).debug_vec_wmask := dbg_vec_wmask(w)
        }
      }
   }

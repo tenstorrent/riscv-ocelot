@@ -213,7 +213,7 @@ glossary.rst `glossary-terms`; execution.rst `execution-pipelines`,
   `csr_vector`, `csr_frm`, `csr_vs_dirty`, `vl_wakeup`, `lsu_vec`,
   `lsu_fencei_rdy_vec`; (5) COMPLETION AND OBSERVABILITY — `vec_clr_bsy`
   (`numVecClrPorts` lanes), `vec_clr_unsafe`, `vec_rob_flags`, `vec_xcpt`,
-  `vec_trace_en`, `debug_vrf_read`.
+  `vec_trace_en`, `debug_read_addr`, `debug_read_data`.
 
   ---- Interface members this container REQUIRED: three APPLIED, one OUTSTANDING ----
 
@@ -594,8 +594,10 @@ glossary.rst `glossary-terms`; execution.rst `execution-pipelines`,
   and have no FP comparator at all — vector memory addressing uses only GPRs, so
   an FP connection there would be dead silicon in every slot of two queues.
 
-  ===> THE RESIDUAL FP WINDOW IS CLOSED, AND A30 IS CLOSED WITH IT (decision
-  D4). It was a real exposure while there were TWO FP readers:
+  ===> THE RESIDUAL **FP** WINDOW IS CLOSED, AND A30 IS CLOSED WITH IT
+  (decision D4). READ THE SCOPE LINE BEFORE THE ARGUMENT: this decision is
+  about the **FP** network reaching `VecCiiIssue` through `iq_v_alu`, AND
+  NOTHING ELSE. It was a real exposure while there were TWO FP readers:
   `FPExeUnit.io_wakeup` is a FAST wakeup with `bypassable := true` and a
   writeback presented at T+3, so a slot woken at T that drove its FP read
   address combinationally in the grant cycle could read data one cycle STALE.
@@ -604,15 +606,61 @@ glossary.rst `glossary-terms`; execution.rst `execution-pipelines`,
   the ONLY FP reader left is `VecCiiIssue`, reached through `iq_v_alu`, and
   `IQ_V_ALU` IS PAST-PNR GATED. A granted CII op is therefore OLDER THAN THE
   PNR, which means its FP producer has genuinely written back: there is no
-  residual window between a bypassable match and the read, on any path.
+  residual window between a bypassable match and the read ON THAT PATH.
   DO NOT hold a BYPASSABLE FP wakeup match back one cycle inside
-  `VecIssueSlot`. That earlier recommendation is WITHDRAWN, not deferred —
-  implementing it now would cost a cycle on every `.vf` op to close a window
-  that cannot occur, and it would be invisible in simulation as a bug.
+  `VecIssueSlot`. That earlier recommendation is WITHDRAWN for the FP path, not
+  deferred — implementing it there would cost a cycle on every `.vf` op to
+  close a window that cannot occur, and it would be invisible in simulation as
+  a bug.
   What D4 explicitly RETAINS is the MATCH ITSELF (`spec-vrf.e4`,
   `spec-issue.g8/g9/g10`): the slot still watches `.vf` on the FP wakeup
   network, because that is how it learns the scalar operand is ready. Only the
-  store-side reader, and the claim that a bypass window exists, are gone.
+  store-side FP reader, and the claim that an FP bypass window exists, are gone.
+
+  ===> RETRACTION, AND THE MOST DAMAGING SENTENCE IN THIS FILE. An earlier
+  revision of the paragraph above wrote the PNR argument as a GENERALISATION —
+  "there is no residual window between a bypassable match and the read, ON ANY
+  PATH" — and then forbade holding "a BYPASSABLE wakeup match" back one cycle,
+  with no network named. THAT GENERALISATION IS FALSE, AND IT MANDATED A REAL
+  BUG. The PNR premise holds for `iq_v_alu` ALONE. This very file, part 3 above,
+  states `iq_v_load: pnrGate false` and `iq_v_store: pnrGate false` — and those
+  two queues are precisely the ones that carry the INTEGER wakeup network into
+  `VecScalarOperandRead`. A vector load or store is therefore granted while its
+  base producer is still SPECULATIVE and, on a bypassable wakeup, one cycle
+  BEFORE that producer's integer regfile write. The window is real, it was
+  measured (see `VecScalarOperandRead.nlhdl` part on the stale scalar base
+  forward: read at T, response at T+1, producer's write on `int_wb_snoop` at
+  T+2), and it produced vector addresses taken from the previous tenant of the
+  base physical register on five tests.
+
+  WHERE IT IS CLOSED: not here. `VecIssueSlot` still copies the hint verbatim
+  and the GRANT IS NOT DELAYED AT ALL — the CAPTURE waits. The INT window into
+  `iq_v_load`/`iq_v_store` is closed inside `VecScalarOperandRead`, by WAITING
+  FOR THE PRODUCER'S WRITE ON `int_wb_snoop` before presenting the operand.
+  Putting the hold in the slot would tax every vector memory op at issue; putting
+  it in the reader taxes only the lane with an outstanding write.
+
+  NO NEW STATE IS ADDED HERE FOR IT. `VecScalarOperandRead` arms its wait from
+  the grant-cycle hint alone, which is sufficient because every bypassable
+  integer producer's write lands at the same distance from the hint and that
+  bound is ENFORCED by `execution-unit.scala:136`/`:141` in the scalar path, not
+  merely observed. Should that enforcement ever be weakened, the wait has to
+  become sticky, and `VecPipeline` is where the state belongs — it is the ONLY
+  scope holding BOTH the integer wakeup network (`io.int_wakeups`) and the
+  writeback snoop (`io.int_wb_snoop`), so one `Vec(numIntPhysRegs, Bool)` here,
+  fanned through a `VecLsu` port, replaces a doubled comparator array in every
+  vector issue slot. The construction is written out in
+  `VecScalarOperandRead.nlhdl`; do not re-derive the slot-based version.
+
+  RECORD THE ASYMMETRY, BECAUSE IT IS INVISIBLE IN THE CODE.
+  `VecCiiIssue.scala:189-192` and `VecScalarOperandRead` contain STRUCTURALLY
+  IDENTICAL single-cycle `int_wb_snoop` forwards over a stage-registered
+  `prs1`. One is correct and one was not, and nothing local to either module
+  says why: `VecCiiIssue` is safe **only because `iq_v_alu` is past-PNR gated**.
+  Anyone reading the two side by side and concluding they are equivalent will
+  reintroduce this bug. If `iq_v_load`/`iq_v_store` ever gain a PNR gate, the
+  wait in `VecScalarOperandRead` becomes redundant — and that is the ONLY
+  condition under which it may be removed.
 
   //@req-spec-issue.f10
   //@req-spec-issue.h1
@@ -809,8 +857,10 @@ glossary.rst `glossary-terms`; execution.rst `execution-pipelines`,
   computation at this level — which is also why no mask needs a VRF port beyond R1
   and R4.
 
-  `debug_vrf_read` is `vrf`'s, built from its ordinary read ports (no thirteenth
-  port). `vec_trace_en` is ANDed into `vrf`'s trace gate and fanned to nothing
+  `debug_read_addr` / `debug_read_data` pass straight through to `vrf`'s own debug
+  read ports — an addressed commit-time read, not a mirror of the functional ports,
+  and zero-length unless the vector-cosim-check parameter is set. `vec_trace_en` is
+  ANDed into `vrf`'s trace gate and fanned to nothing
   else — every other module reaches the `vecTrace` plusarg through `VecTrace`.
 
   ---- PART 9. THE VL-RF RULING, and the commit read ----

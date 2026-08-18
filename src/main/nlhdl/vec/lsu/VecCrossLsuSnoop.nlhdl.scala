@@ -203,27 +203,75 @@ caracal-milestone-plan-v2.md Phase G step G1, section 5 rules 6, 10 and 11.
   //@req-spec-memord.a22
   ---- 2. The presentation gate: no address without its data ----
 
-  A vector store address queue entry is NOT presented to the LCAM until its
-  corresponding `st_*_DATA_Q` entry is valid. `io.cand[i].ready` is the arbiter's
-  LCAM grant AND-ed with `data_filled` for a store candidate, so an entry whose
-  data half was not yet captured at DGEN does not win the port and is re-offered
-  later.
+  ===> THIS PARAGRAPH IS RETRACTED AND REWRITTEN. As written it MANDATED a
+  suite-wide silent correctness loss: the vector-store→scalar-LCAM ordering path
+  has never once produced a tier-1 entry, in a failing test OR a passing one.
+  36 green rows are green because their source contains an explicit `fence`, and
+  one of them says so in a comment. What it got wrong, specifically:
 
-  This is not conservatism for its own sake — it makes a failure mode unreachable.
-  Without it a load could match a store address whose data does not exist yet, and
-  every consumer would need a third answer besides "forward" and "no match":
-  "match, but come back later". With the gate, every store address a load can
-  match is data-backed by construction, so VecStoreForward never has to represent
-  a data-pending store and paragraph 5's summary can never name one.
+  (a) **FALSE — "does not win the port and is re-offered LATER."** There is no
+  re-offer and there cannot be one at this seam. `io.cand[i].ready` HAS NO
+  READER in `VecLsu` (grep: only `.valid`/`.bits` are driven), so it is a SILENT
+  GATE, not back-pressure. The candidate is derived from `arb.io.vec_fire(w)` --
+  a grant that has ALREADY committed to the TLB/D$ access -- so declining the
+  LCAM does not decline the grant, and nothing re-presents.
+  **This is the IDENTICAL impossibility Phase G already recorded against
+  `VecStoreForward` para 9: "the LCAM presentation and the D$ request are ONE
+  arbiter grant, so 'search then decline the access' is inexpressible."** That
+  lesson was written down for one paragraph and not applied to its neighbour,
+  which is why this survived. It is now cross-referenced so the impossibility is
+  recorded ONCE, where both paragraphs read it.
 
-  LIVENESS, and ORDER_FAIL STILL IN TIME — the two objections to the gate. It
-  cannot deadlock: the data half is written by VecDgen out of VRF port R3/R4
-  into the data queue, a path needing neither LCAM, TLB nor D$, so it completes
-  independently of every grant this module competes for. And the delay cannot
-  lose an order_fail: a vector store's address pass is PRE-COMMIT (its fault
-  must be reported precisely before the store) and the store is older than any
-  load it can fail, so it presents before it commits, and it commits before
-  that younger load can reach the ROB head where the flush fires.
+  (b) **FALSE — "every consumer would need a third answer besides forward and
+  no-match: match, but come back later."** That answer ALREADY EXISTS AND IS
+  ALREADY WIRED. `VecStoreForward.scala:169-172,313-319`: an address-pool hit
+  that is not a forward-pool hit gives `!sameWinner` -> `!attemptForward` ->
+  `io.replay`. The sole stated justification for the gate is void.
+
+  (c) **TRUE, and it is what the gate destroys.** The pre-commit address pass
+  does present before it commits. Para 2's first half contradicted its second
+  half, and the RTL implemented the wrong half.
+
+  ---- 2. Publishing an address for ORDERING is not reading data for FORWARDING ----
+
+  THE PRINCIPLE: these are two different duties with two different timings, and
+  the data gate belongs on the second, evaluated LIVE at forward time.
+
+  A store candidate's LCAM presentation is UNCONDITIONAL. `io.cand[i].ready` is
+  `true.B`: the arbiter grant it rides has already committed, so there is
+  nothing left to decline and no second chance to decline into. Assert
+  `snoopCandRefused` -- `!(c.valid && !c.ready)` -- so that any future attempt
+  to reintroduce a refusal fails loudly at the point of the mistake.
+
+  `data_filled` instead means "filled NOW, at the search", and is carried into
+  the tier tables from the COMBINATIONAL `filled_vec` rather than hardcoded
+  `true.B`. Its consumer is `VecStoreForward`, where it gates membership of the
+  FORWARD pool ONLY and never the ADDRESS pool: an unfilled older store then
+  yields `matchFound && !forwarderFound` -> `io.replay`, and `vst_match` still
+  kills the D$ access. Correct by machinery already present -- which is the
+  point of (b) above.
+
+  WHY THE OLD ORDER WAS BACKWARDS. The gate was placed where it could only be
+  evaluated at grant time, on a value that is not yet true at grant time:
+  `st_US_DATA_Q` is filled by DGEN one member per enqueue, while the pass-1
+  first beat is the EARLIEST LSU activity in the store's life. The condition was
+  essentially never met, and at LMUL=8 never. Sampling a data-readiness bit at
+  grant to protect a read that happens many cycles later is the frozen-vs-live
+  confusion; `fwdCandFilledIsLive` is the assertion for it.
+
+  PHASE G MADE THIS WORSE, AND THE SHAPE IS WORTH REMEMBERING. `data_filled` was
+  previously hardcoded `true.B`, so the presentation always succeeded and the
+  ordering path largely worked. Phase G replaced the constant with the live
+  AND-reduce to fix a REAL bug (VecStoreForward reading an unfilled entry) and
+  thereby killed the presentation outright. **A correct fix for silent
+  forward-corruption created silent ordering-corruption**, because it tightened a
+  gate without asking what else the gate was holding open.
+
+  ORDER_FAIL IS STILL IN TIME, and this half of the original argument SURVIVES:
+  a vector store's address pass is PRE-COMMIT (its fault must be reported
+  precisely before the store) and the store is older than any load it can fail,
+  so it presents before it commits, and it commits before that younger load can
+  reach the ROB head where the flush fires.
 
   //@req-spec-memord.b1
   //@req-spec-memord.b2

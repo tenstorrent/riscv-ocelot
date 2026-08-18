@@ -342,7 +342,11 @@ interfaces:
       - { name: lsu_fencei_rdy_vec, dir: bwd, width: 1 }
       # ---- debug / trace (ground rule: guarded printf, off by default) -----
       - { name: vec_trace_en,       dir: fwd, width: 1 }
-      - { name: debug_vrf_read,     dir: bwd, width: "vLen * coreWidth" }
+      # Commit-time architectural VRF read for the cosim vector compare. One entry
+      # per (commit port, group member); both are zero-length unless
+      # enableVecCosimCheck, so a physical build carries neither.
+      - { name: debug_read_addr,    dir: fwd, width: "vecPregSz * coreWidth * maxMembers" }
+      - { name: debug_read_data,    dir: bwd, width: "vLen * coreWidth * maxMembers" }
 
   # === Frozen SV interface ==================================================
   # `tt_cii_interface.sv` is AUTHORITATIVE for these signals; this entry exists

@@ -312,6 +312,80 @@ from Tenstorrent Inc.
       was captured at issue, so no VRF and no scalar regfile read happens at pull
       time.
     `STALE_VD` (6) — `prn := e.stale_pvdest_grp(op_offset)`, `read_vrf` true.
+
+  ===> `read_vrf` IS NOT A CONSTANT PER SLOT, AND WRITING IT AS ONE WAS A BUG.
+  The five lines above were implemented with `read_vrf := true.B` literally
+  constant for `VS1`/`VS2`/`VS3`/`VM`/`STALE_VD`, because nothing in this table
+  recorded WHICH SLOTS THE INSTRUCTION ACTUALLY HAS. `VecCiiTagEntry` carried the
+  five PRN groups and no presence bit, so the entry could not express "this op
+  has no vs2" and the response had no choice but to assume presence.
+
+  MEASURED CONSEQUENCE. For `vid.v`, whose vs2 decode correctly declines to
+  rename (`v_uses_vs2 = false`, `VDecode.nlhdl:271-274`), this table returned
+  `read_vrf = 1, killed = 0, prn = 0` on lane 1 / `op_id = 2` — a source the
+  instruction architecturally does not have. `VecCiiOperandServer` latched
+  `vrfAddrReg(1) := 0`, selected `SEL_VRF` instead of its correct zero default,
+  read VRF prn 0, and served that to the VPU as a real operand; it came back as
+  `wb_data`, bit-exact with `io_read_data_6` across all 256 bits in both failing
+  tests and differing run to run because prn 0 is uninitialised.
+
+  THE CONTRACT: **decode's `v_uses_vs1`/`v_uses_vs2`/`v_uses_vs3` are recorded in
+  the tag entry at ALLOC and consulted by the lookup response.** `read_vrf` for a
+  slot is that slot's presence bit, never a literal. `VDecode.nlhdl:277-285`
+  states the `v_uses_vs*` contract; nothing previously said that THIS table must
+  consume it, and an unconsumed contract is not a contract.
+    - `VS1`/`VS2`/`VS3` — `read_vrf := uses_vs{1,2,3}`.
+    - `STALE_VD` — `read_vrf := uses_vs3`. Same bit, and not a coincidence:
+      `VDecode.nlhdl:279-281` says `v_uses_vs3` is true exactly when the lane has
+      a VECTOR DESTINATION, which is precisely the condition under which a stale
+      destination group exists to merge from.
+      ⚠ KNOWN RESIDUAL GAP ON THIS SLOT, recorded and deliberately NOT fixed:
+      `VecCiiIssue.scala:168-169` substitutes `pvtmp` for `pvdest_grp` when
+      `cop_writes_pvtmp` (`is_shared && uses_stq`). `v_uses_vs3` is still TRUE in
+      that case, so `STALE_VD` still advertises `stale_pvdest_grp` — but the
+      merge target is `pvtmp`, which has no stale group. The gate should probably
+      be `uses_vs3 && !cop_writes_pvtmp`. Unreachable in the current suite
+      (`is_shared` means segmented stores, which are LSU-side), so it is left as
+      a named gap rather than an untested change riding a fix that has a live
+      failing test to answer to.
+    - `VM` — LEAVE `read_vrf` TRUE. **This is NOT the same defect, and the
+      asymmetry is deliberate.** `lvm` is a HARDWIRED CONSTANT, not a decoded
+      field (`micro-op.scala:205`; `VDecode.scala:157` and `VecDecode.scala:291`
+      both assign `lvm := 0.U` unconditionally), so `pvm` always holds the live
+      architectural-v0 mapping through an unconditional map-table read
+      (`VecRenameSpace.scala:205` → `VecMapTable.scala:155` → `:268`). It is
+      NEVER unrenamed, so it never falls back to the prn-0 reset default that
+      makes `VS2` dangerous. The unconditional read serves REAL DATA the op
+      ignores — a wasted port, not corruption.
+      The structural tell confirms the intent: `VecRenameSpace.scala:370,394`
+      gate `pvm_busy`/`vm_rdy` on `v_is_masked` but never gate the PRN. **The
+      design gates the DEPENDENCY, not the PRN** — the PRN is always well-formed,
+      while the dependency is only real when the op is masked.
+      A future `v_is_masked` gate here would be DEFENSIVELY worth having rather
+      than merely a saving: because `pvm_busy` is forced false for an unmasked
+      op, that op may issue while an older write to v0 is still in flight, so the
+      unconditional read can return a correctly-named but NOT-YET-WRITTEN PRN.
+      Harmless today because nothing consumes it. If it is ever added, it belongs
+      in its OWN commit — a non-fix bundled into a correctness fix muddies the
+      bisect if the fix regresses something.
+
+  FIX IT HERE, NOT IN `VecCiiOperandServer`. The server's `MuxCase` default
+  already serves zero when the selector is not `SEL_VRF`, so suppressing unused
+  reads there would make these two tests pass — while leaving this table telling
+  every future consumer to read a register the instruction does not have. The
+  defect is the lying response, not the consumer that believed it.
+
+  WHY THE SEVERITY IS WORSE THAN THE SYMPTOM. `VecCiiOperandServer`'s
+  `vrfAddrReg` RESETS TO 0, so an unresolved slot reads **prn 0** — and prn 0 is
+  a real allocatable physical register, not a reserved sentinel. In these two
+  tests it happens to be unwritten, so the corruption is obvious garbage. **The
+  moment prn 0 holds live architectural data, an unresolved slot reads a
+  PLAUSIBLE WRONG VALUE**, and this class stops being visible at all.
+
+  WHY `vid.v` IS THE CANONICAL CASE, and why this survived so long: it is the
+  only arithmetic op with NO vector source whatsoever, so there is no correctly
+  renamed sibling slot to mask the fault. Any other op serves the bad slot
+  alongside good ones and merely looks strange.
   Every lane also drives `killed := tag_killed(req.tag)` and `rob_idx :=
   e.rob_idx`. `killed` is what lets VecCiiOperandServer suppress the VRF read
   while still returning the mandatory don't-care Src-Data beat — the read ports

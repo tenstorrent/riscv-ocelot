@@ -426,5 +426,8 @@ class VecPipelineIO(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
 
   // ---- debug / trace (ground rule: guarded printf, off by default) -----
   val vec_trace_en   = Input(Bool())
-  val debug_vrf_read = Output(Vec(coreWidth, UInt(vecVLen.W)))
+  // Commit-time architectural VRF read, indexed [commit port * maxVecMembers + member].
+  // Empty unless enableVecCosimCheck.
+  val debug_read_addr = Input(Vec(if (usingRVV && enableVecCosimCheck) coreWidth * maxVecMembers else 0, UInt(vecPregSz.W)))
+  val debug_read_data = Output(Vec(if (usingRVV && enableVecCosimCheck) coreWidth * maxVecMembers else 0, UInt(vecVLen.W)))
 }

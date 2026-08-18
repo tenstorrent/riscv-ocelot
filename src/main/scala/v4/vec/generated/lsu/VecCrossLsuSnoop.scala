@@ -72,6 +72,15 @@ class VecCrossLsuSnoopIO(val searchPorts: Int)(implicit p: Parameters) extends B
   val ld_search      = Input(Vec(lsuWidth, Valid(new VecLdSearch)))
   val stq_vec_valid  = Input(Vec(numStqEntries, Bool()))
 
+  //@req-spec-memord.a22
+  // LIVE store-data fill state, read at the SEARCH rather than frozen at the
+  // grant. `data_filled` means "filled NOW", which is what VecStoreForward
+  // actually needs; a bit sampled at grant to protect a read many cycles later
+  // is the frozen-vs-live confusion that produced the ordering loss.
+  // Bit vectors, matching VecElemQueue.io.filled_vec's `Output(UInt(entries.W))`.
+  val st_us_filled   = Input(UInt(usQueueEntries.W))
+  val st_ssi_filled  = Input(UInt(ssiQueueEntries.W))
+
   val snoop_cand     = Output(Vec(lsuWidth, Vec(numStqEntries, Valid(new VecSnoopHit))))
   val vst_addr_match = Output(Vec(lsuWidth, UInt(numStqEntries.W)))
 
@@ -149,7 +158,13 @@ class VecCrossLsuSnoop(val searchPorts: Int = 1, val ssiSnoopWindow: Int = 16)(i
     val cb = c.bits
 
     //@req-spec-memord.a22
-    c.ready := !cb.is_store || cb.data_filled
+    // UNCONDITIONAL. The candidate rides an arbiter grant that has ALREADY
+    // committed to the TLB/D$ access, and `c.ready` has NO READER in VecLsu, so
+    // a refusal here does not decline the grant and nothing re-offers -- it only
+    // deletes the presentation, permanently. Publishing an address for ORDERING
+    // is not the same duty as reading data for FORWARDING; the data gate belongs
+    // on the second, live at forward time. See VecCrossLsuSnoop.nlhdl para 2.
+    c.ready := true.B
 
     val fire    = c.valid && c.ready
     val killed  = IsKilledByBranch(io.brupdate, io.rob_flush, cb.uop)
@@ -174,8 +189,16 @@ class VecCrossLsuSnoop(val searchPorts: Int = 1, val ssiSnoopWindow: Int = 16)(i
     io.lcam(i).bits.range_hi        := presHi
     io.lcam(i).bits.uop             := cb.uop
 
-    assert(!(c.fire && cb.is_store) || cb.data_filled,
-      "VecCrossLsuSnoop: an accepted store candidate must have data_filled set")
+    //@req-spec-memord.a22
+    // snoopCandRefused. THE PREVIOUS ASSERTION HERE WAS VACUOUS, and recording
+    // why matters more than the replacement: it read
+    //   assert(!(c.fire && cb.is_store) || cb.data_filled)
+    // while `c.fire` is `c.valid && c.ready` and `c.ready` was itself
+    // `!is_store || data_filled` -- so `c.fire && is_store` ALREADY IMPLIED
+    // `data_filled`. It could not fire under any stimulus. It read as coverage
+    // of the data gate while checking nothing, which is worse than absent.
+    assert(!(c.valid && !c.ready),
+      "VecCrossLsuSnoop: a candidate was offered and REFUSED -- the offer rides an already-committed arbiter grant and is never re-offered, so a refusal here silently deletes the ordering publication")
     assert(!(io.lcam(i).valid && io.lcam(i).bits.is_range) ||
       (io.lcam(i).bits.range_hi >= io.lcam(i).bits.range_lo),
       "VecCrossLsuSnoop: a range presentation must have range_hi >= range_lo")
@@ -275,10 +298,16 @@ class VecCrossLsuSnoop(val searchPorts: Int = 1, val ssiSnoopWindow: Int = 16)(i
         usRowHit(row).bits.active_mask := e.active_mask
         usRowHit(row).bits.us_data_base      := e.us_data_base
         usRowHit(row).bits.members           := e.members
-        // Only stores are recorded in tier 2, and only after passing the
-        // data_filled gate at presentation, so both are true by construction.
+        // Only stores are recorded in tier 2, so `is_store` is true by
+        // construction. `data_filled` is NOT: the presentation-time gate that
+        // once made it true by construction has been removed (it deleted the
+        // presentation instead of delaying it), so this must be read LIVE, at
+        // the search, from the data queue's own fill bits. It means "filled
+        // NOW", which is what VecStoreForward needs.
         usRowHit(row).bits.is_store          := true.B
-        usRowHit(row).bits.data_filled       := true.B
+        usRowHit(row).bits.data_filled       := (0 until usQueueEntries).map { k =>
+          !(k.U < e.members) || io.st_us_filled((e.us_data_base + k.U)(log2Ceil(usQueueEntries) - 1, 0))
+        }.reduce(_ && _)
         usRowHit(row).bits.stq_idx           := e.stq_idx
         usRowHit(row).bits.len               := e.len
         usRowHit(row).bits.eew               := 0.U
@@ -305,7 +334,9 @@ class VecCrossLsuSnoop(val searchPorts: Int = 1, val ssiSnoopWindow: Int = 16)(i
         cand.us_data_base   := 0.U
         cand.members        := 0.U
         cand.is_store       := true.B
-        cand.data_filled    := true.B
+        // LIVE, as above: an SSI candidate is one element at the same ordinal as
+        // its address entry, so one fill bit answers it.
+        cand.data_filled    := io.st_ssi_filled(e.queue_idx(log2Ceil(ssiQueueEntries) - 1, 0))
         cand.stq_idx        := e.stq_idx
         cand.len            := elemLen
         cand.eew            := e.eew

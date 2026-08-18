@@ -36,7 +36,8 @@ class VecElemQueue(
   val isStore:        Boolean,
   val hasXlatePass:   Boolean = false,
   val reserved:       Boolean = true,
-  val ports:          Int = 1
+  val ports:          Int = 1,
+  val enqStallWatchdog: Int = 4096
 )(implicit p: Parameters) extends BoomModule
 {
   val readPorts: Int = ports + 1
@@ -211,10 +212,43 @@ class VecElemQueue(
   }
 
   for (i <- 0 until ports) {
+    // Condition UNCHANGED -- this is a message and diagnosis improvement only.
+    //
+    // The request was to split this into `enq_not_below_head` and
+    // `enq_not_at_or_past_tail`. THAT SPLIT IS NOT WELL-DEFINED HERE and is not
+    // implemented: `inRegion` is modular (`wrapSub(idx, head) < wrapSub(tail,
+    // head)`), so in a circular buffer "below head" and "at or past tail" are
+    // the SAME region viewed from opposite ends -- any predicate separating them
+    // would either be arbitrary or would weaken the check. Rather than fake the
+    // split with extra terms, the message now carries `idx`, `head` and `tail`
+    // so the reader can see which end it fell off, and names both causes: a
+    // STALE or ZERO index from a capture that read a dead lane, versus an
+    // OVER-RUNNING producer.
     assert(!(io.enq(i).valid && !inRegion(io.enq(i).bits.idx)),
-      s"$queueName: enq idx outside occupied region")
+      s"$queueName: enq idx outside occupied region -- idx=%d head=%d tail=%d. Near head: a STALE or ZERO index from a capture that read a dead resv lane. Near tail: an over-running producer.",
+      io.enq(i).bits.idx, head, tail)
     assert(!(io.enq(i).fire && filled(phys(io.enq(i).bits.idx))),
       s"$queueName: fill targeted an already-filled entry")
+
+    // THE PRODUCER-SIDE DETECTOR. The two region assertions above are a
+    // BACKSTOP, not a detector: the masked-store defect presented idx 0 with
+    // ready=0 for FIFTY CLOCKS, the whole time legitimately inside [head, tail),
+    // and tripped the region check only when an unrelated older store RETIRED
+    // and head moved past it. It was reported by a retirement, ~50 cycles
+    // downstream of the module that computed the wrong index -- and had the
+    // stale index landed in-region AND unfilled, NOTHING would have fired and
+    // the store would have written wrong bytes to memory. The `filled` bit was
+    // the only thing converting silent corruption into a deterministic failure,
+    // and that is not a property anyone designed for.
+    // This fires at the PRODUCER, at the START of those 50 clocks.
+    if (enqStallWatchdog > 0) {
+      val stalled = io.enq(i).valid && !io.enq(i).ready
+      val cnt     = RegInit(0.U(log2Ceil(enqStallWatchdog + 2).W))
+      when (stalled) { cnt := cnt + 1.U } .otherwise { cnt := 0.U }
+      assert(cnt <= enqStallWatchdog.U,
+        s"$queueName: an enqueue has been stalled past enqStallWatchdog cycles -- idx=%d head=%d tail=%d filled=%d. The index most likely belongs to a DIFFERENT in-flight op.",
+        io.enq(i).bits.idx, head, tail, filled(phys(io.enq(i).bits.idx)))
+    }
   }
   assert(!(io.resv.claim.valid && io.resv.claim.bits > avail_reg),
     s"$queueName: claim exceeds avail")

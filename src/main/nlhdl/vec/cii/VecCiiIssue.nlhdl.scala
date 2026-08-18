@@ -443,7 +443,15 @@ from Tenstorrent Inc.
   In the accept cycle the renamed physical scalar register drives
   `int_scalar_read_req`, or `fp_scalar_read_req` when the source's register type is
   `RT_FLT` — the uop's register-type field selects the file, nothing here decodes
-  the instruction — and in the emit cycle the returned value is written into the
+  the instruction — EXCEPT that a source whose type is `RT_ZERO` is not a register
+  read at all and must be delivered as a LITERAL ZERO. Rename maps `x0` to p0 and
+  nothing ever writes p0, so the integer file returns that entry's leftover
+  contents; BOOM's scalar register-read stage forces the zero itself, and this is
+  that stage for the CII. `vmv.s.x vd, x0` — the idiomatic accumulator clear, in
+  every reduction kernel — otherwise writes garbage into element 0 (measured on
+  `conv1d-vector`: DUT `0x80002a88` against an architectural 0). Key it on the
+  TYPE, which decode already resolves to `RT_ZERO` for an rs field of 0, not on
+  `prs1 === 0` — and in the emit cycle the returned value is written into the
   entry's scalar field, from which VecCiiOperandServer later serves the `SCALAR`
   slot with no VRF read. That read carries the same RAW window as
   VecScalarOperandRead's base-GPR read and for the same reason: BOOM's integer

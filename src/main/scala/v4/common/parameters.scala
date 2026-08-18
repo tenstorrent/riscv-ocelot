@@ -374,6 +374,7 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   def lcbEntries: Int = vectorParams.lcbEntries
   def dcacheArbiterMode: String = vectorParams.dcacheArbiterMode
   def resvPtrSz: Int = hvp.resvPtrSz
+  def enableVecCosimCheck: Boolean = vectorParams.enableVecCosimCheck
 
   // Delegated from VectorParams (A2): needs aluWidth/coreWidth/lsuWidth,
   // which a zero-dependency VectorParams can't see. Not new obligations --

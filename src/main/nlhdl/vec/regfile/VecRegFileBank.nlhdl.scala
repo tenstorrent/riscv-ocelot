@@ -154,9 +154,15 @@ from Tenstorrent Inc.
   bank simply enables no byte. That is intentional — it keeps the four banks
   identical and keeps the write decoder out of the mask's timing path.
 
-  Debug — there is no debug read port. VecRegFile builds the `debug_vrf_read`
-  output of `vec_pipeline_io` from the ordinary read ports; a private debug port
-  here would be a thirteenth port on the array, which the table forbids.
+  Debug — there IS a debug read port array, sized by parameter and ZERO by default
+  in a physical build. The earlier prohibition ("a private debug port would be a
+  thirteenth port on the array") rested on a false premise: **the storage is a
+  register array, not a memory, so a read is a mux and there is no port budget to
+  exceed.** Nothing can contend, and no arbitration is needed. Build each debug
+  read through the SAME expression as a functional read, write-forwarding included,
+  so a debug read of a PRN can never disagree with a functional read of it. Do not
+  trace debug reads: they must not perturb the read-forward trace the functional
+  ports own.
   <|end_ports|>
 
   <|begin_logic|>
@@ -358,7 +364,7 @@ INSTANTIATED BY VecRegFile, four times, as `bank`. VecRegFile owns everything
 this module deliberately does not: which functional unit holds which read or
 write port, the `vLen`-wide concatenation of the four `read_data` slices, the
 slicing of write data and of the `vLen/8`-bit write mask into per-bank fields,
-and the `debug_vrf_read` output.
+and the concatenation of the four debug read slices.
 
 Instantiates nothing itself. In particular it instantiates no memory primitive:
 the array is `Reg(Vec(...))` and must stay so unless the C3 area estimate

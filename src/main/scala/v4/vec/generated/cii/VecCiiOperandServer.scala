@@ -80,7 +80,6 @@ class VecCiiOperandServer(
   assert(io.req_credit === beatValid,
     "VecCiiOperandServer: req_credit must be asserted exactly once per accepted beat")
 
-  val vrfAddrReg = RegInit(VecInit(Seq.fill(numSrcLanes)(0.U(vecPregSz.W))))
   val ctrlZero   = 0.U.asTypeOf(new VecCiiSrcCtrl)
 
   //@req-spec-cii.f23
@@ -135,10 +134,9 @@ class VecCiiOperandServer(
 
     //@req-spec-cii.f21
     //@req-spec-cii.f22
-    when (beatValid && doVrfRead) {
-      vrfAddrReg(i) := resp.prn
-    }
-    io.vrf_read_addr(i) := vrfAddrReg(i)
+    // ⚠ COMBINATIONAL. VecRegFile registers the read, so a flop here too puts the
+    // data one beat behind the positional Src-Data channel, forever.
+    io.vrf_read_addr(i) := Mux(doVrfRead, resp.prn, 0.U)
 
     val newCtrl = Wire(new VecCiiSrcCtrl)
     newCtrl.valid  := beatValid
@@ -170,6 +168,19 @@ class VecCiiOperandServer(
     io.src_data(i).bits.data := MuxCase(0.U(vecVLen.W), Seq(
       (ctrl.sel === SEL_VRF)    -> io.vrf_read_data(i),
       (ctrl.sel === SEL_SCALAR) -> ctrl.scalar.pad(vecVLen)))
+
+    // What the VPU actually RECEIVES, one line per lane per beat. The prn on
+    // `src_serve` names where the data was meant to come from; this names what was
+    // handed over, which is the only way to tell a mis-served operand from a
+    // mis-computed result inside the coprocessor.
+    when (ctrl.valid) {
+      VecTrace.traceStruct("VecCiiOperandServer", "src_data", Seq(
+        ("lane", i.U), ("sel", ctrl.sel),
+        ("d0", io.src_data(i).bits.data(63, 0)),
+        ("d1", io.src_data(i).bits.data(127, 64)),
+        ("d2", io.src_data(i).bits.data(191, 128)),
+        ("d3", io.src_data(i).bits.data(vecVLen - 1, 192))))
+    }
 
     val reqValidDelayed = ShiftRegister(io.src_req(i).valid, srcReadLatency, false.B, true.B)
     assert(io.src_data(i).valid === reqValidDelayed,

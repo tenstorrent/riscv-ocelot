@@ -247,6 +247,83 @@ from Tenstorrent Inc.
   `speculative_masks` expressions are copied from the scalar slot unchanged,
   including the `next_uop.iw_p1_bypass_hint` / `iw_p1_speculative_child` updates.
 
+  `iw_p1_bypass_hint` / `iw_p2_bypass_hint` ARE A CONTRACT, NOT DEAD BAGGAGE —
+  NAME THE READER. An earlier revision of this paragraph asked for the hint to
+  be copied "verbatim" and named no consumer, and for a long time it HAD none:
+  the field was carried through every vector slot and read by nothing. That is
+  how the stale-scalar-base hole survived review — the bit that says "this
+  operand is not written back yet" was present, correct, and ignored.
+  THE HINT IS NOT A READINESS SIGNAL FOR A CONSUMER WITH NO BYPASS PORT. That is
+  the whole content of this paragraph. A scalar EU treats a bypassable wakeup as
+  "ready" because it has a bypass network to read the value from at RRD; the
+  vector memory path has none — it has a register file read and a writeback
+  snoop — so for it a set hint means precisely the opposite: THE VALUE IS NOT
+  READABLE YET. On `iq_v_load` and `iq_v_store`, which are NOT past-PNR gated
+  (VecPipeline part 3), that state is reachable.
+
+  THE OBLIGATION IS NOT ON THIS MODULE, AND THE GRANT IS NOT DELAYED. It belongs
+  to `VecScalarOperandRead`: a set hint means the producer's integer regfile
+  write **has not yet landed**. `VecScalarOperandRead` therefore holds that lane
+  until it observes the write on `int_wb_snoop`, rather than assuming any
+  particular distance. The distance happens to be uniform across bypassable
+  producers and that uniformity is what makes a one-cycle arm sufficient — but
+  the reasoning for it lives in `VecScalarOperandRead.nlhdl`, not here, and this
+  slot must not encode a number. **The slot's only obligation is to deliver the
+  hint truthfully on `iss_uop`.** A wrong hint is no longer a lost optimisation;
+  it is a wrong address or a stalled lane.
+
+  **`bypass_hint` may be used as a "is the write pending?" predicate, never as a
+  latency constant.**
+  ===> OPEN DEFECT (named, NOT fixed here): THE `prs2` WAKEUP AND REBUSY ARMS
+  ARE GATED DIFFERENTLY, SO SET AND CLEAR DISAGREE ABOUT WHAT THEY COVER.
+
+  Read the four arms together, because no single one of them looks wrong:
+
+    | arm                                   | line  | gated on `lrs*_rtype === RT_FIX`? |
+    |---------------------------------------|-------|-----------------------------------|
+    | `prs1` wakeup  (set ready)            | :164  | YES                               |
+    | `prs1` rebusy  (retract)              | :173  | YES                               |
+    | `prs2` wakeup  (set ready)            | :178  | **NO**                            |
+    | `prs2` `iw_p2_speculative_child` set  | :180  | **NO**                            |
+    | `prs2` rebusy + child clear (retract) | :183  | YES                               |
+
+  The `prs2` group is INCONSISTENT WITH ITSELF: two ungated SET arms feeding one
+  gated CLEAR arm. A state that can be set and never cleared.
+
+  THE `:180` ARM IS THE MORE SERIOUS HALF, AND IT IS THE ONE TO FIX FIRST.
+  `iw_p2_speculative_child`'s consumer is the RETRACTION PREDICATE at `:183`
+  (`io.child_rebusys & slot_uop.iw_p2_speculative_child`). Set ungated at `:180`
+  and cleared only through the gated path, a slot whose `prs2` is architecturally
+  ABSENT can accumulate a speculative-child mask that nothing clears — and is
+  then RE-BUSIED REPEATEDLY by unrelated child rebusys that have nothing to do
+  with any operand it actually reads.
+
+  ⇒ **THE SIGNATURE IS STARVATION / LIVELOCK, NOT SILENT CORRUPTION.** That is
+  why nothing has caught it, and it is why it will eventually appear as an
+  unexplained HANG in some future test rather than as a data mismatch — the same
+  "fires ten cycles downstream of the error, in the wrong module" pattern as
+  every other defect in this campaign.
+
+  WHICH DIRECTION IS CORRECT: gate **both `:178` and `:180`** on
+  `lrs2_rtype === RT_FIX`, matching `:183`. This is RESTORING AN EXISTING
+  PRECEDENT, not inventing a rule — the `prs1` pair already has set (`:164`) and
+  clear (`:173`) both gated, and that is the evidence that gating is the intended
+  discipline. Four arms, one rule.
+
+  WHY IT IS NOT FIXED IN THIS PASS. It lives in the shared scalar-slot logic, so
+  changing it perturbs every slot on a regression that has to stay clean for the
+  A+B stale-base fix. `VecScalarOperandRead` compensates LOCALLY in the meantime
+  by re-qualifying both hints with `lrs*_rtype === RT_FIX` before arming its
+  wait — that neutralises the consequence for the vector memory path and for
+  nothing else. It does NOT touch the `:180` speculative-child arm at all, so the
+  starvation shape above is UNMITIGATED anywhere. **The slot-level defect is live
+  and will bite the next consumer of `iw_p2_bypass_hint`, of `prs2_busy`, or of
+  `iw_p2_speculative_child`.** Tracked as a follow-up work item; the local
+  compensation is not a fix and must not be read as one.
+  A real defect with a plausible hang signature and no known reproducer deserves
+  its own change and its own clean run — which is the other reason it is not in
+  the A+B pass.
+
   //@req-spec-issue.g8
   The scalar FP source of a `.vf`-form op or `vfmv.*.f` rides `prs1` as well, with
   `lrs1_rtype === RT_FLT` selecting the FP network for that comparator and

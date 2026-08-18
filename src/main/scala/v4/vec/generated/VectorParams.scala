@@ -84,7 +84,14 @@ case class VectorParams(
 
   numVecWbPorts: Int = 3,
 
-  numVecClrPorts: Int = 3
+  numVecClrPorts: Int = 3,
+
+  // Commit-time architectural VRF read for the Whisper cosim vector compare.
+  // Costs coreWidth*maxMembers read muxes and is simulation-only: a physical build
+  // sets this false. Defaults TRUE because an unchecked vector register file let a
+  // broken vmv.v.i pass as green, and a verification facility that is off unless
+  // someone remembers to enable it is the defect this closes.
+  enableVecCosimCheck: Boolean = true
 )
 {
   // ---- Elaboration-time requires that depend only on this class's own fields ----

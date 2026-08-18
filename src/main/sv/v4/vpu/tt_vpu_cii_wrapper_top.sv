@@ -349,7 +349,10 @@ module tt_vpu_cii_wrapper_top
             next_src_beat   <=  '0;
             dst_wr          <=  6'd0;
 
-            iss_state   <=  S_REQ;
+            // DO NOT ENTER THE OPERAND PULL WHILE tt_id IS STILL REPLAYING THE PREVIOUS OP. 
+            if (!id_replay) begin
+              iss_state   <=  S_REQ;
+            end
         end
 
         S_REQ: begin
@@ -551,9 +554,35 @@ module tt_vpu_cii_wrapper_top
   // via i_iterate_addrp*). Convert to a member index by subtracting the source base
   // decoded from the raw instruction, and index the per-member operand arrays. VM
   // (v0) is a single register.
-  wire [4:0] rd_mem_p0 = id_vpu_uop_packet.rf_addrp0 - next_iss_insn[19:15]; // VS1 base
-  wire [4:0] rd_mem_p1 = id_vpu_uop_packet.rf_addrp1 - next_iss_insn[24:20]; // VS2 base
-  wire [4:0] rd_mem_p2 = id_vpu_uop_packet.rf_addrp2 - next_iss_insn[11:7];  // VS3/old-dest base (vd)
+  //
+  // ⚠ THE BASE COMES FROM THE EXECUTING OP, NOT THE STAGED ONE. `next_iss_insn` is
+  // the instruction being PREFETCHED: it is overwritten in S_WAIT as soon as the
+  // next op is popped, which is while tt_id is still iterating the CURRENT op.
+  // Subtracting the wrong base turns a correct per-iteration register address into
+  // a WRONG MEMBER INDEX, and the wrapper then feeds tt_vec a member the op never
+  // staged -- zeros, or another op's leftovers -- with no error anywhere.
+  // Measured on ms12h_vredsum_loop (MegaBoom, Whisper cosim): `vredsum.vs v10,v10,v12`
+  // ran its full 16 iterations (iterate=1, cnt_start=15), but three iterations in,
+  // the wrapper staged the following `vmacc.vv v14,v8,v8` and the VS2 base changed
+  // 10 -> 8, so `rd_mem_p1` jumped 0 -> 2 and thirteen of the sixteen elements were
+  // read as zero. The reduction returned the sum of elements 0..2 (0x38 instead of
+  // 0x1760) -- a plausible number, from the right instruction, with no assertion.
+  // A reduction is simply the most VISIBLE victim: every iterating op reads its
+  // operands through this subtraction.
+  //
+  // Latch it at ACCEPT, which is the cycle tt_id takes ownership of the op, and
+  // bypass on that cycle so the first iteration (dispatched in the accept cycle,
+  // before the latch updates) still sees its own base.
+  logic [31:0] exec_insn;
+  always_ff @(posedge clk or negedge reset_n) begin
+    if (!reset_n)                                    exec_insn <= '0;
+    else if ((iss_state == S_HOLD) && id_ready_to_receive) exec_insn <= next_iss_insn;
+  end
+  wire [31:0] base_insn = ((iss_state == S_HOLD) && id_ready_to_receive) ? next_iss_insn : exec_insn;
+
+  wire [4:0] rd_mem_p0 = id_vpu_uop_packet.rf_addrp0 - base_insn[19:15]; // VS1 base
+  wire [4:0] rd_mem_p1 = id_vpu_uop_packet.rf_addrp1 - base_insn[24:20]; // VS2 base
+  wire [4:0] rd_mem_p2 = id_vpu_uop_packet.rf_addrp2 - base_insn[11:7];  // VS3/old-dest base (vd)
   assign vrf_p0_rddata  = opnd_p0[rd_mem_p0[CII_MEMBER_W-1:0]];
   assign vrf_p1_rddata  = opnd_p1[rd_mem_p1[CII_MEMBER_W-1:0]];
   assign vrf_p2_rddata  = opnd_p2[rd_mem_p2[CII_MEMBER_W-1:0]];
@@ -648,6 +677,45 @@ module tt_vpu_cii_wrapper_top
                                       wb_fp_flags.fpOF,
                                       wb_fp_flags.fpUF,
                                       wb_fp_flags.fpNX} } };
+
+  // ---- Debug: what the VPU accepted, and every result strobe it produced.
+  // Plusarg-gated (+vecTrace, the same switch VecTrace uses on the Chisel side) so
+  // it costs nothing when off. A wrong reduction is otherwise indistinguishable at
+  // the CII boundary from a correctly-computed one over wrong operands.
+  bit vpu_dbg_en;
+  initial vpu_dbg_en = $test$plusargs("vecTrace");
+  always_ff @(posedge clk) begin
+    if (vpu_dbg_en && reset_n) begin
+      if ((iss_state == S_HOLD) && id_ready_to_receive)
+        $display("[vpu] accept tag=%0d insn=%08x vl=%0d vsew=%0d vlmul=%0d vstart=%0d dst_nm=%0d maxbeats=%0d replay=%0b scalar=%0b redop=%0b",
+                 next_iss_tag, next_iss_insn, next_iss_vl, next_iss_vtype.vsew,
+                 next_iss_vtype.vlmul, next_iss_vstart, dst_nm, max_src_beats,
+                 id_replay, scalar_src, id_vpu_uop_packet.reductop);
+      // tt_id's replay setup for the accepted op. A reduction walks ONE ELEMENT
+      // PER ITERATION (tt_vec_iadd.sv:168), so the element count it actually sums
+      // IS this replay count -- the only place a "summed 3 of 16" can come from.
+      if ((iss_state == S_HOLD) && id_ready_to_receive)
+        $display("[vpu]   id: iterate=%0b onecyc=%0b cnt_start=%0d vsew=%0d lmul=%0d ign_lmul=%0b ign_dstincr=%0b ign_srcincr=%0b vl=%0d",
+                 id.vec_autogen.iterate, id.vec_autogen.onecycle_iterate,
+                 id.id_replay_cnt_start, id.v_vsew, id.v_lmul,
+                 id.i_ignore_lmul, id.i_ignore_dstincr, id.i_ignore_srcincr,
+                 id.o_csr.v_vl);
+      // One line per DISPATCHED iteration: which member of which staged source the
+      // wrapper is feeding tt_vec this iteration, and the data it sees. A reduction
+      // consumes one element per iteration, so this is the sum's actual input list.
+      if (id_vex_rts)
+        $display("[vpu]   iter replay=%0b cnt=%0d addrp0=%0d addrp1=%0d addrp2=%0d memp0=%0d memp1=%0d p1lo=%016x",
+                 id_replay, id.vec_autogen_replay.replay_cnt,
+                 id_vpu_uop_packet.rf_addrp0, id_vpu_uop_packet.rf_addrp1,
+                 id_vpu_uop_packet.rf_addrp2, rd_mem_p0, rd_mem_p1,
+                 vrf_p1_rddata[63:0]);
+      if (wb_result_valid)
+        $display("[vpu] result lqid=%0d data=%016x tag=%0d off=%0d last=%0b vld={%0b%0b%0b%0b}",
+                 wb_ldqid, wb_result_data[63:0], tag_by_lqid[wb_ldqid],
+                 dstoff_by_lqid[wb_ldqid], last_by_lqid[wb_ldqid],
+                 vex_mem_lqvld_1c, vex_mem_lqvld_2c, vex_mem_lqvld_3c, vex_mem_lqvld_div);
+    end
+  end
 
   /////////////////////////////////////////////////////////////////////////////
   // Old-dest merge FSM: for a vec_single_reg op (VPU writes only member 0), write

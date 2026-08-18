@@ -176,9 +176,10 @@ from Tenstorrent Inc.
 
   `vl_wakeup` is an output of `VecPipeline` and every VL consumer is inside
   `VecPipeline` (its part 6 forms the network from `vset_resp` and its own
-  `vleff` trim). Nothing in `core.scala` reads or drives it. `debug_vrf_read` is
-  `dontTouch`ed for the waveform and the Whisper cosim and reaches no functional
-  logic.
+  `vleff` trim). Nothing in `core.scala` reads or drives it. `debug_read_addr` is
+  driven from the committing uops' `pvdest` (one address per commit port and group
+  member) and `debug_read_data` feeds the harness's `debug_vec_wdata`; both are
+  empty unless the vector-cosim-check parameter is set.
   <|end_ports|>
 
   <|begin_logic|>
@@ -678,7 +679,55 @@ from Tenstorrent Inc.
   the CSR-side half of the design's precise-exception rule: Caracal never writes
   a non-zero `vstart`, so the only way `vstart` becomes non-zero is a software
   write, and a vector instruction that honours that prefix must clear it when it
-  retires. `csr_frm := csr.io.fcsr_rm`, the same value `all_exe_units` and
+  retires.
+
+  ===> IT MUST ALSO BE CLEARED ONCE OUT OF RESET, AND THAT IS NOT COSMETIC.
+       **Rocket's `reg_vstart` is a plain `Reg`, not a `RegInit`** (rocket-chip
+       `CSR.scala`, the `usingVector.option(Reg(...))` declaration) — **it has no
+       reset value.** With the clear gated only on a vector commit, the register
+       holds power-on garbage from reset until the FIRST vl-producing uop retires,
+       and every vector instruction issued in that window reads it. MEASURED:
+       `csr_vstart` = 219 for the whole pre-vsetvl window; the coprocessor computed
+       `vstart_mask << 219`, suppressed every element write, and returned the OLD
+       DESTINATION unchanged. A correct `vmv.v.i` computed the right answer
+       internally and wrote none of it — silent architectural corruption on every
+       vector test, invisible until the vector registers entered the cosim compare.
+       So drive `set_vstart.valid` once more than at commit — but **NOT on the first
+       post-reset cycle.** `set_vstart.valid` implies `set_vs_dirty`, and rocket
+       asserts `reg_mstatus.vs > 0` whenever that is raised (`CSR.scala`, the
+       `set_vs_dirty` block). Out of reset `mstatus.vs` is 0, so an unconditional
+       one-shot **trips that assertion at 785 ns and kills every test** — measured.
+       **The write port has a precondition that is invisible at the call site: it is
+       unusable until software enables vector state.**
+       Gate the one-shot on `csr.io.status.vs > 0` instead: a one-shot
+       `vstartInitDone` latch with `valid = commit || (!done && status.vs > 0)`.
+
+       GATING ON `vs > 0` IS SUFFICIENT, NOT MERELY SAFE, and the reason must be
+       stated or the next reader will think it leaves a hole. **A vector instruction
+       cannot issue while `mstatus.vs == 0` — it is an ILLEGAL INSTRUCTION and
+       traps.** Verified: rocket raises `io_dec.vector_illegal := io.status.vs === 0
+       || …` (`CSR.scala`), BOOM consumes it as `v_legal = v_opcode &&
+       !io.csr_decode.vector_illegal` (`decode.scala`), and `id_illegal_insn`
+       includes `!cs_legal && !v_legal`. So the garbage `vstart` is UNREACHABLE
+       before the gate fires, and it is zeroed the moment it first becomes
+       reachable. (Residual, noted not chased: a vector op issuing in the very cycle
+       `vs` transitions would predate the write by one edge. Unreachable in practice
+       — the enabling CSR write is `is_unique` and the CII issue path is several
+       stages deep — but it is a timing argument, not a structural one.)
+       Do NOT instead force the ISSUE packet's `vstart` field to zero — the CII
+       spec forbids that, because software may legally `csrw vstart` and the
+       coprocessor honours the prefix.
+
+  ⚠ THIS IS A WORKAROUND FOR AN UPSTREAM DEFECT WE ARE CHOOSING NOT TO FIX, and
+    the choice is deliberate rather than ignorant. The correct fix is
+    `RegInit(0.U)` in rocket-chip. We do not take it because `rocket-chip` is a
+    PINNED SUBMODULE in this tree and submodule resets have already silently
+    reverted required changes here (see the repo's own troubleshooting notes) — a
+    one-word fix that vanishes on the next checkout takes the bug back with it.
+    **Report it upstream; keep the local clear regardless, since it is correct even
+    after the reset lands.**
+
+  `csr_frm := csr.io.fcsr_rm`, the same value `all_exe_units` and
   `fp_pipeline` already get. Note that rocket asserts `set_vconfig.bits.vl <=
   set_vconfig.bits.vtype.vlMax` (CSR.scala), which is a live check on the pair
   crossing this seam.
@@ -707,8 +756,20 @@ from Tenstorrent Inc.
 
   `v.io.vec_trace_en` is driven from the `vecTrace` plusarg that `VecTrace`
   defines, read ONCE in this file and fanned in as a single bit, off by default.
-  `dontTouch(v.io.debug_vrf_read)` so the waveform and the Whisper cosim can read
-  the VRF; it reaches no functional logic. `v.io.vl_wakeup` is read by nothing
+  THE COSIM'S VECTOR COMPARE IS DRIVEN HERE, AND FOR A LONG TIME IT WAS NOT.
+  `debug_vec_wdata`/`debug_vec_wmask` on the committing uop are what arm the
+  harness's vector branch. While they were tied to zero the harness compared NO
+  vector register in any run — a garbage VRF was invisible unless the value
+  happened to reach a GPR, and a test writing a corrupt register PASSED. An
+  earlier revision of this paragraph claimed the cosim could read the VRF through
+  a `dontTouch`ed observability output; **it could not, and stating that it could
+  is why the gap survived.** Drive the mask from the committing uop's member count
+  and gate it on the uop actually having a vector destination; drive the data from
+  a COMMIT-TIME architectural read of `pvdest`, member `m` at bit offset `vLen*m`.
+  Do this in EVERY retire-width arm: wiring one arm leaves every other width
+  unchecked, which is indistinguishable from not doing it at all.
+
+  `v.io.vl_wakeup` is read by nothing
   here (part 6 of `VecPipeline` forms and consumes the VL network internally),
   and is left as an observability output.
 

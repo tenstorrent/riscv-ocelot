@@ -168,7 +168,30 @@ class VecBusyTable(
     }.reduce(_ | _)
     destMask | tmpMask
   }
-  val setMaskOR = (0 until plWidth).map(setMaskFor).reduce(_ | _)
+  val setMasks  = (0 until plWidth).map(setMaskFor)
+  val setMaskOR = setMasks.reduce(_ | _)
+
+  //@req-spec-rename.g11
+  // INTRA-GROUP RAW: a lane's source may be renamed by an OLDER LANE IN THIS SAME
+  // rename group, whose busy set has not reached `busy_table` yet. The map table
+  // already bypasses the older lane's `pvdest` into this lane's `pvs*`, so the PRN
+  // is correct -- but reading the table alone answers "not busy" for a register
+  // nothing has written, and the consumer issues against a STALE register with no
+  // assertion anywhere. BOOM's scalar RenameBusyTable carries exactly this bypass
+  // (`prs1_was_bypassed`); the vector table was missing it.
+  // Measured on conv1d-vector (MegaBoom): `vl2re32.v v14` (rob 20) and its consumer
+  // `vmacc.vv v10,v14,v12` (rob 22) renamed in the same group -- the vmacc's read
+  // reported `pvs1_busy=0` in the very cycle rob 20's set was forming, issued ~350
+  // cycles before the load's `group_done`, and multiplied a stale v14. Its OTHER
+  // source (v12, renamed in an EARLIER group) was correctly seen busy, which is why
+  // exactly one operand came back stale.
+  // Physical-PRN compare, not an architectural one: `setMasks(j)` is already the
+  // exact set of PRNs lane j is marking busy, group members and `pvtmp` included.
+  // OLDER LANES ONLY -- a lane must not see its own set, or every op would read its
+  // own freshly-allocated destination as a busy source.
+  val setMaskOlder = (0 until plWidth).map { i =>
+    if (i == 0) 0.U(numPregs.W) else (0 until i).map(setMasks).reduce(_ | _)
+  }
 
   // =========================================================================
   // ---- 3. Clear-busy on group-done ----
@@ -212,12 +235,18 @@ class VecBusyTable(
     val uop  = io.ren_uops(i)
     val resp = io.busy_resps(i)
 
+    // This lane's view of the table: this cycle's clears applied, this cycle's
+    // OLDER-LANE sets folded in. Same set-beats-clear precedence as
+    // `busy_table_next`, so a PRN both woken and re-allocated in one cycle reads
+    // BUSY -- it belongs to the new tenant.
+    val busyView = busy_table_clr | setMaskOlder(i)
+
     if (vectorInstance) {
       val emul = uop.v_emul.get
 
       //@req-spec-rename.g11
       def memberBits(vec: Seq[UInt]): Seq[Bool] =
-        (0 until maxGroupSize).map(j => busy_table_clr(vec(j)) && (j.U < emul))
+        (0 until maxGroupSize).map(j => busyView(vec(j)) && (j.U < emul))
 
       val pvs1Bits  = memberBits(uop.pvs1.get)
       val pvs2Bits  = memberBits(uop.pvs2.get)
@@ -227,7 +256,7 @@ class VecBusyTable(
       //@req-spec-rename.e12
       //@req-spec-vrf.d6
       val pvtmpBits = memberBits(uop.pvtmp.get)
-      val pvmBit    = busy_table_clr(uop.pvm.get)
+      val pvmBit    = busyView(uop.pvm.get)
 
       //@req-spec-rename.g11
       resp.pvs1_busy.get  := pvs1Bits.reduce(_ || _)
@@ -266,7 +295,7 @@ class VecBusyTable(
       //@req-spec-rename.h14
       //@req-spec-rename.g12
       //@req-spec-rename.g26
-      resp.pvl_busy.get := busy_table_clr(uop.pvl_src.get)
+      resp.pvl_busy.get := busyView(uop.pvl_src.get)
 
       VecTrace.trace("VecBusyTable", "read", uop, Seq(("pvl_busy", resp.pvl_busy.get)))
     }

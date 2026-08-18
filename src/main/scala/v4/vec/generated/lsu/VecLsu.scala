@@ -238,9 +238,40 @@ class VecLsu(
   resv.io.release(2).bits.used_count   := ld_range_agen.io.release.bits.used_count
   ld_range_agen.io.release_ok := resv.io.release_ok(2)
 
-  resv.io.resv_lookup(3).valid         := st_range_agen.io.resv_lookup.valid
-  resv.io.resv_lookup(3).bits.is_store := st_range_agen.io.resv_lookup.bits.is_store
-  resv.io.resv_lookup(3).bits.q_idx    := st_range_agen.io.resv_lookup.bits.q_idx
+  //@req-spec-lsu.k2b
+  // A RESERVATION LOOKUP LANE'S `valid` IS A READ ENABLE OWNED BY THIS
+  // CONTAINER, NOT PART OF THE AGEN'S REQUEST HANDSHAKE. VecLsu samples lane 3's
+  // echo at `stOpPulse` to capture `data_base`, but VecRangeAgen only raises its
+  // own lookup on `stMaskFire` -- one cycle LATER for a masked op -- and
+  // `resv_resp` returns ZERO from a dead lane. So enable the read where the read
+  // happens. The capture stays at stOpPulse for BOTH classes; do NOT defer it to
+  // stMaskFire (see the capture site).
+  //
+  // Safe, and both halves were checked rather than assumed:
+  //  - `slots(k).base` is written at DISPATCH ONLY (VecQueueReservation :286,
+  //    :290, :302) -- never by `release`, which touches `count` alone
+  //    (:369-372), and never by retire. The row is live for tens of cycles
+  //    before stOpPulse; measured 6-38 clocks in ms5p1. The base was always
+  //    correct -- only the lane's VALID was low, which is why the echo read 0.
+  //  - forcing the lane cannot disturb VecRangeAgen: it consumes `resv_resp`
+  //    only into `io.range.bits.us_data_base` (:140), and `io.range.valid` is
+  //    gated by its own `io.req.valid`, which is low in exactly the cycles we
+  //    force. `resv_lookup` is a pure read enable with no side effects
+  //    (referenced at VecQueueReservation:318 and nowhere else).
+  // The agen's own lookup always wins when live, so its read is never perturbed.
+  // FORWARD-DECLARED Wire, connected beside stIsRangeClass several hundred lines
+  // below. `stOpPulse` (:479) and `stIsRangeClass` (:486) are both declared AFTER
+  // this point, so referencing them here reads a Scala NULL and dies at
+  // elaboration, not at compile time -- the same trap the LCB-credit note records
+  // for `lcbWalkActive`. `st_opnd` and `st_range_agen` are Modules instantiated
+  // above (:129, :137), so their `io` is safe to reference here.
+  val stRangeLookupEarly = Wire(Bool())
+  resv.io.resv_lookup(3).valid         := st_range_agen.io.resv_lookup.valid || stRangeLookupEarly
+  resv.io.resv_lookup(3).bits.is_store := Mux(stRangeLookupEarly, true.B,
+                                              st_range_agen.io.resv_lookup.bits.is_store)
+  resv.io.resv_lookup(3).bits.q_idx    := Mux(stRangeLookupEarly,
+                                              GetRealLSQIdx(st_opnd.io.out.bits.uop.stq_idx),
+                                              st_range_agen.io.resv_lookup.bits.q_idx)
   st_range_agen.io.resv_resp := resv.io.resv_resp(3)
   resv.io.release(3).valid             := st_range_agen.io.release.valid
   resv.io.release(3).bits.is_store     := st_range_agen.io.release.bits.is_store
@@ -303,6 +334,22 @@ class VecLsu(
     ldRows(idx).valid   := true.B
     ldRows(idx).fullIdx := io.iss_ld.bits.ldq_idx
     ldRows(idx).uop     := io.iss_ld.bits
+    //@req-spec-issue.d3
+    // THE BYPASS HINTS ARE KEPT, AND CLEARED BY OBSERVATION -- see the snoop below.
+    // `iw_p*_bypass_hint` means "the producer's regfile write is still in flight AS
+    // OF THIS CYCLE". It is a wakeup-cycle pulse in VecIssueSlot, so a hint replayed
+    // out of a row that has been parked for tens of cycles makes
+    // VecScalarOperandRead wait for a write that already landed -- a wait nothing
+    // ever clears (measured on conv1d-vector: ld_opnd's wbWaitWatchdog, with the
+    // whole vector pipe stalled behind it).
+    // ⚠ BUT STRIPPING THE HINT AT PARK TIME IS ALSO WRONG, AND THAT WAS MEASURED
+    // TOO: a row can be presented within a cycle or two of being parked, while its
+    // producer's write is genuinely still in flight, and the op then reads a STALE
+    // base from the register file. That is `lateWritebackObserved` firing in
+    // VecScalarOperandRead -- it regressed relu-vector, which had been passing.
+    // Neither "always keep" nor "always strip" is right because the question is not
+    // about the row, it is about the PRODUCER: has that write landed yet?
+    // So keep the hint and CLEAR IT WHEN THE WRITE IS SEEN, below.
   }
   for (i <- 0 until numLdqEntries) {
     when (ldRows(i).valid && !(io.iss_ld.valid && GetRealLSQIdx(io.iss_ld.bits.ldq_idx) === i.U)) {
@@ -310,6 +357,29 @@ class VecLsu(
       when (IsKilledByBranch(io.brupdate, io.rob_flush, ldRows(i).uop)) {
         ldRows(i).valid := false.B
       }
+    }
+  }
+
+  //@req-spec-issue.d3
+  // THE PARKED-HINT SNOOP. A hint is a statement about a producer's write being in
+  // flight, so it stays true exactly until that write is OBSERVED. Watch every
+  // int-writeback port against each parked row's `prs1`/`prs2` and clear that
+  // lane's hint on a match: a row presented afterwards reads a register file that
+  // already holds the value (no wait armed, correctly), and a row presented before
+  // the write still carries its hint, so VecScalarOperandRead waits (correctly).
+  // This replaces both of the wrong absolutes -- "always keep" (a permanent wait,
+  // conv1d-vector) and "always strip" (a stale base read, relu-vector).
+  // COST, stated because it is not small: numLdqEntries x numIrfWritePorts address
+  // compares per direction. It can be narrowed later to rows whose hint is actually
+  // set (a handful at any time) -- the mask is already here -- but do that with a
+  // measurement, not on sight.
+  def snoopHit(prn: UInt): Bool =
+    io.int_wb_snoop.map(w => w.valid && w.bits.addr === prn(ipregSz - 1, 0)).reduce(_ || _)
+
+  for (i <- 0 until numLdqEntries) {
+    when (ldRows(i).valid) {
+      when (snoopHit(ldRows(i).uop.prs1)) { ldRows(i).uop.iw_p1_bypass_hint := false.B }
+      when (snoopHit(ldRows(i).uop.prs2)) { ldRows(i).uop.iw_p2_bypass_hint := false.B }
     }
   }
 
@@ -400,6 +470,9 @@ class VecLsu(
     stRows(idx).valid   := true.B
     stRows(idx).fullIdx := io.iss_st.bits.stq_idx
     stRows(idx).uop     := io.iss_st.bits
+    //@req-spec-issue.d3
+    // Same contract as the load row above: hints are kept here and cleared by the
+    // int_wb_snoop watch below.
   }
   for (i <- 0 until numStqEntries) {
     when (stRows(i).valid && !(issStAgen && GetRealLSQIdx(io.iss_st.bits.stq_idx) === i.U)) {
@@ -411,6 +484,13 @@ class VecLsu(
   }
 
   val stCandValid   = Wire(Vec(numStqEntries + 1, Bool()))
+  for (i <- 0 until numStqEntries) {
+    when (stRows(i).valid) {
+      when (snoopHit(stRows(i).uop.prs1)) { stRows(i).uop.iw_p1_bypass_hint := false.B }
+      when (snoopHit(stRows(i).uop.prs2)) { stRows(i).uop.iw_p2_bypass_hint := false.B }
+    }
+  }
+
   val stCandFullIdx = Wire(Vec(numStqEntries + 1, UInt((1 + stqAddrSz).W)))
   for (i <- 0 until numStqEntries) {
     stCandValid(i)   := stRows(i).valid
@@ -460,6 +540,11 @@ class VecLsu(
   when (stMaskFire) { stMaskAwaiting := false.B }
   val stIsRangeClass = st_opnd.io.out.bits.uop.v_is_unit_stride.get || st_opnd.io.out.bits.uop.v_is_whole_reg.get ||
     st_opnd.io.out.bits.uop.v_is_mask.get
+
+  //@req-spec-lsu.k2b
+  // Connection of the forward-declared Wire at the resv_lookup(3) wiring, which
+  // needs these two and is written several hundred lines above them.
+  stRangeLookupEarly := stOpPulse && stIsRangeClass && !st_range_agen.io.resv_lookup.valid
 
   st_opnd.io.iss.valid := stPresent
   st_opnd.io.iss.bits  := stWinnerUop
@@ -687,12 +772,45 @@ class VecLsu(
   // before an older store's DGEN grant, and a single register hands the older
   // store the younger one's vl and base.
   val stDgenVlTbl   = Reg(Vec(numStqEntries, UInt(vecVLSz.W)))
-  val stDgenBaseTbl = Reg(Vec(numStqEntries, UInt(log2Ceil(ssiQueueEntries).W)))
+  //@req-spec-lsu.k2b
+  // WIDTH: resvPtrSz, not log2Ceil(ssiQueueEntries). `resv_resp.base` is
+  // resvPtrSz because it carries a WRAP BIT, and VecDgen's `data_base` is
+  // ALREADY resvPtrSz -- so this table was the single narrow link in an
+  // otherwise correctly-sized path, dropping the wrap bit in the middle of a
+  // chain whose two ends are both right. An SSI store loses it once the tail
+  // passes 512.
+  val stDgenBaseTbl = Reg(Vec(numStqEntries, UInt(resvPtrSz.W)))
+  val stDgenBaseVld = RegInit(VecInit(Seq.fill(numStqEntries)(false.B)))
+
+  //@req-spec-lsu.k2b
+  // ONE capture, at stOpPulse, for BOTH classes -- bit-identical to pre-class-C
+  // on the common path. Lane 3's echo is live here because VecLsu enables that
+  // read itself (see the resv_lookup(3) wiring); the fix is the READ ENABLE, not
+  // the capture time.
+  //
+  // ⚠ DO NOT DEFER THIS CAPTURE TO stMaskFire. That was tried and is UNSAFE:
+  // `dgen.io.req.valid` (:757) comes from the ISSUE UNIT via VecStoreDgenPath,
+  // which gates `dgen_request` only on `!fu_agen` -- nothing orders the DGEN
+  // grant against stOpPulse, let alone stMaskFire. Deferring widened the
+  // DGEN-reads-before-AGEN-writes window by a cycle and broke ms11a4_vse_mask,
+  // the one masked store that passed. The safety argument offered for it cited
+  // `stStreamerBusy`, which is TRUE and about the WRONG PAIR: it orders AGEN
+  // pulses against each other, not the DGEN grant against the mask fire.
   when (stOpPulse) {
     val agenIdx = GetRealLSQIdx(st_opnd.io.out.bits.uop.stq_idx)
     stDgenVlTbl(agenIdx)   := st_opnd.io.out.bits.vl
     stDgenBaseTbl(agenIdx) := Mux(stIsRangeClass, resv.io.resv_resp(3)(1).base, resv.io.resv_resp(1)(1).base)
+    stDgenBaseVld(agenIdx) := true.B
   }
+
+  //@req-spec-lsu.k2b
+  // The lane whose echo we read must actually be live -- the general guard
+  // against re-introducing this class. The lane-3 form is the symmetric partner
+  // of the read enable above: if that enable is ever removed, this fires.
+  assert(!(stOpPulse && !stIsRangeClass) || resv.io.resv_lookup(1).valid,
+    "VecLsu: SSI data_base captured from resv lane 1 while that lane was dead -- resv_resp returns 0, not the held value")
+  assert(!(stOpPulse && stIsRangeClass) || resv.io.resv_lookup(3).valid,
+    "VecLsu: US range data_base captured from resv lane 3 while that lane was dead -- resv_resp returns 0, not the held value")
   //@req-spec-lsu.d7
   // uop, vl and data_base all name the store the issue unit granted. Taking the
   // uop from st_opnd instead sources bits and valid from different instructions.
@@ -701,6 +819,28 @@ class VecLsu(
   dgen.io.req.bits.uop       := io.iss_st.bits
   dgen.io.req.bits.vl        := stDgenVlTbl(stDgenIdx)
   dgen.io.req.bits.data_base := stDgenBaseTbl(stDgenIdx)
+  when (dgen.io.req.fire) { stDgenBaseVld(stDgenIdx) := false.B }
+
+  //@req-spec-lsu.k2b
+  // vec_lsu_dgen_base_captured_before_grant. INDEPENDENT OF CLASS C, and it is
+  // EXPECTED TO STILL FIRE -- the read-enable rework makes it less likely (the
+  // capture lands a cycle earlier than the deferred version) but cannot remove
+  // it: nothing orders the DGEN grant against `st_opnd.out`. When it fires,
+  // triage it as its own item; do NOT fold it back into class C.
+  //
+  // The stakes are higher than "a wrong base". If the DGEN grant lands before
+  // `stPresent`, `dgen.io.req.fire` drops `req.ready`, which BLOCKS `stPresent`
+  // outright (:444) -- the store then stalls behind a dgen streaming from
+  // uninitialised `stDgenVlTbl` AND `stDgenBaseTbl`, i.e. a wild store with a
+  // garbage length. Measured pre-capture garbage: base 141 / -149, vl 219 / 21.
+  //
+  // ⚠ ASSERTION INPUT, NOT A GRANT GATE. Do not add this to dgen.io.req.valid:
+  // it would stall the common path to guard a case that is a bug anyway.
+  // The real fix is on the ISSUE side -- VecStoreDgenPath:98 should gate
+  // `dgen_request` on the AGEN pass having reached its operand read, not merely
+  // `!fu_agen`. That belongs to the issue-seam owner.
+  assert(!(dgen.io.req.fire && !stDgenBaseVld(stDgenIdx)),
+    "VecLsu: a DGEN grant read stDgenBaseTbl before any AGEN pulse captured it -- data_base AND vl are uninitialised registers, so this is a wild store with a garbage length, not merely a wrong base")
 
   // =========================================================================
   // ---- 5. Drain side: per-queue drain pointers and the beat expanders ----
@@ -738,8 +878,71 @@ class VecLsu(
   ld_beat.io.stop          := ldBeatStop
   ld_beat.io.kill          := squash.io.kill(2)
   val ldUsRetire = ld_beat.io.us_pop || ldUsTrimRetire
+
+  //@req-spec-lsu.j3
+  // THE LOAD RANGE'S LCAM DUTY. One bit and one tag: ldUsDrainPtr serializes
+  // ranges, so two can never be in pass 1 together. ARMED BY IDENTITY -- the
+  // staged ldq_idx changing -- and never by a single retire EVENT, because a
+  // trimmed vleff retires without a us_pop and an event-keyed arm would leave
+  // the next range stranded with a CLEAR latch, silently reintroducing the
+  // lane-0 defect for every range after the first. Reset value is OWED.
+  // WIRE, not a register -- see the store mirror below for why an edge-detect
+  // on identity lags the staged entry by a cycle and loses the duty.
+  val ldLcamDoneVld = RegInit(false.B)
+  val ldLcamDoneTag = Reg(UInt((1 + ldqAddrSz).W))
+  val ldUsLcamOwed  = !(ldLcamDoneVld && ldLcamDoneTag === ldUsStagedBits.ldq_idx)
+  when (io.rob_flush || squash.io.kill(2)) { ldLcamDoneVld := false.B }
+  ld_beat.io.us_lcam_owed := ldUsLcamOwed
+
   when (ld_beat.io.us_cursor_wr.valid) { ldUsCursor := ld_beat.io.us_cursor_wr.bits }
   when (ldUsRetire) { ldUsCursor := 0.U; ldUsDrainPtr := ldUsDrainPtr + 1.U }
+  //@req-spec-lsu.i3
+  // ABANDONED is not COMPLETED. `ldUsRetire` is a completion event, so a killed or
+  // flushed range never reaches it and the NEXT range resumed at the dead one's
+  // cursor -- measured on ms4p6_vle32_2, where member 0 was never fetched. Last in
+  // program order here so a kill beats a same-cycle advance.
+  when (io.rob_flush || squash.io.kill(2)) { ldUsCursor := 0.U }
+  //@req-spec-lsu.i3
+  // The drain pointer must follow the SAME rewind the queue's tail takes, or the two
+  // walk apart and every later range stages at an index that is never filled.
+  // LAST in program order: a squash can coincide with the retire increment above and
+  // the rewind must win -- reordering these two `when`s reintroduces the defect.
+  val ldUsQIdx = queueSeq.indexOf(ld_US_ADDR_Q)
+  // ⚠ CONDITIONAL: the rewind must never move the pointer FORWARD -- q_squash.bits
+  // is the surviving-allocation tail, ahead of a staged range that survives.
+  //
+  // THE CONDITION IS AN ORDER COMPARISON, NOT `!staged`. An earlier revision
+  // guarded this with `!ldUsStagedValid || kill`, reading "nothing is staged right
+  // now" as "the drain pointer is already past the surviving region". Those are
+  // different statements: a range that SURVIVES the squash is un-staged whenever
+  // its slot has not been filled yet -- the reservation is claimed at dispatch but
+  // the entry is written when the range AGEN gets to it, which is any number of
+  // cycles later, and a branch resolving in that window is ordinary. The rewind
+  // then jumped the pointer FORWARD over every surviving unconsumed range, none of
+  // which is ever drained again: no beat is issued, the LCB entries already
+  // allocated for those ops sit short forever, and it surfaces as lcbStallWatchdog
+  // on an unrelated entry thousands of cycles later. Measured on conv1d-vector
+  // (MegaBoom): ranges at slots 10 (rob 28) and 11 (rob 32) both survived a branch
+  // at ldq 37 -- the reservation correctly rolled the tail back to 12, ABOVE both
+  // -- and the drain pointer was set to 12, skipping both. Zero beats followed.
+  //
+  // Compare in queue order, which is `head <= drainPtr <= tail` and
+  // `head <= newTail <= tail` in modular arithmetic. Distance-from-the-tail is
+  // therefore a total order over both, and it uses the queue's PRE-squash `tail`
+  // register (io.resv.tail), which is what both quantities were formed against.
+  // Rewind only when the pointer is at or beyond the new tail, i.e. only ever
+  // BACKWARD. A full flush rolls the tail back to the head, where every pointer is
+  // at-or-beyond and the rewind still fires, so the flush case is unchanged; a
+  // killed staged range is younger than the branch and therefore sits at or above
+  // the new tail, so it too still rewinds without a separate `kill` term.
+  val ldUsNewTail = squash.io.q_squash(ldUsQIdx).bits(ld_US_ADDR_Q.ptrW - 1, 0)
+  val ldUsQTail   = ld_US_ADDR_Q.io.resv.tail
+  def ldUsDistFromTail(x: UInt): UInt = (ldUsQTail - x)(ld_US_ADDR_Q.ptrW - 1, 0)
+  val ldUsSquashRewind = squash.io.q_squash(ldUsQIdx).valid &&
+    (ldUsDistFromTail(ldUsDrainPtr) <= ldUsDistFromTail(ldUsNewTail))
+  when (ldUsSquashRewind) {
+    ldUsDrainPtr := ldUsNewTail
+  }
   ld_US_ADDR_Q.io.consume(0).valid := ldUsRetire
   ld_US_ADDR_Q.io.consume(0).bits  := ldUsDrainPtr
   for (i <- 1 until queuePorts) { ld_US_ADDR_Q.io.consume(i).valid := false.B; ld_US_ADDR_Q.io.consume(i).bits := 0.U }
@@ -805,6 +1008,45 @@ class VecLsu(
     }
   }
   when (st_beat.io.us_pop) { stUsDrainPtr := stUsDrainPtr + 1.U; stUsCursor := 0.U; stUsWritePass := false.B }
+  //@req-spec-lsu.i3
+  // The store mirror of the load reset above, and `us_pop` is likewise a COMPLETION
+  // event: an abandoned range left `stUsWritePass` SET, so the next range ran in
+  // write-pass mode, skipping pass 1 -- which is where the DGEN data enqueue and the
+  // LCAM publication live. Measured: st_US_DATA_Q.filled stayed 0 for a whole run.
+  // GATED ON !stUsCommitted, and that gate is load-bearing: a committed store's
+  // write pass is POST-COMMIT and must never be abandoned by a flush.
+  when ((io.rob_flush || squash.io.kill(3)) && !stUsCommitted) {
+    stUsCursor    := 0.U
+    stUsWritePass := false.B
+  }
+
+  //@req-spec-lsu.j3
+  // THE STORE RANGE'S LCAM DUTY -- a pure SELECTOR, blocking nothing. One bit
+  // and one tag: stUsDrainPtr advances only at us_pop and a store's us_pop
+  // requires is_write_pass, so pass 1 of range N strictly precedes staging of
+  // N+1 and two ranges can never be in pass 1 together. ARMED BY IDENTITY, so
+  // it is self-correcting whichever path retired the previous range. Pass 1 and
+  // pass 2 share a stq_idx, so the tag does not re-arm between passes -- correct,
+  // since uses_lcam is !writePass-gated anyway.
+  // ⚠ `owed` IS A WIRE, NOT A REGISTER, AND THAT IS THE WHOLE POINT.
+  // An earlier revision made it a RegInit armed by `when (staged.stq_idx =/=
+  // tag) { owed := true }`. That is an EDGE-DETECT on identity, not a function
+  // OF identity, and it LAGS the staged entry by one cycle: in the cycle a new
+  // range first stages, `owed` still holds the PREVIOUS range's value -- normally
+  // false, just cleared by the previous store's presentation. A pass-1 beat
+  // firing in that cycle then took no duty, and a presentation landing there
+  // compared against a stale tag. One defect, two symptoms, and it is invisible
+  // with a SINGLE store because the lag falls in the reset window where `owed`
+  // is already true (ms11a2_vse passed; ten multi-store rows did not).
+  // Deriving it from an identity COMPARISON instead makes it true in the same
+  // cycle the new range stages, with no edge and nothing to lag.
+  val stLcamDoneVld = RegInit(false.B)
+  val stLcamDoneTag = RegInit(0.U((1 + stqAddrSz).W))
+  val stUsLcamOwed  = !(stLcamDoneVld && stLcamDoneTag === stUsStagedBits.stq_idx)
+  // A write-pass store is POST-COMMIT and `stUsWritePass` has no flush term, so
+  // its publication record must survive a flush too -- see VecBeatExpander.nlhdl.
+  when ((io.rob_flush || squash.io.kill(3)) && !stUsWritePass) { stLcamDoneVld := false.B }
+  st_beat.io.us_lcam_owed := stUsLcamOwed
   for (i <- 0 until queuePorts) { st_US_ADDR_Q.io.consume(i).valid := false.B; st_US_ADDR_Q.io.consume(i).bits := 0.U }
   for (i <- 1 to queuePorts) { st_US_ADDR_Q.io.rd(i).req.valid := false.B; st_US_ADDR_Q.io.rd(i).req.bits := 0.U }
 
@@ -1194,7 +1436,18 @@ class VecLsu(
     lcb.io.resp(w).bits.prn      := vec.resp(w).bits.uop.v_split_dst_prn.get
     lcb.io.resp(w).bits.ldq_idx  := vec.resp(w).bits.uop.ldq_idx
     lcb.io.resp(w).bits.dst_byte := vec.resp(w).bits.uop.v_split_dst_byte_off.get
-    lcb.io.resp(w).bits.src_off  := shadow.vaddr(log2Ceil(coreDataBytes) - 1, 0)
+    // src_off is the parked byte_en's FIRST SET BYTE, never the parked vaddr's low
+    // bits: the load path of the beat expander word-aligns the address it requests
+    // and carries the in-word offset in byte_en alone, so vaddr(2,0) is zero for
+    // every non-corner beat. Reading it there placed a misaligned beat's bytes from
+    // offset 0 of the response word -- wrong bytes, right length, right destination,
+    // invisible to every completion check. Measured on conv1d-vector (MegaBoom,
+    // vl2re32.v with x30 = 0x800032c8): the single non-8B-aligned beat of a 64-byte
+    // transfer wrote element 0's bytes at dst_byte = 4.
+    // PriorityEncoder(byte_en) is correct on both beat shapes -- 0 for a `corner`
+    // beat, whose bytes the D$ LoadGen has already right-aligned to bit 0, and the
+    // lane offset for a full-beat access, whose word comes back unshifted.
+    lcb.io.resp(w).bits.src_off  := PriorityEncoder(shadow.byte_en)
     lcb.io.resp(w).bits.nbytes   := PopCount(shadow.byte_en)
     lcb.io.resp(w).bits.nelem    := PopCount(shadow.byte_en) >> shadow.eew
   }
@@ -1384,6 +1637,11 @@ class VecLsu(
   }
   for (w <- 0 until lsuWidth) {
     arb.io.scalar_demand(w) := vec.scalar_demand(w).claim
+    //@req-spec-lsu.h4
+    // The agen deadline, kept OUT of the claim triple on purpose -- see the port's
+    // comment in VecDcacheArbiter: it suppresses ELEVATION, it does not participate
+    // in ordinary resource arbitration.
+    arb.io.scalar_agen_incoming(w) := vec.scalar_demand(w).agen_incoming
     arb.io.scalar_avail(w)  := vec.scalar_avail(w)
     arb.io.dmem_req_ready(w) := vec.dmem_req_ready(w)
   }
@@ -1429,7 +1687,19 @@ class VecLsu(
     snoop.io.cand(w).valid          := fired.valid && fired.bits.uses_lcam
     snoop.io.cand(w).bits.is_store       := isStoreWinner
     snoop.io.cand(w).bits.is_unit_stride := isUs
-    snoop.io.cand(w).bits.paddr          := fired.bits.vaddr
+    //@req-spec-lsu.j3
+    // THE PRESENTATION'S ADDRESS IS A PROPERTY OF THE RANGE, NEVER OF THE BEAT
+    // CARRYING IT. A US candidate describes the whole range, and the beat's own
+    // vaddr equals the range base ONLY when the duty rides element 0 -- which is
+    // no longer guaranteed now that a skipped element 0 hands the duty to a later
+    // beat. Left as the beat's vaddr, dwordBounds(paddr, len) would describe a
+    // window shifted forward by the elements already consumed: MISSING loads to
+    // the low part of the range and FALSELY MATCHING past its end. That is worse
+    // than losing the presentation -- a lost one is silent absence, this is a
+    // confident wrong answer.
+    snoop.io.cand(w).bits.paddr          :=
+      Mux(isUs, Mux(isStoreWinner, stUsStagedBits.base, ldUsStagedBits.base),
+                fired.bits.vaddr)
     snoop.io.cand(w).bits.len            := Mux(isUs, fired.bits.lcam_range_len, 1.U << fired.bits.eew)
     snoop.io.cand(w).bits.eew            := fired.bits.eew
     snoop.io.cand(w).bits.active_mask    :=
@@ -1467,6 +1737,67 @@ class VecLsu(
     snoop.io.cand(w).bits.data_filled    :=
       Mux(!isStoreWinner, true.B, Mux(isUs, stUsDataFilled, stSsiDataFilled))
   }
+  //@req-spec-lsu.j3
+  // Clear the duty only when the candidate for a US range ACTUALLY FIRES. OR
+  // reduce over lanes per lane-discipline clause (a): the question is "did any
+  // lane present", a flag, never a selection.
+  val stLcamPresented = (0 until lsuWidth).map { w =>
+    snoop.io.cand(w).fire && snoop.io.cand(w).bits.is_store && snoop.io.cand(w).bits.is_unit_stride
+  }.reduce(_ || _)
+  val ldLcamPresented = (0 until lsuWidth).map { w =>
+    snoop.io.cand(w).fire && !snoop.io.cand(w).bits.is_store && snoop.io.cand(w).bits.is_unit_stride
+  }.reduce(_ || _)
+  when (stLcamPresented) { stLcamDoneVld := true.B }
+  when (ldLcamPresented) { ldLcamDoneVld := true.B }
+  for (w <- 0 until lsuWidth) {
+    when (snoop.io.cand(w).fire && snoop.io.cand(w).bits.is_unit_stride) {
+      when (snoop.io.cand(w).bits.is_store) { stLcamDoneTag := snoop.io.cand(w).bits.uop.stq_idx }
+        .otherwise                          { ldLcamDoneTag := snoop.io.cand(w).bits.uop.ldq_idx }
+    }
+  }
+
+  // The presentation must belong to the range currently staged. Compared against
+  // LIVE staged state, not a registered tag -- a register here could itself lag
+  // and was the defect this assertion was meant to catch.
+  for (w <- 0 until lsuWidth) {
+    assert(!(snoop.io.cand(w).fire && snoop.io.cand(w).bits.is_store &&
+             snoop.io.cand(w).bits.is_unit_stride) ||
+           stUsStagedBits.stq_idx === snoop.io.cand(w).bits.uop.stq_idx,
+      "VecLsu: an LCAM presentation named a DIFFERENT store than the one currently staged -- the duty and the staged range have diverged")
+  }
+
+  // Pass 1 must not end still owing, unless nothing was active. An all-skip
+  // range fires no beat, so it never presents -- and owes nothing, because it
+  // touches no memory.
+  assert(!(st_beat.io.us_pop && stUsLcamOwed) || stUsStagedBits.mask === 0.U,
+    "VecLsu: a US store range completed its drain still owing an LCAM presentation, and it had active elements -- an ordering publication was lost")
+
+  // THE INTERLOCK, DEMOTED TO A DETECTOR. Blocking the write pass on this would
+  // deadlock: promotion is what ends the supply of pass-1 beats the duty needs
+  // to ride, so the interlock removes the very opportunity it waits for. Same
+  // safety property, cannot wedge. Where a duty rides a FINITE EVENT STREAM, an
+  // interlock that stalls the stream can never be the enforcement mechanism.
+  // SAME EXEMPTION AS ITS SIBLING ABOVE, AND FOR THE SAME REASON. A range with no
+  // active elements owes no presentation: it touches no memory, so there is
+  // nothing for a younger scalar load to be ordered against. Without the
+  // exemption this fires on any all-skip or vl=0 store -- promotion needs only
+  // `us_cursor_wr >= stUsTotalElems`, and with `stUsTotalElems` = 0 that is
+  // satisfied immediately while `stUsLcamOwed` is still true, because a SKIP
+  // advances the cursor with no `req.fire` at all (`advOk` takes the isSkip leg).
+  // Caught by inspection against `:1650`, not by a firing: the sibling carried the
+  // exemption and this one did not. Cf. spec §0c -- an assertion must be scoped to
+  // every case that shares its signal, and `stUsWritePass` is shared with the
+  // zero-element range.
+  //
+  // NOTE ON WHY `:1650` NEVER CORROBORATES THIS ONE: `stUsWritePass` is set
+  // strictly before `us_pop`, so this assertion is fatal first and `:1650`'s guard
+  // is unreachable on any row. THE TWO ARE ONE DETECTOR ON ORDERED STATES, NOT TWO
+  // INDEPENDENT ONES -- do not read `:1650`'s silence as evidence about the design.
+  assert(!(stUsWritePass && stUsLcamOwed) || stUsStagedBits.mask === 0.U,
+    "VecLsu: pass 1 completed without presenting the range to the LCAM, and it had active elements -- no younger scalar load can be ordered against this store")
+
+  snoop.io.st_us_filled  := st_US_DATA_Q.io.filled_vec
+  snoop.io.st_ssi_filled := st_SSI_DATA_Q.io.filled_vec
   snoop.io.ld_search     := vec.ld_search
   snoop.io.stq_vec_valid := vec.stq_vec_valid
   snoop.io.stq_alloc     := vec.st_alloc
