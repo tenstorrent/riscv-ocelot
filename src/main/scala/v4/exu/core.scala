@@ -118,6 +118,9 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   // numVecIrfWritePorts / numVecIrfReadPorts / numIrfWritePorts come from
   // HasBoomCoreParameters -- the vec/lsu modules that need them get no constructor arg.
   val numIrfLogicalReadPorts  = all_exe_units.map(_.nReaders).reduce(_+_) + numVecIrfReadPorts
+  // Index of the CII scalar feeder within VecPipeline's 5 INT lanes (0-3 are
+  // VecLsu's base/stride lanes). See the arbitrate stage for why it is special.
+  val ciiIrfLane = 4
 
   val numIntWakeups           = coreWidth + lsuWidth + 1 + numVecIrfWritePorts
   val numFpWakeupPorts        = fp_pipeline.io.wakeups.length
@@ -1166,7 +1169,43 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   // **** Register Read Arbitrate Stage ****
   //-------------------------------------------------------------
   //-------------------------------------------------------------
+  // Caracal (D2): the CII's INT scalar feeder (vector lane 4) takes the
+  // HIGHEST-PRIORITY logical read port, ahead of every scalar reader.
+  //
+  // WHY IT CANNOT BE APPENDED WITH THE OTHERS. PartiallyPortedRF grants in
+  // ascending logical index -- `ready(i) = PopCount(earlier valids) <
+  // numPhysicalReadPorts` -- so a lane at the back can be denied. Every other
+  // reader on this file has a retry path for that: a scalar EU raises
+  // `io_squash_iss` and the issue slot re-grants, and VecScalarOperandRead holds
+  // its request until it fires. VecCiiHost has NEITHER. Its read is issued in the
+  // grant cycle and consumed at grant+1 into the tag table's `scalar_operands`,
+  // and the CII issue packet it feeds is already committed by then -- there is no
+  // cycle in which the grant can be taken back, which is why VecCiiHost:283
+  // asserts its `ready` rather than handling it. On MegaBoomV4VectorConfig that
+  // assertion FIRES (conv2d-vector): the wide machine's scalar readers plus the
+  // four VecLsu lanes ahead of it exhaust `numIrfReadPorts`, and the CII would
+  // otherwise clock a stale register value into a coprocessor op.
+  //
+  // At logical index 0 the ready term is `PopCount(Nil) < numPhysicalReadPorts`,
+  // i.e. constant true, per bank -- the guarantee the CII's as-built pipeline
+  // needs, for the cost of shifting the scalar readers down one slot. THE COST IS
+  // BOUNDED AND SELF-CORRECTING: this lane is valid only in the grant cycle of a
+  // `.vx`/`.vf` CII op, and a scalar reader displaced by it retries through
+  // `io_squash_iss`, which is the same path it already takes whenever the file is
+  // oversubscribed. Feeding the denial into `int_squash_grant` instead was
+  // rejected: that signal kills ALL vector grants, including the VecLsu lanes
+  // whose valids this lane's `ready` is a function of, which closes a
+  // combinational loop.
+  //
+  // The FP mirror of this hazard is solved the other way -- fp-pipeline.scala:171
+  // buys the vector lane a DEDICATED physical port -- because the FRF has spare
+  // ports to give. Do not "harmonise" the two by moving this lane back.
+  //@req-spec-core.e15
   arb_idx = 0
+  vec.foreach { v =>
+    iregfile.io.arb_read_reqs(arb_idx) <> v.io.int_rf_read_req(ciiIrfLane)
+    arb_idx += 1
+  }
   for ((unit, w) <- all_exe_units.zipWithIndex) {
     for (i <- 0 until unit.nReaders) {
       iregfile.io.arb_read_reqs(arb_idx) <> unit.io_arb_irf_reqs(i)
@@ -1175,10 +1214,11 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     immregfile.io.arb_read_reqs(w) <> unit.io_arb_immrf_req
     unit.io_arb_rebusys := io.lsu.iwakeups
   }
-  // Caracal (D2): 5 INT lanes for vector scalar feeders, appended after all scalar ports.
+  // The four VecLsu lanes stay LAST: they hold their request until it fires, so a
+  // denial costs them a cycle and nothing else.
   //@req-spec-core.e15
   vec.foreach { v =>
-    for (i <- 0 until 5) {
+    for (i <- 0 until 5 if i != ciiIrfLane) {
       iregfile.io.arb_read_reqs(arb_idx) <> v.io.int_rf_read_req(i)
       arb_idx += 1
     }
@@ -1197,7 +1237,14 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   //-------------------------------------------------------------
 
   // Register Read <- Issue (rrd <- iss)
+  // Response half, registered at t+1 off the grant. THE ORDER HERE MUST MATCH THE
+  // ARBITRATE STAGE ABOVE EXACTLY -- the two loops index one shared port vector,
+  // so the CII lane leads here too.
   var rd_idx = 0
+  vec.foreach { v =>
+    v.io.int_rf_read_rsp(ciiIrfLane) := iregfile.io.rrd_read_resps(rd_idx)
+    rd_idx += 1
+  }
   for ((unit, w) <- all_exe_units.zipWithIndex) {
     for (i <- 0 until unit.nReaders) {
       unit.io_rrd_irf_resps(i) := iregfile.io.rrd_read_resps(rd_idx)
@@ -1206,9 +1253,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     unit.io_rrd_immrf_resp := immregfile.io.rrd_read_resps(w)
     unit.io_rrd_irf_bypasses := int_bypasses
   }
-  // Response half, registered at t+1 off the grant.
   vec.foreach { v =>
-    for (i <- 0 until 5) {
+    for (i <- 0 until 5 if i != ciiIrfLane) {
       v.io.int_rf_read_rsp(i) := iregfile.io.rrd_read_resps(rd_idx)
       rd_idx += 1
     }

@@ -384,6 +384,37 @@ class VecScalarOperandRead(
   //   (2) consumedValid is a held register with an explicit clear rather than a
   //       single RegNext. That is what implements the wide window above; the
   //       draft's RegNext gave a one-cycle peephole.
+  // THE HANDOFF PULSE, AND WHY BOTH WINDOWS BELOW MUST END AT IT.
+  // `io.out.valid` is a LEVEL, not a pulse: it goes high when the op resolves and
+  // stays high until the NEXT grant, which on a back-pressured stream is hundreds
+  // of cycles later (measured: 143 on conv2d-vector). The op itself leaves in the
+  // first of those cycles -- VecLsu's ldOpPulse/stOpPulse is exactly this rising
+  // edge -- and by a few cycles after that it has retired, its base PRN has been
+  // freed, and an unrelated instruction is legitimately writing the new tenant.
+  // Both detectors below key off a PRN this op used, so anchoring either on the
+  // LEVEL makes them fire on correct behaviour once the op is long gone -- which
+  // is what staleCaptureCheck did on conv2d-vector lane 0: it compared a base
+  // captured 143 cycles earlier against the new owner of that PRN.
+  // The spec's bounds ("two cycles", "until the op leaves") are bounds on the
+  // op's residence in this stage; this pulse is what makes them that.
+  //
+  // AND IT IS NOT AN EDGE DETECTOR ON THAT LEVEL, WHICH WAS THE FIRST ATTEMPT AND
+  // WAS WRONG. `out.valid` does NOT fall between two back-to-back ops: when the
+  // next grant's reads both fire in the grant cycle and no lane arms a writeback
+  // wait, the level stays high across the handover and there is no rising edge at
+  // all. Measured on conv2d-vector: over 100 consecutive ops presented with ONE
+  // rising edge between them, so an edge-detector anchor silently reverted both
+  // windows to "until the next grant" for every op but the first.
+  // Track the presentation per GRANT instead: cleared by the grant, set by the
+  // first cycle this op presents. `!io.iss.valid` because in the grant cycle
+  // `out.valid` still describes the PREVIOUS op -- rr_* are registered -- so that
+  // cycle is not this op's presentation. This reproduces VecLsu's
+  // ldOpPulse/stOpPulse exactly: their `*AwaitingPulse` is likewise a register set
+  // by the grant, so the pulse is at grant+1 at the earliest.
+  val presSeen = RegInit(false.B)
+  val presFire = io.out.valid && !presSeen && !io.iss.valid
+  when (io.iss.valid) { presSeen := false.B } .elsewhen (io.out.valid) { presSeen := true.B }
+
   val consumedFromRf = (0 until 2).map(n =>
     fired_prev(n) && !rr_wb_wait(n) && !hits(n).asUInt.orR && rr_valid &&
     heldRtypeFix(n))
@@ -394,7 +425,19 @@ class VecScalarOperandRead(
       consumedValid(n) := true.B
       consumedAddr(n)  := heldAddr(n)(ipregSz - 1, 0)
     }
-    when (io.iss.valid || killedNow) { consumedValid(n) := false.B }
+    // ...AND AT THE HANDOFF. `io.iss.valid` is the next GRANT, which is not when
+    // the op leaves -- see presFire. Clearing only there kept the window open
+    // across the whole idle tail, past this op's commit and past its PRN's
+    // reallocation, which is unsound for exactly the reason the block comment
+    // above gives for `killedNow`.
+    // TWO cycles after the handoff, not one: a lane that consumes in the
+    // presentation cycle itself (the common case -- the grant-cycle read's
+    // response lands exactly there) sets consumedValid at P+1, and a clear at
+    // P+1 would win the last-connect and the detector would never be armed at
+    // all. P+2 leaves it armed across P+1 and P+2.
+    when (io.iss.valid || killedNow || RegNext(RegNext(presFire, false.B), false.B)) {
+      consumedValid(n) := false.B
+    }
 
     val lateHit = consumedValid(n) &&
       VecInit(io.int_wb_snoop.map(w => w.valid && w.bits.addr === consumedAddr(n))).asUInt.orR
@@ -420,7 +463,9 @@ class VecScalarOperandRead(
   // is the op's whole life, so it is the same defect with a much smaller target.
   // Fixed together deliberately -- fixing only the one that fired would have
   // left a latent false positive to surface on an unrelated future run.
-  val pres_v     = RegNext(io.out.valid, false.B)
+  // ARMED FROM THE HANDOFF PULSE, NOT THE OUTPUT LEVEL -- that is what makes the
+  // "two cycles" bound above true rather than aspirational. See presFire.
+  val pres_v     = RegNext(presFire, false.B)
   val pres_prn   = RegNext(VecInit(heldAddr.map(a => a(ipregSz - 1, 0))))
   val pres_data  = RegNext(VecInit(presented))
   val pres_rtype = RegNext(VecInit(heldRtypeFix), VecInit(Seq.fill(2)(false.B)))

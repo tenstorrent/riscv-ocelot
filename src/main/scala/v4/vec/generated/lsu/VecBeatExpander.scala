@@ -420,9 +420,36 @@ class VecBeatExpander(
   when (io.us_pop) { rr := false.B }
   when (io.kill)   { rr := false.B }
 
+  //@req-spec-agen.c1
+  // SSI LANES DRAIN STRICTLY IN ORDER: lane i may fire only if EVERY LOWER LANE
+  // FIRED IN THE SAME CYCLE. The lanes are not independent consumers -- VecLsu
+  // presents `ssi_head(i)` from ONE shared base pointer (`base + i`) and advances
+  // that base by `PopCount(ssi_pop)`, so a pop set that is not a PREFIX of the
+  // lanes moves the base over an entry that was never sent. The queue clears the
+  // entry's `filled` bit only on consume, so the skipped element is not merely
+  // late: no lane ever addresses it again, its beat never issues, and the LCB
+  // entry that was allocated for it sits short forever -- surfacing tens of
+  // thousands of cycles later as `lcbStallWatchdog` on that entry and, if the
+  // watchdog were off, as an empty vector free list in rename.
+  //
+  // Measured on `transpose-vector` (MegaBoom, `vlse32.v` LMUL=4 VL=32): with the
+  // base at 7 both lanes fired (elements 7 and 8, base -> 9); the next cycle the
+  // arbiter refused lane 0 and granted lane 1, which popped element 10 while
+  // element 9 was still unsent. `PopCount = 1` advanced the base to 10, element 9
+  // was orphaned, and member 1 of the destination group stayed one beat (4 bytes
+  // at `dst_byte = 4`) short for the rest of the run.
+  //
+  // The alternative -- letting lanes pop out of order and advancing the base by
+  // the leading-ones prefix -- does NOT work: the out-of-order entry has already
+  // had its `filled` bit cleared by its own consume, so the prefix pointer reaches
+  // it, reads it unfilled and stalls there forever. In-order firing is what makes
+  // one shared base pointer a sound description of the drain, and the cost is
+  // bounded: a refused lane 0 idles lane 1 for that cycle only.
   private val useSsi = new Array[Bool](nLanes)
+  private val ssiPop = new Array[Bool](nLanes)
+  private var ssiLowerAllPopped: Bool = true.B
   for (i <- 0 until nLanes) {
-    val sel = !usSelected && ssiLaneFire(i)
+    val sel = !usSelected && ssiLaneFire(i) && ssiLowerAllPopped
     useSsi(i) = sel
 
     val ssiBits = io.ssi_head(i).bits
@@ -454,10 +481,27 @@ class VecBeatExpander(
       io.req(i).bits  := payload
     }
 
-    io.ssi_pop(i) := sel && io.req(i).fire
+    // Threaded through the serial prefix, and coupled to the FIRE rather than to
+    // the selection: a lane that was chosen but refused has not consumed its
+    // entry, so a higher lane must not run past it (the same
+    // selection-versus-grant distinction the US duty above is built on).
+    val popNow = sel && io.req(i).fire
+    io.ssi_pop(i) := popNow
+    ssiPop(i) = popNow
+    ssiLowerAllPopped = ssiLowerAllPopped && popNow
     if (isStore) {
       io.st_ssi_data_pop.get(i) := sel && io.req(i).fire
     }
+  }
+
+  //@req-spec-agen.c1
+  // The shared-base drain in VecLsu is only correct while the pop set is a PREFIX
+  // of the lanes; assert the invariant HERE, where it is created, rather than
+  // leaving it to be rediscovered from a starved LCB entry three modules away.
+  for (i <- 1 until nLanes) {
+    assert(!ssiPop(i) || ssiPop(i - 1),
+      s"VecBeatExpander: SSI lane $i popped while lane ${i - 1} did not -- " +
+      "the shared base pointer would advance over an element that was never sent")
   }
 
   when (usAnyAdvance) {

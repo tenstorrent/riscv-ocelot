@@ -718,6 +718,37 @@ from Tenstorrent Inc.
   a PRN cannot be freed and reallocated while a live consumer still holds it as
   a source.
 
+  ⇒ **BOTH WINDOWS ARE ANCHORED ON THE HANDOFF PULSE, NOT ON `out.valid`.**
+  `out.valid` is a LEVEL: it rises when the op resolves and stays high until the
+  NEXT grant, which on a back-pressured stream is hundreds of cycles later
+  (measured: 143 on `conv2d-vector`). The op LEAVES in the first of those cycles
+  -- `VecLsu`'s `ldOpPulse`/`stOpPulse` is precisely that rising edge -- and a few
+  cycles later it has COMMITTED, its base PRN is back on the free list, and an
+  unrelated instruction legitimately writes the new tenant.
+  DERIVE THE PULSE PER GRANT, NOT AS AN EDGE ON THE LEVEL. `out.valid` does not
+  fall between back-to-back ops -- when the next grant's reads all fire in the
+  grant cycle and no lane arms a writeback wait, the level stays high across the
+  handover and there is NO rising edge (measured on `conv2d-vector`: 100+
+  consecutive ops with one edge between them). So: a `presSeen` register cleared
+  by `iss.valid` and set by the first cycle `out.valid` is high, with
+  `presFire = out.valid && !presSeen && !iss.valid` -- the `!iss.valid` because in
+  the grant cycle `out.valid` still describes the PREVIOUS op, `rr_*` being
+  registered. That is exactly `VecLsu`'s `ldOpPulse`/`stOpPulse`, whose
+  `*AwaitingPulse` is likewise a register set by the grant.
+  Bound BOTH detectors by it: `staleCaptureCheck` arms from `RegNext(presFire)` rather
+  than `RegNext(out.valid)`, and `lateWritebackObserved`'s `consumedValid` clears
+  TWO cycles after `presFire`, in addition to the next grant and `killedNow` --
+  two rather than one because a lane that consumes in the presentation cycle
+  itself (the common case) sets `consumedValid` at P+1, and a P+1 clear would win
+  the last-connect and leave the detector permanently unarmed.
+  This is not a refinement of the bounds stated above -- it is what MAKES them the
+  bounds stated above. Anchored on the level, "two cycles" and "until the op
+  leaves" both silently become "until the next grant", and every soundness
+  argument in this section (which all rest on the PRN not being reallocatable
+  while the op is live) stops holding. `staleCaptureCheck` fired exactly that way
+  on `conv2d-vector` lane 0, comparing a base captured 143 cycles earlier against
+  the PRN's new owner -- correct behaviour reported as a stale capture.
+
   THE HOLD IS SAFE AT THE VecLsu SEAM. `VecLsu`'s `ldAwaitingPulse` and
   `stAwaitingPulse` are LEVEL handshakes -- a register set by `ldPresent`/
   `stPresent`, cleared on `out.valid` -- and `ldStreamerBusy`/`stStreamerBusy`

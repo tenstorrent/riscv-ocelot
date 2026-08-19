@@ -231,6 +231,33 @@ from Tenstorrent Inc.
   no VRF port. The unit-stride path is the dense, contiguous, non-indexed case,
   and it is the only one that coalesces.
 
+  ===> THE SSI LANES DRAIN STRICTLY IN ORDER: `ssi_pop` MUST BE A PREFIX OF THE
+  LANES. Lane `i` fires only when every lower lane fired in the SAME cycle, so
+  `sel(i)` carries a serial `lower_all_popped` term threaded exactly like
+  `elemAcc`/`dutyTaken`, and the term is built from `ssi_pop(j) = sel(j) &&
+  req(j).fire` — the GRANT, not the selection. The lanes are not independent
+  consumers: VecLsu presents `ssi_head(i)` from ONE shared base pointer
+  (`base + i`) and advances it by `PopCount(ssi_pop)`, so a non-prefix pop set
+  moves the base OVER an element that was never sent. Nothing addresses that
+  element again — the queue clears `filled` on consume, so the hole is permanent
+  — its beat never issues, and the LCB entry allocated for it stays short for
+  ever; the report is `lcbStallWatchdog` on that entry tens of thousands of
+  cycles later, or an empty vector free list in rename if the watchdog is off.
+  Measured on `transpose-vector` (MegaBoom, `vlse32.v` LMUL=4 VL=32): the arbiter
+  refused lane 0 and granted lane 1, lane 1 popped `base+1`, the base advanced by
+  one, and element `base` was orphaned — member 1 of the group ended 4 bytes short
+  at `dst_byte = 4`.
+  ⚠ THE OBVIOUS ALTERNATIVE IS WRONG: advancing the base by the LEADING-ONES
+  prefix while still allowing an out-of-order pop deadlocks instead, because the
+  out-of-order entry has already had its `filled` bit cleared by its own consume,
+  so the prefix pointer reaches it, reads it unfilled and never moves again.
+  In-order firing is what makes a single shared base a sound description of the
+  drain. Cost is one idle cycle on the higher lane whenever lane 0 is refused,
+  and it is bounded by the same anti-starvation elevation that unblocks lane 0.
+  Assert the prefix property here, where it is created — `!ssi_pop(i) ||
+  ssi_pop(i-1)` — rather than leaving it to be rediscovered from a starved LCB
+  entry three modules away.
+
   //@req-spec-agen.b8
   //@req-spec-lsu.c5
   //@req-spec-lsu.c6

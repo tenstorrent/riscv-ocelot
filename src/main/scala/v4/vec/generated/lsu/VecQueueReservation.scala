@@ -46,7 +46,22 @@ class VecResvUsedCount(implicit p: Parameters) extends BoomBundle
 
 class VecResvSlotResp(implicit p: Parameters) extends BoomBundle
 {
-  val base  = UInt(log2Ceil(ssiQueueEntries).W)
+  //@req-spec-lsu.b4
+  // WIDTH: `resvPtrSz`, NOT `log2Ceil(ssiQueueEntries)`. A base is a QUEUE
+  // POINTER and every pointer in this path carries a WRAP BIT: the reservation's
+  // own `allocTail`, VecElemQueue's head/tail, VecElemAgen's `resv_base`, and
+  // VecDgen's `data_base` are all `resvPtrSz` (= log2Ceil(entries) + 1). Declared
+  // one bit narrow, this bundle silently drops that bit on the way OUT of the
+  // module, so an op dispatched once the tail passes `ssiQueueEntries` is handed
+  // base 0 while the queue's tail sits at 512+: the agen then enqueues at index 0,
+  // outside the occupied region, and `ld_SSI_ADDR_Q`'s "enq idx outside occupied
+  // region" assertion fires against a head/tail pair that looks perfectly sane.
+  // Measured on `transpose-vector` (MegaBoom): base ran 448, 480, then 0 with the
+  // queue at head=448 tail=544.
+  // The same truncation reached `region_free`, which uses this bundle to hand the
+  // queue the base of a retiring region -- a wrapped retire would have freed the
+  // wrong 512-entry half.
+  val base  = UInt(resvPtrSz.W)
   val count = UInt(log2Ceil(ssiQueueEntries + 1).W)
 }
 
@@ -137,6 +152,13 @@ class VecQueueReservation(implicit p: Parameters) extends BoomModule
     val full_idx = UInt(idxW.W)
     val slots    = Vec(2, new VecResvSlot)
   }
+
+  //@req-spec-lsu.b4
+  // A region's exclusive end, IN POINTER SPACE. `base + count` is one bit wider
+  // than a pointer, so every comparison against a tail must be taken on the
+  // truncated value or it disagrees with the hardware the moment a region ends at
+  // the wrap point.
+  def regionEnd(sl: VecResvSlot): UInt = (sl.base + sl.count)(qSz - 1, 0)
 
   val ldqTable = RegInit(VecInit(Seq.fill(numLdqEntries)(0.U.asTypeOf(new VecResvRow(1 + ldqAddrSz)))))
   val stqTable = RegInit(VecInit(Seq.fill(numStqEntries)(0.U.asTypeOf(new VecResvRow(1 + stqAddrSz)))))
@@ -336,14 +358,31 @@ class VecQueueReservation(implicit p: Parameters) extends BoomModule
     val idx = r.bits.q_idx
     val row = Mux(r.bits.is_store, stqTable(idx(stqAddrSz - 1, 0)), ldqTable(idx(ldqAddrSz - 1, 0)))
 
-    val slot0Fits = row.slots(0).base + row.slots(0).count === allocTail(row.slots(0).queue)
-    val slot1Fits = !row.slots(1).valid || (row.slots(1).base + row.slots(1).count === allocTail(row.slots(1).queue))
+    //@req-spec-lsu.b4
+    // MODULAR: `regionEnd` truncates to qSz. Every base/tail here is a WRAPPING
+    // pointer, so the raw `base + count` is one bit wider and compares unequal to
+    // the wrapped tail exactly when the region ends at the wrap point -- the
+    // surplus trim would then be silently refused for the rest of the run.
+    val slot0Fits = regionEnd(row.slots(0)) === allocTail(row.slots(0).queue)
+    val slot1Fits = !row.slots(1).valid || (regionEnd(row.slots(1)) === allocTail(row.slots(1).queue))
     val noCollide0 = fireSum(row.slots(0).queue) === 0.U
     val noCollide1 = !row.slots(1).valid || fireSum(row.slots(1).queue) === 0.U
 
     //@req-spec-issue.b6
     //@req-spec-issue.b8
-    val ok = r.valid && row.valid && !row.released && slot0Fits && slot1Fits && noCollide0 && noCollide1
+    //@req-spec-issue.b6
+    // ⚠ NOT DURING A ROLLBACK. The surplus trim is a TAIL-SIDE edit, and a
+    // rollback cycle rewrites the tail wholesale from the surviving rows' stored
+    // regions -- which are read here BEFORE this cycle's trim. Allowed to fire
+    // together, the table row keeps the trimmed `count` while `allocTail` keeps
+    // the untrimmed end, and the two never agree again: the next retire of that
+    // row frees `used_count` entries out of a region that reserved more, `occ`
+    // leaks the difference, and the head drifts below the tail until "retiring
+    // row's base is not its queue's head" fires on a LATER, innocent row.
+    // Refusing the trim costs only capacity -- the full reservation is freed at
+    // retire instead -- and `release_ok` has no consumer that must see it granted.
+    val ok = r.valid && row.valid && !row.released && slot0Fits && slot1Fits && noCollide0 && noCollide1 &&
+             !io.rollback.valid
     io.release_ok(i) := ok
 
     for (k <- 0 until 2) {
@@ -442,6 +481,17 @@ class VecQueueReservation(implicit p: Parameters) extends BoomModule
 
   def headOf(q: UInt): UInt = (allocTail(q) - occ(q))(qSz - 1, 0)
 
+  //@req-spec-lsu.b4
+  // "The surviving region ends at or before the new tail" -- STATED MODULARLY.
+  // A magnitude compare (`end <= newTail`) is only right while the queue has never
+  // wrapped: once the tail passes `ssiQueueEntries` a perfectly ordinary surviving
+  // region has an end numerically ABOVE the wrapped tail and the assertion fires on
+  // correct hardware. Distance from the new tail is a total order over the live
+  // window (`head <= end <= newTail` in modular arithmetic), which is the same
+  // idiom VecLsu's US drain-pointer rewind uses for exactly this reason.
+  def inRolledBackRegion(end: UInt, head: UInt, newTail: UInt): Bool =
+    (newTail - end)(qSz - 1, 0) <= (newTail - head)(qSz - 1, 0)
+
   // Youngest-strictly-older-than-pivot selection: a single reduction over one
   // direction's table, restricted to rows whose slot 0 queue matches cls.
   def selectYoungestOlder(table: Vec[VecResvRow], n: Int, pivot: UInt, head: UInt, cls: UInt): (Bool, UInt) = {
@@ -488,28 +538,28 @@ class VecQueueReservation(implicit p: Parameters) extends BoomModule
 
     for ((cls, qOut) <- Seq((ld_SSI_ADDR_Q, ld_SSI_ADDR_Q), (ld_US_ADDR_Q, ld_US_ADDR_Q))) {
       val (hit, idx) = selectYoungestOlder(ldqTable, numLdqEntries, ldqPivot, io.ldq_head, cls)
-      rollbackTailNext(qOut) := Mux(hit, ldqTable(idx).slots(0).base + ldqTable(idx).slots(0).count, headOf(qOut))
+      rollbackTailNext(qOut) := Mux(hit, regionEnd(ldqTable(idx).slots(0)), headOf(qOut))
       rollbackOccNext(qOut)  := occ(qOut) - (allocTail(qOut) - rollbackTailNext(qOut))(qSz - 1, 0)
       for (i <- 0 until numLdqEntries) {
         assert(!(ldqTable(i).valid && ldqTable(i).slots(0).valid && ldqTable(i).slots(0).queue === cls &&
                  IsOlderLSU(ldqTable(i).full_idx, ldqPivot, io.ldq_head)) ||
-               (ldqTable(i).slots(0).base + ldqTable(i).slots(0).count) <= rollbackTailNext(qOut),
+               inRolledBackRegion(regionEnd(ldqTable(i).slots(0)), headOf(qOut), rollbackTailNext(qOut)),
           "VecQueueReservation: a surviving ldq row's region exceeds the rolled-back tail")
       }
     }
 
     for ((cls, addrQ, dataQ) <- Seq((st_SSI_ADDR_Q, st_SSI_ADDR_Q, st_SSI_DATA_Q), (st_US_ADDR_Q, st_US_ADDR_Q, st_US_DATA_Q))) {
       val (hit, idx) = selectYoungestOlder(stqTable, numStqEntries, stqPivot, io.stq_head, cls)
-      rollbackTailNext(addrQ) := Mux(hit, stqTable(idx).slots(0).base + stqTable(idx).slots(0).count, headOf(addrQ))
-      rollbackTailNext(dataQ) := Mux(hit, stqTable(idx).slots(1).base + stqTable(idx).slots(1).count, headOf(dataQ))
+      rollbackTailNext(addrQ) := Mux(hit, regionEnd(stqTable(idx).slots(0)), headOf(addrQ))
+      rollbackTailNext(dataQ) := Mux(hit, regionEnd(stqTable(idx).slots(1)), headOf(dataQ))
       rollbackOccNext(addrQ)  := occ(addrQ) - (allocTail(addrQ) - rollbackTailNext(addrQ))(qSz - 1, 0)
       rollbackOccNext(dataQ)  := occ(dataQ) - (allocTail(dataQ) - rollbackTailNext(dataQ))(qSz - 1, 0)
       for (i <- 0 until numStqEntries) {
         val surviving = stqTable(i).valid && stqTable(i).slots(0).valid && stqTable(i).slots(0).queue === cls &&
           IsOlderLSU(stqTable(i).full_idx, stqPivot, io.stq_head)
-        assert(!surviving || (stqTable(i).slots(0).base + stqTable(i).slots(0).count) <= rollbackTailNext(addrQ),
+        assert(!surviving || inRolledBackRegion(regionEnd(stqTable(i).slots(0)), headOf(addrQ), rollbackTailNext(addrQ)),
           "VecQueueReservation: a surviving stq row's address region exceeds the rolled-back tail")
-        assert(!surviving || (stqTable(i).slots(1).base + stqTable(i).slots(1).count) <= rollbackTailNext(dataQ),
+        assert(!surviving || inRolledBackRegion(regionEnd(stqTable(i).slots(1)), headOf(dataQ), rollbackTailNext(dataQ)),
           "VecQueueReservation: a surviving stq row's data region exceeds the rolled-back tail")
       }
     }
@@ -551,8 +601,22 @@ class VecQueueReservation(implicit p: Parameters) extends BoomModule
 
   for (q <- 0 until nQueues) {
     when (io.rollback.valid) {
+      //@req-spec-lsu.b14
+      //@req-spec-lsu.b15
+      // A ROLLBACK IS TAIL-SIDE; A RETIRE IS HEAD-SIDE; THEY ARE INDEPENDENT AND
+      // CAN LAND IN THE SAME CYCLE. `rollbackOccNext` accounts only for the tail
+      // rewind, so writing it bare DROPS a coincident retire: the region is freed
+      // to the queue by `region_free` all the same, but `occ` still counts it, so
+      // `headOf` (= allocTail - occ) sits `retireSum` entries behind the queue's
+      // real head from then on. The next retire trips "retiring row's base is not
+      // its queue's head" -- pointing at a row that is perfectly correct.
+      // Measured on `transpose-vector` (MegaBoom) at the first wrap of the load
+      // SSI queue: a store retire coincided with the mispredict that rolled the
+      // tail to 0, and the following load retire asserted.
+      // A retiring row is the OLDEST in its direction, so it can never be the row
+      // the age sweep kills, and the two updates cannot describe the same entries.
       allocTail(q) := rollbackTailNext(q)
-      occ(q)       := rollbackOccNext(q)
+      occ(q)       := rollbackOccNext(q) - retireSum(q)
     } .otherwise {
       allocTail(q) := allocTail(q) + fireSum(q) - releaseSum(q)
       //@req-spec-lsu.b14

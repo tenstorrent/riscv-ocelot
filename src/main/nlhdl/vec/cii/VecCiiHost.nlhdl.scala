@@ -74,6 +74,25 @@ from Tenstorrent Inc.
        is an issue-handshake change and therefore an owner decision. Do not
        "fix" it by ignoring `ready`.
 
+       ===> RESOLVED (conv2d-vector on MegaBoomV4VectorConfig, where the assertion
+            above FIRED): the first option — a conflict-free port — taken as a
+            PRIORITY guarantee rather than an extra physical port. `core.scala`
+            now hands the CII's INT lane (vector lane 4) LOGICAL INDEX 0 on the
+            iregfile, ahead of every scalar reader, so its ready term is
+            `PopCount(Nil) < numPhysicalReadPorts` — constant true, per bank.
+            The scalar readers it displaces retry through `io_squash_iss`, which
+            they already do whenever the file is oversubscribed; the CII has no
+            such path, which is the whole reason for the ordering.
+            The grant-side stall was rejected: `int_squash_grant` kills ALL vector
+            grants, and this lane's `valid` is now upstream of the scalar EUs'
+            `ready` and hence of that signal, so squashing on a denial closes a
+            combinational loop.
+            CONSEQUENCE FOR `valid` BELOW: it must be raised off the PRE-SQUASH
+            grant (`io.iss_presquash_valid`, exported by `VecIssueUnit`) for the
+            same loop reason. A squashed grant then issues one harmless read whose
+            response nothing consumes — `iss` still registers `s1_valid` from the
+            SQUASHED `io.iss.valid`.
+
   ===> AND `valid` IS NOT `true.B`. IT IS THE ACCEPT CYCLE OF A GRANT THAT
        ACTUALLY READS A SCALAR:
 

@@ -364,6 +364,7 @@ class VecPipeline(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
   vlsu.io.iss_ld := iq_v_load.io.iss_uops(0)
   vlsu.io.iss_st := iq_v_store.io.iss_uops(0)
   cii.io.iss     := iq_v_alu.io.iss_uops(0)
+  cii.io.iss_presquash_valid := iq_v_alu.io.iss_uops_presquash_valid(0)
 
   //@req-spec-core.i4
   //@req-spec-core.i5

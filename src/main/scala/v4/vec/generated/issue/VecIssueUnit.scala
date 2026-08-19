@@ -43,6 +43,13 @@ class VecIssueUnitIO(
   val dis_uops = Vec(dispatchWidth, Flipped(Decoupled(new MicroOp())))
   val dis_member_rdy = Input(Vec(dispatchWidth, new VecMemberRdy))
   val iss_uops = Output(Vec(issueWidth, Valid(new MicroOp())))
+  // The SAME grant valids BEFORE `squash_grant` is applied. Consumers that must
+  // not close a combinational loop through the squash read this instead -- today
+  // that is VecCiiHost's integer/FP scalar register-read request, whose logical
+  // read port sits ahead of the scalar EUs on the register file, so its `valid`
+  // feeds their `ready`, their `io_squash_iss`, and hence `squash_grant`. Nothing
+  // architectural may use it: a squashed grant is not a grant.
+  val iss_uops_presquash_valid = Output(Vec(issueWidth, Bool()))
   val int_wakeup_ports = Flipped(Vec(numIntWakeupPorts, Valid(new Wakeup)))
   val fp_wakeup_ports = if (isAluQueue) Some(Flipped(Vec(numFpWakeupPorts, Valid(new Wakeup)))) else None
   val vl_wakeup = Flipped(Vec(numVlWakeupPorts, Valid(UInt(vlPregSz.W))))
@@ -401,6 +408,7 @@ class VecIssueUnit(
 
   //@req-spec-core.f14
   io.iss_uops := iss_uops
+  io.iss_uops_presquash_valid := VecInit(iss_uops.map(_.valid))
   when (io.squash_grant) {
     io.iss_uops.map { u => u.valid := false.B }
   }

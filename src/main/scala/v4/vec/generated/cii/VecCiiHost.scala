@@ -175,6 +175,9 @@ class TTCii extends BlackBox with HasBlackBoxPath with HasBlackBoxResource
 class VecCiiHostIO(implicit p: Parameters) extends BoomBundle
 {
   val iss      = Input(Valid(new MicroOp))
+  // `iss.valid` BEFORE the issue unit applies `squash_grant`. Used ONLY to raise
+  // the scalar register-read requests -- see the drive site for why.
+  val iss_presquash_valid = Input(Bool())
   val fu_types = Output(UInt(FC_SZ.W))
 
   val vl_read_addr = Output(UInt(vlPregSz.W))
@@ -278,12 +281,25 @@ class VecCiiHost(implicit p: Parameters) extends BoomModule
   opnd.io.vrf_read_data := io.vrf_read_data
   io.vrf_write := wb.io.vrf_write
 
-  io.int_scalar_read_req.valid := io.iss.valid && io.iss.bits.lrs1_rtype === RT_FIX
+  // RAISED OFF THE PRE-SQUASH GRANT, AND THAT IS A LOOP BREAK, NOT AN
+  // OPTIMISATION. This lane owns the highest-priority logical read port on the
+  // integer regfile (core.scala, Register Read Arbitrate) because the read below
+  // is consumed at grant+1 with no retry path, so it must never be denied. That
+  // priority puts this `valid` upstream of every scalar EU's `ready`, hence of
+  // their `io_squash_iss`, hence of `int_squash_grant` -- which is what clears
+  // `io.iss.valid`. Deriving the request from the SQUASHED grant closes that
+  // cycle (firtool: "detected combinational cycle ... io_arb_read_reqs_0_valid
+  // <- io_int_squash_grant"). The pre-squash valid is upstream of the squash by
+  // construction, so the loop cannot form.
+  // A squashed grant therefore issues one harmless register read whose response
+  // nothing consumes: `iss` re-registers `s1_valid` from the SQUASHED
+  // `io.iss.valid`, so no squashed operand can reach the tag table.
+  io.int_scalar_read_req.valid := io.iss_presquash_valid && io.iss.bits.lrs1_rtype === RT_FIX
   io.int_scalar_read_req.bits  := iss.io.int_scalar_read_req
   assert(!io.int_scalar_read_req.valid || io.int_scalar_read_req.ready)
   iss.io.int_scalar_read_rsp := io.int_scalar_read_rsp
 
-  io.fp_scalar_read_req.valid := io.iss.valid && io.iss.bits.lrs1_rtype === RT_FLT
+  io.fp_scalar_read_req.valid := io.iss_presquash_valid && io.iss.bits.lrs1_rtype === RT_FLT
   io.fp_scalar_read_req.bits  := iss.io.fp_scalar_read_req
   assert(!io.fp_scalar_read_req.valid || io.fp_scalar_read_req.ready)
   iss.io.fp_scalar_read_rsp := io.fp_scalar_read_rsp
