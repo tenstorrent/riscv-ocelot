@@ -73,12 +73,18 @@ from Tenstorrent Inc.
   implies 1, "dual-dynamic" implies 2) rather than tolerating a mismatch.
 
   `dmemBeatBytes: Int` — the byte width of one D$ request lane, derived from
-  rocket's `coreDataBytes` (`xLen/8`, 8 today). This is THE bound on beat width.
+  rocket's `coreDataBytes` (`xLen max fLen max vMemDataBits`, all over 8; 8 by
+  default, 16 when a config sets `BoomCoreParams.dcacheDataBits = 128`). This is
+  THE bound on beat width.
   ===> IT MUST NOT BE WRITTEN AS 8 ANYWHERE, and no expression may assume 3
        offset bits. A wider vector cache port raises this ceiling and every
        width, mask and shift below must follow it automatically. Require it to be
        a power of two and no greater than the page size, which is what makes the
        "a beat never crosses a page" argument in the logic section true.
+  ===> A BEAT'S `byte_en` IS TRUNCATED TO `dmemBeatBytes`, NEVER TO `elenBytes`.
+       A coalesced beat spans up to a whole lane, which is wider than one
+       element once the lane is wider than `eLen`; `VecElemAccess.byte_en` is
+       sized `(eLen/8) max coreDataBytes` for exactly this reason.
 
   From VectorParams: `vLen`, `eLen`, `maxMembers`, `usQueueEntries`, `vecPregSz`.
   Derived, all as named vals rather than inline arithmetic:
@@ -86,13 +92,18 @@ from Tenstorrent Inc.
     `beatOffBits  = log2Ceil(dmemBeatBytes)`
     `maxElems     = vLen`                worst-case active elements (SEW=8, LMUL=8)
     `elemIdxSz    = log2Ceil(maxElems + 1)`
-    `sizeBits`    the width of the D$ request's `mem_size` field
+    `sizeBits     = log2Ceil(coreDataBytes.log2 + 1)`
+                                         the width of the D$ request's
+                                         `mem_size` field
 
-  ===> `mem_size` in MicroOp is 2 bits, so the largest expressible beat is 8
-  bytes today. dmemBeatBytes larger than 8 therefore ALSO requires widening
-  mem_size, which is a MicroOp/ScalarOpConstants change outside this node's
-  scope. Assert `log2Ceil(dmemBeatBytes) < (1 << sizeBits)` at elaboration so
-  the configuration fails the build instead of silently truncating a beat.
+  ===> `sizeBits` MUST NOT BE WRITTEN AS 2. It mirrors `MicroOp.mem_size`, which
+  is itself sized `log2Ceil(coreDataBytes.log2 + 1)` (rocket's `HasCoreMemOp.size`
+  formula) — 2 bits for an 8-byte lane, 3 for a 16-byte one. Spelling it as a
+  literal is what previously capped the largest expressible beat at 8 bytes
+  regardless of `dmemBeatBytes`. Keep asserting
+  `log2Ceil(dmemBeatBytes) < (1 << sizeBits)` at elaboration so a configuration
+  whose lane outgrows the field fails the build instead of silently truncating a
+  beat.
   <|end_parameters|>
 
   <|begin_ports|>

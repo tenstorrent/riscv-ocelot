@@ -140,6 +140,14 @@ from Tenstorrent Inc.
   `MicroOp` and adds the access payload: the virtual address, the `eew`, a byte
   enable, and `first`/`last` markers for the group.
 
+  ===> The byte enable is `(eLen/8) max coreDataBytes` bits, NOT `eLen/8`.
+  `VecMemAccess` extends this bundle and one drain beat is up to `coreDataBytes`
+  wide, which exceeds `eLen/8` when a config widens the D$ request lane
+  (`BoomCoreParams.dcacheDataBits`). Sizing it at `eLen/8` alone truncates a
+  wide beat's mask, and the LCB derives `src_off`/`nbytes` from
+  `PriorityEncoder`/`PopCount` of exactly this field -- so the truncation would
+  not be a lost mask bit, it would be a wrong destination offset.
+
   The fields identifying WHICH register the access targets — the destination PRN
   and the byte offset within it — are the nOP.v-scoped cursor fields of the
   wrapped `MicroOp`, not new fields here; see the MicroOp delta spec, which owns

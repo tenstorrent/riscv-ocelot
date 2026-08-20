@@ -736,7 +736,14 @@ class WithVector(
   vecIssueEntries: Int = VectorParams().vecIssueEntries,
   vecIssueGrantWidth: Int = VectorParams().vecIssueGrantWidth,
   dcacheArbiterMode: String = VectorParams().dcacheArbiterMode,
-  lsuWidth: Int = 1
+  lsuWidth: Int = 1,
+  // 0 keeps the 64-bit D$ request lane. 128 doubles the bytes one lane moves
+  // per cycle, i.e. doubles peak vector memory bandwidth to
+  // `lsuWidth * 16 B/cycle`. The D$ cannot deliver a word wider than one SRAM
+  // row, so this fragment raises the tier's `dcache.rowBits` to match when it is
+  // narrower (Medium is 64; Large/Mega/Giga are already 128) -- same pairing
+  // saturn uses for its `dLen` port.
+  dcacheDataBits: Int = 0
 ) extends Config((site, here, up) => {
   case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
     case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
@@ -752,6 +759,7 @@ class WithVector(
         dcacheArbiterMode   = dcacheArbiterMode
       )),
       lsuWidth = lsuWidth,
+      dcacheDataBits = dcacheDataBits,
       // APPEND to the tier's existing issueParams, never rebuild it: the
       // four scalar entries are counted-by-iqType in HasBoomCoreParameters
       // and a tier's carefully-sized scalar queues must survive untouched.
@@ -760,7 +768,16 @@ class WithVector(
         IssueParams(issueWidth=vecIssueGrantWidth, numEntries=vecIssueEntries, iqType=IQ_V_STORE, dispatchWidth=tp.tileParams.core.decodeWidth),
         IssueParams(issueWidth=vecIssueGrantWidth, numEntries=vecIssueEntries, iqType=IQ_V_ALU,   dispatchWidth=tp.tileParams.core.decodeWidth)
       )
-    )))
+    ),
+    // rocket requires `rowBits >= coreDataBits` (HellaCache.scala), and BOOM's
+    // D$ arrays/refill/writeback are all row-parameterized, so raising the row
+    // to the word costs nothing beyond `rowWords` going 2 -> 1. Left untouched
+    // when the row is already wide enough, so Large/Mega/Giga stay bit-identical
+    // here. The I$ is NOT touched: its `fetchBytes` is pinned by `fetchWidth`
+    // and the two L1 masters have independent width widgets (see tile.scala).
+    dcache = tp.tileParams.dcache.map(dc =>
+      if (dcacheDataBits > dc.rowBits) dc.copy(rowBits = dcacheDataBits) else dc)
+    ))
     case other => other
   }
 })
@@ -786,6 +803,23 @@ class WithLargeBoomsVector extends Config(
 // already sets it to 2 on the scalar tier. vecIssueGrantWidth stays 1; see above.
 class WithMegaBoomsVector extends Config(
   new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic")
+)
+
+// Wide-D$-lane variants. Kept as SEPARATE fragments rather than flipping the
+// default so the existing narrow configs stay as the regression baseline.
+// 128 is legal on both tiers: their dcache.rowBits is already 128, so the whole
+// SRAM row becomes one word (rowWords == 1) and nothing about the arrays,
+// banking, refill or TL beat width changes.
+class WithMediumBoomsVectorWide extends Config(
+  new WithVector(dcacheDataBits = 128)
+)
+
+class WithLargeBoomsVectorWide extends Config(
+  new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic", dcacheDataBits = 128)
+)
+
+class WithMegaBoomsVectorWide extends Config(
+  new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic", dcacheDataBits = 128)
 )
 
 // Sub-flags, so Track A (vector LSU) and Track B (CII arith / cross-LSU

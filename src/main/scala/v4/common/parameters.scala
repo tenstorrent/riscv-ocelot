@@ -142,6 +142,15 @@ case class BoomCoreParams(
   enableVectorArith: Boolean = false,
   // Enables bidirectional cross-LSU (scalar<->vector) disambiguation.
   vecScalarSnoopEnable: Boolean = false,
+  // Width in bits of one LSU<->D$ request lane. 0 means "follow rocket's
+  // default", i.e. `xLen max fLen` = 64. Setting it to a multiple of `xLen`
+  // widens `coreDataBits` (rocket `tile/Core.scala`), which widens
+  // `BoomDCacheReq/Resp.data` and therefore the bytes one `dmem.req` lane
+  // moves per cycle -- the vector-memory bandwidth ceiling. It is routed
+  // through rocket's `vMemDataBits`, which rocket gates on `useVector`, so it
+  // only takes effect with `enableVector`. `dcacheParams.rowBits` must be at
+  // least this wide; see the requires in `HasBoomCoreParameters`.
+  dcacheDataBits: Int = 0,
 
 // DOC include end: BOOM Parameters
 ) extends freechips.rocketchip.tile.CoreParams
@@ -173,6 +182,11 @@ case class BoomCoreParams(
   // overridden as a stable value. It gates rocket's architectural vector CSR
   // state (ground rule 9), which is why it tracks enableVector exactly.
   override val useVector: Boolean = enableVector
+  // Routes `dcacheDataBits` into rocket's `coreDataBits = xLen max fLen max
+  // vMemDataBits`. rocket already gates `vMemDataBits` on `useVector`
+  // (`tile/Core.scala`), but gate it here too so the value read back is honest
+  // with vectors off.
+  override def vMemDataBits: Int = if (enableVector) dcacheDataBits else 0
   override def vLen: Int = if (enableVector) vector.getOrElse(VectorParams()).vLen else 0
   override def eLen: Int = if (enableVector) vector.getOrElse(VectorParams()).eLen else 0
 
@@ -328,6 +342,21 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
 
   val enablePrefetching = boomParams.enablePrefetching
   val nLBEntries = dcacheParams.nMSHRs
+
+  // `dcacheDataBits` widens `coreDataBits` (see BoomCoreParams). Check it here
+  // rather than let rocket's `require(rowBits >= coreDataBits)` in
+  // HellaCache.scala fire, because from there the reported culprit is `rowBits`
+  // and not the knob that actually moved.
+  val dcacheDataBits = boomParams.dcacheDataBits
+  require(dcacheDataBits == 0 || dcacheDataBits % xLen == 0,
+    s"dcacheDataBits ($dcacheDataBits) must be 0 or a multiple of xLen ($xLen): " +
+    "the D$ AMO datapath is built as xLen-wide lanes across the word")
+  require(dcacheDataBits <= dcacheParams.rowBits,
+    s"dcacheDataBits ($dcacheDataBits) must be <= dcache rowBits (${dcacheParams.rowBits}): " +
+    "the D$ cannot deliver a word wider than one SRAM row")
+  require(dcacheDataBits == 0 || boomParams.enableVector,
+    s"dcacheDataBits ($dcacheDataBits) requires enableVector: it is routed through " +
+    "rocket's vMemDataBits, which rocket gates on useVector")
 
   //************************************
   // Vector (Caracal)

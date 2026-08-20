@@ -151,7 +151,13 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val exception        = Bool()
   val exc_cause        = UInt(xLen.W)          // TODO compress this down, xlen is insanity
   val mem_cmd          = UInt(M_SZ.W)          // sync primitives/cache flushes
-  val mem_size         = UInt(2.W)
+  // Sized exactly as rocket's `HasCoreMemOp.size` (`rocket/HellaCache.scala`),
+  // so a `mem_size` of log2(coreDataBytes) is always expressible. 2 bits when
+  // `coreDataBytes` is 8 (bit-identical to the old literal), 3 bits when the
+  // D$ lane is widened to 16 bytes via `dcacheDataBits`. Scalar decode never
+  // emits more than MT_D (3); the wide encodings come only from the vector
+  // beat expander.
+  val mem_size         = UInt(log2Ceil(coreDataBytes.log2 + 1).W)
   val mem_signed       = Bool()
   val uses_ldq         = Bool()
   val uses_stq         = Bool()

@@ -65,8 +65,13 @@ class VecElemAccess(implicit p: Parameters) extends BoomBundle
 {
   val vaddr   = UInt(coreMaxAddrBits.W)
   val eew     = UInt(2.W) // matches MicroOp.v_eew's encoding width
-  // Byte enable across the up-to-eLen-wide element access.
-  val byte_en = UInt((vecELen / 8).W)
+  // Byte enable across the access. An element access is at most eLen wide, but
+  // VecMemAccess extends this bundle and a drain beat is up to `coreDataBytes`
+  // wide, so the field must cover the larger of the two: sizing it at eLen/8
+  // alone silently truncates the mask of a beat on a D$ lane wider than eLen
+  // (`dcacheDataBits`), and the LCB derives src_off/nbytes from PopCount and
+  // PriorityEncoder of exactly this field.
+  val byte_en = UInt(((vecELen / 8) max coreDataBytes).W)
   val first   = Bool() // first access of the group
   val last    = Bool() // last access of the group
 }

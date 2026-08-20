@@ -921,19 +921,52 @@ class BoomNonBlockingDCacheModule(outer: BoomNonBlockingDCache) extends LazyModu
                        Mux(s5_bypass(w), s5_req.data,
                                          s2_data_word_prebypass(w))))
   }
-  val amoalu   = Module(new AMOALU(xLen))
-  amoalu.io.mask := new StoreGen(s3_req.uop.mem_size, s3_req.addr, 0.U, xLen/8).mask
-  amoalu.io.cmd  := s3_req.uop.mem_cmd
-  amoalu.io.lhs  := s3_data_word
-  amoalu.io.rhs  := RegNext(s2_req(0).data)
-
-
-  s3_req.data := amoalu.io.out
+  // The store/AMO merge has to cover the whole `coreDataBits` word. RISC-V AMOs
+  // are at most xLen wide, so rather than one wide AMOALU this is built as
+  // `coreDataBits/xLen` xLen-wide lanes: at most one lane ever does arithmetic
+  // and the rest just byte-merge store data under their slice of the mask. Same
+  // construction as rocket's blocking DCache. Note the mask must be
+  // `coreDataBytes` wide, not `xLen/8`, or the upper lanes see an all-zero mask
+  // and a wide store writes zeros above bit xLen.
+  //
+  // The `coreDataBits == xLen` case is the original single-AMOALU code kept
+  // verbatim, so a narrow (vectors-off) elaboration stays bit-identical --
+  // gate (f).
+  // NOTE the `if` is at STATEMENT level, not wrapped around the value: Chisel
+  // names instances after the enclosing val/assignment, so making this an
+  // expression assigned to `s3_req.data` would rename the instance
+  // `amoalu` -> `s3_req_data_amoalu` and every wire around it, which gate (f)
+  // reads as a design change.
+  if (coreDataBits == xLen) {
+    val amoalu   = Module(new AMOALU(xLen))
+    amoalu.io.mask := new StoreGen(s3_req.uop.mem_size, s3_req.addr, 0.U, xLen/8).mask
+    amoalu.io.cmd  := s3_req.uop.mem_cmd
+    amoalu.io.lhs  := s3_data_word
+    amoalu.io.rhs  := RegNext(s2_req(0).data)
+    s3_req.data := amoalu.io.out
+  } else {
+    val s3_amo_mask = new StoreGen(s3_req.uop.mem_size, s3_req.addr, 0.U, coreDataBytes).mask
+    val s3_amo_rhs  = RegNext(s2_req(0).data)
+    val amoalus = (0 until coreDataBits / xLen).map { i =>
+      val amoalu = Module(new AMOALU(xLen))
+      amoalu.io.mask := s3_amo_mask  >> (i * (xLen/8))
+      amoalu.io.cmd  := s3_req.uop.mem_cmd
+      amoalu.io.lhs  := s3_data_word >> (i * xLen)
+      amoalu.io.rhs  := s3_amo_rhs   >> (i * xLen)
+      amoalu
+    }
+    s3_req.data := amoalus.map(_.io.out).asUInt
+  }
   val s3_way   = RegNext(s2_tag_match_way(0))
 
   dataWriteArb.io.in(0).valid       := s3_valid
   dataWriteArb.io.in(0).bits.addr   := s3_req.addr
-  dataWriteArb.io.in(0).bits.wmask  := UIntToOH(s3_req.addr.extract(rowOffBits-1,offsetlsb))
+  // `offsetlsb` is `wordOffBits`, so when the word is as wide as the row
+  // (`rowWords == 1`, i.e. a 128-bit `coreDataBits` over a 128-bit row) the
+  // extract range inverts. There is exactly one word in the row then, so the
+  // mask is the constant 1. Same guard shape as `s2_word_idx` above.
+  dataWriteArb.io.in(0).bits.wmask  := (if (rowWords == 1) 1.U
+                                        else UIntToOH(s3_req.addr.extract(rowOffBits-1,offsetlsb)))
   dataWriteArb.io.in(0).bits.data   := Fill(rowWords, s3_req.data)
   dataWriteArb.io.in(0).bits.way_en := s3_way
 

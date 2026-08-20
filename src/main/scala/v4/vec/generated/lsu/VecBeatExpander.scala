@@ -48,7 +48,10 @@ class VecBeatExpander(
   val beatOffBits = log2Ceil(dmemBeatBytes)
   val maxElems    = vecVLen
   val elemIdxSz   = log2Ceil(maxElems + 1)
-  val sizeBits    = 2
+  // Mirrors MicroOp.mem_size, which is sized by rocket's HasCoreMemOp.size
+  // formula: 2 bits for an 8-byte D$ lane, 3 for a 16-byte one. Never a literal
+  // -- a literal 2 is what capped the largest expressible beat at 8 bytes.
+  val sizeBits    = log2Ceil(log2Ceil(coreDataBytes) + 1)
   require(log2Ceil(dmemBeatBytes) < (1 << sizeBits),
     s"VecBeatExpander: log2Ceil(dmemBeatBytes) (${log2Ceil(dmemBeatBytes)}) must be < (1 << sizeBits) (${1 << sizeBits})")
 
@@ -303,7 +306,9 @@ class VecBeatExpander(
       val loadSize  = Mux(res.corner, eew, beatOffBits.U(sizeBits.W))
       val laneOff   = Mux(res.corner, 0.U, res.addr(beatOffBits - 1, 0))
       val activeLen = res.runBytes(shiftW - 1, 0)
-      val byteEn    = (((1.U << activeLen) - 1.U) << laneOff)(elenBytes - 1, 0)
+      // Truncate to the LANE width, not elenBytes: a beat spans up to
+      // dmemBeatBytes bytes, which exceeds eLen/8 on a widened D$ lane.
+      val byteEn    = (((1.U << activeLen) - 1.U) << laneOff)(dmemBeatBytes - 1, 0)
 
       lanePayload.vaddr    := loadAddr
       lanePayload.byte_en  := byteEn
@@ -323,7 +328,8 @@ class VecBeatExpander(
       val sizeBytes = (1.U(byteW.W) << sizeLog2)(byteW - 1, 0)
       val storeAddr = (res.addr >> sizeLog2) << sizeLog2
       val storeOff  = storeAddr(beatOffBits - 1, 0)
-      val byteEn    = (((1.U << sizeBytes(shiftW - 1, 0)) - 1.U) << storeOff)(elenBytes - 1, 0)
+      // Truncate to the LANE width, not elenBytes -- see the load path above.
+      val byteEn    = (((1.U << sizeBytes(shiftW - 1, 0)) - 1.U) << storeOff)(dmemBeatBytes - 1, 0)
 
       //@req-spec-lsu.d6
       val memberOff = res.curByte(memberIdxW - 1, 0)

@@ -266,7 +266,10 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
 
   val next_stq_idx        = UInt((1+stqAddrSz).W)
 
-  val ld_byte_mask        = UInt(8.W)
+  // One bit per byte of a `coreDataBits` D$ word (8 today, 16 with a widened
+  // `dcacheDataBits`). It is paired with a word-granular address compare, so it
+  // must be exactly as wide as the word the compare ignores the offset within.
+  val ld_byte_mask        = UInt(coreDataBytes.W)
 
   val forward_std_val     = Bool()
   val forward_stq_idx     = UInt((1+stqAddrSz).W) // Which store did we get the store-load forward from?
@@ -310,7 +313,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val ldq_order_fail          = Reg(Vec(numLdqEntries, Bool()))
   val ldq_observed            = Reg(Vec(numLdqEntries, Bool()))
   val ldq_next_stq_idx        = Reg(Vec(numLdqEntries, UInt((stqAddrSz+1).W))) // the one bit is for overflow calculation
-  val ldq_ld_byte_mask        = Reg(Vec(numLdqEntries, UInt(8.W)))
+  val ldq_ld_byte_mask        = Reg(Vec(numLdqEntries, UInt(coreDataBytes.W)))
   val ldq_forward_std_val     = Reg(Vec(numLdqEntries, Bool()))
   val ldq_forward_stq_idx     = Reg(Vec(numLdqEntries, UInt((1+stqAddrSz).W)))
   val ldq_debug_wb_data       = Reg(Vec(numLdqEntries, UInt(xLen.W)))
@@ -1106,7 +1109,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       val ldq_idx = Mux(will_fire_load_agen(w) || will_fire_load_agen_exec(w), ldq_incoming_idx(w), ldq_retry_idx)
       ldq_addr               (ldq_idx).valid  := !exe_agen_killed(w) || will_fire_load_retry(w)
       ldq_addr               (ldq_idx).bits   := Mux(exe_tlb_miss(w), exe_tlb_vaddr(w), exe_tlb_paddr(w))
-      ldq_ld_byte_mask       (ldq_idx)        := GenByteMask(exe_tlb_vaddr(w), exe_tlb_uop(w).mem_size)
+      ldq_ld_byte_mask       (ldq_idx)        := GenByteMask(exe_tlb_vaddr(w), exe_tlb_uop(w).mem_size, coreDataBytes)
       ldq_uop                (ldq_idx).pdst   := exe_tlb_uop(w).pdst
       ldq_addr_is_virtual    (ldq_idx)        := exe_tlb_miss(w)
       ldq_addr_is_uncacheable(ldq_idx)        := exe_tlb_uncacheable(w) && !exe_tlb_miss(w)
@@ -1287,7 +1290,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val lcam_uop = if (usingRVV) widthMap(w => Mux(io.core.lsu_vec.get.lcam(w).valid,
     io.core.lsu_vec.get.lcam(w).bits.uop, lcam_uop_scalar(w))) else lcam_uop_scalar
 
-  val lcam_mask_scalar  = widthMap(w => GenByteMask(lcam_addr_scalar(w), lcam_uop_scalar(w).mem_size))
+  val lcam_mask_scalar  = widthMap(w => GenByteMask(lcam_addr_scalar(w), lcam_uop_scalar(w).mem_size, coreDataBytes))
   val lcam_mask = if (usingRVV) widthMap(w => Mux(io.core.lsu_vec.get.lcam(w).valid,
     io.core.lsu_vec.get.lcam(w).bits.byte_mask, lcam_mask_scalar(w))) else lcam_mask_scalar
 
@@ -1388,7 +1391,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     val l_forward_stq_idx = ldq_forward_stq_idx(i)
 
     val block_addr_matches = widthMap(w => lcam_addr(w) >> blockOffBits === l_addr.bits >> blockOffBits)
-    val dword_addr_matches = widthMap(w => block_addr_matches(w) && lcam_addr(w)(blockOffBits-1,3) === l_addr.bits(blockOffBits-1,3))
+    // Compares at D$-WORD granularity, i.e. `wordOffBits`, not a literal 3.
+    // Which bytes of the matched word are touched is then decided by the byte
+    // masks below; at dword granularity a `coreDataBytes = 16` access whose low
+    // dword differed would miss a real overlap in its high dword. `wordOffBits`
+    // is 3 unless a config sets `dcacheDataBits`, so the name still describes
+    // the default machine and is kept to keep gate (f) free of renames.
+    val dword_addr_matches = widthMap(w => block_addr_matches(w) && lcam_addr(w)(blockOffBits-1,wordOffBits) === l_addr.bits(blockOffBits-1,wordOffBits))
     val mask_match   = widthMap(w => (l_mask & lcam_mask(w)) === l_mask)
     val mask_overlap = widthMap(w => (l_mask & lcam_mask(w)).orR)
 
@@ -1475,8 +1484,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     for (w <- 0 until lsuWidth) {
       // A younger load might find a older nacking load
       // this is not the full case, need also to account for the situation where the older load already went to sleep above
-      val nack_dword_addr_matches = (lcam_addr(w) >> 3) === (io.dmem.nack(wi).bits.addr >> 3)
-      val nack_mask = GenByteMask(io.dmem.nack(wi).bits.addr, io.dmem.nack(wi).bits.uop.mem_size)
+      val nack_dword_addr_matches = (lcam_addr(w) >> wordOffBits) === (io.dmem.nack(wi).bits.addr >> wordOffBits)
+      val nack_mask = GenByteMask(io.dmem.nack(wi).bits.addr, io.dmem.nack(wi).bits.uop.mem_size, coreDataBytes)
       val nack_mask_overlap = (nack_mask & lcam_mask(w)) =/= 0.U
       when (do_ld_search(w)                    &&
             io.dmem.nack(wi).valid             &&
@@ -1494,8 +1503,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 
 
       // A older load might find a younger forwarding load
-      val forward_dword_addr_matches = (lcam_addr(w) >> 3 === wb_ldst_forward_ld_addr(wi) >> 3)
-      val forward_mask = GenByteMask(wb_ldst_forward_ld_addr(wi), wb_ldst_forward_e(wi).uop.mem_size)
+      val forward_dword_addr_matches = (lcam_addr(w) >> wordOffBits === wb_ldst_forward_ld_addr(wi) >> wordOffBits)
+      val forward_mask = GenByteMask(wb_ldst_forward_ld_addr(wi), wb_ldst_forward_e(wi).uop.mem_size, coreDataBytes)
       val forward_mask_overlap = (forward_mask & lcam_mask(w)) =/= 0.U
       when (do_ld_search(w)                   &&
             wb_ldst_forward_valid(wi)         &&
@@ -1537,12 +1546,12 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     val s_uop             = WireInit(stq_uop(i))
     val s_valid           = stq_valids(i)
 
-    val write_mask = GenByteMask(s_addr.bits, s_uop.mem_size)
+    val write_mask = GenByteMask(s_addr.bits, s_uop.mem_size, coreDataBytes)
     for (w <- 0 until lsuWidth) {
       val dword_addr_matches = ( s_addr.valid      &&
                                 !s_uop.is_amo      &&
                                 !s_addr_is_virtual &&
-                                (s_addr.bits(corePAddrBits-1,3) === lcam_addr(w)(corePAddrBits-1,3)))
+                                (s_addr.bits(corePAddrBits-1,wordOffBits) === lcam_addr(w)(corePAddrBits-1,wordOffBits)))
       val mask_union = lcam_mask(w) & write_mask
 
       addr_matches(w)(i)    := (mask_union =/= 0.U) && dword_addr_matches
@@ -2375,21 +2384,31 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 }
 
 /**
- * Object to take an address and generate an 8-bit mask of which bytes within a
- * double-word.
+ * Object to take an address and generate a `coreDataBytes`-wide mask of which
+ * bytes within one D$ word are touched.
+ *
+ * This is rocket's `StoreGen(size, addr, _, maxSize).mask` with `maxSize =
+ * coreDataBytes`, so it delegates rather than re-deriving it: the hand-rolled
+ * 8-bit form this replaces was that expression specialized to a 64-bit word and
+ * silently wrong once `dcacheDataBits` widens the word to 16 bytes.
  */
 object GenByteMask
 {
-   def apply(addr: UInt, size: UInt): UInt =
-   {
-      val mask = Wire(UInt(8.W))
-      mask := MuxCase(255.U(8.W), Array(
-                   (size === 0.U) -> (1.U(8.W) << addr(2,0)),
-                   (size === 1.U) -> (3.U(8.W) << (addr(2,1) << 1.U)),
-                   (size === 2.U) -> Mux(addr(2), 240.U(8.W), 15.U(8.W)),
-                   (size === 3.U) -> 255.U(8.W)))
-      mask
-   }
+   def apply(addr: UInt, size: UInt, maxSize: Int): UInt =
+      if (maxSize == 8) {
+         // The 8-byte case is kept verbatim so a narrow (vectors-off)
+         // elaboration stays bit-identical -- gate (f). It is exactly the
+         // StoreGen expression below specialized to a double-word.
+         val mask = Wire(UInt(8.W))
+         mask := MuxCase(255.U(8.W), Array(
+                      (size === 0.U) -> (1.U(8.W) << addr(2,0)),
+                      (size === 1.U) -> (3.U(8.W) << (addr(2,1) << 1.U)),
+                      (size === 2.U) -> Mux(addr(2), 240.U(8.W), 15.U(8.W)),
+                      (size === 3.U) -> 255.U(8.W)))
+         mask
+      } else {
+         (new freechips.rocketchip.rocket.StoreGen(size, addr, 0.U, maxSize)).mask
+      }
 }
 
 /**

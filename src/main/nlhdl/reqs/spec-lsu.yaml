@@ -1802,8 +1802,44 @@ reqs:
         |caracal| reuses the scalar cache port rather than
         building a ``VLEN``-wide vector cache interface.
     notes: >
-      A wider or line-granular vector cache port is explicitly out of scope in this spec and
-      named as the highest-leverage follow-on if vector memory bandwidth proves limiting.
+      Still true: the widened lane (spec-lsu.k12) widens the SHARED scalar port, it does not
+      add a second VLEN-wide vector interface.
+
+  - id: spec-lsu.k12
+    kind: structure
+    statement: >
+      The width of one D$ request lane must be BoomCoreParams.dcacheDataBits when that is
+      non-zero, and rocket's default coreDataBits otherwise; it must be a multiple of xLen and
+      no wider than DCacheParams.rowBits.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: wide-dcache-lane
+      heading: "Widening the lane: ``dcacheDataBits``"
+      quote: >
+        ``dcacheDataBits`` must be a multiple of ``xLen`` (the D$ store/AMO merge is built as
+        ``coreDataBits/xLen`` ``xLen``-wide lanes) and no wider than the tier's ``rowBits``
+    notes: >
+      Enforced by three requires in HasBoomCoreParameters rather than left to rocket's
+      require(rowBits >= coreDataBits), which names rowBits as the culprit instead of the knob
+      that moved.
+
+  - id: spec-lsu.k13
+    kind: structure
+    statement: >
+      MicroOp.mem_size must be wide enough to encode log2 of the D$ lane width, and the scalar
+      LSU's store-to-load byte masks and LCAM address compares must be at D$-word granularity,
+      not double-word granularity.
+    source:
+      file: docs_caracal/src/loadstore.rst
+      anchor: wide-dcache-lane
+      heading: "Widening the lane: ``dcacheDataBits``"
+      quote: >
+        the scalar LSU's store→load byte masks and LCAM address compares moved from double-word
+        to ``coreDataBytes``-word granularity — at dword granularity a 16-byte access would miss
+        a real overlap in its upper half
+    notes: >
+      These are the only two things a wider lane needs beyond re-parameterization; everything
+      else on both the scalar and vector paths already derives from coreDataBytes.
 
   - id: spec-lsu.l1
     kind: structure

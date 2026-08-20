@@ -663,13 +663,14 @@ Vector memory bandwidth ceiling
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Because the cache and its request interface are unchanged, **vector memory bandwidth is bounded by
-the scalar D$ port width, not by ``VLEN``.** Each ``dmem.req`` lane carries at most one element
-(``≤ ELEN`` = 64 bits) per cycle, and there are ``lsuWidth`` lanes — **1 on Medium, 2 on
+the scalar D$ port width, not by ``VLEN``.** Each ``dmem.req`` lane carries at most one
+``coreDataBytes``-wide beat per cycle, and there are ``lsuWidth`` lanes — **1 on Medium, 2 on
 Large/Mega**. The consequences are first-order for vector performance and must be understood:
 
-- A single ``VLEN = 256`` destination register is **≥ 4 D$ beats** (``VLEN/ELEN``), even for the
-  densest unit-stride load — so peak vector load/store throughput is **64 bits/cycle on Medium,
-  128 bits/cycle on Mega**, regardless of ``LMUL``.
+- With the default 64-bit lane (``coreDataBytes = 8``), a single ``VLEN = 256`` destination register
+  is **≥ 4 D$ beats** (``VLEN/ELEN``), even for the densest unit-stride load — so peak vector
+  load/store throughput is **64 bits/cycle on Medium, 128 bits/cycle on Mega**, regardless of
+  ``LMUL``.
 - **SSI** (strided / indexed / segmented) accesses drain **one element per granted lane**, and that
   lane is shared with scalar memory ops through the priority round-robin arbiter
   (:ref:`dcache-arbiter`). A pathological scatter/gather is therefore element-serial.
@@ -681,6 +682,42 @@ Large/Mega**. The consequences are first-order for vector performance and must b
 This is a deliberate area/complexity trade-off: |caracal| reuses the scalar cache port rather than
 building a ``VLEN``-wide vector cache interface. For memory-bound vector kernels it is the dominant
 performance limiter, so ``LargeBoomV4Config`` / ``MegaBoomV4Config`` (dual-port L1 D$, two grants
-per cycle) is **required, not merely recommended,** for acceptable vector throughput. A wider /
-line-granular vector cache port is explicitly out of scope here and would be the highest-leverage
-follow-on if vector memory bandwidth proves limiting.
+per cycle) is **required, not merely recommended,** for acceptable vector throughput.
+
+.. _wide-dcache-lane:
+
+Widening the lane: ``dcacheDataBits``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ceiling above is a *parameter*, not a structural limit. ``BoomCoreParams.dcacheDataBits``
+raises rocket's ``coreDataBits`` (``xLen max fLen max vMemDataBits``) and therefore the width of
+``BoomDCacheReq``/``BoomDCacheResp.data`` — the bytes one ``dmem.req`` lane moves per cycle.
+Setting it to 128 halves the beat count of every unit-stride access and doubles peak vector memory
+bandwidth to **128 bits/cycle on Medium, 256 on Mega**. The fragments
+``WithMediumBoomsVectorWide`` / ``WithLargeBoomsVectorWide`` / ``WithMegaBoomsVectorWide`` and the
+configs ``MediumBoomV4VectorWideConfig`` / ``MegaBoomV4VectorWideConfig`` are the wired-up form;
+the narrow configs remain the regression baseline.
+
+What makes this cheap: the D$ data SRAMs, banking, writeback buffer, line buffer, refill path and
+TileLink beat width are all parameterized on ``DCacheParams.rowBits``, which is **already 128** on
+the Large/Mega/Giga tiers — there, widening the *word* to match the *row* only takes ``rowWords``
+from 2 to 1, with no array, bank or bus change at all. On the Medium tier (``rowBits = 64``) the
+fragment raises the row to 128 as well, which is the same pairing saturn uses for its ``dLen``
+port; the D$ SRAM row and its TileLink port widen with it, the I$ does not. The whole vector drain
+path (``VecBeatExpander``, the LCB (:ref:`load-coalesce`), ``VecStoreForward``) is written against
+``coreDataBytes`` and follows automatically. ``dcacheDataBits`` must be a multiple of ``xLen`` (the
+D$ store/AMO merge is built as ``coreDataBits/xLen`` ``xLen``-wide lanes).
+
+Only a few things were genuinely fixed rather than derived:
+
+- ``MicroOp.mem_size`` now follows rocket's ``HasCoreMemOp.size`` sizing, so a 16-byte beat is
+  expressible at all (a literal 2 bits capped every request at 8 bytes).
+- The scalar LSU's store→load byte masks and LCAM address compares moved from double-word to
+  ``coreDataBytes``-word granularity. At dword granularity a 16-byte access would miss a real
+  overlap in its upper half.
+- The drain beat's ``byte_en`` is sized ``(eLen/8) max coreDataBytes`` and truncated to the lane
+  width, not to ``eLen/8``: the LCB derives ``src_off``/``nbytes`` from that field alone, so a
+  truncated mask is a wrong destination offset, not just a lost mask bit.
+- The BOOM tile no longer requires ``dcache.rowBits == icache.fetchBytes * 8``. The two L1 masters
+  have independent ``TLWidthWidget``\ s, and ``icache.fetchBytes`` is pinned by ``fetchWidth``, so
+  that equality made a wide D$ row unreachable on the Medium tier for no structural reason.
