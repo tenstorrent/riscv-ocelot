@@ -1161,6 +1161,106 @@ glossary.rst `glossary-terms`.
        against `us_head.rob_idx` alone and the strided (`vlse`) path went on
        starving until the comparison moved into the expander.
 
+  ===> ADMISSION MUST ALSO RESPECT THE **DRAIN ORDER**, NOT MERELY THE AGE OF
+       WHAT HAS ARRIVED. Three facts collide otherwise. (a) `VecQueueReservation`
+       hands each range load its `ld_US_ADDR_Q` slot AT DISPATCH, in program
+       order. (b) the drain is `ldUsDrainPtr`, a plain `+1` counter, so ranges are
+       served strictly in SLOT order. (c) `IQ_V_LOAD` issues OUT OF ORDER, so a
+       younger load can be the only candidate in `ldRows` and win the oldest-first
+       select purely because the older one has not been issued yet.
+
+       Admitting that younger load starts its LCB walk, and at the shipping
+       `lcbEntries == maxVecMembers` ONE LMUL=8 group owns the whole buffer. Its
+       own beats can never fire — the drain is parked on the OLDER op's slot — and
+       the older op, once it finally issues, walks into `alloc.ready = 0` and
+       stalls forever. The `lcbRdyFor` escape above CANNOT break this: it covers a
+       LATER op's stalled walk gating an EARLIER op's beats, and here the stalled
+       walk belongs to the very op the drain is waiting for, so
+       `rob === walk_rob`. What fires is `lcbStallWatchdog` on the YOUNGER op's
+       entry 0 — the victim, not the cause.
+
+       Measured on `axpy-vector` (MegaBoom, pipelined VPU): rob 21 reserved slot 6
+       and rob 6 slot 5; rob 21 issued first, took all 8 LCB entries, and the
+       drain sat on slot 5 forever. The pipelined VPU did not introduce this — it
+       retires arithmetic fast enough to put two unit-stride loads in `IQ_V_LOAD`
+       at once, which is the only thing the deadlock ever needed.
+
+       ⚠ DO NOT "FIX" THIS BY DEEPENING `lcbEntries`. That only moves the depth at
+       which the same inversion deadlocks; the INVARIANT is wrong, not the
+       capacity.
+
+       So add a third term to `ldPresent`: a range-class winner is admitted only
+       when its reserved `ld_US_ADDR_Q` base EQUALS `ldUsDrainPtr`.
+
+       THE BASE MUST BE SHADOWED AT DISPATCH, NOT LOOKED UP AT ADMISSION.
+       `VecQueueReservation`'s four `resv_lookup` lanes are permanently assigned
+       to the four AGENs (its spec refuses a fifth), and its echo returns ZERO —
+       a legal-looking index at the BOTTOM of the queue — outside a lane's valid
+       window, so borrowing a lane yields a wrong answer rather than a stall.
+       `resv_out` is the one cycle the value is presented and it arrives already
+       qualified by `dis_fire`; latch it into an LDQ-indexed `ldUsBaseTbl`. The
+       shadow is sound because the value is IMMUTABLE for the life of the op: a
+       squash rolls `allocTail` back but never renumbers a reservation that
+       SURVIVES, and an LDQ index whose op is killed is rewritten the next time it
+       is dispatched into. `ldUsDrainPtr` and the reservation tail already share
+       ONE rewind source (`q_squash.bits = resv_rollback_tail`), so the equality
+       cannot be made permanently unsatisfiable by a squash.
+
+       THE GATE IS PER CLASS. It constrains range-class loads against the range
+       drain and leaves SSI loads alone. Cross-class hogging is not a deadlock: an
+       SSI load holding the LCB is itself drainable (its own base pointer is on
+       it), so it completes and frees. Only an op that is NOT drain-next can hold
+       the buffer against the op that is. The SSI mirror is deliberately ABSENT —
+       SSI element regions drain over many cycles and gating admission on
+       `ldSsiBase` would serialise strided loads end to end for a hazard that
+       cannot arise within one class from one op.
+
+  ===> SSI RESERVATION SLACK: THE DRAIN MUST STEP OVER WHAT WAS NEVER FILLED.
+       An SSI region is claimed at DISPATCH at its worst-case size, and
+       `VecElemAgen` fills only `emit_ctr` slots, leaving ONE CONTIGUOUS HOLE at
+       the end of the region. `VecQueueReservation` §7's surplus trim reasons that
+       a refused trim "costs only capacity". It does not: the three SSI base
+       pointers (`ldSsiBase`, `stSsiPass1Base`, `stSsiPass2Base`) are plain `+1`
+       counters over FILLED slots, so a hole parks them permanently and every
+       later SSI access on that queue is dead. And the trim is granted only while
+       the region is still the queue's tail, which inside a loop it never is — the
+       NEXT op claims its region at dispatch, long before this one reaches its
+       agen accept, so the trim is refused essentially always. Measured on
+       `spmv_bare` (MegaBoom Wide, 2026-09-01): a vl=3 walk reserved 4 slots at
+       base 0, the drain stopped at 3, the next indexed load's elements at 4..7
+       never issued, and its LCB entry starved until `lcbStallWatchdog` fired —
+       naming, as ever, the victim rather than the cause.
+
+       So do not reclaim the slack; STEP OVER it. `VecElemAgen.slack` publishes
+       `(used_end, region_end)` when a walk ends short, and a drain pointer that
+       comes to rest on `used_end` jumps to `region_end`. One table per direction,
+       `ssiSlackEntries` rows of two pointers plus a valid.
+
+       ⚠ A MATCH TABLE, NOT A FIFO. Records are produced in agen-accept order and
+       consumed in REGION order, and the two differ precisely because the SSI
+       class has no drain-order admission gate (above): a younger SSI op can be
+       admitted and walked before an older one. A FIFO head would then name a
+       region the drain has not reached, and the queue would wedge on a record it
+       holds itself. Matching on the pointer is order-independent. Assert the hit
+       is one-hot — two live records naming the same `used_end` is impossible
+       while regions are disjoint, so it would mean a stale record survived a
+       squash.
+
+       A squash clears every record at or beyond the new tail, by the same
+       distance-from-tail total order the range rewind uses and against the same
+       PRE-squash tail; leaving one armed would jump a LATER op's live region.
+
+       BACK-PRESSURE AT ADMISSION, NOT AT THE AGEN. `*_elem_agen.op.valid` is a
+       ONE-CYCLE pulse, so an agen that refused an op would DROP it. Gate
+       `ldPresent`/`stPresent` on the table having room, for SSI-class winners
+       only. That cannot deadlock: with admission stopped the drain still runs,
+       every jump frees a row, and the only thing that ever blocks the drain is
+       the hole this table removes.
+
+       `ldUsDrainPtr` lives with the drain side hundreds of lines below, so take
+       it through a `Wire` for the same reason `lcbWalkActive` is taken through
+       one.
+
   ===> THE WALK IS A ONE-OP RESOURCE AND MUST BE BACK-PRESSURED AT ADMISSION.
        `lcbWalkActive` holds a single op, and the walk STALLS whenever the LCB has
        no free entry, so a second load admitted meanwhile begins a second walk and
@@ -1391,6 +1491,20 @@ glossary.rst `glossary-terms`.
   bit off `resv` rather than tracking vector-ness here is deliberate: a local copy
   of which LSQ indices hold reservations is a second source of truth, and it drifts
   on exactly the mispredict cycle where `resv`'s own rollback clears a row.
+
+  ===> AND THAT WALK POINTER, NOT THE LSU HEAD, IS WHAT FEEDS `resv`'s
+       `ldq_head`/`stq_head`.
+  The walk steps ONE row per cycle; the LSU head advances by however many loads or
+  stores commit in a cycle. The rows in the gap have committed and still hold queue
+  regions, and `resv`'s rollback sweep orders rows by `IsOlderLSU` against whatever
+  those ports carry — a comparison that has no representation for an index BEFORE
+  its base and returns "youngest in the ring". Handed the LSU head, the sweep
+  therefore kills exactly the committed, unkillable rows the walk has not reached
+  yet; their regions never retire and the queue leaks them permanently. Handed the
+  walk pointer, they are the oldest rows in the window, which is what they are.
+  The two ports are named for BOOM's convention, and the value they must carry is
+  argued in full in VecQueueReservation's ports section — read it before rewiring
+  them back to `vec.ldq_head`.
 
   ---- 5. Drain, and the store's TWO passes ----
 

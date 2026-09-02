@@ -410,8 +410,30 @@ from Tenstorrent Inc.
   to one bit, the AND-trees collapse, and no VL-specific code path is needed.
   `vsetivli` is the one producer whose `pvl` busy bit is never set — the VCFG
   computed VL at decode and the VL RF is written in the rename cycle, so `pvl` is
-  born ready — which VecRenameSpace expresses simply by not raising
-  `rebusy_reqs` for that lane.
+  born ready.
+
+  ===> AND BORN READY MUST BE WRITTEN, NOT MERELY LEFT UNSET. `unbusy_reqs` —
+       Input, `Vec(plWidth, Bool)` — is the second half of that same allocation,
+       and it CLEARS the bit for `pvdest(0)`.
+  Declining to raise `rebusy_reqs` says nothing about the bit's value: the PRN
+  carries whatever its last tenant left there, and a tenant KILLED BY A BRANCH
+  leaves it SET. Nothing clears a busy bit on a squash — only a wakeup does, and a
+  killed `vset` never writes back — while the free list returns the PRN through
+  the branch snapshot regardless. For an ordinary next tenant that is invisible,
+  because its own allocation sets the bit and its own wakeup clears it; the
+  born-ready tenant is the one case that does NEITHER, so it inherits the stale
+  bit and every consumer of that VL waits forever on a wakeup no one can send.
+  Measured on `spmv_small` (MegaBoom): `vsetivli zero,1` took VL PRN 1 at rob 80
+  and `vmv.v.i v27,0` at rob 81 read `pvl_busy=1` in the same dispatch group; the
+  machine went quiet and the vector free list starved 115k cycles later, which is
+  the only place it reported anything.
+  FOLDED INTO THE CLEAR TERM of part 3, not added as a third case in part 4: the
+  read bypass of part 5 is built on `busy_table_clr`, so it then sees the clear
+  for free, and set-beats-clear stays correct — a PRN cannot be born ready in one
+  lane and allocated busy in another in the same cycle, because that is one
+  allocation. Member 0 only, with no `v_emul` fan-out: a VL destination is a
+  single PRN. Asserted VL-only, and asserted mutually exclusive with
+  `rebusy_reqs` on the same lane.
 
   //@req-spec-rename.g12
   //@req-spec-rename.g26

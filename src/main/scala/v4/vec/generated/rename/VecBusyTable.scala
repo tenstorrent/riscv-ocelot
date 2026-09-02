@@ -81,6 +81,23 @@ class VecBusyTableIO(
   //@req-spec-rename.g23
   val rebusy_reqs = Input(Vec(plWidth, Bool()))
 
+  //@req-spec-rename.h15
+  // BORN READY IS A WRITE, NOT AN OMISSION. A VL destination whose value is known
+  // at DISPATCH -- the front-end-only `vsetivli` with `rd == x0`, which issues
+  // nowhere -- must be marked NOT BUSY here. Merely declining to set it (the
+  // `rebusy_reqs` gate in VecRenameSpace) leaves whatever the PREVIOUS tenant of
+  // that PRN left behind, and a squashed producer leaves its bit SET: nothing
+  // clears a busy bit on a branch kill, only a wakeup does, and a killed vset
+  // never writes back. The free list returns that PRN through the branch snapshot
+  // with the bit still standing. For an ordinary tenant that is harmless -- the
+  // next allocation sets the bit anyway and its own wakeup clears it -- but a
+  // born-ready tenant neither sets nor wakes, so it INHERITS the stale bit, and
+  // every consumer of that VL waits on a wakeup that can never be broadcast.
+  // Measured on `spmv_small` (MegaBoom): `vsetivli zero,1` took VL PRN 1 at
+  // rob 80, `vmv.v.i v27,0` at rob 81 read `pvl_busy=1` in the same dispatch
+  // group, and the machine idled until the free list starved 115k cycles later.
+  val unbusy_reqs = Input(Vec(plWidth, Bool()))
+
   //@req-spec-rename.g21
   val busy_resps = Output(Vec(plWidth, new VecBusyResp(vectorInstance)))
 
@@ -209,7 +226,20 @@ class VecBusyTable(
       UIntToOH(prn, numPregs) & Fill(numPregs, valid && (j.U < cnt))
     }.reduce(_ | _)
   }
-  val clearMaskOR = (0 until numWbPorts).map(clearMaskFor).reduce(_ | _)
+  val wakeupClearMaskOR = (0 until numWbPorts).map(clearMaskFor).reduce(_ | _)
+
+  //@req-spec-rename.h15
+  // Member 0 only, and no `v_emul` fan-out: a VL destination is a single PRN, and
+  // VecRenameSpace already forces `v_emul` to 1 on the bundle it hands this table.
+  // Folded into the CLEAR term rather than added as a third case, so the read
+  // bypass below sees it for free and the existing set-beats-clear precedence
+  // still holds -- a PRN cannot be born ready in one lane and allocated busy in
+  // another in the same cycle, since it is one allocation.
+  val unbusyMaskOR = (0 until plWidth).map { i =>
+    UIntToOH(io.ren_uops(i).pvdest.get(0), numPregs) & Fill(numPregs, io.unbusy_reqs(i))
+  }.reduce(_ | _)
+
+  val clearMaskOR = wakeupClearMaskOR | unbusyMaskOR
 
   // =========================================================================
   // ---- 4. Next state, and set beats clear ----
@@ -340,5 +370,14 @@ class VecBusyTable(
   for (i <- 0 until plWidth) {
     assert(!(io.rebusy_reqs(i) && io.ren_uops(i).v_emul.get === 0.U),
       "VecBusyTable: rebusy_reqs asserted with v_emul == 0")
+    //@req-spec-rename.h15
+    // The two are the SAME allocation seen two ways -- busy or born ready -- so a
+    // lane that asserts both is a driver bug, and the clear would silently win.
+    assert(!(io.rebusy_reqs(i) && io.unbusy_reqs(i)),
+      "VecBusyTable: a lane asserted rebusy_reqs and unbusy_reqs together")
+    if (vectorInstance) {
+      assert(!io.unbusy_reqs(i),
+        "VecBusyTable: unbusy_reqs asserted on the vector instance -- born-ready is a VL-only path")
+    }
   }
 }

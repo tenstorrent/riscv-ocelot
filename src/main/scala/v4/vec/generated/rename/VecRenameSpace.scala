@@ -316,6 +316,19 @@ class VecRenameSpace(
       ren2_alloc_fire(w) && !io.ren2_vl_imm_valid.get(w)
     else
       ren2_alloc_fire(w))
+
+    //@req-spec-rename.h15
+    // THE OTHER HALF OF THE SAME ALLOCATION. `rebusy_reqs` above declines to mark
+    // the front-end-only vset's VL busy because its value is written HERE, at
+    // dispatch, from the immediate -- but declining to set a bit is not the same
+    // as knowing it is clear. The PRN carries whatever its last tenant left, and a
+    // tenant killed by a branch leaves it SET forever (a busy bit is cleared only
+    // by a wakeup, and a killed vset never writes back). So state it: born ready
+    // WRITES not-busy. See the port in VecBusyTable for the measurement.
+    busytable.io.unbusy_reqs(w) := (if (hasRenameWrite)
+      ren2_alloc_fire(w) && io.ren2_vl_imm_valid.get(w)
+    else
+      false.B)
   }
   busytable.io.wakeups := io.wakeups
 

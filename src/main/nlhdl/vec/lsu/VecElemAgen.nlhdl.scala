@@ -554,6 +554,47 @@ from Tenstorrent Inc.
   active count, since a later second trim could only be a mid-queue release. A
   denied release is not retried; the surplus frees in order with the region.
 
+  ---- 7b. The SLACK RECORD: what a denied release leaves behind ----
+
+  ===> AMENDED. "A denied release is not retried; the surplus frees in order with
+  the region" is true of CAPACITY and false of the DRAIN. The reservation is
+  claimed at DISPATCH at its worst case, the walk fills only `emit_ctr` slots, and
+  because slots are numbered by `emit_ctr` the shortfall is always ONE CONTIGUOUS
+  HOLE at the end of the region: `[resv_base + used, resv_base + resv_count)`. The
+  three SSI drain pointers in VecLsu are plain `+1` counters over FILLED slots, so
+  that hole parks them permanently and every later SSI access on the queue dies
+  with them. And the trim is granted only while the region is still the queue's
+  tail, which inside a loop it never is — the NEXT SSI op claims its own region at
+  dispatch, long before this one reaches its agen accept. Measured on `spmv_bare`
+  (MegaBoom Wide, 2026-09-01): a vl=3 walk reserved 4 slots at base 0, the drain
+  stopped at 3, the next indexed load's elements at 4..7 never issued, and its LCB
+  entry starved until `lcbStallWatchdog` fired on the victim.
+
+  So publish the hole instead of trying to reclaim it. `slack` (Output
+  Valid(VecSsiSlack), fields `used_end` and `region_end`) fires EXACTLY ONE cycle
+  per accepted OP.v that ends short, and VecLsu's drain, on coming to rest at
+  `used_end`, jumps to `region_end`.
+
+  Three conditions, each load-bearing:
+    - ONLY when `release_ok` was LOW for that op. A granted trim really did move
+      the tail back to `used_end`; the next op will claim from there, and telling
+      the drain to skip would jump it over that op's LIVE entries. Latch
+      `release_ok` at accept — the release is a one-shot in the accept cycle and
+      the answer is needed at walk end.
+    - NOT on `killed`. A squash rolls the tail back over the whole region, so
+      there is no hole left to describe, and the stale record would misdirect a
+      later op's drain.
+    - The VL = 0 / all-inactive case retires at `accept` without ever setting
+      `w_valid`, so its whole region is slack and the base/count must come from
+      `resv_resp`, not from the registers that are only being written that cycle.
+
+  On the last PUSH cycle `emit_ctr` still holds its pre-increment value, so that
+  arm counts its own push; the suppress arm does not.
+
+  VecLsu reserves a table row at ADMISSION rather than back-pressuring here,
+  because `op.valid` is a one-cycle pulse and a refusal at this port would DROP
+  the op rather than stall it.
+
   //@req-spec-lsu.b11
   `addr_enq.idx` is `resv_base + emit_ctr`, where `emit_ctr` counts EMITTED
   accesses, so the filled region is COMPACT — masked-off elements leave no holes

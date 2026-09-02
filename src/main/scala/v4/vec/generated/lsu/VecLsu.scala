@@ -29,6 +29,7 @@ import boom.v4.lsu.{VecLsuCoreIO, GetRealLSQIdx, IsOlderLSU, EntryValidFromAge}
 import boom.v4.util.{GetNewBrMask, IsKilledByBranch}
 import boom.v4.vec.generated.{VecElemAccess, VecMemAccess, VecRangeEntry, VecException, IntWbSnoop, VecRobFlags, VecGroupDone, VecTrace}
 import boom.v4.vec.formal.{BoomSvaLayer, VecLsuChecks}
+import freechips.rocketchip.util.PlusArg
 
 // GENERATED from src/main/nlhdl/vec/lsu/VecLsu.nlhdl.scala. Do not
 // hand-edit; regenerate via the nlhdl gen-rtl flow instead.
@@ -148,7 +149,11 @@ class VecLsu(
 
   val dgen  = Module(new VecDgen)
   val lcb   = Module(new VecLoadCoalescingBuffer)
-  val gcopy = Module(new VecGroupCopy())
+  // gcopyEntries at the depth its spec prescribes -- "numVecPhysRegisters - 32
+  // rounded up to a power of two" -- instead of the 128 literal that specialized
+  // that formula to the default VRF size and fails the module's own require once
+  // numVecPhysRegisters grows.
+  val gcopy = Module(new VecGroupCopy(1 << log2Ceil(numVecPhysRegs - 32)))
 
   val arb = Module(new VecDcacheArbiter)
 
@@ -176,8 +181,36 @@ class VecLsu(
   resv.io.dis_uops := io.dis_uops
   resv.io.dis_fire := io.dis_fire
   io.dis_ok        := resv.io.dis_ok
-  resv.io.ldq_head := vec.ldq_head
-  resv.io.stq_head := vec.stq_head
+  //@req-spec-lsu.b14
+  //@req-spec-lsu.b16
+  // THE AGE WINDOW THE RESERVATION SWEEPS IS [retirePtr, tail) -- NOT
+  // [ldq_head, tail). `IsOlderLSU(a, b, base)` orders two indices only inside the
+  // window that STARTS at `base`; an index BEFORE `base` reads as the youngest
+  // thing in the ring, because "distance from base" is all the comparison has.
+  // The LSQ head runs AHEAD of `ldRetirePtr`: the head advances by however many
+  // loads commit in a cycle (up to retireWidth on a wide tier), while the retire
+  // walk below steps ONE row per cycle by construction. Every row in that gap has
+  // committed -- it is not speculative and cannot be branch-killed -- yet handed
+  // `ldq_head` as the base the rollback sweep judges it NOT older than any pivot
+  // and clears it. Its region is then never retired, so `occ` keeps counting
+  // entries no `region_free` will ever return, the queue's head parks below the
+  // tail forever, and the NEXT retire -- a perfectly correct row -- trips
+  // "retiring row's base is not its queue's head".
+  // Measured on `spmv_small` (MegaBoom): ldq_head=61 with the walk at full_idx=59,
+  // rows 27/28 (full_idx 59, 60; ld_US_ADDR_Q bases 2 and 3) both swept with
+  // `older=0` in the same cycle row 27 retired, against a new tail of 12.
+  // Feeding the walk pointer instead makes the pending-retire rows the OLDEST in
+  // the window, which is what they are, and it repairs the tail selection for
+  // free: `selectYoungestOlder` may now land on a pending region's end rather than
+  // falling back to `headOf`, which would have rewound the tail past regions `occ`
+  // still holds and double-freed them at the retire that followed.
+  // FORWARD-DECLARED: `ldRetirePtr` is a RegInit several hundred lines below, and
+  // referencing it here reads a Scala null at elaboration (same trap as
+  // `stRangeLookupEarly`).
+  val ldResvAgeBase = Wire(UInt((1 + ldqAddrSz).W))
+  val stResvAgeBase = Wire(UInt((1 + stqAddrSz).W))
+  resv.io.ldq_head := ldResvAgeBase
+  resv.io.stq_head := stResvAgeBase
 
   val queueSeq = Seq(ld_SSI_ADDR_Q, st_SSI_ADDR_Q, st_SSI_DATA_Q, ld_US_ADDR_Q, st_US_ADDR_Q, st_US_DATA_Q)
 
@@ -202,6 +235,31 @@ class VecLsu(
     queueSeq(q).io.resv.free.bits.entries := resv.io.region_free(q).bits.count
 
     queueSeq(q).io.squash := squash.io.q_squash(q)
+  }
+
+  //@req-spec-lsu.b2
+  //@req-spec-lsu.c5
+  // DISPATCH SHADOW OF EACH RANGE LOAD'S `ld_US_ADDR_Q` BASE. Load admission
+  // (`ldPresent`, below) has to be ordered against the drain, and the drain is
+  // keyed on a QUEUE SLOT, not on an op identity -- so admission needs the
+  // winner's reserved base, and the reservation table cannot supply it there.
+  // Its four `resv_lookup` lanes are PERMANENTLY assigned to the four AGENs (its
+  // own spec refuses a fifth), and the echo returns ZERO -- a legal-looking index
+  // at the bottom of the queue -- outside a lane's valid window, so borrowing a
+  // lane is a wrong answer, not a stall. `resv_out` is the one cycle the value is
+  // presented, and it is presented already qualified by `dis_fire`.
+  //
+  // SHADOWING IS SOUND HERE ONLY BECAUSE THE VALUE IS IMMUTABLE FOR THE OP: a
+  // squash rolls `allocTail` back but never renumbers a reservation that
+  // SURVIVES, and an LDQ index whose op is killed is rewritten here the next time
+  // it is dispatched into. There is no second source of truth to drift from.
+  val ldUsQIdxDis  = queueSeq.indexOf(ld_US_ADDR_Q)
+  val ldUsBaseTbl  = Reg(Vec(numLdqEntries, UInt(ld_US_ADDR_Q.ptrW.W)))
+  for (w <- 0 until coreWidth; k <- 0 until 2) {
+    val slot = resv.io.resv_out(w)(k)
+    when (slot.valid && slot.bits.queue === ldUsQIdxDis.U) {
+      ldUsBaseTbl(GetRealLSQIdx(slot.bits.ldq_idx)) := slot.bits.base(ld_US_ADDR_Q.ptrW - 1, 0)
+    }
   }
 
   // ---- resv_lookup / release: the four fixed lanes (0 ld_elem_agen, 1
@@ -299,6 +357,13 @@ class VecLsu(
   resv.io.retire.valid         := (ldRetireNow || stRetireNow) && resv.io.retire_row_valid
   when (ldRetireNow) { ldRetirePtr := ldRetirePtr + 1.U }
   when (stRetireNow) { stRetirePtr := stRetirePtr + 1.U }
+
+  // The age base the rollback sweep uses (forward-declared at the top of the
+  // reservation hookup): the OLDEST row this module still owns, which is the row
+  // the walk has yet to retire -- not the LSQ head, which has already moved past
+  // it. See the note there.
+  ldResvAgeBase := ldRetirePtr
+  stResvAgeBase := stRetirePtr
 
   // =========================================================================
   // ---- 9. Squash ----
@@ -427,7 +492,72 @@ class VecLsu(
   // ONE-CYCLE PULSE -- that is what "the launch cycle must be able to fire" below
   // is protecting, and deferring it would silently drop the op rather than stall
   // it.
-  val ldPresent = ldWinnerValid && !ldStreamerBusy && !lcbWalkBusy
+  //@req-spec-lsu.c5
+  //@req-spec-lsu.e6
+  // ===> ADMISSION MUST RESPECT THE DRAIN ORDER, NOT MERELY THE AGE OF WHAT HAS
+  // ARRIVED. Three facts collide otherwise. (a) `VecQueueReservation` hands each
+  // range load its `ld_US_ADDR_Q` slot AT DISPATCH, in program order. (b) the
+  // drain is `ldUsDrainPtr`, a plain `+1` counter, so ranges are served strictly
+  // in slot order. (c) `IQ_V_LOAD` issues OUT OF ORDER, so a younger load can be
+  // the only candidate in `ldRows` and win the oldest-first select above purely
+  // because the older one has not been issued yet.
+  //
+  // Admitting that younger load starts its LCB walk, and at the shipping
+  // `lcbEntries == maxVecMembers` ONE LMUL=8 group owns the whole buffer. Its own
+  // beats can never fire -- the drain is parked on the OLDER op's slot -- and the
+  // older op, once it finally issues, walks into `alloc.ready = 0` and stalls
+  // forever. `lcbRdyFor`'s escape in VecBeatExpander cannot break this: it covers
+  // a LATER op's stalled walk gating an EARLIER op's beats, and here the stalled
+  // walk belongs to the very op the drain is waiting for, so `rob === walk_rob`.
+  // What fires is `lcbStallWatchdog` on the YOUNGER op's entry 0, pointing at the
+  // op that is a victim rather than the cause.
+  //
+  // Measured on `axpy-vector` (MegaBoom, pipelined VPU): rob 21 reserved slot 6
+  // and rob 6 slot 5; rob 21 issued first, took all 8 LCB entries, and the drain
+  // sat on slot 5 forever. The pipelined VPU did not introduce this -- it retires
+  // arithmetic fast enough to put two unit-stride loads in `IQ_V_LOAD` at once,
+  // which is the only thing the deadlock ever needed.
+  //
+  // ⚠ DO NOT "FIX" THIS BY DEEPENING `lcbEntries`. That only moves the depth at
+  // which the same inversion deadlocks; the invariant, not the capacity, is what
+  // is wrong.
+  //
+  // The gate is per CLASS: it constrains range-class loads against the range
+  // drain and leaves SSI loads alone. Cross-class hogging is not a deadlock -- an
+  // SSI load holding the LCB is itself drainable (its own base pointer is on it),
+  // so it completes and frees. Only an op that is NOT drain-next can hold the
+  // buffer against the op that is. The SSI mirror of this gate would be
+  // `ldSsiBase`, and it is deliberately absent: SSI element regions drain over
+  // many cycles and gating admission on the base would serialise strided loads
+  // end to end for a hazard that cannot occur within one class of one op.
+  //
+  // `ldUsDrainPtr` is defined with the drain side several hundred lines below, so
+  // take it through a Wire -- referencing the register directly reads a Scala
+  // null and fails at FIRRTL time, not at compile time.
+  val ldUsDrainPtrFwd = Wire(UInt(ld_US_ADDR_Q.ptrW.W))
+  val ldWinnerIsRange = ldWinnerUop.v_is_unit_stride.get || ldWinnerUop.v_is_whole_reg.get ||
+    ldWinnerUop.v_is_mask.get
+  // MEASUREMENT ESCAPE HATCH, defaults to ON. `+vec_no_drain_gate=1` removes the
+  // ordering term so the gate's cycle cost can be attributed against the same
+  // build. Running with it set REINTRODUCES the deadlock this gate exists to
+  // prevent -- it is for profiling only, never for a passing run.
+  val ldDrainGateOn = !PlusArg("vec_no_drain_gate", 0,
+    "Disable the vector-load drain-order admission gate (PROFILING ONLY -- deadlocks)",
+    width = 1).orR
+  val ldWinnerDrainNext = !ldWinnerIsRange || !ldDrainGateOn ||
+    (ldUsBaseTbl(GetRealLSQIdx(ldWinnerFullIdx)) === ldUsDrainPtrFwd)
+  //@req-spec-lsu.b4
+  // An SSI walk may end short and owe the drain a slack record, and the agen has
+  // no way to refuse one (its `op.valid` is a one-cycle pulse). Reserve the row
+  // HERE, where the op can still wait in `ldRows`. Forward declaration: the
+  // table lives beside the drain it feeds, several hundred lines below.
+  val ldSsiSlackRoomFwd = Wire(Bool())
+  val ldPresent = ldWinnerValid && !ldStreamerBusy && !lcbWalkBusy && ldWinnerDrainNext &&
+    (ldWinnerIsRange || ldSsiSlackRoomFwd)
+  when (ldWinnerValid && !ldStreamerBusy && !lcbWalkBusy && !ldWinnerDrainNext) {
+    VecTrace.traceId("VecLsu", "ld_admit_out_of_drain_order", ldWinnerUop.rob_idx, Seq(
+      ("resv_base", ldUsBaseTbl(GetRealLSQIdx(ldWinnerFullIdx))), ("drain_ptr", ldUsDrainPtrFwd)))
+  }
   when (ldPresent) {
     ldRows(GetRealLSQIdx(ldWinnerFullIdx)).valid := false.B
     ldStreamerBusy := true.B
@@ -521,7 +651,14 @@ class VecLsu(
   // st_opnd while dgen is still draining the first one's SSI/US data -- dgen's
   // own completion lags st_msk.io.done whenever the R3 refill stalls (see the
   // DGEN skid-buffer note below), so streamer-busy alone is not enough here.
-  val stPresent = stWinnerValid && !stStreamerBusy && dgen.io.req.ready
+  //@req-spec-lsu.b4
+  // Store mirror of the load's SSI slack-row reservation -- same argument, same
+  // forward declaration. See the load admission point above.
+  val stSsiSlackRoomFwd = Wire(Bool())
+  val stWinnerIsRange = stWinnerUop.v_is_unit_stride.get || stWinnerUop.v_is_whole_reg.get ||
+    stWinnerUop.v_is_mask.get
+  val stPresent = stWinnerValid && !stStreamerBusy && dgen.io.req.ready &&
+    (stWinnerIsRange || stSsiSlackRoomFwd)
   when (stPresent) {
     stRows(GetRealLSQIdx(stWinnerFullIdx)).valid := false.B
     stStreamerBusy := true.B
@@ -856,6 +993,8 @@ class VecLsu(
   val ldUsCursor   = RegInit(0.U(ldUsElemIdxSz.W))
   ld_US_ADDR_Q.io.rd(0).req.valid := true.B
   ld_US_ADDR_Q.io.rd(0).req.bits  := ldUsDrainPtr
+  // Connects the forward declaration at the load-admission point above.
+  ldUsDrainPtrFwd := ldUsDrainPtr
   val ldUsDrainPtrPrev = RegNext(ldUsDrainPtr)
   val ldUsStagedValid = ld_US_ADDR_Q.io.rd(0).resp.filled && (ldUsDrainPtrPrev === ldUsDrainPtr)
   val ldUsStagedBits  = ld_US_ADDR_Q.io.rd(0).resp.data.asTypeOf(new VecRangeEntry)
@@ -902,12 +1041,108 @@ class VecLsu(
   // cursor -- measured on ms4p6_vle32_2, where member 0 was never fetched. Last in
   // program order here so a kill beats a same-cycle advance.
   when (io.rob_flush || squash.io.kill(2)) { ldUsCursor := 0.U }
+  //@req-spec-lsu.b4
+  //@req-spec-lsu.j6
+  // ==========================================================================
+  // ---- SSI RESERVATION SLACK: the drain has to STEP OVER what was never
+  //      filled ----
+  // ==========================================================================
+  // An SSI region is claimed at DISPATCH at its worst-case size, because neither
+  // VL nor the mask is known yet. `VecElemAgen` then fills only `emit_ctr`
+  // slots, leaving one contiguous hole at the end of the region.
+  //
+  // The design's answer to that was the surplus trim (`VecQueueReservation`
+  // §7), whose own comment reasons that a refused trim "costs only capacity --
+  // the full reservation is freed at retire instead". It does NOT: the three
+  // SSI drain pointers below (`ldSsiBase`, `stSsiPass1Base`, `stSsiPass2Base`)
+  // are plain `+1` counters over FILLED slots, so a hole parks them forever and
+  // every later SSI access on that queue is dead. And the trim is granted only
+  // while the region is still the queue's tail, which inside a loop it never is
+  // -- the NEXT op claims its region at dispatch, long before this one reaches
+  // its agen accept. Measured on `spmv_bare` (MegaBoom Wide): rob 73 with vl=3
+  // reserved 4 slots at base 0, filled 0..2, drain stuck at 3; rob 113's
+  // elements at 4..7 never issued and its LCB entry starved until
+  // `lcbStallWatchdog` fired -- pointing, as ever, at the victim.
+  //
+  // ===> So do not try to reclaim the slack; STEP OVER it. The agen publishes
+  // `(used_end, region_end)` when a walk ends short, and a drain that comes to
+  // rest on `used_end` jumps to `region_end`.
+  //
+  // A MATCH TABLE, NOT A FIFO. Records are produced in agen-accept order but
+  // consumed in region order, and the two differ: the SSI class deliberately has
+  // no mirror of the range class's drain-order admission gate, so a younger SSI
+  // op can be admitted (and walked) before an older one. A FIFO head would then
+  // name a region the drain has not reached and the whole queue would wedge on a
+  // record it holds itself. Matching on the pointer is order-independent.
+  //
+  // BACK-PRESSURE AT ADMISSION, not at the agen: `*_elem_agen.io.op.valid` is a
+  // ONE-CYCLE pulse (`ldOpPulse`/`stOpPulse`), so an agen that refused an op
+  // would drop it, not stall it. `ldPresent`/`stPresent` therefore hold the op
+  // in its pending row until this table has room. That cannot deadlock: with
+  // admission stopped the drain still runs, every jump frees an entry, and the
+  // only thing that ever blocks the drain is the hole this table removes.
+  val ssiSlackEntries = 8
+
+  class SsiSlackTable(val name: String, val ptrW: Int) {
+    val valid = RegInit(VecInit(Seq.fill(ssiSlackEntries)(false.B)))
+    val from  = Reg(Vec(ssiSlackEntries, UInt(ptrW.W)))
+    val to    = Reg(Vec(ssiSlackEntries, UInt(ptrW.W)))
+
+    def room: Bool = valid.map(!_).reduce(_ || _)
+
+    // hit / target / one-hot, for a drain pointer at rest.
+    def lookup(ptr: UInt): (Bool, UInt, UInt) = {
+      val hits = VecInit((0 until ssiSlackEntries).map(i => valid(i) && (from(i) === ptr))).asUInt
+      (hits.orR, Mux1H(hits, to), hits)
+    }
+    def free(hitOH: UInt): Unit =
+      for (i <- 0 until ssiSlackEntries) { when (hitOH(i)) { valid(i) := false.B } }
+
+    // An entry freed THIS cycle is still `valid` in `freeOH`, so it is not
+    // re-used until next cycle -- harmless, and it keeps alloc/free disjoint.
+    def alloc(rec: Valid[VecSsiSlack]): Unit = {
+      val freeOH = PriorityEncoderOH(VecInit(valid.map(!_)).asUInt)
+      when (rec.valid) {
+        assert(room, s"$name: a slack record arrived with the table full -- the admission gate that reserves a row for every walked SSI op was bypassed")
+        for (i <- 0 until ssiSlackEntries) {
+          when (freeOH(i)) {
+            valid(i) := true.B
+            from(i)  := rec.bits.used_end
+            to(i)    := rec.bits.region_end
+          }
+        }
+      }
+    }
+
+    // A squash rolls the queue's tail back; any record describing a region at or
+    // beyond the new tail names slots that no longer exist, and leaving it armed
+    // would make a LATER op's region get jumped over. Same distance-from-tail
+    // total order the range rewind below uses, against the PRE-squash tail both
+    // quantities were formed against. LAST, so it wins a same-cycle alloc.
+    def squash(fire: Bool, newTail: UInt, qTail: UInt): Unit = {
+      def distFromTail(x: UInt): UInt = (qTail - x)(ptrW - 1, 0)
+      for (i <- 0 until ssiSlackEntries) {
+        when (fire && valid(i) && (distFromTail(from(i)) <= distFromTail(newTail))) {
+          valid(i) := false.B
+        }
+      }
+    }
+  }
+
+  val ldSsiQIdx = queueSeq.indexOf(ld_SSI_ADDR_Q)
+  val stSsiQIdx = queueSeq.indexOf(st_SSI_ADDR_Q)
+  val ldSsiSlack = new SsiSlackTable("ld_SSI slack", ld_SSI_ADDR_Q.ptrW)
+  val stSsiSlack = new SsiSlackTable("st_SSI slack", st_SSI_ADDR_Q.ptrW)
+  // Connects the forward declarations beside the two admission points above.
+  ldSsiSlackRoomFwd := ldSsiSlack.room
+  stSsiSlackRoomFwd := stSsiSlack.room
+
   //@req-spec-lsu.i3
   // The drain pointer must follow the SAME rewind the queue's tail takes, or the two
   // walk apart and every later range stages at an index that is never filled.
   // LAST in program order: a squash can coincide with the retire increment above and
   // the rewind must win -- reordering these two `when`s reintroduces the defect.
-  val ldUsQIdx = queueSeq.indexOf(ld_US_ADDR_Q)
+  val ldUsQIdx = ldUsQIdxDis
   // ⚠ CONDITIONAL: the rewind must never move the pointer FORWARD -- q_squash.bits
   // is the surviving-allocation tail, ahead of a staged range that survives.
   //
@@ -965,7 +1200,29 @@ class VecLsu(
     ld_SSI_ADDR_Q.io.consume(i).valid := ld_beat.io.ssi_pop(i)
     ld_SSI_ADDR_Q.io.consume(i).bits  := idxNow
   }
-  ldSsiBase := ldSsiBase + PopCount(ld_beat.io.ssi_pop)
+  //@req-spec-lsu.b4
+  // The jump is qualified on ZERO pops so it can only fire with the pointer at
+  // rest. `ldSsiBase` sitting on `used_end` means lane 0 has nothing filled to
+  // present, so a pop is impossible then anyway -- the qualifier is there to
+  // keep the two writers of this register provably exclusive, not because the
+  // case is reachable.
+  val ldSsiPops = PopCount(ld_beat.io.ssi_pop)
+  val (ldSlackHit, ldSlackTo, ldSlackOH) = ldSsiSlack.lookup(ldSsiBase)
+  val ldSlackJump = ldSlackHit && (ldSsiPops === 0.U)
+  assert(PopCount(ldSlackOH) <= 1.U,
+    "VecLsu: two live load-SSI slack records name the same used_end -- regions are disjoint, so this means a stale record survived a squash")
+  when (ldSlackJump) {
+    ldSsiBase := ldSlackTo
+    ldSsiSlack.free(ldSlackOH)
+    VecTrace.traceStruct("VecLsu", "ld_ssi_slack_skip", Seq(
+      ("from", ldSsiBase), ("to", ldSlackTo)))
+  } .otherwise {
+    ldSsiBase := ldSsiBase + ldSsiPops
+  }
+  ldSsiSlack.alloc(ld_elem_agen.io.slack)
+  ldSsiSlack.squash(squash.io.q_squash(ldSsiQIdx).valid,
+                    squash.io.q_squash(ldSsiQIdx).bits(ld_SSI_ADDR_Q.ptrW - 1, 0),
+                    ld_SSI_ADDR_Q.io.resv.tail)
   // The shared extra read port (beyond the lsuWidth drain lanes) has no
   // reader on the load address side -- forwarding/snoop only read data queues.
   ld_SSI_ADDR_Q.io.rd(queuePorts).req.valid := false.B
@@ -1117,8 +1374,30 @@ class VecLsu(
   // its translate pass -- it never pops, never drains, and the fence hangs.
   st_beat.io.is_write_pass.get := Mux(stUsStagedValid, stUsWritePass, stSsiDoPass2Prev)
   val stSsiAdvance = PopCount(st_beat.io.ssi_pop)
-  when (stSsiDoPass2Prev) { stSsiPass2Base := stSsiPass2Base + stSsiAdvance }
-    .otherwise            { stSsiPass1Base := stSsiPass1Base + stSsiAdvance }
+  //@req-spec-lsu.b4
+  // BOTH passes have to step over the hole, and the record must survive until
+  // the TRAILING one has. Pass 2 never overtakes pass 1 (`stSsiDoPass2` only
+  // lets it run once pass 1 has reached the tail), so freeing on the pass-2 jump
+  // frees it exactly once, after both are past.
+  val (stP1Hit, stP1To, _)      = stSsiSlack.lookup(stSsiPass1Base)
+  val (stP2Hit, stP2To, stP2OH) = stSsiSlack.lookup(stSsiPass2Base)
+  val stP1Jump = !stSsiDoPass2Prev && stP1Hit && (stSsiAdvance === 0.U)
+  val stP2Jump =  stSsiDoPass2Prev && stP2Hit && (stSsiAdvance === 0.U)
+  assert(PopCount(stP2OH) <= 1.U,
+    "VecLsu: two live store-SSI slack records name the same used_end -- regions are disjoint, so this means a stale record survived a squash")
+  when (stP1Jump)                  { stSsiPass1Base := stP1To }
+    .elsewhen (!stSsiDoPass2Prev)  { stSsiPass1Base := stSsiPass1Base + stSsiAdvance }
+  when (stP2Jump)                  { stSsiPass2Base := stP2To }
+    .elsewhen (stSsiDoPass2Prev)   { stSsiPass2Base := stSsiPass2Base + stSsiAdvance }
+  when (stP2Jump) {
+    stSsiSlack.free(stP2OH)
+    VecTrace.traceStruct("VecLsu", "st_ssi_slack_skip", Seq(
+      ("from", stSsiPass2Base), ("to", stP2To)))
+  }
+  stSsiSlack.alloc(st_elem_agen.io.slack)
+  stSsiSlack.squash(squash.io.q_squash(stSsiQIdx).valid,
+                    squash.io.q_squash(stSsiQIdx).bits(st_SSI_ADDR_Q.ptrW - 1, 0),
+                    st_SSI_ADDR_Q.io.resv.tail)
   // A store's filled bit is never cleared by consume (VecElemQueue: consume_mask
   // is forced to 0 for isStore); the region frees only at retire, already wired.
   for (i <- 0 until lsuWidth) { st_SSI_ADDR_Q.io.consume(i).valid := false.B; st_SSI_ADDR_Q.io.consume(i).bits := 0.U }

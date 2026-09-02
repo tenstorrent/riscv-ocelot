@@ -516,8 +516,20 @@ from Tenstorrent Inc.
   `vl_rf_write(w)` is driven with `valid := dis_fire(w) && ren2_vl_imm_valid(w)`,
   `addr := uop.pvl`, `data := ren2_vl_imm(w)`, writing the new VL into the VL
   register file in this same rename cycle on VlRegFile's statically partitioned
-  rename-side port, and no busy bit is set — that `pvl` is BORN READY. There is no
-  decode-time VL fast path and no bypass around the VL RF for consumers.
+  rename-side port, and the busy bit is CLEARED — that `pvl` is BORN READY. There
+  is no decode-time VL fast path and no bypass around the VL RF for consumers.
+
+  ===> `unbusy_reqs(w) := ren2_alloc_fire(w) && ren2_vl_imm_valid(w)` — THE EXACT
+       COMPLEMENT of the suppression above, on `vl_rename` only.
+  Suppressing the set is not enough, and the difference is not cosmetic. A PRN
+  arrives from the free list carrying whatever its last tenant left in the busy
+  table, and a tenant killed by a branch leaves it SET — a busy bit is cleared
+  only by a wakeup, and a killed `vset` never writes back. Every other tenant
+  overwrites that with its own set; the born-ready one is the only tenant that
+  neither sets nor wakes, so it is the only one that can inherit it, and when it
+  does, its consumers wait on a VL wakeup that nothing will ever broadcast. State
+  the readiness rather than assume it. The measurement is recorded at
+  VecBusyTable's `unbusy_reqs` port.
 
   Busy responses reach the uop with the qualifications only this module can apply:
   `pvs<s>_busy := v_uses_vs<s> && busy_resps(w).pvs<s>_busy` for `s` in {1,2,3}

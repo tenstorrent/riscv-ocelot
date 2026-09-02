@@ -91,6 +91,16 @@ class VecQueueReservationIO(implicit p: Parameters) extends BoomBundle
   val rollback      = Input(Valid(new VecResvRollbackReq()))
   val rollback_tail = Output(Vec(6, UInt(resvPtrSz.W)))
 
+  //@req-spec-lsu.b16
+  // THE AGE-WINDOW BASE, NOT THE LSQ HEAD. Every `IsOlderLSU` in this module is
+  // taken against this pointer, and that comparison is only defined for indices
+  // AT OR AFTER it -- an index before the base reads as the youngest in the ring.
+  // So the base must be the oldest row THIS module still owns: VecLsu drives it
+  // from its retire walk pointer, which lags the LSQ head whenever more than one
+  // load or store commits in a cycle. Driven from the LSQ head instead, the rows
+  // in that gap -- committed, unkillable, and still holding queue regions -- are
+  // swept as young and dropped, and their entries leak out of `occ`. See VecLsu's
+  // note at the `resv.io.ldq_head` hookup for the measurement.
   val ldq_head = Input(UInt((1 + ldqAddrSz).W))
   val stq_head = Input(UInt((1 + stqAddrSz).W))
 }
@@ -299,6 +309,17 @@ class VecQueueReservation(implicit p: Parameters) extends BoomModule
     val u = io.dis_uops(w).bits
     when (io.dis_fire(w) && laneValid(w) && !u.uses_stq) {
       val idx = GetRealLSQIdx(u.ldq_idx)
+      //@req-spec-lsu.b16
+      // THE LSQ MUST NOT HAND BACK A SLOT WHOSE RESERVATION HAS NOT RETIRED. The
+      // row is cleared at retire or at a rollback kill, so a still-valid row here
+      // means the LSQ freed the entry and reallocated it while VecLsu's retire
+      // walk -- one row per cycle -- was still behind. The write would overwrite a
+      // live region's base with a new one, and the pending retire would then free
+      // the WRONG extent. Unreachable while the walk's lag stays under the queue's
+      // depth (measured max 2 on spmv_small against 32 entries); asserted rather
+      // than assumed, because the failure is silent queue corruption.
+      assert(!ldqTable(idx).valid,
+        "VecQueueReservation: dispatch reused an ldq slot whose reservation had not retired")
       ldqTable(idx).valid    := true.B
       ldqTable(idx).released := false.B
       ldqTable(idx).rob_idx  := u.rob_idx
@@ -314,6 +335,9 @@ class VecQueueReservation(implicit p: Parameters) extends BoomModule
     }
     when (io.dis_fire(w) && laneValid(w) && u.uses_stq) {
       val idx = GetRealLSQIdx(u.stq_idx)
+      //@req-spec-lsu.b16
+      assert(!stqTable(idx).valid,
+        "VecQueueReservation: dispatch reused a stq slot whose reservation had not retired")
       stqTable(idx).valid    := true.B
       stqTable(idx).released := false.B
       stqTable(idx).rob_idx  := u.rob_idx
@@ -615,6 +639,10 @@ class VecQueueReservation(implicit p: Parameters) extends BoomModule
       // tail to 0, and the following load retire asserted.
       // A retiring row is the OLDEST in its direction, so it can never be the row
       // the age sweep kills, and the two updates cannot describe the same entries.
+      // THAT HOLDS ONLY BECAUSE `io.ldq_head`/`io.stq_head` CARRY THE RETIRE WALK
+      // POINTER, not the LSQ head: driven from the head, the retiring row sits
+      // BEFORE the age base, the sweep reads it as the youngest row in the ring and
+      // kills it, and this same-cycle pairing stops being safe. See the port.
       allocTail(q) := rollbackTailNext(q)
       occ(q)       := rollbackOccNext(q) - retireSum(q)
     } .otherwise {

@@ -266,14 +266,44 @@ from Tenstorrent Inc.
   not a detail when the bit being dropped is the one that orders the events.
 
   `ldq_head` — input, `UInt((1 + ldqAddrSz).W)` — and `stq_head`,
-  `UInt((1 + stqAddrSz).W)`, tapped from the LSU's own pointer registers through
-  `VecLsuCoreIO`. These exist so section 8 can call `IsOlderLSU(a, b, head)` with
+  `UInt((1 + stqAddrSz).W)`, carrying the base of the age window THIS MODULE
+  OWNS. These exist so section 8 can call `IsOlderLSU(a, b, head)` with
   the head argument it actually takes, which is how the rest of `lsu.scala`,
   `VecLsu` and `VecSquashUnit` all spell an LSQ age comparison (ground rule 10:
   reuse BOOM's machinery rather than a private comparator). They are pure reads of
   state the LSU already maintains — this module adds no pointer tracking of its
   own for the LDQ/STQ, and must not: a second copy would drift on exactly the
   mispredict cycle it is needed.
+
+  ===> THE BASE IS VecLsu's RETIRE WALK POINTER, NOT THE LSU's HEAD. Named for
+       BOOM's convention, but the value must be the oldest row this module still
+       owns, and after E-stage bring-up that is NOT the same pointer.
+  `IsOlderLSU(a, b, base)` orders two indices only within the window that STARTS
+  at `base`; an index BEFORE the base has no representation in that ordering and
+  comes back as the YOUNGEST entry in the ring. The LSU's head runs AHEAD of the
+  retire walk: the head advances by however many loads or stores commit in a cycle
+  — up to `retireWidth` on a wide tier — while VecLsu's walk (its `ldRetirePtr`)
+  steps exactly one row per cycle by construction, precisely so a multi-entry jump
+  never skips a row. Every row in that gap has COMMITTED. It is not speculative,
+  no mispredict can reach it, and it still holds a queue region. Judged against the
+  LSU head it reads as younger than any pivot, so section 8's sweep clears it: the
+  region is never retired, `occ(q)` keeps counting entries no `region_free` will
+  return, the queue's head parks below its tail for the rest of the run, and the
+  NEXT retire — a row that is entirely correct — trips "retiring row's base is not
+  its queue's head". Measured on `spmv_small` (MegaBoom): `ldq_head=61` with the
+  walk still at `full_idx=59`, rows 27 and 28 (`ld_US_ADDR_Q` bases 2 and 3) both
+  swept with `older=0` in the same cycle row 27 retired, against a new tail of 12.
+  Feeding the walk pointer makes those rows the OLDEST in the window, which is what
+  they are. It also repairs the tail selection below for free: the youngest-older
+  reduction may now land on a pending region's end instead of falling through to
+  the queue's HEAD, which would have rewound the tail past regions `occ` still held
+  and double-freed them at the retire that followed.
+  The window is then `[retire_ptr, tail)`, at most the queue's depth PLUS the
+  walk's lag, so the LSQ must not hand back a slot whose reservation has not
+  retired — the dispatch write would overwrite a live region's base and the pending
+  retire would free the wrong extent. Unreachable while the lag stays under the
+  LSQ's depth (measured max 2 against 32 entries) and ASSERTED at the dispatch
+  write rather than assumed, because the failure is silent queue corruption.
 
   TWO PORTS, NOT FOUR: the heads only. An earlier E2 revision of this paragraph
   also declared `ldq_tail`/`stq_tail` "for symmetry with the `VecLsuCoreIO` tap".

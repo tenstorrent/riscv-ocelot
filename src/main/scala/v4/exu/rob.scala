@@ -436,9 +436,24 @@ class Rob(
     rob_debug_inst_wmask(w) := io.enq_valids(w)
     rob_debug_inst_wdata(w) := io.enq_uops(w).debug_inst
 
+    //@req-spec-decode.c3
+    // A FRONT-END-ONLY vset ENQUEUES COMPLETE. VsetDecode's `frontendOnly` path
+    // (`vsetivli` with rd == x0) clears both iq_type and fu_code: the uop issues
+    // NOWHERE, so no writeback port ever names its rob_idx and nothing can clear
+    // its rob_bsy. Its entire effect is already done before the ROB sees it --
+    // vtype travels in the uop and commits from `rob_vconfig`, and vl is written
+    // into the VL regfile at dispatch from the immediate (VecRenameSpace's
+    // `ren2_vl_imm_valid` write, which also marks the pvl not-busy). Left busy it
+    // sits at the ROB head forever and the machine wedges with an idle pipeline.
+    // `is_vl_producer` (false for every non-vset uop, decode.scala) plus an
+    // all-clear iq_type names exactly that shape and nothing else.
+    val enqNeverIssues = if (usingRVV) {
+      io.enq_uops(w).is_vl_producer.get && io.enq_uops(w).iq_type.asUInt === 0.U
+    } else false.B
+
     when (io.enq_valids(w)) {
       rob_val(rob_tail)       := true.B
-      rob_bsy(rob_tail)       := io.enq_uops(w).starts_bsy
+      rob_bsy(rob_tail)       := io.enq_uops(w).starts_bsy && !enqNeverIssues
       rob_unsafe(rob_tail)    := io.enq_uops(w).starts_unsafe
       rob_uop(rob_tail)       := io.enq_uops(w)
       rob_exception(rob_tail) := io.enq_uops(w).exception

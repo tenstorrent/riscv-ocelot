@@ -32,6 +32,20 @@ import boom.v4.vec.formal.{BoomSvaLayer, VecElemAgenChecks}
 // GENERATED from src/main/nlhdl/vec/lsu/VecElemAgen.nlhdl.scala. Do not
 // hand-edit; regenerate via the nlhdl gen-rtl flow instead.
 
+//@req-spec-lsu.b4
+// THE SLACK RECORD. An SSI reservation is claimed at DISPATCH, worst-case sized,
+// and the walk fills only the slots it actually emits -- so `[used_end,
+// region_end)` is a hole the drain would otherwise park on forever. This is what
+// the agen hands the drain so it can step over that hole; see the SSI-slack
+// block in VecLsu for the whole argument.
+class VecSsiSlack(val ptrW: Int) extends Bundle
+{
+  // First slot the walk did NOT fill -- where the drain will come to rest.
+  val used_end   = UInt(ptrW.W)
+  // One past the reservation, i.e. the next op's base -- where it must resume.
+  val region_end = UInt(ptrW.W)
+}
+
 class VecElemAgen(val isStore: Boolean)(implicit p: Parameters) extends BoomModule
 {
   require(usingRVV, "VecElemAgen: elaborates only under usingRVV")
@@ -91,6 +105,11 @@ class VecElemAgen(val isStore: Boolean)(implicit p: Parameters) extends BoomModu
     val resv_resp   = Input(Vec(2, new ResvSlot))
     val release     = Output(Valid(new ReleaseBits))
     val release_ok  = Input(Bool())
+    //@req-spec-lsu.b4
+    // One pulse per accepted op that leaves its reservation short, naming the
+    // hole. Only meaningful when `release_ok` was LOW for that op -- a granted
+    // trim gives the slack back to the tail and there is no hole to skip.
+    val slack       = Output(Valid(new VecSsiSlack(ptrW)))
 
     val addr_enq = Decoupled(new AddrEnqBits)
     val elem_pub = if (isStore) Some(Output(Valid(new ElemPubBits))) else None
@@ -335,6 +354,60 @@ class VecElemAgen(val isStore: Boolean)(implicit p: Parameters) extends BoomModu
     emit_ctr := 0.U
   } .elsewhen (pushFire) {
     emit_ctr := emit_ctr + 1.U
+  }
+
+  //@req-spec-lsu.b4
+  //@req-spec-lsu.j6
+  // ---- THE SLACK RECORD: what this walk reserved and never filled ----
+  //
+  // `resv_count` is the WORST CASE, fixed at dispatch before VL or the mask are
+  // known; `emit_ctr` is what the walk actually pushed. Slots are numbered by
+  // `emit_ctr`, NOT by `elem_ptr`, so a suppressed (mask-inactive) element eats
+  // no slot and the shortfall is always ONE CONTIGUOUS HOLE at the END of the
+  // region: `[resv_base + used, resv_base + resv_count)`.
+  //
+  // The surplus trim (`io.release`, one shot at `accept`) is supposed to hand
+  // that back, but `VecQueueReservation` grants it only while the region is
+  // still the queue's tail -- and the NEXT SSI op claims its own region at
+  // DISPATCH, long before this op reaches its agen accept. So inside a loop the
+  // trim is refused essentially always, and the refusal is NOT free: the drain
+  // pointer in VecLsu is a plain `+1` over FILLED slots, so it parks on the hole
+  // and no later SSI access ever fires. That is the `spmv_bare` deadlock (rob 73
+  // vl=3 reserved 4 at base 0, drain stuck at 3, rob 113's elements at 4..7 dead,
+  // its LCB entry starved until `lcbStallWatchdog`).
+  //
+  // ===> So publish the hole instead of trying to reclaim it. Exactly one pulse
+  // per accepted op, and ONLY when the trim was refused -- a granted trim really
+  // did move the tail back, the next op will claim from `used_end`, and telling
+  // the drain to skip there would make it jump over that op's live entries.
+  //
+  // `killed` deliberately emits nothing: a squash rolls the queue tail back over
+  // the whole region, so there is no hole left to describe.
+  val trimmed = RegEnable(io.release_ok, false.B, accept)
+
+  val walkEndPush     = pushFire && isLastFld && retireAfterPush
+  val walkEndSuppress = suppressFire && retireAfterSuppress
+  // `emit_ctr` still holds the PRE-increment value on the cycle of the last
+  // push, so the pushing arm has to count that push itself.
+  val usedAtEnd  = Mux(walkEndPush, emit_ctr +& 1.U, emit_ctr)
+  val slackWalk  = (walkEndPush || walkEndSuppress) && !trimmed && (usedAtEnd =/= resv_count)
+  // vl == 0 or an all-inactive mask retires the op at `accept` without ever
+  // setting `w_valid`, so its whole region is slack -- and `resv_base`/
+  // `resv_count` are not in their registers yet, read the lookup response.
+  val slackEmpty = accept && emptyOp && !io.release_ok && (io.resv_resp(0).count =/= 0.U)
+
+  io.slack.valid := slackWalk || slackEmpty
+  io.slack.bits.used_end := Mux(slackEmpty, io.resv_resp(0).base,
+                                            (resv_base + usedAtEnd)(ptrW - 1, 0))
+  io.slack.bits.region_end := Mux(slackEmpty,
+                                  (io.resv_resp(0).base + io.resv_resp(0).count)(ptrW - 1, 0),
+                                  (resv_base + resv_count)(ptrW - 1, 0))
+  assert(!slackWalk || (usedAtEnd <= resv_count),
+    "VecElemAgen: the walk emitted more entries than its reservation held")
+
+  when (io.slack.valid) {
+    VecTrace.traceId("VecElemAgen", "slack", Mux(slackEmpty, opUop.rob_idx, w_uop.rob_idx), Seq(
+      ("used_end", io.slack.bits.used_end), ("region_end", io.slack.bits.region_end)))
   }
 
   //@req-spec-lsu.f8
