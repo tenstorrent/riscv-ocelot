@@ -92,7 +92,26 @@ class VecGroupReady(isMask: Boolean = false)(implicit p: Parameters) extends Boo
   //@req-spec-issue.g17
   val member_rdy_next = Wire(Vec(groupMembers, Bool()))
   for (i <- 0 until groupMembers) {
-    member_rdy_next(i) := Mux(io.load, io.in_member_rdy(i), member_rdy(i)) || member_hit(i)
+    //@req-spec-issue.g17
+    // ⚠ `member_hit` IS DROPPED ON A LOAD CYCLE, and that is not an omission.
+    // `io.prns` names the REGISTER occupant (VecIssueSlot drives them from
+    // `track_uop = slot_uop`, never from the incoming uop), so on a fill/collapse
+    // cycle the hit belongs to the occupant LEAVING, while `member_rdy_next` is
+    // the state of the occupant ARRIVING. OR-ing it in handed the arriving uop a
+    // wakeup meant for its predecessor: measured on matmul_bare (MegaBoom-wide),
+    // `vfmv.f.s f15,v1` was dispatched with `in_vs2_rdy=254` -- pvs2 member 0
+    // correctly busy -- and read 255 one cycle later because the slot's outgoing
+    // occupant took a group_done that cycle. It then issued ~4000 trace lines
+    // before its `vfredosum.vs` producer wrote pvs2, and the CII served it the
+    // PREVIOUS tenant of prn 97: a plausible wrong double, no assertion anywhere.
+    // NOTHING IS LOST. A group_done landing in the move cycle reaches the arriving
+    // uop through `io.in_member_rdy`, because the exporter folds its own
+    // same-cycle `member_hit` into `out_member_rdy` below (and a fresh dispatch's
+    // `dis_member_rdy` is computed off `busy_table_clr`, this cycle's clears
+    // already applied). The nlhdl text assumed the opposite `prns` contract --
+    // that they name the ARRIVING uop on a load cycle -- which VecIssueSlot's
+    // `track_uop` rule inverted; this line follows the code that exists.
+    member_rdy_next(i) := Mux(io.load, io.in_member_rdy(i), member_rdy(i) || member_hit(i))
   }
   member_rdy := member_rdy_next
 

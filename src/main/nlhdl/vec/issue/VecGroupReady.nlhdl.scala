@@ -165,16 +165,19 @@ from Tenstorrent Inc.
        occupant ARRIVING from the slot above. Export it and the readiness vector
        walks down one slot per shift while the uops walk down one slot per shift
        from one position higher: every slot receives its neighbour's uop with its
-       neighbour-but-one's readiness. Export
-       `member_rdy(i) || (member_hit(i) && !load)` instead.
+       neighbour-but-one's readiness. Export `member_rdy(i) || member_hit(i)`
+       instead — the register occupant's state, plus the hit landing this cycle.
 
-       A group-done landing in the cycle of the move is NOT lost by doing so, which
-       is what the earlier "next state on purpose" note feared: the RECEIVING slot
-       ORs the same-cycle `member_hit` in itself, and on its load cycle its `prns`
-       are the end-of-cycle values naming the arriving uop (the contract
-       VecIssueSlot's fill-cycle prns rule establishes), so the hit is evaluated
-       against the right group. The `|| member_hit` term here covers only the
-       non-load case, where `prns` already names the resident uop.
+       `member_hit` stays in that export UNCONDITIONALLY, load cycle included, and
+       is dropped from `member_rdy_next` on a load cycle instead. `prns` name the
+       REGISTER occupant in every cycle (VecIssueSlot drives them from `slot_uop`,
+       NOT from the incoming uop — an earlier revision of this text assumed the
+       reverse and the slot never adopted it), so a hit always belongs to the
+       occupant that is leaving: the exporter is exactly who must apply it, and the
+       arriving occupant must not. That is how a group-done landing in the cycle of
+       the move survives — it rides down in `in_member_rdy` — and how it stops
+       leaking onto the uop arriving from above. See the next-state block below for
+       the measurement that named this.
 
        The skew is invisible whenever the two slots' vectors agree, so it survives
        any test where every queued vector op has the same readiness —
@@ -272,19 +275,37 @@ from Tenstorrent Inc.
   The next state and both outputs are one expression, so a load, a collapse move
   and a match landing in the same cycle compose:
 
-    member_rdy_next(i) := (load ? in_member_rdy(i) : member_rdy(i)) ||
-                          member_hit(i)
+    member_rdy_next(i) := load ? in_member_rdy(i)
+                               : (member_rdy(i) || member_hit(i))
     member_rdy(i)      <= member_rdy_next(i)               // posedge core_clk
-    out_member_rdy(i)  := member_rdy_next(i)
+    out_member_rdy(i)  := member_rdy(i) || member_hit(i)
     group_all_rdy      := AND over i of
-                          ( member_rdy_next(i) || (i.U >= members) )
+                          ( member_rdy(i) || member_hit(i) || (i.U >= members) )
     ready              := !used || group_all_rdy
 
-  The OR of member_hit into the LOADED value is the load-bearing part. A
-  group-done fires exactly once, so applying the match only to the already-
-  registered state would drop an event arriving in a dispatch or collapse-move
-  cycle and the consumer would never issue. Hence `ready` and `out_member_rdy`
-  come from the next state, not from the register.
+  ===> member_hit IS NOT OR-ed INTO THE LOADED VALUE, and an earlier revision of
+       this text said it was "the load-bearing part". THAT IS INVERTED, and the
+       reason is the `prns` contract this file assumed above and VecIssueSlot did
+       not adopt: the slot drives `prns` from its `track_uop = slot_uop` REGISTER,
+       so on a load cycle they name the occupant LEAVING while `member_rdy_next`
+       is the state of the occupant ARRIVING. ORing the hit in gives the arriving
+       uop a wakeup addressed to its predecessor. Measured on matmul_bare
+       (MegaBoom-wide): `vfmv.f.s f15,v1` was dispatched with vs2 member 0
+       correctly BUSY and read READY one cycle later off the outgoing occupant's
+       group-done, issued before its `vfredosum.vs` producer had written pvs2, and
+       the CII served it the previous tenant of that PRN -- a plausible wrong
+       double with no assertion anywhere.
+
+       NO EVENT IS DROPPED. A group-done landing in the move cycle reaches the
+       arriving uop through `in_member_rdy`: the EXPORTING slot folds its own
+       same-cycle `member_hit` into `out_member_rdy` (which is why that term stays
+       unconditional there), and a fresh dispatch's `dis_member_rdy` is computed
+       off `busy_table_clr`, with this cycle's clears already applied. The two
+       rules are one rule: a hit is always applied by whoever is comparing the
+       PRNs it names, and never by anyone else.
+
+  `ready` and `out_member_rdy` therefore come from the REGISTER plus this cycle's
+  own hit -- the resident occupant's state -- not from `member_rdy_next`.
 
   A member's ready bit is STICKY: once set, only a `load` overwrites it. There is
   no re-busy path.
