@@ -1555,6 +1555,33 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       val mask_union = lcam_mask(w) & write_mask
 
       addr_matches(w)(i)    := (mask_union =/= 0.U) && dword_addr_matches
+      //@req-spec-memord.a20
+      //@req-spec-memord.a21
+      // ===> THIS CAM IS SCALAR-ONLY, AND A VECTOR STQ ENTRY MUST NOT ENTER IT.
+      // A vector store never writes `stq_addr(idx).bits` or `stq_data(idx).bits`
+      // -- `will_fire_store_agen` is the only writer of either, and a vector
+      // store's base goes through the vector agen instead. `st_pass_done`
+      // validates the two `valid` flags (the ROB and the commit path need them)
+      // and leaves `bits` holding whatever the slot's previous scalar occupant
+      // left behind. So `dword_addr_matches` here compares a live load against a
+      // DEAD ADDRESS, and `forward_matches` then hands that entry's DEAD DATA to
+      // the load as if it were a store-to-load forward.
+      // The vector store's real overlap arrives on `vec.vst_match` (OR'd into
+      // `ldst_addr_matches` below) and its real forward on `vec.fwd_resp`, both
+      // computed from the range the vector LSU actually owns -- which is why the
+      // two paths carry an assert that they never fire together.
+      // Cost of the omission: on `pathfinder_bare` at MegaBoomV4VectorWideConfig,
+      // `lw a6,0(a7)` at 0x80000c68 matched an older vse32's stale `stq_addr`
+      // (byte mask 0xf00 on both sides, so an EXACT forward), was s1-killed off
+      // the D$ -- which was returning the correct 6 -- and committed the stale
+      // 9 that the same slot's earlier occupant had left in `stq_data`.
+      // Statement-level `if`, not an `&&` inside the expression above, so a
+      // vectors-off elaboration emits this CAM unchanged (gate (f)).
+      if (usingRVV) {
+        when (s_uop.is_vec.get) {
+          addr_matches(w)(i) := false.B
+        }
+      }
       forward_matches(w)(i) := addr_matches(w)(i) && s_data.valid && (mask_union === lcam_mask(w))
 
       prs2_matches(w)(i) := (s_uop.prs2 === lcam_uop(w).pdst &&
