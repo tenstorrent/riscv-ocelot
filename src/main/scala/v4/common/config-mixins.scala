@@ -733,6 +733,7 @@ class WithVector(
   ssiQueueEntries: Int = VectorParams().ssiQueueEntries,
   usQueueEntries: Int = VectorParams().usQueueEntries,
   lcbEntries: Int = VectorParams().lcbEntries,
+  ldRespTags: Int = VectorParams().ldRespTags,
   vecIssueEntries: Int = VectorParams().vecIssueEntries,
   vecIssueGrantWidth: Int = VectorParams().vecIssueGrantWidth,
   dcacheArbiterMode: String = VectorParams().dcacheArbiterMode,
@@ -754,6 +755,7 @@ class WithVector(
         ssiQueueEntries     = ssiQueueEntries,
         usQueueEntries      = usQueueEntries,
         lcbEntries          = lcbEntries,
+        ldRespTags          = ldRespTags,
         vecIssueEntries     = vecIssueEntries,
         vecIssueGrantWidth  = vecIssueGrantWidth,
         dcacheArbiterMode   = dcacheArbiterMode
@@ -820,6 +822,44 @@ class WithLargeBoomsVectorWide extends Config(
 
 class WithMegaBoomsVectorWide extends Config(
   new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic", dcacheDataBits = 128)
+)
+
+// EXPERIMENT, not a shipping tier. Wide Mega tier with every LSU-side queue /
+// buffer / FIFO, the vector register file and the ROB scaled 4x, to test whether
+// axpy-vector is capacity-bound at all. Single-knob depth increases have already
+// measured null (usQueueEntries 16->32/64/256, numVecPhysRegisters 128->256), so
+// this raises all of them at once. Its own fragment so MegaBoomV4VectorWideConfig
+// stays the regression baseline.
+class WithMegaBoomsVectorWide4x extends Config(
+  new WithVector(
+    numVecPhysRegisters = 4 * VectorParams().numVecPhysRegisters,  // 128  -> 512
+    numVlPhysRegisters  = 4 * VectorParams().numVlPhysRegisters,   // 64   -> 256
+    ssiQueueEntries     = 4 * VectorParams().ssiQueueEntries,      // 512  -> 2048
+    usQueueEntries      = 4 * VectorParams().usQueueEntries,       // 16   -> 64
+    lcbEntries          = 4 * VectorParams().lcbEntries,           // 8    -> 32
+    ldRespTags          = 4 * VectorParams().ldRespTags,           // 8    -> 32
+    vecIssueEntries     = 4 * VectorParams().vecIssueEntries,      // 16   -> 64
+    lsuWidth = 2, dcacheArbiterMode = "dual-dynamic", dcacheDataBits = 128) ++
+  new Config((site, here, up) => {
+    // Scalar-side structures the vector pipeline shares: the ROB every vector uop
+    // occupies an entry in, the LDQ/STQ the vector LSU orders against, and the D$
+    // miss-side queues. WithVector above re-copies `core` and `dcache`, but only
+    // fields disjoint from these, so composition order does not matter.
+    case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+      case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(
+        core = tp.tileParams.core.copy(
+          numRobEntries = 4 * 128,   // Mega: 128 -> 512
+          numLdqEntries = 4 * 32,    // Mega:  32 -> 128
+          numStqEntries = 4 * 32     // Mega:  32 -> 128
+        ),
+        dcache = tp.tileParams.dcache.map(dc => dc.copy(
+          nMSHRs = 4 * 8,            // Mega:   8 -> 32
+          nSDQ   = 4 * 17,           // rocket 17 -> 68
+          nRPQ   = 4 * 16            // rocket 16 -> 64
+        ))))
+      case other => other
+    }
+  })
 )
 
 // Sub-flags, so Track A (vector LSU) and Track B (CII arith / cross-LSU
