@@ -942,9 +942,22 @@ glossary.rst `glossary-terms`.
   exists to prevent, and it presents as a mis-routed or mis-widthed access rather
   than as an X.
 
-  ACCEPT IS UNCONDITIONAL. `iss_ld`/`iss_st` are written into the row named by
-  that uop's `ldq_idx`/`stq_idx` in the grant cycle, with NO qualification of any
-  kind: no `busy`, no ready toward the issue queue, no dropped grant. That is
+  ACCEPT IS UNCONDITIONAL EXCEPT FOR THE GRANT-CYCLE KILL. `iss_ld`/`iss_st` are
+  written into the row named by that uop's `ldq_idx`/`stq_idx` in the grant cycle
+  with NO CAPACITY qualification of any kind: no `busy`, no ready toward the issue
+  queue, no dropped grant.
+
+  ===> THE GRANT CYCLE IS A KILL CYCLE TOO. `brupdate.b1.mispredict_mask` is a
+       ONE-CYCLE pulse and `iq_v_load`/`iq_v_store` are not past-PNR gated, so a
+       grant can land in the very cycle its branch resolves. Capture
+       `UpdateBrMask(brupdate, iss_xx.bits)` — not the raw bits — and REFUSE a grant
+       this cycle's `b1` kills (`issLdFire`/`issStAgen`), for both the row write and
+       the fresh candidate the winner select sees. Capturing raw parked a row whose
+       `br_mask` still had the RESOLVED branch set; `b1` was gone the next cycle, so
+       the per-row kill sweep could never fire on it again and the row was later
+       admitted as a ZOMBIE. This is the identical defect
+       `VecScalarOperandRead`'s own capture documents — the issue boundary has two
+       captures, and both owe the same-cycle mask update. That is
   sound BY CONSTRUCTION rather than by argument — the row is indexed by an LDQ/STQ
   placeholder the dispatch-time reservation ALREADY guaranteed for this `OP.v`, and
   one placeholder holds one op, so "the table is full when a grant arrives" is not
@@ -1260,6 +1273,38 @@ glossary.rst `glossary-terms`.
        `ldUsDrainPtr` lives with the drain side hundreds of lines below, so take
        it through a `Wire` for the same reason `lcbWalkActive` is taken through
        one.
+
+  ===> `ld_msk.done`/`st_msk.done` IS NOT THE ONLY WAY AN ADMITTED OP LEAVES, AND
+       `ldStreamerBusy`/`stStreamerBusy` MUST NOT BE CLEARED AS IF IT WERE. A
+       branch can kill the admitted op anywhere between admission and completion,
+       and on EVERY such path the mask streamer's `done` never fires:
+         - killed while HELD in `xx_opnd`: that module gates `out.valid` on its own
+           `killedNow`, so `xxOpPulse` never happens and `xx_msk.op.valid` is never
+           asserted at all;
+         - killed MID-WALK: `VecMaskStream` treats `io.kill` as a state CLEAR
+           (`clear = io.kill || done_now`) and deliberately does NOT raise `done`.
+       Clearing only on `done` therefore LATCHES the flag forever, and since it is
+       an ADMISSION term the direction is dead: no further vector load (or store)
+       is ever admitted, `xx_opnd` is never granted again, and the machine wedges
+       with `Pipeline has hung` and NO LSU SIGNATURE AT ALL — no `ld_fire`, no
+       `lcbStallWatchdog`, nothing. The only trace of it is `xx_opnd`'s grant event
+       appearing exactly ONCE for the whole run. Measured on `canneal_bare`
+       (MegaBoom Wide): rob 72 was admitted, the next branch killed it inside
+       `ld_opnd`, and the six loads behind it never reached `ld_opnd` again.
+
+       CLEAR ON `squash.kill(0)` / `squash.kill(1)` TOO. That predicate is exactly
+       right and needs no new state: its `valid` IS `xxStreamerBusy` and its uop IS
+       the one `xx_opnd` holds. It cannot misfire against the PREVIOUS tenant of
+       `rr_uop` either, because the admission `when` arm wins over the clear
+       `elsewhen` on an admission cycle, and from admission+1 onward `rr_uop` is
+       the op in question. Release `xxAwaitingPulse` and `xxMaskAwaiting` on the
+       same event — they are part of one handshake, and a stale `1` outlives the
+       dead op into the next one.
+
+       AND REFUSE ADMISSION OF A WINNER THIS CYCLE'S `b1` KILLS
+       (`ldWinnerKilled`/`stWinnerKilled`). Admitting it would set the busy flag
+       for an op already dead, which is the leak above reached by its shortest
+       path.
 
   ===> THE WALK IS A ONE-OP RESOURCE AND MUST BE BACK-PRESSURED AT ADMISSION.
        `lcbWalkActive` holds a single op, and the walk STALLS whenever the LCB has

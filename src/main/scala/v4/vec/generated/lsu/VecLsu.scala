@@ -26,7 +26,7 @@ import org.chipsalliance.cde.config.Parameters
 import boom.v4.common._
 import boom.v4.exu.BrUpdateInfo
 import boom.v4.lsu.{VecLsuCoreIO, GetRealLSQIdx, IsOlderLSU, EntryValidFromAge}
-import boom.v4.util.{GetNewBrMask, IsKilledByBranch}
+import boom.v4.util.{GetNewBrMask, IsKilledByBranch, UpdateBrMask}
 import boom.v4.vec.generated.{VecElemAccess, VecMemAccess, VecRangeEntry, VecException, IntWbSnoop, VecRobFlags, VecGroupDone, VecTrace}
 import boom.v4.vec.formal.{BoomSvaLayer, VecLsuChecks}
 import freechips.rocketchip.util.PlusArg
@@ -393,12 +393,22 @@ class VecLsu(
 
   // ---- LOAD direction ----
   val ldRows = RegInit(VecInit(Seq.fill(numLdqEntries)(0.U.asTypeOf(new PendRow(1 + ldqAddrSz)))))
-  when (io.iss_ld.valid) {
+  //@req-spec-lsu.i6
+  // THE GRANT CYCLE IS A KILL CYCLE TOO -- the same defect class VecScalarOperandRead
+  // documents at its own capture. `brupdate.b1` is a ONE-CYCLE pulse and IQ_V_LOAD is
+  // not past-PNR gated, so a grant can land in the very cycle its branch resolves.
+  // Capturing `iss_ld.bits` raw parked a row whose `br_mask` still had the RESOLVED
+  // branch set: b1 was gone the next cycle, so the per-row kill below could never fire
+  // again and the row was admitted later as a zombie. Apply the same-cycle mask update
+  // on capture and refuse a grant this branch kills.
+  val issLdKilled = IsKilledByBranch(io.brupdate, io.rob_flush, io.iss_ld.bits)
+  val issLdFire   = io.iss_ld.valid && !issLdKilled
+  when (issLdFire) {
     val idx = GetRealLSQIdx(io.iss_ld.bits.ldq_idx)
     assert(!ldRows(idx).valid, "VecLsu: iss_ld granted into an already-valid pending row")
     ldRows(idx).valid   := true.B
     ldRows(idx).fullIdx := io.iss_ld.bits.ldq_idx
-    ldRows(idx).uop     := io.iss_ld.bits
+    ldRows(idx).uop     := UpdateBrMask(io.brupdate, io.iss_ld.bits)
     //@req-spec-issue.d3
     // THE BYPASS HINTS ARE KEPT, AND CLEARED BY OBSERVATION -- see the snoop below.
     // `iw_p*_bypass_hint` means "the producer's regfile write is still in flight AS
@@ -417,7 +427,7 @@ class VecLsu(
     // So keep the hint and CLEAR IT WHEN THE WRITE IS SEEN, below.
   }
   for (i <- 0 until numLdqEntries) {
-    when (ldRows(i).valid && !(io.iss_ld.valid && GetRealLSQIdx(io.iss_ld.bits.ldq_idx) === i.U)) {
+    when (ldRows(i).valid && !(issLdFire && GetRealLSQIdx(io.iss_ld.bits.ldq_idx) === i.U)) {
       ldRows(i).uop.br_mask := GetNewBrMask(io.brupdate, ldRows(i).uop)
       when (IsKilledByBranch(io.brupdate, io.rob_flush, ldRows(i).uop)) {
         ldRows(i).valid := false.B
@@ -454,7 +464,7 @@ class VecLsu(
     ldCandValid(i)   := ldRows(i).valid
     ldCandFullIdx(i) := ldRows(i).fullIdx
   }
-  ldCandValid(numLdqEntries)   := io.iss_ld.valid
+  ldCandValid(numLdqEntries)   := issLdFire
   ldCandFullIdx(numLdqEntries) := io.iss_ld.bits.ldq_idx
 
   val ldFound   = Wire(Vec(numLdqEntries + 1, Bool()))
@@ -552,23 +562,55 @@ class VecLsu(
   // HERE, where the op can still wait in `ldRows`. Forward declaration: the
   // table lives beside the drain it feeds, several hundred lines below.
   val ldSsiSlackRoomFwd = Wire(Bool())
-  val ldPresent = ldWinnerValid && !ldStreamerBusy && !lcbWalkBusy && ldWinnerDrainNext &&
-    (ldWinnerIsRange || ldSsiSlackRoomFwd)
-  when (ldWinnerValid && !ldStreamerBusy && !lcbWalkBusy && !ldWinnerDrainNext) {
+  //@req-spec-lsu.i6
+  // A winner this cycle's branch kills must NOT be admitted. `brupdate.b1` is a
+  // one-cycle pulse, so admitting it would set `ldStreamerBusy` for an op that is
+  // already dead -- and `ld_opnd` suppresses `out.valid` on its own `killedNow`,
+  // so the op would never pulse and never retire the flag (see the leak note at
+  // the clear below).
+  val ldWinnerKilled = IsKilledByBranch(io.brupdate, io.rob_flush, ldWinnerUop)
+  val ldPresent = ldWinnerValid && !ldWinnerKilled && !ldStreamerBusy && !lcbWalkBusy &&
+    ldWinnerDrainNext && (ldWinnerIsRange || ldSsiSlackRoomFwd)
+  when (ldWinnerValid && !ldWinnerKilled && !ldStreamerBusy && !lcbWalkBusy && !ldWinnerDrainNext) {
     VecTrace.traceId("VecLsu", "ld_admit_out_of_drain_order", ldWinnerUop.rob_idx, Seq(
       ("resv_base", ldUsBaseTbl(GetRealLSQIdx(ldWinnerFullIdx))), ("drain_ptr", ldUsDrainPtrFwd)))
   }
+  //@req-spec-lsu.i6
+  // ===> `ld_msk.io.done` IS NOT THE ONLY WAY AN ADMITTED OP LEAVES. A branch can
+  // kill it anywhere between admission and completion, and on EVERY such path the
+  // mask streamer's `done` never fires:
+  //   - killed while held in `ld_opnd`: `killedNow` gates `out.valid`, so
+  //     `ldOpPulse` never happens and `ld_msk.io.op.valid` is never asserted;
+  //   - killed mid-walk: `VecMaskStream` treats `io.kill` as a state CLEAR
+  //     (`clear = io.kill || done_now`) and deliberately does not raise `done`.
+  // Clearing only on `done` therefore LATCHES `ldStreamerBusy` forever, and since
+  // it is an admission term no further vector load is ever admitted -- the machine
+  // wedges with `Pipeline has hung` and no LSU signature at all. Measured on
+  // `canneal_bare` (MegaBoom Wide): rob 72 was admitted, killed in `ld_opnd` by the
+  // next branch, and the six loads behind it never reached `ld_opnd` again.
+  // `squash.io.kill(0)` is exactly the right predicate -- its `valid` IS
+  // `ldStreamerBusy` and its uop IS the one `ld_opnd` holds -- and the `when`
+  // arm above wins on an admission cycle, so it cannot misfire against the
+  // previous tenant of `rr_uop`.
+  val ldStreamerKill = squash.io.kill(0)
   when (ldPresent) {
     ldRows(GetRealLSQIdx(ldWinnerFullIdx)).valid := false.B
     ldStreamerBusy := true.B
-  } .elsewhen (ld_msk.io.done) {
+  } .elsewhen (ld_msk.io.done || ldStreamerKill) {
     ldStreamerBusy := false.B
+  }
+  when (ldStreamerKill) {
+    VecTrace.traceId("VecLsu", "ld_streamer_kill", ld_opnd.io.out.bits.uop.rob_idx)
   }
 
   val ldAwaitingPulse = RegInit(false.B)
   when (ldPresent) { ldAwaitingPulse := true.B }
   val ldOpPulse = ldAwaitingPulse && ld_opnd.io.out.valid
   when (ldOpPulse) { ldAwaitingPulse := false.B }
+  //@req-spec-lsu.i6
+  // The pulse bookkeeping is part of the same admission handshake, so it must be
+  // released on the kill path too or a stale `1` outlives the dead op.
+  when (ldStreamerKill && !ldPresent) { ldAwaitingPulse := false.B }
 
   val ldMaskAwaiting = RegInit(false.B)
   // An unmasked OP.v elides the mask read, so us_mask is valid in the very cycle
@@ -576,6 +618,8 @@ class VecLsu(
   val ldMaskFire = (ldMaskAwaiting || ldOpPulse) && ld_msk.io.us_mask.valid
   when (ldOpPulse) { ldMaskAwaiting := true.B }
   when (ldMaskFire) { ldMaskAwaiting := false.B }
+  //@req-spec-lsu.i6
+  when (ldStreamerKill) { ldMaskAwaiting := false.B }
   val ldIsRangeClass = ld_opnd.io.out.bits.uop.v_is_unit_stride.get || ld_opnd.io.out.bits.uop.v_is_whole_reg.get ||
     ld_opnd.io.out.bits.uop.v_is_mask.get
 
@@ -593,13 +637,16 @@ class VecLsu(
   // A store issues TWICE -- VecStoreDgenPath offers the AGEN pass then the DGEN
   // pass, and the two are exclusive on fu_code. This container drives dgen off
   // the AGEN pulse, so the DGEN grant is not a new op and must not restart one.
-  val issStAgen = io.iss_st.valid && io.iss_st.bits.fu_code(FC_AGEN)
+  //@req-spec-lsu.i6
+  // Store mirror of the load's grant-cycle kill (see the ldRows capture above).
+  val issStKilled = IsKilledByBranch(io.brupdate, io.rob_flush, io.iss_st.bits)
+  val issStAgen = io.iss_st.valid && io.iss_st.bits.fu_code(FC_AGEN) && !issStKilled
   when (issStAgen) {
     val idx = GetRealLSQIdx(io.iss_st.bits.stq_idx)
     assert(!stRows(idx).valid, "VecLsu: iss_st granted into an already-valid pending row")
     stRows(idx).valid   := true.B
     stRows(idx).fullIdx := io.iss_st.bits.stq_idx
-    stRows(idx).uop     := io.iss_st.bits
+    stRows(idx).uop     := UpdateBrMask(io.brupdate, io.iss_st.bits)
     //@req-spec-issue.d3
     // Same contract as the load row above: hints are kept here and cleared by the
     // int_wb_snoop watch below.
@@ -657,24 +704,36 @@ class VecLsu(
   val stSsiSlackRoomFwd = Wire(Bool())
   val stWinnerIsRange = stWinnerUop.v_is_unit_stride.get || stWinnerUop.v_is_whole_reg.get ||
     stWinnerUop.v_is_mask.get
-  val stPresent = stWinnerValid && !stStreamerBusy && dgen.io.req.ready &&
+  //@req-spec-lsu.i6
+  // Store mirror of the load admission gate + streamer-busy kill release. Same
+  // argument in full; see the load side above.
+  val stWinnerKilled = IsKilledByBranch(io.brupdate, io.rob_flush, stWinnerUop)
+  val stPresent = stWinnerValid && !stWinnerKilled && !stStreamerBusy && dgen.io.req.ready &&
     (stWinnerIsRange || stSsiSlackRoomFwd)
+  val stStreamerKill = squash.io.kill(1)
   when (stPresent) {
     stRows(GetRealLSQIdx(stWinnerFullIdx)).valid := false.B
     stStreamerBusy := true.B
-  } .elsewhen (st_msk.io.done) {
+  } .elsewhen (st_msk.io.done || stStreamerKill) {
     stStreamerBusy := false.B
+  }
+  when (stStreamerKill) {
+    VecTrace.traceId("VecLsu", "st_streamer_kill", st_opnd.io.out.bits.uop.rob_idx)
   }
 
   val stAwaitingPulse = RegInit(false.B)
   when (stPresent) { stAwaitingPulse := true.B }
   val stOpPulse = stAwaitingPulse && st_opnd.io.out.valid
   when (stOpPulse) { stAwaitingPulse := false.B }
+  //@req-spec-lsu.i6
+  when (stStreamerKill && !stPresent) { stAwaitingPulse := false.B }
 
   val stMaskAwaiting = RegInit(false.B)
   val stMaskFire = (stMaskAwaiting || stOpPulse) && st_msk.io.us_mask.valid
   when (stOpPulse) { stMaskAwaiting := true.B }
   when (stMaskFire) { stMaskAwaiting := false.B }
+  //@req-spec-lsu.i6
+  when (stStreamerKill) { stMaskAwaiting := false.B }
   val stIsRangeClass = st_opnd.io.out.bits.uop.v_is_unit_stride.get || st_opnd.io.out.bits.uop.v_is_whole_reg.get ||
     st_opnd.io.out.bits.uop.v_is_mask.get
 
