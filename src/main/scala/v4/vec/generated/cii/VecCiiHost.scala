@@ -163,7 +163,10 @@ class TTCii extends BlackBox with HasBlackBoxPath with HasBlackBoxResource
 
   addPath(s"$svRoot/vpu/reg/tt_vec_regfile.sv")
   addPath(s"$svRoot/vpu/tt_vec_top.sv")
-  addPath(s"$svRoot/vpu/tt_vpu_cii_wrapper_top.sv")
+  // addPath(s"$svRoot/vpu/tt_vpu_cii_wrapper_top.sv")
+  // UNCOMMENT THIS TO USE PIPELINED VERSION
+  addPath(s"$svRoot/vpu/tt_vpu_cii_wrapper_pipelined_top.sv")
+
 
   addPath(s"$svRoot/generated/tt_cii_host_wrap.sv")
   addPath(s"$svRoot/tt-cii/src/tt_cii_caracal_pkg.svh")
