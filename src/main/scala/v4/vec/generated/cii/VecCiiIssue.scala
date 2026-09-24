@@ -125,6 +125,26 @@ class VecCiiIssue(
   //@req-spec-cii.d7
   //@req-spec-cii.k1
   //@req-spec-cii.k10
+  // ---- THE PACKET STAYS ON `s1`. COLLAPSING THIS REGISTER DOES NOT WORK. ----
+  //
+  // Driving `iss_pkt` combinationally off the IQ grant removes one cycle from a
+  // dependent op's 12.28-cycle period, and the obvious objection -- that `vl` needs
+  // the register -- is WRONG: the VL regfile read is async (`VlRegFile.scala:165`),
+  // so `vl` is valid in the grant cycle. It was tried anyway and it CORRUPTS DATA.
+  // Measured on axpy_bare (2026-09-24): the kernel runs to its self-check and then
+  // `c.fld f15` reads back a y[] element that still holds the INPUT value
+  // (DUT 4001c28f5c28f5c3 against an architectural 40141460aa64c2f9) -- one
+  // element's vfmacc result never reached memory. Reproduced with the wrapper's
+  // FIFO bypass DISABLED (`+cii_no_iss_bypass=1`), so it is this change alone and
+  // not the bypass.
+  //
+  // The reason is the half that CANNOT move: `tag_alloc` carries
+  // `scalar_operands`, which comes from the scalar regfile read launched in the
+  // grant cycle and is not available until the next one, so the tag-table entry is
+  // necessarily written at `s1`. Sending the packet a cycle EARLIER than the entry
+  // makes the packet lead its own tag, and the coprocessor's Src-Data lookup is
+  // served from that entry. Re-collapsing this is only sound together with a
+  // same-cycle scalar operand path; until then the register is load-bearing.
   io.iss_pkt.valid := s1_valid
   io.iss_pkt.bits.tag := s1_tag
 

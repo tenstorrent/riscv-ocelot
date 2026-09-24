@@ -442,7 +442,7 @@ from Tenstorrent Inc.
                 rdy_vs2.used  := v_uses_vs2
                 rdy_vm.used   := v_is_masked      (as stated above)
     IQ_V_LOAD   rdy_vs3.used  := v_uses_vs3 && !is_shared
-                rdy_vold.used := dst_rtype === RT_VEC
+                rdy_vold.used := dst_rtype === RT_VEC && v_needs_old_dest
     IQ_V_STORE  rdy_vs3.used  := true             (it tracks the SELECTED DGEN group)
                 (no rdy_vold instance)
     IQ_V_ALU    rdy_vs3.used  := (is_shared && uses_ldq) || v_uses_vs3
@@ -520,22 +520,38 @@ from Tenstorrent Inc.
   `rdy_vm.used := v_is_masked` is UNCHANGED by D11 — it gates on a different
   question (does this op read the mask) and stays exactly as part 4 states it.
 
-  `rdy_vold.used` is the single coarse term `dst_rtype === RT_VEC`: any OP.v with a
-  vector destination waits on its `stale_pvdest` group, in both the load and the
-  ALU queue. That is DELIBERATELY CONSERVATIVE in both queues, and neither
-  conservatism is removable from here:
+  `rdy_vold.used` is `dst_rtype === RT_VEC` in the ALU queue, and that same term
+  ANDed with `v_needs_old_dest` in the load queue:
 
-  - IQ_V_ALU: the host cannot know whether the coprocessor will actually pull the
+    v_needs_old_dest := v_tail_undist || v_mask_undist    (both are MicroOp fields
+                        i.e. `vta === 0 || vma === 0`)     set in VecDecode)
+
+  - IQ_V_ALU: STILL UNCONDITIONAL, and the conservatism is NOT removable from
+    here. The host cannot know whether the coprocessor will actually pull the
     `STALE_VD` source slot. The VPU decides, and NO VPU-SIDE SIGNAL EXISTS to ask.
     So the op waits whenever the pull is possible, i.e. whenever it has a vector
     destination.
-  - IQ_V_LOAD: `vta`/`vma` are visible in the per-uOP `VConfig` snapshot, so the
-    LCB's undisturbed pre-load could in principle be predicted — but it is NOT the
-    only reader. VecGroupCopy performs the whole `pvdest <- stale_pvdest` group copy
-    for a VL=0 load regardless of `vta`/`vma`, and VL is not known at issue (the
-    value is read from the VL RF at execute, part 5). Narrowing this term to
-    `vta === 0 || (v_is_masked && vma === 0)` would therefore let a VL=0 load copy
-    from a BUSY stale group.
+  - IQ_V_LOAD: the only readers of a load's stale group are the LCB's undisturbed
+    pre-load and VecGroupCopy, and VecGroupCopy's own launch predicate is
+    `must_preserve = (vta == 0) || (vma == 0 && !vl_zero)` (part 5 of
+    VecGroupCopy). `v_needs_old_dest` is that predicate WITHOUT its `vl_zero`
+    term, so it is a strict SUPERSET of `must_preserve` at every VL: whenever
+    VecGroupCopy copies, `v_needs_old_dest` is high. VL is not known at issue and
+    DOES NOT NEED TO BE — `vl_zero` only ever narrows a term that already sits
+    under `vma === 0`, which forces `v_needs_old_dest` high on its own.
+
+  ===> A PRIOR VERSION OF THIS SPEC ASSERTED "VecGroupCopy performs the group copy
+       for a VL=0 load REGARDLESS of `vta`/`vma`, so narrowing would let a VL=0
+       load copy from a BUSY stale group". THAT IS FALSE, and it cost real
+       performance. At `vta=1, vma=1` VecGroupCopy's `must_preserve` is LOW even
+       when `vl_zero` is high, so no copy is launched and nothing reads the stale
+       group. Measured on `axpy_bare` (MegaBoomV4VectorWideConfig): the kernel's
+       `vle64.v v24` under `e64,m1,ta,ma` at VL==VLMAX reads nothing, yet sat in
+       its issue slot for 24 cycles and went ready exactly one cycle after the
+       previous `vfmacc.vf v24`'s `VecBusyTable clr`. That false edge was 12 of
+       the loop's 21 cycles per iteration, and it also starved the second
+       unit-stride load so that 1710 loop cycles refused a ready load with BOTH
+       D$ lanes idle.
 
   A segmented STORE's coprocessor half is excluded for free by the same term: it
   writes `pvtmp` and its `dst_rtype` is not `RT_VEC`, so it has no `stale_pvdest`
@@ -604,24 +620,76 @@ from Tenstorrent Inc.
   obligation VecStoreDgenPath asserts at its boundary.
 
   //@req-spec-issue.g21
-  On a `pnrGate` slot — `IQ_V_ALU` only — eligibility is
-  `request && IsOlder(slot_uop.rob_idx, io.rob_pnr_idx, io.rob_head_idx)`,
-  applied PER ENTRY and not only to the queue head, so every op handed to the CII
-  is individually non-speculative. `IQ_V_LOAD`/`IQ_V_STORE` set `eligible :=
-  request`: vector memory may issue speculatively, and ordering and replay are
-  the LSU's business. The gate lives in the slot precisely because it is
-  per-entry; putting it in the unit's select would tempt a head-only
-  implementation, whose cost is a segmented store's coprocessor half blocking
-  every younger vector arithmetic op.
+  On a `pnrGate` slot — `IQ_V_ALU` only — eligibility is `request` ANDed with a
+  BRANCH-RESOLUTION term, applied PER ENTRY and not only to the queue head:
 
-  ===> THE TEST IS STRICT `IsOlder`, AND BASELINE'S EXTRA EQUALITY TERM MUST NOT
-  BE COPIED. BOOM's SNI block writes `issue_slot_past_pnr` with
-  `| (rob_idx === rob_pnr_idx)`, but `rob_pnr_idx` names the OLDEST UNSAFE entry
-  (`rob.scala:531`), so admitting equality admits exactly the entry whose
-  speculation is UNRESOLVED. That is intended in the scalar SNI context, which is
-  permissive by construction and off by default; here it would hand a
-  still-speculative op to the coprocessor and defeat the entire reason `pnrGate`
-  exists. `IsOlder(rob_idx, rob_pnr_idx, rob_head_idx)` and nothing OR-ed onto it.
+      eligible := request && (GetNewBrMask(brupdate, slot_uop) === 0) && !killed
+
+  `IQ_V_LOAD`/`IQ_V_STORE` set `eligible := request`: vector memory may issue
+  speculatively, and ordering and replay are the LSU's business. The gate lives in
+  the slot precisely because it is per-entry; putting it in the unit's select would
+  tempt a head-only implementation, whose cost is a segmented store's coprocessor
+  half blocking every younger vector arithmetic op.
+
+  ===> THE TERM IS BRANCH RESOLUTION, NOT PAST-PNR, AND THE OLD `IsOlder` TEST MUST
+  NOT BE RESTORED AS THE DEFAULT. The gate was originally
+  `IsOlder(slot_uop.rob_idx, io.rob_pnr_idx, io.rob_head_idx)` — issue only once the
+  op is older than the ROB's oldest UNSAFE entry. That is strictly stronger than what
+  the CII needs, and the difference IS the CII issue rate: `starts_unsafe` is
+  `uses_ldq || (uses_stq && !is_fence) || is_br || is_jalr`, so on a vector loop the
+  PNR pointer parks behind every in-flight vector load and store — the very ops the
+  CII op is waiting for DATA from — and the CII queue sits ~10 deep with its operands
+  ready and nothing to do.
+
+  What the CII survives is asymmetric, and only ONE of those four producers is on the
+  wrong side of it:
+  - A ROB FLUSH is recoverable. Exceptions, memory-ordering failures, load replays
+    and every redirect that goes through the ROB raise `rob_flush` /
+    `rob_flush_kill`, VecCiiFlush turns that into `kill_all`, every live tag is
+    marked killed and drained, and its drain watchdog proves the drain terminates.
+    Loads, stores and exceptions — three of the four producers — can ONLY squash
+    through that path, so they need no issue-side gate at all.
+  - A BRANCH MISPREDICT is not. `brupdate.b2` is a partial squash by `br_mask` with
+    no flush, so it never reaches `kill_all`, and an op handed to the coprocessor
+    cannot be un-handed. VecCiiFlush states this as its own invariant:
+    `alloc_br_mask === 0` on every allocation.
+
+  So the gate is the mispredict condition alone. Take it on `next_uop.br_mask`
+  (`GetNewBrMask`), NOT the register, so a branch resolving in b1 this cycle frees
+  the op the SAME cycle rather than one cycle later, and AND it with `!killed` so the
+  grant cycle cannot issue an op that b1 is simultaneously killing — the same
+  grant-cycle kill contract the rest of the vector pipeline follows. Both downstream
+  assertions then hold by construction and unchanged: VecCiiFlush's
+  `alloc_br_mask === 0`, and VecIssueUnit's "a pnrGate-eligible entry was killed by a
+  branch".
+
+  BASELINE'S EXTRA EQUALITY TERM IS IRRELEVANT HERE AND MUST NOT BE REVIVED. BOOM's
+  SNI block writes `issue_slot_past_pnr` with `| (rob_idx === rob_pnr_idx)`, but
+  `rob_pnr_idx` names the OLDEST UNSAFE entry, so admitting equality admits exactly
+  the entry whose speculation is unresolved. Nothing in this slot may OR anything
+  onto the gate term.
+
+  ===> KEEP BOTH A/B HATCHES, CLEARLY MARKED AS NOT MODES.
+  `+vec_strict_pnr=1` selects the OLD past-PNR term in place of the branch term, so
+  the relaxation's gain can be measured on one simv. `+vec_no_pnr_gate=1` drops the
+  gate entirely; that arm is MEASUREMENT ONLY and is known to HANG — axpy_bare,
+  2026-09-15, the pipeline wedges after ~5.4k retired instructions when a
+  mispredicted CII op cannot be un-handed — and that hang is the direct evidence that
+  the branch term is the one term that must stay. The `rob_pnr_idx` / `rob_head_idx`
+  ports therefore remain elaborated on a `pnrGate` slot even though the default arm
+  does not read them.
+
+  ===> AND PROBE THE CII SLOT'S WAIT, NOT ONLY THE LOAD SLOT'S. `load_not_rdy` was
+  added for `iq_v_load` with the ALU slot deliberately excluded, on the reasoning
+  that the vpu trace already showed the CII op's wait. That was wrong: the vpu trace
+  shows WHEN the op reached the coprocessor, not what held it in the queue, and the
+  past-PNR term appears in NO trace at all -- so a CII op waiting to become
+  non-speculative and one waiting for an operand are indistinguishable from outside.
+  `alu_not_rdy` carries `pnr` (the OLD past-PNR term), `br` (the term that actually
+  gates) and the raw `brmask` as their own columns beside the operand terms, for
+  exactly that separation. Both gate terms print unconditionally and on both arms,
+  so an A/B pair produces identical columns and the relaxation reads off as the gap
+  between `pnr` and `br`.
 
   `io.iss_uop := slot_uop`, plus, in a store slot, the `fu_code(FC_AGEN)` /
   `fu_code(FC_DGEN)` overrides `dgen_path` supplies. Baseline's grant bookkeeping
@@ -754,9 +822,16 @@ from Tenstorrent Inc.
   VPU decoder's decision, the issue packet carries no hint of it, and no
   back-channel exists — so the host cannot narrow the gate.
 
+  The `IQ_V_LOAD` gate IS narrowed, and only there:
+  `rdy_vold.used := dst_rtype === RT_VEC && (v_tail_undist || v_mask_undist)`.
+  A load's stale group has exactly two readers, the LCB undisturbed pre-load and
+  VecGroupCopy, and both are governed by `vta`/`vma`; see part 4 for why the
+  `vl_zero` term of VecGroupCopy's `must_preserve` need not be reproduced here.
+
   The fix is the fifth `VecGroupReady` instance, `rdy_vold`, in `IQ_V_LOAD` and
   `IQ_V_ALU` slots only, with `prns := slot_uop.stale_pvdest`,
-  `members := slot_uop.v_emul`, `used := dst_rtype === RT_VEC` (part 4), and a
+  `members := slot_uop.v_emul`, `used` per the part 4 table (unconditional in an
+  ALU slot, ANDed with `v_needs_old_dest` in a load slot), and a
   fifth group `vold_rdy` on the per-member side channel. `VecBusyTable` is amended
   in parallel to export that group's per-member read.
 
@@ -817,6 +892,34 @@ on that term; it removes a silent read of a BUSY stale group. Scalar slots
 instantiate none of it, which is what keeps the promise that a pure-scalar slot
 pays nothing for vector matching.
 <|end_perf|>
+
+/* ===> AND KEEP AN A/B HATCH ON IT. The narrowing above is a PERFORMANCE change
+     to a readiness term, and a performance change is only ever as credible as the
+     measurement that backs it. Gate the pre-fix behaviour behind a PlusArg
+     (`vec_vold_dep_all`, default 0) so the two sides are measured on ONE simv:
+     a separately built baseline confounds the change with every other edit in the
+     tree, and this file's own history — the sign bug in the drain admission bound,
+     found only because the same-simv A/B was available — is the argument. The hatch
+     costs one input bit and no logic on the fast path. */
+
+/* ===> AND TRACE THE WAIT, NOT ONLY THE GRANT. `grant_rdy` prints the five matchers
+   at the moment of the grant, where every one of them reads 1 BY DEFINITION. It
+   answers "why was this allowed to issue", which is the rarer question. The question
+   that comes up in performance work is "why is this STILL waiting", and no amount of
+   grant-time data answers it.
+
+   So load slots also emit `load_not_rdy` on every cycle a valid, un-issued slot is
+   not requesting, carrying `prs1_busy` / `prs2_busy` / `pvl_busy` alongside the five
+   matchers. Loads only: the ALU slot's wait is the CII source dependence and the vpu
+   trace already shows it, and an every-cycle trace on every slot is a flood.
+
+   Measured need: on axpy_bare a vector load sits ~8.6 cycles between dispatch and
+   its first request, with everything downstream ruled out -- dispatch unblocked
+   (resv_deny 0), the arbiter refusing on 7% of cycles, the IQ granting 2.6 cycles
+   after readiness, and pnrGate false for load slots. The wait is therefore one of
+   the readiness terms, and the terms differ in what they imply: `prs1_busy` is the
+   address recurrence, `pvl_busy` is the vsetvli recurrence, a matcher is a vector
+   dependence. Those point at three different fixes and nothing distinguished them. */
 
 <|begin_dependencies|>
 VecGroupReady — instantiated FIVE times in an `iq_v_load` or `iq_v_alu` slot and

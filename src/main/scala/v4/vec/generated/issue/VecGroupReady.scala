@@ -43,6 +43,13 @@ class VecGroupReadyIO(val isMask: Boolean)(implicit p: Parameters) extends BoomB
 
   val used = Input(Bool())
 
+  //@req-spec-issue.g15
+  // PER-MEMBER LIVE BUSY, indexed from the rename busy table by this tracker's own
+  // `prns` and carrying this cycle's clears. `member_hit` alone makes readiness a
+  // ONE-CYCLE PULSE that the consumer must be comparing on exactly the right cycle;
+  // this is the same fact as a level, so a missed pulse is recoverable.
+  val live_busy = Input(Vec(groupMembers, Bool()))
+
   //@req-spec-rename.g19
   //@req-spec-issue.g12
   //@req-spec-vrf.e8
@@ -111,7 +118,31 @@ class VecGroupReady(isMask: Boolean = false)(implicit p: Parameters) extends Boo
     // already applied). The nlhdl text assumed the opposite `prns` contract --
     // that they name the ARRIVING uop on a load cycle -- which VecIssueSlot's
     // `track_uop` rule inverted; this line follows the code that exists.
-    member_rdy_next(i) := Mux(io.load, io.in_member_rdy(i), member_rdy(i) || member_hit(i))
+    //@req-spec-issue.g15
+    // `!io.live_busy(i)` MAKES A LOST `group_done` RECOVERABLE. The pulse stays the
+    // fast path; the level is the same fact held steady, so a member whose producer
+    // has written is ready whether or not this tracker happened to be comparing in
+    // the pulse cycle. Measured on axpy_bare with the relaxed CII gate: a vector
+    // store sat with pvs3 busy for the rest of the run after its producer's clear
+    // (prn 114) landed while the store was resident in its slot, and nothing
+    // downstream could recover it.
+    //
+    // ⚠ THE LEVEL IS ON THE HOLD ARM ONLY, AND THAT IS NOT AN OMISSION.
+    // `io.live_busy` is indexed by `io.prns`, and on a LOAD cycle `prns` names the
+    // REGISTER occupant (VecIssueSlot drives them from `track_uop = slot_uop`) --
+    // in a store slot's `rdy_vs3` it names the INCOMING uop instead. Either way it
+    // is not reliably the uop whose readiness `member_rdy_next` is becoming, so
+    // OR-ing it onto the load arm hands the arriving uop a verdict taken on someone
+    // else's registers. Measured: `vfmacc.vf v24,f10,v25` then issued against
+    // sources nothing had written and produced four uninitialised lanes (DUT
+    // d8b196b1.. / 2add40c9.. against an architectural 40141460aa64c2f9, and the
+    // values differ run to run, which is the signature of reading an unwritten
+    // physical register). Nothing is lost by the restriction: from the cycle after
+    // the move, `prns` names the resident uop and the level re-asserts on its own.
+    // MONOTONIC WITHIN A RESIDENCY -- only ever OR-ed in, never used to clear, so a
+    // prn that goes busy again under a younger tenant cannot un-ready this member.
+    member_rdy_next(i) := Mux(io.load, io.in_member_rdy(i),
+      member_rdy(i) || member_hit(i) || !io.live_busy(i))
   }
   member_rdy := member_rdy_next
 
@@ -131,7 +162,25 @@ class VecGroupReady(isMask: Boolean = false)(implicit p: Parameters) extends Boo
   // consumer of `in_member_rdy` skip comparing against the INCOMING prns: the
   // exporter has already folded this cycle's hit in.
   for (i <- 0 until groupMembers) {
-    io.out_member_rdy(i) := member_rdy(i) || member_hit(i)
+    io.out_member_rdy(i) := member_rdy(i) || member_hit(i) || (!io.load && !io.live_busy(i))
+  }
+
+  // TEMP PROBE -- READINESS DESTROYED BY A COLLAPSE FILL. On a load cycle
+  // `member_rdy_next` REPLACES the tracker with `in_member_rdy`, so a member that
+  // was already woken is re-cleared if the arriving side channel says not-ready.
+  // The producer's `group_done` is a ONE-CYCLE PULSE that will never repeat, so
+  // that member can never become ready again -- an unrecoverable stall with no
+  // signature anywhere downstream. Fires only on the regression, so it is silent
+  // unless the loss is real.
+  for (i <- 0 until groupMembers) {
+    when (io.load && io.used && (member_rdy(i) || member_hit(i)) && !io.in_member_rdy(i) && io.live_busy(i)) {
+      VecTrace.traceStruct("VecGroupReady", "rdy_regress", Seq(
+        ("member",   i.U),
+        ("prn",      io.prns(i)),
+        ("was_rdy",  (member_rdy(i) || member_hit(i)).asUInt),
+        ("in_rdy",   io.in_member_rdy(i).asUInt),
+        ("hit",      member_hit(i).asUInt)))
+    }
   }
 
   // Who woke this member. A member that goes ready with no legitimate producer

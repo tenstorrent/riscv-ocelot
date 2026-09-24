@@ -648,6 +648,32 @@ class Rob(
     // Block commit if there is mispredict
     can_commit(w) := rob_val(rob_head) && !(rob_bsy(rob_head)) && !io.csr_stall && !io.brupdate.b2.mispredict && !io.trace_stall
 
+    // TEMP PROBE -- WHY THE HEAD IS NOT COMMITTING. The relaxed CII gate wedges with
+    // the whole machine idle and no trace naming the entry the ROB is parked on:
+    // `pnr_block` names the PNR row, which is not the head, and every vector trace
+    // is silent because the vector pipeline has already drained. Rate-limited to one
+    // line per 64 stalled cycles so a long wedge stays readable.
+    if (usingRVV) {
+      val headStuck = RegInit(0.U(16.W))
+      when (will_commit.reduce(_ || _)) { headStuck := 0.U } .otherwise { headStuck := headStuck + 1.U }
+      val hu = rob_uop(rob_head)
+      when (headStuck > 64.U && headStuck(5, 0) === 0.U && w.U === 0.U) {
+        VecTrace.trace("Rob", "head_stuck", hu, Seq(
+          ("bank",     w.U),
+          ("head",     rob_head_idx),
+          ("val",      rob_val(rob_head)),
+          ("bsy",      rob_bsy(rob_head)),
+          ("ldq",      hu.uses_ldq),
+          ("stq",      hu.uses_stq),
+          ("vec",      hu.is_vec.get),
+          ("xcpt",     rob_exception(rob_head)),
+          ("csr_stl",  io.csr_stall),
+          ("mispred",  io.brupdate.b2.mispredict),
+          ("trace_stl", io.trace_stall),
+          ("stuck",    headStuck)))
+      }
+    }
+
 
     // use the same "com_uop" for both rollback AND commit
     // Perform Commit
@@ -736,6 +762,38 @@ class Rob(
     }
     // Read unsafe status of PNR row.
     rob_pnr_unsafe(w) := rob_val(rob_pnr) && (rob_unsafe(rob_pnr) || rob_exception(rob_pnr))
+
+    // WHAT IS BLOCKING THE PNR. `IQ_V_ALU` is past-PNR gated, so on a vector workload
+    // every CII op waits on this pointer, and no trace anywhere names the entry that
+    // is holding it. `starts_unsafe` is `uses_ldq || (uses_stq && !is_fence) || is_br
+    // || is_jalr` -- four quite different producers with four different clears, and
+    // "PNR is slow" is not actionable until it says WHICH. Emitted per bank because
+    // the advance is ROW-granular at coreWidth > 1: one unsafe lane holds all four.
+    if (usingRVV) {
+      val u = rob_uop(rob_pnr)
+      when (rob_pnr_unsafe(w)) {
+        VecTrace.trace("Rob", "pnr_block", u, Seq(
+          ("bank",  w.U),
+          ("ldq",   u.uses_ldq),
+          ("stq",   u.uses_stq),
+          ("br",    u.is_br),
+          ("jalr",  u.is_jalr),
+          ("vec",   u.is_vec.get),
+          ("bsy",   rob_bsy(rob_pnr)),
+          ("xcpt",  rob_exception(rob_pnr)),
+          ("tail",  rob_pnr === rob_tail)))
+      }
+      // The other reason PNR does not move: `do_inc_row` also requires
+      // `!(rob_pnr === rob_tail && !mispredict)`, so PNR can never pass the TAIL. A
+      // PNR parked at an all-safe tail is not slow -- it has simply run out of
+      // dispatched work, which is a front-end/dispatch finding, not a safety one,
+      // and the two are indistinguishable without this line.
+      if (w == 0) {
+        when (rob_pnr === rob_tail && !rob_pnr_unsafe.reduce(_ || _)) {
+          VecTrace.trace("Rob", "pnr_at_tail", u, Seq(("head_dist", rob_pnr - rob_head)))
+        }
+      }
+    }
 
 
     //--------------------------------------------------

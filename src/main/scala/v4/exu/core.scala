@@ -825,6 +825,51 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   dis_fire := dis_valids zip dis_stalls map {case (v,s) => v && !s}
   dis_ready := !dis_stalls.last
 
+  // SCALAR DISPATCH-STALL ATTRIBUTION. `VecPipeline`'s DisProbe reports only the
+  // three VECTOR terms (vec_alloc_ok / vl_alloc_ok / vlsu_dis_ok), so a dispatch
+  // paced by the ROB, the LDQ/STQ, a rename free list or an issue queue looks
+  // IDENTICAL to one that is not stalled at all. On axpy_bare that blind spot cost
+  // several wrong conclusions in a row: the vector-visible terms were cleared one by
+  // one -- the US reservation queues, then the vsetvli VL dependence -- and each time
+  // the loop period did not move, because whatever actually paces it is in here and
+  // nothing could see it. One line per cycle in which at least one valid uop is held
+  // back, each term OR-reduced across the dispatch lanes.
+  if (usingRVV) {
+    val anyValid = dis_valids.reduce(_ || _)
+    val anyHeld  = (dis_valids zip dis_stalls).map { case (v, s) => v && s }.reduce(_ || _)
+    val ldqFull  = (0 until coreWidth).map(w =>
+      io.lsu.ldq_full(w) && dis_valids(w) && dis_uops(w).uses_ldq).reduce(_ || _)
+    val stqFull  = (0 until coreWidth).map(w =>
+      io.lsu.stq_full(w) && dis_valids(w) && dis_uops(w).uses_stq).reduce(_ || _)
+    val iqFull   = (0 until coreWidth).map(w =>
+      dis_valids(w) && !dispatcher.io.ren_uops(w).ready).reduce(_ || _)
+    val renAny   = (dis_valids zip ren_stalls).map { case (v, r) => v && r }.reduce(_ || _)
+    val intRen   = (0 until coreWidth).map(w =>
+      dis_valids(w) && rename_stage.io.ren_stalls(w)).reduce(_ || _)
+    val brtag    = (dis_valids zip brtag_stall).map { case (v, b) => v && b }.reduce(_ || _)
+    val empty    = (dis_valids zip wait_for_empty_pipeline).map { case (v, e) => v && e }.reduce(_ || _)
+    when (anyValid && anyHeld) {
+      VecTrace.trace("DisProbe", "scalar_stall", dis_uops(0), Seq(
+        ("rob_rdy",  rob.io.ready),
+        ("ldq_full", ldqFull),
+        ("stq_full", stqFull),
+        ("iq_full",  iqFull),
+        ("ren",      renAny),
+        ("int_ren",  intRen),
+        ("vec_ren",  vec_stall),
+        ("brtag",    brtag),
+        ("uniq",     empty),
+        ("mispred",  brupdate.b1.mispredict_mask =/= 0.U || brupdate.b2.mispredict),
+        ("redir",    io.ifu.redirect_flush)))
+    }
+    // And the other side of it: a cycle with dispatch WIDE OPEN and nothing to
+    // dispatch is a front-end problem, which is a different fix entirely. Without
+    // this line the two are indistinguishable in the trace.
+    when (!anyValid && dis_ready) {
+      VecTrace.trace("DisProbe", "dis_empty", dis_uops(0), Seq(("dec_rdy", dec_ready)))
+    }
+  }
+
   //-------------------------------------------------------------
   // LDQ/STQ Allocation Logic
 

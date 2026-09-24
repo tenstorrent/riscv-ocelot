@@ -470,6 +470,40 @@ from Tenstorrent Inc.
   and read a line an older vector store has not written, which no other check in
   either file would catch.
 
+  ===> AND THE SAME REASONING IS FALSE FOR A VECTOR SEARCHER. Everything above is
+  sound while the searcher on lane w is a SCALAR load: it raised s1_kill on its own
+  D$ request, and `ldq_executed := false.B` re-arms exactly that load. But
+  `do_ld_search(w)` is defined as `do_ld_search_scalar(w) || (lcam(w).valid &&
+  lcam(w).bits.is_load_search)` — a VECTOR lcam presentation makes every ordering
+  check in this part run with `lcam_ldq_idx(w)` naming a vector load, while
+  `RegNext(dmem_req_fire(w) && !s0_kills(w))` still names WHATEVER OCCUPIED LANE w's
+  `dmem_req` LAST CYCLE, which is a vector BEAT. That beat has no `ldq_executed` bit
+  of its own — a vector load's completion is byte-counted in the LCB, not tracked per
+  beat — so nothing re-arms it. dcache.scala gates `s2_valid` on `!io.lsu.s1_kill(w)`,
+  so the beat returns neither `resp` nor `nack` and VecLsu's response tag for it stays
+  busy forever.
+
+  Measured on `axpy_bare` (MegaBoomV4VectorWideConfig) once the `rdy_vold` false
+  dependency was removed and many vector loads were in flight at once: rob 49's beat
+  on tag 4 fired at cycle 10380 and received no outcome of any kind, ever;
+  `ldTagBusy` settled at `0x10` and stayed there for the rest of the run, and LCB
+  entry 3 tripped `lcbStallWatchdog` four thousand cycles later, short by exactly that
+  beat's eight bytes. Nothing in the trace at the point of the failure pointed
+  anywhere near the point of the fault.
+
+  So EXPORT `s1_kill` ON THE VECTOR BUNDLE — `val s1_kill = Output(Vec(lsuWidth,
+  Bool()))`, driven `vec.s1_kill(w) := io.dmem.s1_kill(w)` in the vector tap, after
+  every drive of `io.dmem.s1_kill` above so the read sees the final value — and let
+  VecLsu replay the beat that fired last cycle on a killed lane. This is the exact
+  analogue of `store_failed`, which is already exported for the same class of reason:
+  the D$ has TWO ways to swallow a beat without an outcome, and a requestor that
+  tracks beats individually must be told about both.
+
+  The general shape, which is worth more than the fix: a signal whose recovery is
+  IMPLICIT in the scalar path — carried by a bit the scalar structure happens to own —
+  has no recovery at all on the vector path, and its absence is invisible at the
+  point where it is missing.
+
   ---- 7. Commit, drain eligibility, and the vse teardown hang ----
 
   //@req-spec-lsu.a7

@@ -229,6 +229,10 @@ class VecLsuCoreIO(implicit p: Parameters) extends BoomBundle()(p)
   val nack                = Output(Vec(lsuWidth, Valid(new BoomDCacheReq)))
   val store_ack           = Output(Vec(lsuWidth, Valid(new BoomDCacheReq)))
   val store_failed        = Output(Bool())
+  // A beat killed at the D$'s s1 leaves NO trace at s2 -- neither resp nor nack --
+  // so VecLsu cannot see it on any of the three ports above and must be told
+  // directly. See the s1_kill paragraph in host/LSU.nlhdl.scala part 6.
+  val s1_kill             = Output(Vec(lsuWidth, Bool()))
 
   // ---- Inputs: the drain side (VecLsu -> LSU) ----
   val vec_claim      = Input(Vec(lsuWidth, new LsuResourceClaim))
@@ -2355,6 +2359,13 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     // NOT is_vec-filtered: the squash is indiscriminate, so a SCALAR store's nack
     // kills vector beats too, and VecLsu sees no nack of its own in that case.
     vec.store_failed := io.dmem.store_failed
+    // Same reason, second mechanism. `do_ld_search(w)` is true for a VECTOR lcam
+    // presentation as well as for a scalar searcher, and every ordering check that
+    // raises s1_kill(w) does so on "whatever fired on lane w last cycle", which for
+    // a vector search is a beat with no ldq_executed bit to re-arm. dcache.scala
+    // gates s2_valid on !s1_kill, so that beat returns neither resp nor nack and its
+    // response tag leaks. Read back after every drive above; this is the final value.
+    for (w <- 0 until lsuWidth) { vec.s1_kill(w) := io.dmem.s1_kill(w) }
   }
 
   //-------------------------------------------------------------

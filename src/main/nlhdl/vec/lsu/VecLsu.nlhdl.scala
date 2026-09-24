@@ -481,6 +481,70 @@ glossary.rst `glossary-terms`.
   fields of the same width are not the same quantity: at the defaults both are 256 bits,
   which is exactly why getting this wrong is invisible.
 
+  (a2) ⚠ **A US SNOOP CANDIDATE MAY BE PRESENTED ONLY WHEN THE FIRING BEAT'S OWN OP
+  IS THE STAGED RANGE. GATE IT, DO NOT MERELY ASSERT IT — AND ASSERT IT ON BOTH
+  DIRECTIONS.** The candidate's `paddr`, `active_mask`, `members` and
+  `us_data_base` are read from `ldUsStagedBits`/`stUsStagedBits`, i.e. from
+  whatever range is at the drain pointer THIS cycle, while `arb.vec_fire(w)` is a
+  beat that need not belong to it. Item §0a(b) is exactly this: a duty
+  conditioned on shared mutable state that the duty does not own.
+
+  ⇒ `cand(w).valid` gains, for the US class only:
+```
+     ldCandIsStaged := ldUsStagedValid && fired.uop.ldq_idx === ldUsStagedBits.ldq_idx
+     stCandIsStaged := stUsStagedValid && fired.uop.stq_idx === stUsStagedBits.stq_idx
+     cand(w).valid  := fired.valid && fired.uses_lcam &&
+                       (!isUs || Mux(isStoreWinner, stCandIsStaged, ldCandIsStaged))
+```
+  and the EXISTING store-side assertion ("an LCAM presentation named a DIFFERENT
+  store than the one currently staged") gains its MISSING LOAD MIRROR, which the
+  gate makes unreachable rather than merely unfired.
+
+  ⚠ **NO DUTY IS LOST BY SUPPRESSING A NON-STAGED PRESENTATION, AND THAT IS WHY A
+  GATE IS THE RIGHT SHAPE HERE RATHER THAN A PER-OP RANGE SHADOW.**
+  `ldUsLcamOwed` is armed BY IDENTITY off `ldUsStagedBits.ldq_idx`, so while a
+  range is staged and owes, its OWN beats carry `uses_lcam` and will present. A
+  beat suppressed by the gate therefore belongs to a range that either already
+  presented while it was staged, or is not yet staged and will present when it
+  is. A shadow table keyed by `ldq_idx` would also fix the address, but it costs
+  `numLdqEntries x VecRangeEntry` (~10 kbit of flops, dominated by the `vLen`
+  mask) to carry information the staged read already holds at the only instant
+  the presentation is legal.
+
+  ===> HOW IT FAILS WITHOUT THE GATE — MEASURED, A HANG, NOT A THEORY.
+  `uses_lcam` is latched into the beat descriptor when the beat is issued and is
+  NOT re-evaluated on a REPLAY, so a replayed duty beat keeps presenting long
+  after its range stopped being staged. Measured on `axpy_bare`
+  (MegaBoomV4VectorWideConfig) once more than one vector load could be in flight:
+
+    10348  ld_fire rob=49 rpy=0, grant uses_lcam=1, present rob=49 lo=268435817
+           -> correct; rob 49 IS staged, and its duty is discharged here
+           (`ldLcamDoneTag := 49`)
+    10351  ld_fire rob=49 rpy=1, uses_lcam=1, present rob=49 lo=268435817
+           -> redundant but harmless; rob 49 still staged
+    10354  ld_fire rob=49 rpy=1, uses_lcam=1, present rob=49 lo=268436813
+    10357/10365/...                            present rob=49 lo=268435789 / ...
+           -> ⚠ THE HEAD HAS MOVED. One load, four different disambiguation
+           windows, each one whatever range happened to be staged that cycle,
+           AND `ldLcamDoneTag := 49` overwrites the new staged range's tag so
+           ITS duty is never discharged either. Both a confident wrong answer
+           and a lost obligation, from one missing gate.
+
+  The consequence chain, for recognising the symptom: wrong-address match ->
+  order_fail -> the load replays forever (rob 49 fired 20+ times and placed 1 of
+  its 3 beats) -> its LCB entry stays short -> `lcbStallWatchdog` -> `group_done`
+  never fires -> PRNs stay busy -> commit stops -> the post-commit store write
+  pass stops -> the store queues fill -> `resv_deny queue=3` and `dis_stall`
+  forever, with `ld_opnd`/`st_opnd` re-resolving the same rob every cycle. THAT
+  LAST SIGNATURE LOOKS EXACTLY LIKE A MASK-STREAMER BUSY LEAK AND IS NOT ONE.
+  Do not chase `ldStreamerBusy`; read the snoop `present` addresses for one
+  `rob` and check whether they move.
+
+  ⚠ AND THE REASON IT WAS SILENT FOR SO LONG: the store side already carried the
+  assertion that states this property, the load side did not, and the baseline
+  serialised vector loads one at a time so the load side was unreachable. An
+  assertion written for one direction of a mirrored pair is HALF an assertion.
+
   (b) `io.op` TO EACH AGEN MUST BE ONE CYCLE PER GRANT, AND THIS MODULE IS WHAT MAKES IT
   SO. `VecScalarOperandRead.io.out.valid` has NO self-clear: it holds the same resolved
   op until the issue queue grants a different one. `VecElemAgen`'s accept is level-
@@ -1203,7 +1267,40 @@ glossary.rst `glossary-terms`.
        capacity.
 
        So add a third term to `ldPresent`: a range-class winner is admitted only
-       when its reserved `ld_US_ADDR_Q` base EQUALS `ldUsDrainPtr`.
+       when its reserved `ld_US_ADDR_Q` base equals `ldUsDrainPtr` **or is exactly
+       one slot ahead of a drain slot that is ALREADY FILLED**:
+
+         ldUsPrefixFilled  := ld_US_ADDR_Q.filled_vec(phys(ldUsDrainPtrFwd))
+         ldWinnerDrainNext := !isRange || !ldDrainGateOn ||
+                              base === ldUsDrainPtrFwd ||
+                              (ldUsTwoHeads &&
+                               base === ldUsDrainPtrFwd + 1.U && ldUsPrefixFilled)
+
+       ⚠ **THE ONE-AHEAD ARM IS NOT A RELAXATION OF THE DEADLOCK ARGUMENT — IT IS
+       THE ARGUMENT'S OWN PRECONDITION, STATED DIRECTLY.** What the deadlock needs
+       is an op holding the LCB while the op the drain is parked on cannot make
+       progress. `filled_vec(drainPtr)` says the drain's own op HAS ALREADY PUSHED
+       ITS RANGE, i.e. it is past the streamer and past the walk, so it owes the
+       LCB nothing and drains to completion no matter what the newly admitted op
+       holds. Admitting slot `drainPtr+1` under that condition therefore cannot
+       create a circular wait, and the "empty head below a full one" inversion is
+       unreachable by construction: slot `drainPtr` is filled, so the drain is
+       never waiting on a slot below an admitted one.
+
+       ⚠ **DO NOT EXPRESS THIS AS A DISTANCE COMPARISON BETWEEN AN ADMIT POINTER
+       AND THE DRAIN POINTER.** That form was implemented once and its subtraction
+       was BACKWARDS: with `dist(x) = tail - x`, the admit pointer runs AHEAD of
+       the drain and so has the SMALLER distance, `dist(admit) - dist(drain)`
+       underflows to a huge unsigned value, and the gate collapses silently to the
+       original equality — a measured, byte-identical null that read as "the
+       hypothesis is wrong". The form above has no subtraction, no second pointer,
+       and therefore no squash rewind of its own to keep consistent with
+       `ldUsDrainPtr`: `filled_vec` is maintained by the queue and is correct after
+       any rollback for free.
+
+       `ldUsTwoHeads` is `!PlusArg("vec_one_drain_head", 0)`, so a single simv can
+       A/B the window against the strict-equality behaviour without a rebuild —
+       the same device as `vec_no_drain_gate`.
 
        THE BASE MUST BE SHADOWED AT DISPATCH, NOT LOOKED UP AT ADMISSION.
        `VecQueueReservation`'s four `resv_lookup` lanes are permanently assigned
@@ -1218,6 +1315,50 @@ glossary.rst `glossary-terms`.
        is dispatched into. `ldUsDrainPtr` and the reservation tail already share
        ONE rewind source (`q_squash.bits = resv_rollback_tail`), so the equality
        cannot be made permanently unsatisfiable by a squash.
+
+  ===> AND THE ONE-AHEAD ARM IS WORTHLESS WITHOUT A BUBBLE-FREE HANDOFF AT THE
+       DRAIN. `ldUsStagedValid`/`ldUsStagedBits` come from `ld_US_ADDR_Q.rd(0)`
+       read at `ldUsDrainPtr`, and that port has ONE CYCLE OF LATENCY (`RegNext`
+       on `filled`, `SyncReadMem` on the data), so the staged bits are always the
+       entry the pointer named LAST cycle. The existing validity term
+       `ldUsDrainPtrPrev === ldUsDrainPtr` is what keeps a stale read from being
+       used — and it also means that on the cycle AFTER a retire the head is
+       INVALID, costing one dead cycle per range even when the next range has been
+       sitting in the queue for some time. Admitting the next load early only
+       moves the stall; it does not remove it.
+
+       So prefetch the successor on the spare read port and hand it over on the
+       retire cycle:
+
+         ld_US_ADDR_Q.rd(1).req := (valid, ldUsDrainPtr + 1.U)     // every cycle
+         ldUsAdvanced           := ldUsDrainPtrPrev + 1.U === ldUsDrainPtr
+         ldUsStagedValid        := Mux(ldUsAdvanced, rd(1).resp.filled,
+                                       rd(0).resp.filled && ldUsDrainPtrPrev === ldUsDrainPtr)
+         ldUsStagedBits         := Mux(ldUsAdvanced, rd(1).resp.data, rd(0).resp.data)
+
+       THE TIMING IS EXACT, NOT APPROXIMATE. `rd(1)`'s response in cycle T was
+       formed from `ldUsDrainPtr@(T-1) + 1`. On a retire cycle the pointer stepped
+       from `P` to `P+1` at the T-1/T boundary, so that response IS the entry at
+       `P+1` — precisely the new head — and `ldUsAdvanced` is the one condition
+       under which that coincidence holds. `rd(1..queuePorts)` were tied off, so
+       this costs no new port; `readPorts` is already `ports + 1`.
+
+       ⚠ `ldUsAdvanced` tests a step of EXACTLY ONE, which is the retire, and NOT
+       a squash rewind — a rewind sets the pointer to `ldUsNewTail`, an arbitrary
+       jump, where `rd(1)`'s response belongs to the wrong slot. There the Mux
+       falls back to the `rd(0)` arm and the old one-cycle bubble, which is correct
+       and rare. Do not widen the test to `=/=`.
+
+       ⚠ This changes WHEN the head becomes valid, never WHICH entry it is, so
+       every consumer of `ldUsStagedBits` — the LCAM duty, the `vleff` trim, the
+       snoop candidate, the fault report, the beat kill uop — is untouched. In
+       particular the fault path's `xcptShadow` still resolves a cycle after the
+       beat fires, so a fault on a range's FINAL beat is still dropped by
+       `ldRangeFaultMatch`; that pre-existing hole is neither widened nor fixed
+       here, because only ONE head is ever live in a cycle. That is the reason this
+       is a prefetched single head and not a second drain head: a true second head
+       fires beats in the SAME cycle as head 0 and makes exactly that fault drop
+       the common case instead of a corner, for one further cycle per iteration.
 
        THE GATE IS PER CLASS. It constrains range-class loads against the range
        drain and leaves SSI loads alone. Cross-class hogging is not a deadlock: an
@@ -1408,6 +1549,41 @@ glossary.rst `glossary-terms`.
        never be acked in the same cycle — an ack lands at s2, two cycles after its
        fire, and both victims are younger than that — so assert the kill set and the
        ack-clear set are disjoint rather than defining a priority between them.
+
+  ===> `store_failed` IS ONE OF TWO SILENT DROPS, AND THE LOAD SIDE HAS THE OTHER.
+       `s1_kill(w)` kills whatever is in lane w's s1 — load beats included —
+       and `dcache.scala` gates `s2_valid` on `!io.lsu.s1_kill(w)`, so the victim
+       returns neither `resp` nor `nack`. The scalar LSU raises it on its own searcher
+       and re-arms that load through `ldq_executed := false.B`, but `do_ld_search(w)`
+       in `lsu.scala` is ALSO true for a vector lcam presentation on lane w, and then
+       the beat killed is whatever occupied that lane's `dmem_req` last cycle — a beat
+       with no `ldq_executed` bit, because a vector load's completion is byte-counted
+       in the LCB rather than tracked per beat. See the matching paragraph in
+       `host/LSU.nlhdl.scala` part 6 for why the scalar reasoning does not carry over.
+
+       Measured on `axpy_bare` (MegaBoomV4VectorWideConfig) with the `rdy_vold` false
+       dependency removed, which is what first put enough vector loads in flight to
+       reach it: rob 49's beat on tag 4 fired at cycle 10380 and got no outcome of any
+       kind, ever; `ldTagBusy` settled at `0x10` for the rest of the run and LCB entry
+       3 tripped `lcbStallWatchdog` four thousand cycles later, short by that beat's
+       eight bytes and nothing else.
+
+       So the LSU must export `s1_kill` on the vector bundle, and this module replays
+       the beat that fired LAST cycle on a killed lane — `s1_kill` is an s1 signal, so
+       there is exactly one victim per lane and it is one register deep, not two as on
+       the store side. OR the kill set in AFTER the replay-clear terms for the same
+       reason the store side does. Mirror it on the store side as well: the ordering
+       checks that raise `s1_kill` share their `when` bodies between loads and stores,
+       so a store beat is a victim on exactly the same terms, and a recovery written
+       for one direction of a mirrored pair is half of one — that is precisely how
+       this defect survived the store-squash fix above.
+
+       AND ASSERT ON THE TAG, NOT ON THE ENTRY. Every mechanism that drops a beat
+       silently shows up first as a response tag that never retires and only much
+       later, in another module, as a short LCB entry; the trace at the point of
+       failure pointed nowhere near the point of fault. A busy-tag watchdog with the
+       same generous bound as the arbiter's — a miss may legitimately hold a tag for
+       hundreds of cycles, but not for thousands — names the fault where it happens.
   Assert a response's tag is allocated: with the gate in place that is an
   invariant, and it is the check that catches any later path which drops or
   duplicates a response before the stale alignment it hands the LCB turns into
@@ -1635,6 +1811,34 @@ glossary.rst `glossary-terms`.
   is the completion of the pre-commit translate pass. A shared instruction needs
   only the LSU half's group-safe; the coprocessor half performs no memory access,
   and demanding a second one would deadlock the chain of section 8.
+
+  ===> AND THE SINGLE `vec_clr_unsafe` PORT MAKES THAT CLAIM CONDITIONAL. The port
+  carries ONE event per cycle with fixed load-over-store priority and NO queue
+  behind it, so a store whose group-safe collides with a load's is simply lost. That
+  is not a correctness bug -- the store's `rob_unsafe` still clears through
+  `lsu_clr_bsy` -- but read what that fallback costs. `lsu_clr_bsy` is produced in
+  `lsu.scala` by a ROUND-ROBIN WALKER over the STQ: `clr_idx` advances one index per
+  lane per cycle and fires only when it reaches an entry with
+  `stq_addr.valid && stq_data.valid && !addr_is_virtual && !stq_cleared`, then two
+  further cycles of `clr_valid` -> `clr_valid_1`. At numStqEntries=32 and coreWidth=4
+  that is up to ~10 cycles after the instant group-safe would have fired.
+
+  PNR CANNOT PASS THE STORE UNTIL ITS `rob_unsafe` CLEARS, and `IQ_V_ALU` is
+  past-PNR gated, so those cycles are paid by every CII op behind the store. This is
+  the structural reason a vector store's safety must NOT be allowed to fall back on
+  the completion path: the design already says the store is safe at translate-pass
+  complete, and routing that fact through a walker throws the earliness away.
+  Measured context: on `axpy_bare` the CII queue holds ~10 ops on 99% of cycles with
+  ~9 operand-ready and 0.07/cycle eligible, 88% of the blocking being the past-PNR
+  term alone.
+
+  So COUNT THE COLLISIONS (`clr_unsafe_drop`) before widening the port. If they are
+  rare the fallback is a non-issue and the CII stall is elsewhere; if they are
+  common the fix is a second `vec_clr_unsafe` port, or a one-deep holding register
+  that replays the losing event on the next cycle -- the latter is cheaper and
+  sufficient, because two group-safes cannot arrive every cycle indefinitely.
+  Do NOT "fix" it by giving stores priority: that just moves the drop onto loads,
+  whose group-safe gates the SAME PNR advance.
 
   //@req-spec-rob.c6
   //@req-spec-rob.c7

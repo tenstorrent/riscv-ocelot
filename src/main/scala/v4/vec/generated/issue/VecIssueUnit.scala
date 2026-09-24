@@ -59,6 +59,15 @@ class VecIssueUnitIO(
   val brupdate       = Input(new BrUpdateInfo())
   val flush_pipeline = Input(Bool())
   val squash_grant   = Input(Bool())
+  //@req-spec-issue.g15
+  // Broadcast straight through to every slot; this unit reads no bit of it.
+  val live_busytable = Input(Bits(numVecPhysRegs.W))
+
+  //@req-spec-lsu.k2b
+  // Per-STQ-entry "AGEN capture done", broadcast to the store slots.
+  val st_dgen_base_vld = if (isAluQueue) None else Some(Input(UInt(numStqEntries.W)))
+  val st_dgen_ready    = if (isAluQueue) None else Some(Input(Bool()))
+
   val rob_pnr_idx  = if (pnrGate) Some(Input(UInt(robAddrSz.W))) else None
   val rob_head_idx = if (pnrGate) Some(Input(UInt(robAddrSz.W))) else None
 }
@@ -229,6 +238,9 @@ class VecIssueUnit(
     //@req-spec-cii.i5
     //@req-spec-cii.i13
     //@req-spec-issue.d15
+    issue_slots(i).live_busytable := io.live_busytable
+    if (!isAluQueue) { issue_slots(i).st_dgen_base_vld.get := io.st_dgen_base_vld.get }
+    if (!isAluQueue) { issue_slots(i).st_dgen_ready.get := io.st_dgen_ready.get }
     if (pnrGate) {
       issue_slots(i).rob_pnr_idx.get  := io.rob_pnr_idx.get
       issue_slots(i).rob_head_idx.get := io.rob_head_idx.get
@@ -254,6 +266,18 @@ class VecIssueUnit(
   val nFastSlots = numIssueSlots - nSlowSlots
   require(nFastSlots >= dispatchWidth)
   require(nFastSlots <= numIssueSlots)
+
+  // QUEUE OCCUPANCY, per cycle. "How many ops are sitting in this IQ waiting" had no
+  // answer in any trace -- only grant and dispatch_accept counts, which are flows and
+  // cannot distinguish a starved queue from a blocked one. `occ` is the population,
+  // `rdy` how many of those could issue right now; `occ` high with `rdy` zero is a
+  // dependence stall, both low is starvation, and they call for opposite fixes.
+  when (issue_slots.map(_.valid).reduce(_ || _)) {
+    VecTrace.traceId("VecIssueUnit", "occupancy", iqType.U, Seq(
+      ("occ", PopCount(issue_slots.map(_.valid))),
+      ("rdy", PopCount(issue_slots.map(s => s.valid && s.request))),
+      ("elig", PopCount(issue_slots.map(s => s.valid && s.eligible)))))
+  }
 
   val vacants = issue_slots.map(s => !(s.valid)) ++ io.dis_uops.map(_.valid).map(!_.asBool)
   val shamts_oh = Wire(Vec(numIssueSlots + dispatchWidth, UInt(dispatchWidth.W)))

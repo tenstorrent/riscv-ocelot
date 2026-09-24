@@ -820,6 +820,12 @@ class WithLargeBoomsVectorWide extends Config(
   new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic", dcacheDataBits = 128)
 )
 
+// ⚠ DO NOT SET enableFastPNR ON THIS FORK. Tried 2026-09-22 to attack the CII
+// queue's past-PNR stall: it fails BOOM's OWN sanity assertion
+// (`rob.scala:1005`, "head overrunning PNR") at 851000 ps -- on `lui x11` at
+// PC 0x10000, the FIRST instruction of the bootrom, before any vector op exists.
+// The option defaults false upstream and is plainly unmaintained; this is not a
+// vector-side regression and fixing it is a scalar-ROB project, not a config knob.
 class WithMegaBoomsVectorWide extends Config(
   new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic", dcacheDataBits = 128)
 )
@@ -830,6 +836,18 @@ class WithMegaBoomsVectorWide extends Config(
 // measured null (usQueueEntries 16->32/64/256, numVecPhysRegisters 128->256), so
 // this raises all of them at once. Its own fragment so MegaBoomV4VectorWideConfig
 // stays the regression baseline.
+//
+// RE-MEASURED 2026-09-14, after the rdy_vold false dependency was removed and
+// axpy_bare stopped being D$-throughput-bound -- the earlier null was taken while a
+// different thing was binding, so it was worth redoing. usQueueEntries 16->64 is
+// STILL a null. It does REMOVE the queue as a suspect rather than merely failing to
+// help: `resv_deny` goes 5261 -> 0 and dispatch stalls 3115 -> 652 cycles, so
+// dispatch is genuinely unblocked. And yet the cycle count is IDENTICAL (17097 both)
+// and memory-level parallelism does not move (1.71 -> 1.68 load ops in flight). The
+// US queues were critically sized as a CONSEQUENCE of the loop period, not a cause
+// of it -- Little's law cannot tell those apart from an occupancy trace, only the
+// counterfactual can. The residual 652 stalls are `vec_alloc_ok=0`, the vector free
+// list, not the LSU.
 class WithMegaBoomsVectorWide4x extends Config(
   new WithVector(
     numVecPhysRegisters = 4 * VectorParams().numVecPhysRegisters,  // 128  -> 512

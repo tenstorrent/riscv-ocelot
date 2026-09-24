@@ -56,6 +56,24 @@ class VecLsuIO(implicit p: Parameters) extends BoomBundle
   val iss_ld = Input(Valid(new MicroOp()))
   val iss_st = Input(Valid(new MicroOp()))
 
+  //@req-spec-lsu.k2b
+  // WHICH STQ ENTRIES HAVE HAD THEIR AGEN CAPTURE. `stDgenBaseVld`, exported so
+  // the issue seam can order the DGEN grant behind the AGEN pass's operand read.
+  // VecStoreDgenPath previously gated `dgen_request` on `!fu_agen` alone, which
+  // orders the two GRANTS but not the grant against `stOpPulse` -- the DGEN then
+  // reads `stDgenBaseTbl`/`stDgenVlTbl` before either was written, which is a wild
+  // store with a garbage length, and the assertion at the capture site says so.
+  val st_dgen_base_vld = Output(UInt(numStqEntries.W))
+
+  //@req-spec-lsu.k2b
+  // CAN VecDgen ACCEPT A DGEN GRANT THIS CYCLE. `VecDgen.io.req.ready` is
+  // `!req_valid` -- it holds ONE op at a time -- while the store issue grant is
+  // fire-and-forget with no ready back, so a DGEN granted into a busy VecDgen is
+  // DROPPED ON THE FLOOR and that store's data half never enqueues. The store then
+  // reaches its post-commit write pass with an empty data queue and parks the drain
+  // pointer forever, which stalls every younger store behind it and finally the ROB.
+  val st_dgen_ready = Output(Bool())
+
   val brupdate       = Input(new BrUpdateInfo)
   val rob_flush      = Input(Bool())
   val rob_flush_kill = Input(Bool())
@@ -554,8 +572,21 @@ class VecLsu(
   val ldDrainGateOn = !PlusArg("vec_no_drain_gate", 0,
     "Disable the vector-load drain-order admission gate (PROFILING ONLY -- deadlocks)",
     width = 1).orR
+  // ===> ADMISSION MUST ALSO RESPECT THE DRAIN ORDER: THE ONE-AHEAD ARM. Strict
+  // equality against `ldUsDrainPtr` stalls a range that is one slot ahead of a
+  // drain slot that has ALREADY PUSHED ITS RANGE -- past the streamer and past
+  // the walk, owing the LCB nothing -- so admitting drainPtr+1 there cannot
+  // create the circular wait the gate exists to prevent. `ldUsTwoHeads` is the
+  // same kind of measurement escape hatch as `ldDrainGateOn`, defaulting ON.
+  val ldUsTwoHeads = !PlusArg("vec_one_drain_head", 0,
+    "Restrict vector-load drain admission to a single head (disables the one-ahead arm)",
+    width = 1).orR
+  val ldUsPrefixFilled = ld_US_ADDR_Q.io.filled_vec(ld_US_ADDR_Q.phys(ldUsDrainPtrFwd))
+  val ldUsDrainPtrFwdNext = (ldUsDrainPtrFwd + 1.U)(ld_US_ADDR_Q.ptrW - 1, 0)
   val ldWinnerDrainNext = !ldWinnerIsRange || !ldDrainGateOn ||
-    (ldUsBaseTbl(GetRealLSQIdx(ldWinnerFullIdx)) === ldUsDrainPtrFwd)
+    (ldUsBaseTbl(GetRealLSQIdx(ldWinnerFullIdx)) === ldUsDrainPtrFwd) ||
+    (ldUsTwoHeads && ldUsBaseTbl(GetRealLSQIdx(ldWinnerFullIdx)) === ldUsDrainPtrFwdNext &&
+      ldUsPrefixFilled)
   //@req-spec-lsu.b4
   // An SSI walk may end short and owe the drain a slack record, and the agen has
   // no way to refuse one (its `op.valid` is a one-cycle pulse). Reserve the row
@@ -1017,6 +1048,9 @@ class VecLsu(
   dgen.io.req.bits.data_base := stDgenBaseTbl(stDgenIdx)
   when (dgen.io.req.fire) { stDgenBaseVld(stDgenIdx) := false.B }
 
+  io.st_dgen_base_vld := stDgenBaseVld.asUInt
+  io.st_dgen_ready    := dgen.io.req.ready
+
   //@req-spec-lsu.k2b
   // vec_lsu_dgen_base_captured_before_grant. INDEPENDENT OF CLASS C, and it is
   // EXPECTED TO STILL FIRE -- the read-enable rework makes it less likely (the
@@ -1055,8 +1089,21 @@ class VecLsu(
   // Connects the forward declaration at the load-admission point above.
   ldUsDrainPtrFwd := ldUsDrainPtr
   val ldUsDrainPtrPrev = RegNext(ldUsDrainPtr)
-  val ldUsStagedValid = ld_US_ADDR_Q.io.rd(0).resp.filled && (ldUsDrainPtrPrev === ldUsDrainPtr)
-  val ldUsStagedBits  = ld_US_ADDR_Q.io.rd(0).resp.data.asTypeOf(new VecRangeEntry)
+  // ===> THE ONE-AHEAD ARM IS WORTHLESS WITHOUT A BUBBLE-FREE HANDOFF AT THE
+  // DRAIN. `rd(0)` has one cycle of read latency, so the cycle after a retire
+  // the staged head is invalid even when the next range has long been sitting
+  // in the queue. Prefetch the successor on the spare read port every cycle and
+  // hand it over exactly on the retire cycle -- `ldUsAdvanced` tests a step of
+  // EXACTLY ONE (a retire), not a squash rewind, where `rd(1)`'s response
+  // belongs to the wrong slot and the Mux falls back to the old `rd(0)` bubble.
+  val ldUsDrainPtrNext = (ldUsDrainPtr + 1.U)(ld_US_ADDR_Q.ptrW - 1, 0)
+  ld_US_ADDR_Q.io.rd(1).req.valid := true.B
+  ld_US_ADDR_Q.io.rd(1).req.bits  := ldUsDrainPtrNext
+  val ldUsAdvanced    = (ldUsDrainPtrPrev + 1.U)(ld_US_ADDR_Q.ptrW - 1, 0) === ldUsDrainPtr
+  val ldUsStagedValid = Mux(ldUsAdvanced, ld_US_ADDR_Q.io.rd(1).resp.filled,
+    ld_US_ADDR_Q.io.rd(0).resp.filled && (ldUsDrainPtrPrev === ldUsDrainPtr))
+  val ldUsStagedBits  = Mux(ldUsAdvanced, ld_US_ADDR_Q.io.rd(1).resp.data, ld_US_ADDR_Q.io.rd(0).resp.data)
+    .asTypeOf(new VecRangeEntry)
 
   // Forward declaration. `ldRangeFaulted` is defined beside the exception shadow
   // several hundred lines below, and Scala would read a null here -- the same
@@ -1240,10 +1287,9 @@ class VecLsu(
   ld_US_ADDR_Q.io.consume(0).valid := ldUsRetire
   ld_US_ADDR_Q.io.consume(0).bits  := ldUsDrainPtr
   for (i <- 1 until queuePorts) { ld_US_ADDR_Q.io.consume(i).valid := false.B; ld_US_ADDR_Q.io.consume(i).bits := 0.U }
-  // Only rd(0) is a live drain lane for the US queues (VecBeatExpander takes a
-  // single us_head regardless of nLanes); the remaining ports+1 read lanes are
-  // unused here and tied off.
-  for (i <- 1 to queuePorts) { ld_US_ADDR_Q.io.rd(i).req.valid := false.B; ld_US_ADDR_Q.io.rd(i).req.bits := 0.U }
+  // rd(0) is the live drain lane and rd(1) is the one-ahead prefetch handoff
+  // above; the remaining read lanes are unused here and tied off.
+  for (i <- 2 to queuePorts) { ld_US_ADDR_Q.io.rd(i).req.valid := false.B; ld_US_ADDR_Q.io.rd(i).req.bits := 0.U }
 
   // ---- load, SSI: one shared base index, lane i always reads base+i ----
   val ldSsiBase = RegInit(0.U(ld_SSI_ADDR_Q.ptrW.W))
@@ -1363,6 +1409,35 @@ class VecLsu(
   // its publication record must survive a flush too -- see VecBeatExpander.nlhdl.
   when ((io.rob_flush || squash.io.kill(3)) && !stUsWritePass) { stLcamDoneVld := false.B }
   st_beat.io.us_lcam_owed := stUsLcamOwed
+
+  // TEMP PROBE -- the store US drain FSM, every cycle it is staged but not
+  // advancing. The relaxed CII gate wedges with a store that has both its address
+  // range and its data enqueued and never fires, and no existing trace names which
+  // of the four terms of `stUsStagedValid` is low or whether the write pass is
+  // waiting on commit. Printed unconditionally while staged so the transition into
+  // the wedge is visible, not just the steady state.
+  {
+    val stUsProbeStuck = RegInit(0.U(16.W))
+    when (st_beat.io.us_pop) { stUsProbeStuck := 0.U } .otherwise { stUsProbeStuck := stUsProbeStuck + 1.U }
+    when (stUsProbeStuck > 64.U && stUsProbeStuck(5, 0) === 0.U) {
+      VecTrace.traceStruct("VecLsu", "st_drain_stuck", Seq(
+        ("drain_ptr",   stUsDrainPtr),
+        ("cursor",      stUsCursor),
+        ("write_pass",  stUsWritePass.asUInt),
+        ("staged_raw",  stUsStagedValidRaw.asUInt),
+        ("filled",      st_US_ADDR_Q.io.rd(0).resp.filled.asUInt),
+        ("committed",   stUsCommitted.asUInt),
+        ("stq_idx",     stUsStagedBits.stq_idx),
+        ("stq_head",    vec.stq_head),
+        ("stq_cmt_hd",  vec.stq_commit_head),
+        ("rob_idx",     stUsStagedBits.rob_idx),
+        ("lcam_owed",   stUsLcamOwed.asUInt),
+        ("req0_valid",  st_beat.io.req(0).valid.asUInt),
+        ("req0_ready",  st_beat.io.req(0).ready.asUInt),
+        ("stuck",       stUsProbeStuck)))
+    }
+  }
+
   for (i <- 0 until queuePorts) { st_US_ADDR_Q.io.consume(i).valid := false.B; st_US_ADDR_Q.io.consume(i).bits := 0.U }
   for (i <- 1 to queuePorts) { st_US_ADDR_Q.io.rd(i).req.valid := false.B; st_US_ADDR_Q.io.rd(i).req.bits := 0.U }
 
@@ -1726,6 +1801,7 @@ class VecLsu(
     ldRpyMask = ldRpyMask & (~UIntToOH(ldRpyPick(w), nLdTags)).asUInt
   }
 
+  val ldFiredOH = Wire(Vec(lsuWidth, UInt(nLdTags.W)))
   val ldTagSet = Wire(Vec(lsuWidth, UInt(nLdTags.W)))
   val ldTagClr = Wire(Vec(lsuWidth, UInt(nLdTags.W)))
   val ldRpySet = Wire(Vec(lsuWidth, UInt(nLdTags.W)))
@@ -1739,6 +1815,12 @@ class VecLsu(
       ldTagTable(ldLaneTag(w)) := arb.io.vec_fire(w).bits
     }
     ldRpyClr(w) := Mux(isLdFire && ldRpyValid(w), UIntToOH(ldRpyPick(w), nLdTags), 0.U)
+    ldFiredOH(w) := Mux(isLdFire,
+      UIntToOH(arb.io.vec_fire(w).bits.uop.v_mem_tag.get, nLdTags), 0.U)
+    when (vec.s1_kill(w) && RegNext(ldFiredOH(w), 0.U(nLdTags.W)).orR) {
+      VecTrace.traceId("VecLsu", "ld_s1_kill", RegNext(arb.io.vec_fire(w).bits.uop.rob_idx),
+        Seq(("lane", w.U), ("tag", RegNext(arb.io.vec_fire(w).bits.uop.v_mem_tag.get))))
+    }
 
     // A nack does NOT free the tag -- it marks the beat for replay and keeps the tag
     // (and its parked request) alive. Freeing here instead would drop the beat: the
@@ -1789,9 +1871,50 @@ class VecLsu(
     lcb.io.resp(w).bits.nbytes   := PopCount(shadow.byte_en)
     lcb.io.resp(w).bits.nelem    := PopCount(shadow.byte_en) >> shadow.eew
   }
+  // A beat killed at the D$'s s1 returns NEITHER resp nor nack -- dcache.scala gates
+  // s2_valid on !io.lsu.s1_kill(w), so the beat leaves no trace at s2 and none of the
+  // three ports above ever names it. The scalar path raises s1_kill on its OWN
+  // searcher and re-arms it through `ldq_executed := false`, but `do_ld_search(w)` is
+  // also true for a VECTOR lcam presentation, and then the victim is whatever beat
+  // occupied lane w's dmem_req last cycle -- a beat with no ldq_executed bit of its
+  // own. Replay it here or its tag stays busy forever and the LCB entry it owed bytes
+  // to never fills; the failure then surfaces four thousand cycles later, in another
+  // module, as lcbStallWatchdog on an entry that is short by exactly one beat.
+  // s1_kill is an s1 signal, so the victim is the beat that fired LAST cycle.
+  val ldKillSet = (0 until lsuWidth).map(w =>
+    Mux(vec.s1_kill(w), RegNext(ldFiredOH(w), 0.U(nLdTags.W)), 0.U(nLdTags.W))).reduce(_ | _)
+
   ldTagBusy   := (ldTagBusy | ldTagSet.reduce(_ | _)) & (~ldTagClr.reduce(_ | _)).asUInt
-  ldTagReplay := (ldTagReplay | ldRpySet.reduce(_ | _)) &
-                 (~(ldRpyClr.reduce(_ | _) | ldTagClr.reduce(_ | _))).asUInt
+  // ldKillSet is OR-ed AFTER the clears, for the same reason stKillSet is: a killed
+  // beat that was itself a replay has its bit in ldRpyClr from firing, and the kill
+  // must win or the beat is lost.
+  ldTagReplay := ((ldTagReplay | ldRpySet.reduce(_ | _)) &
+                 (~(ldRpyClr.reduce(_ | _) | ldTagClr.reduce(_ | _))).asUInt) | ldKillSet
+
+  // A killed beat cannot also have responded: a resp arrives at s2, which the kill
+  // suppressed.
+  assert((ldKillSet & ldTagClr.reduce(_ | _)) === 0.U,
+    "VecLsu: a load beat responded and was killed at s1 in the same cycle")
+
+  // ---- RESPONSE-TAG LEAK WATCHDOG. Every mechanism that can drop a beat silently
+  // (s1_kill above, s2_store_failed on the store side) shows up first as a tag that
+  // never retires, and only much later as a short LCB entry. Assert on the tag, where
+  // the fault is, not on the entry, where it is merely visible. A miss can hold a tag
+  // for hundreds of cycles legitimately, so the bound is the same generous one the
+  // arbiter watchdog uses; anything that trips this is a leak, not a slow miss.
+  if (ldAcceptWatchdog > 0) {
+    val busy_cnt = RegInit(0.U(log2Ceil(ldAcceptWatchdog + 2).W))
+    when (ldTagBusy =/= RegNext(ldTagBusy, 0.U(nLdTags.W))) {
+      busy_cnt := 0.U
+    } .elsewhen (ldTagBusy.orR) {
+      busy_cnt := busy_cnt + 1.U
+    }
+    assert(busy_cnt <= ldAcceptWatchdog.U,
+      "VecLsu: a load response tag has been busy for ldAcceptWatchdog cycles with no " +
+      "resp, no nack and no replay -- its beat was dropped by the D$ without an " +
+      "outcome, so the LCB entry it owed bytes to can never fill. Check the s1_kill " +
+      "and store_failed replay paths.")
+  }
 
   //@req-spec-rob.d16
   io.vec_group_done(0) := lcb.io.group_done
@@ -1934,7 +2057,13 @@ class VecLsu(
   // busy forever and their bytes never reach memory.
   val stFiredThisOH = stFiredOH.reduce(_ | _)
   val stFiredPrevOH = RegNext(stFiredThisOH, 0.U(nLdTags.W))
-  val stKillSet = Mux(vec.store_failed, stFiredThisOH | stFiredPrevOH, 0.U(nLdTags.W))
+  // s1_kill kills a store beat exactly as it kills a load beat, and the store-side
+  // ordering checks share the very same `when` bodies. Mirror the load path: an
+  // assertion or a recovery written for one direction of a mirrored pair is half of
+  // one.
+  val stKillS1 = (0 until lsuWidth).map(w =>
+    Mux(vec.s1_kill(w), RegNext(stFiredOH(w), 0.U(nLdTags.W)), 0.U(nLdTags.W))).reduce(_ | _)
+  val stKillSet = Mux(vec.store_failed, stFiredThisOH | stFiredPrevOH, 0.U(nLdTags.W)) | stKillS1
 
   stTagBusy   := (stTagBusy | stTagSet.reduce(_ | _)) & (~stTagClr.reduce(_ | _)).asUInt
   // stKillSet is OR-ed AFTER the clears: a squashed beat that was itself a replay has
@@ -2022,7 +2151,12 @@ class VecLsu(
     val fired    = arb.io.vec_fire(w)
     val isStoreWinner = arb.io.st_req(w).fire
     val isUs     = fired.bits.lcam_range_len =/= 0.U
-    snoop.io.cand(w).valid          := fired.valid && fired.bits.uses_lcam
+    val ldCandIsStaged = ldUsStagedValid &&
+      fired.bits.uop.ldq_idx === ldUsStagedBits.ldq_idx
+    val stCandIsStaged = stUsStagedValidRaw &&
+      fired.bits.uop.stq_idx === stUsStagedBits.stq_idx
+    snoop.io.cand(w).valid          := fired.valid && fired.bits.uses_lcam &&
+      (!isUs || Mux(isStoreWinner, stCandIsStaged, ldCandIsStaged))
     snoop.io.cand(w).bits.is_store       := isStoreWinner
     snoop.io.cand(w).bits.is_unit_stride := isUs
     //@req-spec-lsu.j3
@@ -2102,6 +2236,10 @@ class VecLsu(
              snoop.io.cand(w).bits.is_unit_stride) ||
            stUsStagedBits.stq_idx === snoop.io.cand(w).bits.uop.stq_idx,
       "VecLsu: an LCAM presentation named a DIFFERENT store than the one currently staged -- the duty and the staged range have diverged")
+    assert(!(snoop.io.cand(w).fire && !snoop.io.cand(w).bits.is_store &&
+             snoop.io.cand(w).bits.is_unit_stride) ||
+           ldUsStagedBits.ldq_idx === snoop.io.cand(w).bits.uop.ldq_idx,
+      "VecLsu: an LCAM presentation named a DIFFERENT load than the one currently staged -- the duty and the staged range have diverged")
   }
 
   // Pass 1 must not end still owing, unless nothing was active. An all-skip
@@ -2256,6 +2394,28 @@ class VecLsu(
   // than queued.
   io.vec_clr_unsafe.valid := ldGroupSafeAny || stGroupSafeUs || stGroupSafeSsi
   io.vec_clr_unsafe.bits  := Mux(ldGroupSafeAny, ldGroupSafeRobIdx, Mux(stGroupSafeUs, stUsStagedBits.rob_idx, ssiPass1RobIdx))
+
+  // SIZE THE DROPPED EVENT. The port above is single and the priority is fixed, so
+  // a store whose group-safe collides with a load's is simply LOST -- there is no
+  // queue behind it. A lost store group-safe is not a correctness bug, because the
+  // store's `rob_unsafe` still clears through `lsu_clr_bsy`, but that path is the
+  // STQ round-robin walker in `lsu.scala` (`clr_idx` advances one index per lane per
+  // cycle, then two more cycles of `clr_valid` -> `clr_valid_1` delay), so the clear
+  // lands up to ~10 cycles later than the group-safe would have. PNR cannot pass the
+  // store until then, and every CII op behind it waits -- which is exactly the
+  // structure that shows up as the ~9 operand-ready CII ops stuck behind the
+  // past-PNR term. Count the collisions before building a second port for them.
+  val stGroupSafeAny  = stGroupSafeUs || stGroupSafeSsi
+  val clrUnsafeDrop   = ldGroupSafeAny && stGroupSafeAny
+  when (clrUnsafeDrop) {
+    VecTrace.traceId("VecLsu", "clr_unsafe_drop",
+      Mux(stGroupSafeUs, stUsStagedBits.rob_idx, ssiPass1RobIdx),
+      Seq(("ld_rob", ldGroupSafeRobIdx), ("is_us", stGroupSafeUs.asUInt)))
+  }
+  when (ldGroupSafeAny || stGroupSafeAny) {
+    VecTrace.traceId("VecLsu", "group_safe", io.vec_clr_unsafe.bits,
+      Seq(("is_load", ldGroupSafeAny.asUInt), ("st_also", stGroupSafeAny.asUInt)))
+  }
 
   //@req-spec-lsu.a9
   vec.group_safe.valid        := io.vec_clr_unsafe.valid

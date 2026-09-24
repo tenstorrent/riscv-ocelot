@@ -40,6 +40,20 @@ class VecStoreDgenPathIO(implicit p: Parameters) extends BoomBundle
   val dgen_operand_ready   = Input(Bool())
   val agen_rebusied        = Input(Bool())
 
+  //@req-spec-lsu.k2b
+  // "This store's AGEN pass has captured its data_base and vl." `!fu_agen` orders
+  // the two GRANTS against each other; it does NOT order the DGEN grant against
+  // the AGEN pass's operand read (`stOpPulse` in VecLsu), which is a later,
+  // unrelated event. Without this term the DGEN streams from uninitialised
+  // `stDgenBaseTbl`/`stDgenVlTbl` -- a wild store with a garbage length, which
+  // VecLsu asserts on at the capture site and names this gate as the real fix.
+  val agen_captured        = Input(Bool())
+
+  //@req-spec-lsu.k2b
+  // VecDgen can accept a grant this cycle. The grant is fire-and-forget, so
+  // offering DGEN into a busy VecDgen loses the store's data half outright.
+  val dgen_sink_ready      = Input(Bool())
+
   // ---- Outputs to the slot: the operand mux ----
   val dgen_operand          = Output(uopT.pvs3.get.cloneType)
   val dgen_operand_members  = Output(uopT.v_emul.get.cloneType)
@@ -95,8 +109,9 @@ class VecStoreDgenPath(implicit p: Parameters) extends BoomModule
   //@req-spec-issue.g24
   //@req-spec-issue.c12
   //@req-spec-cii.i12
+  //@req-spec-lsu.k2b
   val dgen_request = io.slot_valid && !uop.iw_issued && fu_dgen && !fu_agen &&
-    !io.dgen_operand_busy && io.dgen_operand_ready
+    io.agen_captured && io.dgen_sink_ready && !io.dgen_operand_busy && io.dgen_operand_ready
 
   // =========================================================================
   // ---- 4. The operand mux — the M1 bug ----

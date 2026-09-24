@@ -300,6 +300,30 @@ from Tenstorrent Inc.
   FIRE-INDEPENDENTLY from `ren2_uops`, or dis_ready -> ren_stalls ->
   dis_hazards -> dis_fire -> dis_ready closes a loop.
 
+  ===> AND PROBE THE SCALAR HALF OF THE STALL, NOT ONLY THE VECTOR HALF.
+  `VecPipeline`'s `DisProbe dis_stall` reports `vec_alloc_ok` / `vl_alloc_ok` /
+  `vlsu_dis_ok` and nothing else, so a dispatch held back by `rob.io.ready`, an LDQ
+  or STQ full, a rename free list, or `!dispatcher.io.ren_uops(w).ready` is
+  INDISTINGUISHABLE in the trace from a dispatch that is not held back at all. That
+  blind spot is not hypothetical: on `axpy_bare` it cost three wrong conclusions in a
+  row. Each vector-visible candidate was cleared by counterfactual -- the US
+  reservation queues (`usQueueEntries` 16->64 drove `resv_deny` to zero), then the
+  per-iteration `vsetvli` VL dependence (hoisting it drove `pvl_busy` blocking from
+  1618 cycles to 4) -- and each time the loop period did not move, because whatever
+  paces it lives in `dis_hazards` here and nothing could see it.
+
+  So emit `DisProbe scalar_stall` on every cycle at least one valid uop is held back,
+  with each `dis_hazards` term OR-reduced across the lanes, and `DisProbe dis_empty`
+  on every cycle dispatch is open with nothing to dispatch. The second line is not
+  decoration: "dispatch is stalled" and "the front end delivered nothing" call for
+  opposite fixes, and without both lines they are the same absence of evidence.
+
+  Keep it under `usingRVV` -- it is a vector bring-up instrument and must not perturb
+  the scalar tiers' elaboration -- and read the terms as ATTRIBUTION, not as a
+  ranking. A term that reads 1 on every stalled cycle may still be a structure sized
+  to the loop rather than the structure setting it; that is exactly the trap the two
+  cleared candidates above sprang. Only a counterfactual settles which.
+
   ---- PART 4. Dispatch: the dispatcher is CONFIG-SELECTED and the three vector
        queues are wired NATIVELY ----
 

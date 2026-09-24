@@ -20,12 +20,14 @@ package boom.v4.vec.generated.issue
 import chisel3._
 import chisel3.util._
 import chisel3.layer
+import freechips.rocketchip.util.PlusArg
 
 import org.chipsalliance.cde.config.Parameters
 
 import boom.v4.common._
 import boom.v4.exu.{BrUpdateInfo, Wakeup}
 import boom.v4.util.{IsKilledByBranch, IsOlder, UpdateBrMask}
+import boom.v4.lsu.GetRealLSQIdx
 import boom.v4.vec.generated.{VecGroupDone, VecMemberRdy, VecTrace}
 import boom.v4.vec.formal.BoomSvaLayer
 
@@ -65,6 +67,17 @@ class VecIssueSlotIO(
   val vl_wakeup = Flipped(Vec(numVlWakeupPorts, Valid(UInt(vlPregSz.W))))
 
   val vec_group_done = Flipped(Vec(vectorParams.numVecWbPorts, Valid(new VecGroupDone)))
+
+  //@req-spec-issue.g15
+  // The rename busy table's LIVE view, broadcast unmodified. Each readiness
+  // tracker indexes it by its own prns, so a `group_done` pulse missed in the
+  // cycle it fired is recovered from the level on any later cycle.
+  val live_busytable = Input(Bits(numVecPhysRegs.W))
+
+  //@req-spec-lsu.k2b
+  // Per-STQ-entry "AGEN capture done", from VecLsu. Store slots only.
+  val st_dgen_base_vld = if (isAluSlot) None else Some(Input(UInt(numStqEntries.W)))
+  val st_dgen_ready    = if (isAluSlot) None else Some(Input(Bool()))
 
   val in_member_rdy  = Input(new VecMemberRdy)
   val out_member_rdy = Output(new VecMemberRdy)
@@ -277,6 +290,9 @@ class VecIssueSlot(
   rdy_vm.io.group_done  := io.vec_group_done
   rdy_vold.foreach(_.io.group_done := io.vec_group_done)
 
+  // One indexed read per tracker member off the broadcast table.
+  def liveBusyOf(prns: Seq[UInt]): Vec[Bool] = VecInit(prns.map(p => io.live_busytable(p)))
+
   rdy_vs1.io.load := io.in_uop.valid
   rdy_vs2.io.load := io.in_uop.valid
   rdy_vs3.io.load := io.in_uop.valid
@@ -293,6 +309,12 @@ class VecIssueSlot(
   //@req-spec-issue.g30
   //@req-spec-issue.g31
   rdy_vm.io.used := track_valid && track_uop.v_is_masked.get
+
+  rdy_vs1.io.live_busy := liveBusyOf(rdy_vs1.io.prns)
+  rdy_vs2.io.live_busy := liveBusyOf(rdy_vs2.io.prns)
+  rdy_vs3.io.live_busy := liveBusyOf(rdy_vs3.io.prns)
+  rdy_vm.io.live_busy  := liveBusyOf(rdy_vm.io.prns)
+  rdy_vold.foreach(r => r.io.live_busy := liveBusyOf(r.io.prns))
 
   rdy_vs1.io.in_member_rdy := io.in_member_rdy.vs1_rdy
   rdy_vs2.io.in_member_rdy := io.in_member_rdy.vs2_rdy
@@ -351,7 +373,14 @@ class VecIssueSlot(
     m.io.prns    := track_uop.stale_pvdest.get
     m.io.members.get := track_uop.v_emul.get
     //@req-spec-issue.g39
-    m.io.used := track_valid && track_uop.dst_rtype === RT_VEC
+    val v_needs_old_dest = track_uop.v_tail_undist.get || track_uop.v_mask_undist.get
+    // A/B escape hatch: restores the unconditional arm this gate replaced, so one
+    // simv measures both sides of the change with no RTL-version confound.
+    val vOldDepAll = PlusArg("vec_vold_dep_all", 0,
+      "Arm rdy_vold on every vector load, ignoring vta/vma (pre-fix behaviour)",
+      width = 1).orR
+    m.io.used := track_valid && track_uop.dst_rtype === RT_VEC &&
+      (if (isLoadSlot) (v_needs_old_dest || vOldDepAll) else true.B)
     m.io.in_member_rdy := io.in_member_rdy.vold_rdy
     io.out_member_rdy.vold_rdy := m.io.out_member_rdy
   }
@@ -420,12 +449,30 @@ class VecIssueSlot(
     dgen_path.io.agen_operands_ready := agen_operands_ready
     dgen_path.io.dgen_operand_ready  := rdy_vs3.io.ready
     dgen_path.io.agen_rebusied := rebusied_prs1
+    //@req-spec-lsu.k2b
+    // Indexed by THIS slot's stq entry; the bit is set by the AGEN pass's capture
+    // (`stOpPulse`) and cleared by VecLsu on the DGEN grant it gates, so it is a
+    // one-shot permission per store rather than a level that could admit two.
+    dgen_path.io.agen_captured := io.st_dgen_base_vld.get(GetRealLSQIdx(slot_uop.stq_idx))
+    dgen_path.io.dgen_sink_ready := io.st_dgen_ready.get
 
     //@req-spec-issue.g19
     //@req-spec-issue.g20
     request := dgen_path.io.agen_request || dgen_path.io.dgen_request
 
     io.iss_uop := slot_uop
+    //@req-spec-cii.e3
+    // THE ISSUED UOP CARRIES THIS CYCLE'S RESOLVED BRANCH MASK, NOT THE REGISTER'S.
+    // `slot_uop.br_mask` is one b1 behind: a branch resolving THIS cycle is already
+    // out of `next_uop.br_mask` (that is `GetNewBrMask`), and the eligibility gate
+    // above reads exactly that, so the grant is correct -- but the uop handed to the
+    // consumer would still carry the stale bit. For the CII that is fatal on the
+    // spot: VecCiiIssue registers `io.iss.bits` verbatim into `alloc_br_mask`, and
+    // VecCiiFlush asserts it is 0 on every allocation. Measured on jacobi2d_bare,
+    // spmv_bare and spmv_small, which fire that assertion and nothing else.
+    // The grant-cycle kill half of the same contract is already covered: `eligible`
+    // includes `!killed`, so a uop b1 is killing this cycle is never granted.
+    io.iss_uop.br_mask := next_uop.br_mask
     io.iss_uop.fu_code(FC_AGEN) := dgen_path.io.iss_fu_code_agen
     io.iss_uop.fu_code(FC_DGEN) := dgen_path.io.iss_fu_code_dgen
 
@@ -440,6 +487,35 @@ class VecIssueSlot(
       next_valid := rebusied || dgen_path.io.keep_valid
     }
 
+    // TEMP PROBE -- A STORE WHOSE DGEN HALF NEVER ISSUES. The relaxed CII gate
+    // wedges with the store drain parked in its write pass on a store whose data
+    // was never enqueued (VecBeatExpander's `usDataRdy` requires st_us_data.valid),
+    // and rob_idx ALIASES across ROB wrap so no per-rob grep can identify it. This
+    // names the tracker state by PRN, which is unique while the op is live: match
+    // `prn` against VecBusyTable's `clr pvdest=` stream to tell a lost wakeup pulse
+    // from a producer that never wrote that register at all.
+    {
+      val dgenPending = slot_valid && !slot_uop.iw_issued &&
+        slot_uop.fu_code(FC_DGEN) && !slot_uop.fu_code(FC_AGEN)
+      val dgenStuck = RegInit(0.U(16.W))
+      when (dgenPending && !dgen_path.io.dgen_request) { dgenStuck := dgenStuck + 1.U }
+        .otherwise { dgenStuck := 0.U }
+      when (dgenStuck > 64.U && dgenStuck(5, 0) === 0.U) {
+        VecTrace.trace("VecIssueSlot", "dgen_stuck", slot_uop, Seq(
+          ("prn",      rdy_vs3.io.prns(0)),
+          ("members",  rdy_vs3.io.members.get),
+          ("used",     rdy_vs3.io.used),
+          ("ready",    rdy_vs3.io.ready),
+          ("out_mrdy", rdy_vs3.io.out_member_rdy.asUInt),
+          ("in_mrdy",  io.in_member_rdy.vs3_rdy.asUInt),
+          ("fill",     io.in_uop.valid),
+          ("op_busy",  dgen_path.io.dgen_operand_busy),
+          ("is_pvtmp", dgen_path.io.dgen_operand_is_pvtmp),
+          ("stq_idx",  slot_uop.stq_idx),
+          ("stuck",    dgenStuck)))
+      }
+    }
+
     eligible := request
   } else {
     //@req-spec-core.f5
@@ -449,6 +525,27 @@ class VecIssueSlot(
     val vector_operands_ready =
       rdy_vs1.io.ready && rdy_vs2.io.ready && rdy_vs3.io.ready && rdy_vm.io.ready && rdy_vold.get.io.ready
     request := slot_valid && !slot_uop.iw_issued && scalar_operands_ready && vector_operands_ready
+
+    // Why this op is NOT allowed to issue yet -- the mirror of `grant_rdy` below,
+    // and the one that carries information. `grant_rdy` prints the five matchers at
+    // the grant, where every one of them reads 1 by definition; measuring WHY a load
+    // waits needs the terms sampled while it is still waiting. Load slots only: the
+    // ALU slot's wait is the CII dependence and is already visible in the vpu trace.
+    //
+    // This exists because axpy_bare's vector loads sit ~8.6 cycles between dispatch
+    // and their first request with nothing downstream to blame -- dispatch unblocked,
+    // the arbiter refusing on 7% of cycles, the IQ granting 2.6 cycles after
+    // readiness -- so the wait is a readiness term and no existing trace names which.
+    if (isLoadSlot) {
+      when (slot_valid && !slot_uop.iw_issued && !request) {
+        VecTrace.trace("VecIssueSlot", "load_not_rdy", slot_uop, Seq(
+          ("prs1_bsy", slot_uop.prs1_busy), ("prs2_bsy", slot_uop.prs2_busy),
+          ("pvl_bsy", slot_uop.pvl_busy.get),
+          ("vs1", rdy_vs1.io.ready), ("vs2", rdy_vs2.io.ready),
+          ("vs3", rdy_vs3.io.ready), ("vm", rdy_vm.io.ready),
+          ("vold", rdy_vold.get.io.ready)))
+      }
+    }
 
     // Why this op was allowed to issue. An operand that reads ready with a busy
     // producer is either (a) woken -- see VecGroupReady's `wake` -- or (b) never
@@ -464,6 +561,18 @@ class VecIssueSlot(
     }
 
     io.iss_uop := slot_uop
+    //@req-spec-cii.e3
+    // THE ISSUED UOP CARRIES THIS CYCLE'S RESOLVED BRANCH MASK, NOT THE REGISTER'S.
+    // `slot_uop.br_mask` is one b1 behind: a branch resolving THIS cycle is already
+    // out of `next_uop.br_mask` (that is `GetNewBrMask`), and the eligibility gate
+    // above reads exactly that, so the grant is correct -- but the uop handed to the
+    // consumer would still carry the stale bit. For the CII that is fatal on the
+    // spot: VecCiiIssue registers `io.iss.bits` verbatim into `alloc_br_mask`, and
+    // VecCiiFlush asserts it is 0 on every allocation. Measured on jacobi2d_bare,
+    // spmv_bare and spmv_small, which fire that assertion and nothing else.
+    // The grant-cycle kill half of the same contract is already covered: `eligible`
+    // includes `!killed`, so a uop b1 is killing this cycle is never granted.
+    io.iss_uop.br_mask := next_uop.br_mask
 
     next_uop.iw_issued := io.grant && !io.squash_grant
     next_uop.iw_issued_partial_agen := false.B
@@ -473,9 +582,80 @@ class VecIssueSlot(
       next_valid := rebusied
     }
 
+    // The CII queue's mirror of the load slot's `load_not_rdy`. Excluding the ALU
+    // slot from that probe was a mistake: `IsOlder(rob_idx, pnr, head)` appears in no
+    // other trace, so a CII op held by the PNR gate and one held by an operand look
+    // identical from outside. `pnr` here is the gate term ALONE -- read it against
+    // the operand columns to tell "waiting to become non-speculative" from "waiting
+    // for data".
+    if (isAluSlot) {
+      // `pnr` is the OLD past-PNR term and `br` the one that now gates -- both are
+      // printed, and unconditionally, so an A/B arm and the default arm produce the
+      // same columns and the relaxation's effect is readable as the gap between them.
+      val pastPnr = if (pnrGate) IsOlder(slot_uop.rob_idx, io.rob_pnr_idx.get,
+        io.rob_head_idx.get) else true.B
+      val brRdy   = (next_uop.br_mask === 0.U) && !killed
+      when (slot_valid && !slot_uop.iw_issued && !(request && brRdy)) {
+        VecTrace.trace("VecIssueSlot", "alu_not_rdy", slot_uop, Seq(
+          ("pnr", pastPnr), ("br", brRdy), ("brmask", next_uop.br_mask),
+          ("req", request),
+          ("prs1_bsy", slot_uop.prs1_busy), ("prs2_bsy", slot_uop.prs2_busy),
+          ("pvl_bsy", slot_uop.pvl_busy.get),
+          ("vs1", rdy_vs1.io.ready), ("vs2", rdy_vs2.io.ready),
+          ("vs3", rdy_vs3.io.ready), ("vm", rdy_vm.io.ready),
+          ("vold", rdy_vold.get.io.ready)))
+      }
+    }
+
     //@req-spec-issue.g21
     if (pnrGate) {
-      eligible := request && IsOlder(slot_uop.rob_idx, io.rob_pnr_idx.get, io.rob_head_idx.get)
+      // ---- THE GATE IS BRANCH-RESOLUTION, NOT PAST-PNR ----
+      //
+      // The gate used to be `IsOlder(rob_idx, rob_pnr_idx, rob_head_idx)`: issue only
+      // once the op is older than the ROB's oldest UNSAFE entry. That is far stronger
+      // than what the CII actually needs, and the difference is the whole CII issue
+      // rate. `starts_unsafe` is `uses_ldq || (uses_stq && !is_fence) || is_br ||
+      // is_jalr`, so on a vector loop the PNR pointer is parked behind every in-flight
+      // vector load and store -- the ops the CII op is waiting for DATA from anyway --
+      // and the CII queue sits ~10 deep with operands ready and nothing to do.
+      //
+      // What the CII can and cannot survive is asymmetric, and only ONE of those four
+      // producers is on the wrong side of it:
+      //   - a ROB flush (exception, memory-ordering fail, load replay, any redirect
+      //     that goes through the ROB) IS recoverable: VecCiiFlush raises `kill_all`
+      //     on `rob_flush || rob_flush_kill`, every live tag is marked killed and
+      //     drained, and the drain watchdog proves it completes. LOADS, STORES and
+      //     EXCEPTIONS -- three of the four `starts_unsafe` producers -- can only
+      //     squash through that path, so they need no gate at all.
+      //   - a BRANCH MISPREDICT is NOT recoverable: b2 is a partial squash by
+      //     `br_mask` with no flush, so it never reaches `kill_all`, and an op already
+      //     handed to the coprocessor cannot be un-handed. VecCiiFlush encodes exactly
+      //     this as `alloc_br_mask === 0` on every allocation.
+      //
+      // So the gate is the mispredict condition ALONE: no unresolved older branch in
+      // this op's mask. Taken on `next_uop.br_mask` (`GetNewBrMask`) rather than the
+      // register, so a branch resolving in b1 this cycle frees the op the SAME cycle
+      // instead of one later, and ANDed with `killed` so the grant cycle cannot issue
+      // an op that b1 is simultaneously killing (the grant-cycle kill contract).
+      // VecCiiFlush's `alloc_br_mask === 0` assertion and VecIssueUnit's
+      // "eligible entry was killed by a branch" assertion both still hold by
+      // construction, unchanged.
+      //
+      // `+vec_strict_pnr=1` restores the old past-PNR term for A/B, and
+      // `+vec_no_pnr_gate=1` still drops the gate entirely. That last one is MEASURE
+      // ONLY and known to hang (axpy_bare, 2026-09-15: a mispredicted CII op wedges
+      // the pipeline after ~5.4k instructions) -- it is the direct evidence that the
+      // branch term is the one that must stay.
+      val strictPnr = PlusArg("vec_strict_pnr", 0,
+        "A/B: restore the old past-PNR eligibility term on IQ_V_ALU",
+        width = 1).orR
+      val gateOn = !PlusArg("vec_no_pnr_gate", 0,
+        "MEASUREMENT ONLY: drop the CII eligibility gate on IQ_V_ALU entirely",
+        width = 1).orR
+      val pastPnrTerm = IsOlder(slot_uop.rob_idx, io.rob_pnr_idx.get, io.rob_head_idx.get)
+      val brResolved  = (next_uop.br_mask === 0.U) && !killed
+      val gateTerm    = Mux(strictPnr, pastPnrTerm, brResolved)
+      eligible := request && (gateTerm || !gateOn)
     } else {
       eligible := request
     }

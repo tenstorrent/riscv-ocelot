@@ -44,14 +44,14 @@ from Tenstorrent Inc.
   added per-member readiness side channel.
 
   ===> THE PRIORITY ENCODER SELECTS ON `eligible`, NOT ON `request`. VecIssueSlot
-       computes past-PNR eligibility ITSELF, per entry, and exports BOTH bits.
-       Selecting on `request` here silently deletes the past-PNR gate on
-       `iq_v_alu` and hands speculative work to the coprocessor. Baseline's own SNI
-       block is NOT reproduced, and its extra `| (rob_idx === rob_pnr_idx)` term
-       must not be copied either: `rob_pnr_idx` names the OLDEST UNSAFE entry
-       (`rob.scala:531`), so admitting equality admits the entry whose speculation
-       is NOT YET RESOLVED. The past-PNR test is a STRICT
-       `IsOlder(rob_idx, rob_pnr_idx, rob_head_idx)` with nothing OR-ed onto it.
+       computes CII eligibility ITSELF, per entry, and exports BOTH bits.
+       Selecting on `request` here silently deletes the gate on `iq_v_alu` and
+       hands branch-speculative work to the coprocessor, which cannot be
+       un-handed. The gate term the slot forms is BRANCH RESOLUTION
+       (`GetNewBrMask(brupdate, slot_uop) === 0 && !killed`), not the old past-PNR
+       `IsOlder` — see VecIssueSlot for why three of the four `starts_unsafe`
+       producers are recoverable through VecCiiFlush's `kill_all` and need no gate.
+       Baseline's own SNI block is NOT reproduced either way.
 
   ===> `out_member_rdy` MUST BE ROUTED TO `in_member_rdy` ON THE SAME COLLAPSE
        MOVE THAT ROUTES `out_uop` TO `in_uop`. Folding this per-member readiness
@@ -402,10 +402,14 @@ from Tenstorrent Inc.
   //@req-spec-cii.d4
   The array the encoder scans is `eligibles = issue_slots.map(_.eligible)`, NOT
   `requests`. On a `pnrGate` slot the slot has already formed
-  `request && IsOlder(slot_uop.rob_idx, rob_pnr_idx, rob_head_idx)` — its ROB
-  entry compared against `rob.io.rob_pnr_idx`, per entry, on every slot and not
-  only the head — so every op this unit hands the CII is individually
-  non-speculative, RoCC-style. On a non-`pnrGate` slot `eligible` is `request`
+  `request && GetNewBrMask(brupdate, slot_uop) === 0 && !killed`, per entry and
+  not only the head — so every op this unit hands the CII is individually free of
+  UNRESOLVED BRANCH speculation, which is the one squash class the CII cannot
+  absorb. It is NOT free of speculation in general, and deliberately so: an
+  exception, an ordering failure or a replay reaches the CII as `rob_flush` and is
+  drained by VecCiiFlush's `kill_all`, so gating on those too (which the old
+  past-PNR term did) bought nothing and parked the queue behind every in-flight
+  vector load. On a non-`pnrGate` slot `eligible` is `request`
   unchanged, so the load and store queues issue speculatively and ordering and
   replay stay the LSU's business. `requests` is still exported by the slots and is
   read here for TRACING and assertions only, never by the select; keeping both
@@ -419,26 +423,20 @@ from Tenstorrent Inc.
   construction. Two gates computing overlapping conditions in two places is how
   one of them ends up disabled by a config flag nobody connected.
   
-  AND ONE OF ITS TERMS IS ACTIVELY WRONG HERE, not merely redundant.
-  `issue_slot_past_pnr` includes `| (iss_uop.rob_idx === io.rob_pnr_idx)`, but
-  `rob_pnr_idx` NAMES THE OLDEST **UNSAFE** ENTRY (`rob.scala:531`) — so equality
-  ADMITS THE UNRESOLVED ENTRY. In the scalar SNI context that is intended, because
-  that mechanism is deliberately permissive. For `IQ_V_ALU`'s past-PNR gate it
-  would hand a STILL-SPECULATIVE op to the coprocessor, which defeats the entire
-  reason `pnrGate` exists — and the CII has no branch-kill path to recover with,
-  precisely because the gate was supposed to make one unnecessary.
-  ===> THE TEST IS THE STRICT `IsOlder(rob_idx, rob_pnr_idx, rob_head_idx)` THAT
-  THE SLOT COMPUTES, WITH NOTHING OR-ED ONTO IT. A generator that "restores the
-  missing equality case" is reintroducing the bug.
+  AND ITS `| (iss_uop.rob_idx === io.rob_pnr_idx)` TERM IS ACTIVELY WRONG HERE if
+  the past-PNR arm is ever selected (`+vec_strict_pnr=1`): `rob_pnr_idx` NAMES THE
+  OLDEST **UNSAFE** ENTRY (`rob.scala:531`), so equality ADMITS THE UNRESOLVED
+  ENTRY — including one sitting on an unresolved branch, the one case the CII has
+  no recovery path for. In the scalar SNI context that permissiveness is intended.
+  ===> THE GATE IS THE TERM THE SLOT COMPUTES, WITH NOTHING OR-ED ONTO IT.
 
   //@req-spec-cii.d13
   A squashed `IQ_V_ALU` entry never issues. Two mechanisms, and both are needed:
   `kill := io.flush_pipeline` clears `slot_valid` in the slot, dropping the entry
   from the queue before any select can see it; and a branch kill cannot reach an
-  ELIGIBLE entry at all, because a past-PNR entry's `br_mask` is necessarily clear
-  — the PNR cannot sweep past an unresolved branch, `is_br`/`is_jalr` setting
-  `starts_unsafe`. Assert that: on a `pnrGate` instance, an eligible entry is
-  never `IsKilledByBranch`. That assertion is the whole of "the CII needs no
+  ELIGIBLE entry at all, because the gate term IS `br_mask === 0` after this
+  cycle's b1 resolution, ANDed with `!killed`. Assert that: on a `pnrGate`
+  instance, an eligible entry is never `IsKilledByBranch`. That assertion is the whole of "the CII needs no
   branch-kill path", stated where it is checkable rather than in a comment.
 
   ---- 6. Grant requires ALL operands ready ----
@@ -720,6 +718,13 @@ encoder per issue lane, and the collapse muxes — now widened by the
 member-readiness bundle riding alongside the uop, `5*maxMembers + 1` = 41 bits with
 `vold_rdy` included.
 <|end_perf|>
+
+/* ===> EMIT QUEUE OCCUPANCY, NOT ONLY FLOWS. `grant` and `dispatch_accept` are
+   RATES; neither can tell a queue that is empty because nothing was dispatched from
+   one that is full of ops none of which can issue, and those two call for opposite
+   fixes. Emit `occupancy` each  cycle any slot is valid, carrying the population (`occ`),
+   how many could request (`rdy`), and how many are eligible (`elig`) -- on a pnrGate
+   queue `rdy` minus `elig` is the past-PNR cost, which no other signal exposes. */
 
 <|begin_dependencies|>
 VecIssueSlot — instantiated as `slots`, `count: numEntries`, in all three

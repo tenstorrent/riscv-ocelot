@@ -435,6 +435,16 @@ class VecPipeline(val numIntWakeupPorts: Int, val numFpWakeupPorts: Int)
     q.io.vec_group_done := vecGroupDoneNetwork
     q.io.child_rebusys := io.int_child_rebusys
     q.io.squash_grant  := io.int_squash_grant
+    //@req-spec-issue.g15
+    // The live busy table, to every vector queue. A `group_done` is a one-cycle
+    // pulse; this is the same fact as a level, so a tracker that was not comparing
+    // in the pulse cycle still becomes ready. See VecGroupReady.
+    q.io.live_busytable := vec_rename.io.live_busytable
+    //@req-spec-lsu.k2b
+    // Load and store queues elaborate this port (the slot bundle keys it off
+    // `isAluSlot`); only the store slots read it.
+    q.io.st_dgen_base_vld.foreach(_ := vlsu.io.st_dgen_base_vld)
+    q.io.st_dgen_ready.foreach(_ := vlsu.io.st_dgen_ready)
   }
   //@req-spec-issue.f12
   //@req-spec-issue.f13

@@ -124,6 +124,7 @@ class VecRenameSpace(
 
     // Observability only -- nothing functional may read either.
     val debug_freelist  = Output(UInt(numPhysRegs.W))
+    val live_busytable  = Output(Bits(numPhysRegs.W))
     val debug_busytable = Output(Bits(numPhysRegs.W))
   })
 
@@ -565,6 +566,7 @@ class VecRenameSpace(
 
   io.debug_freelist  := freelist.io.debug_freelist
   io.debug_busytable := busytable.io.debug.busytable
+  io.live_busytable  := busytable.io.live_busytable
 
   // ===========================================================================
   // ---- 9. What this module deliberately does NOT do ----

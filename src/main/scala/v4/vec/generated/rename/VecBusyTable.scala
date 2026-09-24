@@ -111,6 +111,14 @@ class VecBusyTableIO(
     (if (vectorInstance) new VecGroupDone else UInt(pregSz.W)): Data
   )))
 
+  // THE LIVE TABLE, this cycle's clears applied -- the same `busy_table_clr` view
+  // the rename read ports use. Broadcast to the issue slots so a source operand's
+  // readiness can be RE-DERIVED at any time instead of depending on catching a
+  // one-cycle `group_done` pulse. A pulse missed while the consumer was mid
+  // collapse-shift (or otherwise not comparing that cycle) is otherwise
+  // unrecoverable: the producer never pulses again, and the consumer waits forever.
+  val live_busytable = Output(Bits(numPregs.W))
+
   val debug = new Bundle { val busytable = Output(Bits(numPregs.W)) }
 }
 
@@ -250,6 +258,16 @@ class VecBusyTable(
   busy_table := busy_table_next
 
   io.debug.busytable := busy_table
+  // THE REGISTERED TABLE, NOT `busy_table_clr`, AND THE DIFFERENCE IS CORRECTNESS.
+  // `busy_table_clr` is combinational on THIS cycle's clears, so a slot reading it
+  // can grant in the same cycle the producer's `group_done` fires -- one cycle
+  // EARLIER than the `member_hit` path, whose `member_rdy` is a register. That
+  // advance is not free: measured on axpy_bare, `vfmacc.vf v24,f10,v25` then read
+  // its sources before the write landed and wrote four garbage lanes (DUT
+  // d2c85aa5.. against an architectural 40141460aa64c2f9).
+  // `busy_table` is `busy_table_clr` one cycle later, so the level is exactly as
+  // late as the pulse it backs up -- never earlier, never lost.
+  io.live_busytable  := busy_table
 
   // =========================================================================
   // ---- 5 / 5b. Source reads, per-operand aggregation, and the per-member
