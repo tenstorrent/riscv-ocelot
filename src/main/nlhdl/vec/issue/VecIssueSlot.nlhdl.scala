@@ -626,7 +626,18 @@ from Tenstorrent Inc.
       eligible := request && (GetNewBrMask(brupdate, slot_uop) === 0) && !killed
 
   `IQ_V_LOAD`/`IQ_V_STORE` set `eligible := request`: vector memory may issue
-  speculatively, and ordering and replay are the LSU's business. The gate lives in
+  speculatively, and ordering and replay are the LSU's business.
+
+  ===> BUT THE PORT IS `io.eligible := eligible && !killed` ON EVERY SLOT TYPE.
+  `iss_uop.br_mask` is `next_uop.br_mask` (below), and `GetNewBrMask` clears a
+  bit on RESOLVE whether or not it mispredicted, so a uop granted in its killing
+  branch's b1 cycle leaves with that bit already gone; b1 is a one-cycle pulse, so
+  no downstream `IsKilledByBranch` on the issued uop can ever see the kill. The
+  grant-cycle kill must therefore be taken HERE, on the register. Measured on
+  canneal_bare (MegaBoomV4VectorWideConfig): a `vle32.v` granted from IQ_V_LOAD in
+  the b1 cycle of the mispredicted loop branch left with br_mask=0, ran to LCB
+  `group_done` on a squashed ROB entry and tripped `[rob] vec_clr_bsy naming an
+  invalid entry`. The gate lives in
   the slot precisely because it is per-entry; putting it in the unit's select would
   tempt a head-only implementation, whose cost is a segmented store's coprocessor
   half blocking every younger vector arithmetic op.
@@ -691,7 +702,10 @@ from Tenstorrent Inc.
   so an A/B pair produces identical columns and the relaxation reads off as the gap
   between `pnr` and `br`.
 
-  `io.iss_uop := slot_uop`, plus, in a store slot, the `fu_code(FC_AGEN)` /
+  `io.iss_uop := slot_uop` with `io.iss_uop.br_mask := next_uop.br_mask` (the b1-
+  updated mask the gate reads, so VecCiiFlush's `alloc_br_mask === 0` holds for an
+  op granted in its branch's resolve cycle; safe only because `io.eligible` ANDs
+  `!killed`, above), plus, in a store slot, the `fu_code(FC_AGEN)` /
   `fu_code(FC_DGEN)` overrides `dgen_path` supplies. Baseline's grant bookkeeping
   is reused verbatim: `next_uop.iw_issued := io.grant && !io.squash_grant`, the
   two `iw_issued_partial_*` markers defaulted false and driven from `dgen_path`,

@@ -470,8 +470,9 @@ class VecIssueSlot(
     // spot: VecCiiIssue registers `io.iss.bits` verbatim into `alloc_br_mask`, and
     // VecCiiFlush asserts it is 0 on every allocation. Measured on jacobi2d_bare,
     // spmv_bare and spmv_small, which fire that assertion and nothing else.
-    // The grant-cycle kill half of the same contract is already covered: `eligible`
-    // includes `!killed`, so a uop b1 is killing this cycle is never granted.
+    // The grant-cycle kill half of the same contract is carried by `io.eligible`,
+    // which ANDs `!killed` for EVERY slot type (see its assignment): a uop b1 is killing
+    // this cycle is never granted, so dropping its bit here cannot hide a kill.
     io.iss_uop.br_mask := next_uop.br_mask
     io.iss_uop.fu_code(FC_AGEN) := dgen_path.io.iss_fu_code_agen
     io.iss_uop.fu_code(FC_DGEN) := dgen_path.io.iss_fu_code_dgen
@@ -570,8 +571,9 @@ class VecIssueSlot(
     // spot: VecCiiIssue registers `io.iss.bits` verbatim into `alloc_br_mask`, and
     // VecCiiFlush asserts it is 0 on every allocation. Measured on jacobi2d_bare,
     // spmv_bare and spmv_small, which fire that assertion and nothing else.
-    // The grant-cycle kill half of the same contract is already covered: `eligible`
-    // includes `!killed`, so a uop b1 is killing this cycle is never granted.
+    // The grant-cycle kill half of the same contract is carried by `io.eligible`,
+    // which ANDs `!killed` for EVERY slot type (see its assignment): a uop b1 is killing
+    // this cycle is never granted, so dropping its bit here cannot hide a kill.
     io.iss_uop.br_mask := next_uop.br_mask
 
     next_uop.iw_issued := io.grant && !io.squash_grant
@@ -662,7 +664,18 @@ class VecIssueSlot(
   }
 
   io.request  := request
-  io.eligible := eligible
+  //@req-spec-cii.e3
+  //@req-spec-issue.g21
+  // NO SLOT MAY BE ELIGIBLE IN THE CYCLE b1 KILLS IT -- on EVERY slot type, not
+  // only the pnrGate arm's `brResolved`. `iss_uop.br_mask` is `next_uop.br_mask`
+  // (GetNewBrMask), which clears a bit on RESOLVE, mispredicted or not, so the
+  // grant-cycle uop no longer carries the bit that kills it and no downstream
+  // `IsKilledByBranch(..., iss.bits)` can see the kill; b1 is gone next cycle.
+  // Measured on canneal_bare (MegaBoomV4VectorWideConfig): the `vle32.v` at rob 16
+  // was granted from IQ_V_LOAD in the b1 cycle of the mispredicted loop branch
+  // (rob 8) with br_mask=0, survived the squash as a zombie, and its LCB
+  // group_done tripped `[rob] vec_clr_bsy naming an invalid entry`.
+  io.eligible := eligible && !killed
 
   // ---- 8. Assertions ----
   assert(!(io.grant && !slot_valid),
