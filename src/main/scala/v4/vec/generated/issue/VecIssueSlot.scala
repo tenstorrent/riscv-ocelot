@@ -419,27 +419,23 @@ class VecIssueSlot(
     dgen_path.io.squash_grant := io.squash_grant
     dgen_path.io.slot_uop   := slot_uop
 
-    // End-of-cycle values: on the fill cycle the DGEN group belongs to the
-    // INCOMING uop, so it is selected off io.in_uop here rather than through
-    // dgen_path, whose slot_uop cone also drives iss_uop.fu_code.
+    // Only the in_member_rdy lane follows the INCOMING uop; prns/members/used track slot_uop.
     val dgen_in_is_pvtmp = io.in_uop.bits.is_shared.get
     val dgen_sel_is_pvtmp = Mux(io.in_uop.valid, dgen_in_is_pvtmp,
       dgen_path.io.dgen_operand_is_pvtmp)
 
-    rdy_vs3.io.prns := Mux(io.in_uop.valid,
-      Mux(dgen_in_is_pvtmp, io.in_uop.bits.pvtmp.get, io.in_uop.bits.pvs3.get),
-      dgen_path.io.dgen_operand)
-    rdy_vs3.io.members.get := Mux(io.in_uop.valid, io.in_uop.bits.v_emul.get,
-      dgen_path.io.dgen_operand_members)
-    rdy_vs3.io.used := active_valid
+    val dgen_reg_is_pvtmp = dgen_path.io.dgen_operand_is_pvtmp
+    rdy_vs3.io.prns := dgen_path.io.dgen_operand
+    rdy_vs3.io.members.get := dgen_path.io.dgen_operand_members
+    rdy_vs3.io.used := track_valid
     rdy_vs3.io.in_member_rdy := Mux(dgen_sel_is_pvtmp,
       io.in_member_rdy.vtmp_rdy, io.in_member_rdy.vs3_rdy)
-    io.out_member_rdy.vs3_rdy  := Mux(dgen_sel_is_pvtmp,
+    io.out_member_rdy.vs3_rdy  := Mux(dgen_reg_is_pvtmp,
       io.in_member_rdy.vs3_rdy, rdy_vs3.io.out_member_rdy)
-    io.out_member_rdy.vtmp_rdy := Mux(dgen_sel_is_pvtmp,
+    io.out_member_rdy.vtmp_rdy := Mux(dgen_reg_is_pvtmp,
       rdy_vs3.io.out_member_rdy, io.in_member_rdy.vtmp_rdy)
 
-    when (dgen_sel_is_pvtmp) {
+    when (dgen_reg_is_pvtmp) {
       next_uop.pvtmp_busy.get := !rdy_vs3.io.ready
     } .otherwise {
       next_uop.pvs3_busy.get := !rdy_vs3.io.ready

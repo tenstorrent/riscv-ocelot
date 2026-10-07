@@ -124,6 +124,21 @@ class FetchBuffer(implicit p: Parameters) extends BoomModule
     }
   }
 
+  if (PIPEVIEW_PRINTF) {
+    val pv_cycle = RegInit(0.U(xLen.W))
+    val pv_seq   = RegInit(0.U(32.W))
+    pv_cycle := pv_cycle + 1.U
+    when (do_enq) { pv_seq := pv_seq + PopCount(in_mask) }
+    for (i <- 0 until fetchWidth) {
+      in_uops(i).debug_seq.get := pv_seq + PopCount(in_mask.take(i) :+ false.B)
+      val pv_inst = Mux(in_uops(i).is_rvc, in_uops(i).debug_inst(15,0), in_uops(i).debug_inst)
+      when (do_enq && in_mask(i)) {
+        printf("O3PV fetch %d %d 0x%x 0x%x DASM(%x)\n", pv_cycle, in_uops(i).debug_seq.get,
+          in_uops(i).debug_pc, pv_inst, pv_inst)
+      }
+    }
+  }
+
   // Step 2. Generate one-hot write indices.
   val enq_idxs = Wire(Vec(fetchWidth, UInt(numEntries.W)))
 

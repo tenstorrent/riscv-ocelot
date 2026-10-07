@@ -149,6 +149,14 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
 
   issue_unit.io.iss_uops zip exe_units map { case (i, u) => u.io_iss_uop := i }
 
+  if (PIPEVIEW_PRINTF) {
+    for (iss <- iss_uops) {
+      when (iss.valid) {
+        printf("O3PV issue %d %d\n", io.debug_tsc_reg, iss.bits.rob_idx)
+      }
+    }
+  }
+
   //-------------------------------------------------------------
   // **** Register Arbitrate Stage ****
   //-------------------------------------------------------------

@@ -52,6 +52,12 @@ class VecDcacheArbiterIO(implicit p: Parameters) extends BoomBundle
   // that a presented agen fires in the cycle it arrives (`lsu.scala:782`), so an
   // ELEVATED vector grant, which bypasses `scalar_avail`, must stand down for it.
   val scalar_agen_incoming = Input(Vec(lsuWidth, Bool()))
+  //@req-spec-lsu.h4
+  // The scalar op fired on this lane LAST cycle owns this lane's LCAM THIS cycle
+  // (its s1 search), while a vector beat searches in its grant cycle. Also a hard
+  // deadline: an lcam-using beat, elevated or not, must stand down for it.
+  // Registered in the LSU, so it may feed vec_claim without forming a cycle.
+  val scalar_lcam_s1_busy = Input(Vec(lsuWidth, Bool()))
   val scalar_avail   = Input(Vec(lsuWidth, new LsuResourceClaim))
   val vec_claim      = Output(Vec(lsuWidth, new LsuResourceClaim))
   val vec_fire       = Output(Vec(lsuWidth, Valid(new VecMemAccess)))
@@ -93,11 +99,15 @@ class VecDcacheArbiter(implicit p: Parameters) extends BoomModule
   // `elevated` is a SCALA Boolean, not a Bool: Chisel's `||` builds hardware rather than
   // short-circuiting, so `elevated || avail.x` keeps avail in the cone even when elevated
   // is true.B -- and vec_claim's cone must be avail-free or the LSU seam forms a cycle.
-  def resourceOk(bits: VecMemAccess, avail: LsuResourceClaim, dmemReady: Bool, elevated: Boolean): Bool = {
+  def resourceOk(bits: VecMemAccess, avail: LsuResourceClaim, dmemReady: Bool, lcamS1Busy: Bool,
+                 elevated: Boolean): Bool = {
     val tlbOk    = if (elevated) true.B else !bits.uses_tlb || avail.tlb
     val dcacheOk = if (elevated) !bits.uses_dcache || dmemReady
                    else          !bits.uses_dcache || (avail.dcache && dmemReady)
-    val lcamOk   = if (elevated) true.B else !bits.uses_lcam || avail.lcam
+    // `avail.lcam` arbitrates only against scalar ops firing THIS cycle, whose
+    // search is next cycle; `lcamS1Busy` is the one searching now.
+    val lcamOk   = if (elevated) !bits.uses_lcam || !lcamS1Busy
+                   else          !bits.uses_lcam || (avail.lcam && !lcamS1Busy)
     tlbOk && dcacheOk && lcamOk
   }
 
@@ -142,19 +152,19 @@ class VecDcacheArbiter(implicit p: Parameters) extends BoomModule
     // back around.
     val agenIncoming = io.scalar_agen_incoming(w)
     val ldOkElevated = ldEligible(w) && !agenIncoming &&
-      resourceOk(io.ld_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), true)
+      resourceOk(io.ld_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), io.scalar_lcam_s1_busy(w), true)
     val stOkFallback = stEligible(w) &&
-      resourceOk(io.st_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), false) && !ldOkElevated
+      resourceOk(io.st_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), io.scalar_lcam_s1_busy(w), false) && !ldOkElevated
 
     val stOkElevated = stEligible(w) && !agenIncoming &&
-      resourceOk(io.st_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), true)
+      resourceOk(io.st_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), io.scalar_lcam_s1_busy(w), true)
     val ldOkFallback = ldEligible(w) &&
-      resourceOk(io.ld_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), false) && !stOkElevated
+      resourceOk(io.ld_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), io.scalar_lcam_s1_busy(w), false) && !stOkElevated
 
     val ldOkDefault = ldEligible(w) &&
-      resourceOk(io.ld_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), false)
+      resourceOk(io.ld_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), io.scalar_lcam_s1_busy(w), false)
     val stOkDefault = stEligible(w) &&
-      resourceOk(io.st_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), false) && !ldOkDefault
+      resourceOk(io.st_req(w).bits, io.scalar_avail(w), io.dmem_req_ready(w), io.scalar_lcam_s1_busy(w), false) && !ldOkDefault
 
     ldWins(w) := Mux(elevateLoad, ldOkElevated, Mux(elevateStore, ldOkFallback, ldOkDefault))
     stWins(w) := Mux(elevateLoad, stOkFallback, Mux(elevateStore, stOkElevated, stOkDefault))

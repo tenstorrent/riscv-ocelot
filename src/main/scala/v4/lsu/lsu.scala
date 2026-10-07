@@ -183,6 +183,11 @@ class VecScalarDemand(implicit p: Parameters) extends BoomBundle
   val claim           = new LsuResourceClaim
   val agen_incoming    = Bool()
   val sfence_incoming  = Bool()
+  // The scalar op that fired on this lane LAST cycle is doing its LCAM search
+  // THIS cycle (s1). A vector beat presents its LCAM search in its grant cycle
+  // (s0), so a vector lcam beat granted now would take the same LCAM lane. A
+  // hard deadline like `agen_incoming`: it vetoes elevated grants too.
+  val lcam_s1_busy     = Bool()
 }
 
 class VecXlateResp(implicit p: Parameters) extends BoomBundle
@@ -812,6 +817,21 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
         can_fire_release(w) || can_fire_store_retry(w) || can_fire_load_retry(w) || can_fire_load_wakeup(w)
       vec.scalar_demand(w).agen_incoming   := agen(w).valid
       vec.scalar_demand(w).sfence_incoming := io.core.sfence.valid
+      //@req-spec-lsu.h4
+      // The scalar LCAM search runs in s1 (`lcam_*_scalar` read the `fired_*`
+      // registers), the vector one in s0 (VecCrossLsuSnoop presents off the
+      // arbiter's own grant). `lcam_avail` only arbitrates s0 against s0, so a
+      // scalar lcam op fired in cycle N and a vector lcam beat granted in N+1 met
+      // on the same lane in N+1, and `lcam_*` muxed the VECTOR search in: the
+      // scalar op went unsearched, and any kill the vector search raised hit the
+      // scalar's D$ request with `s1_set_execute` cleared for the vector's ldq
+      // idx instead, leaving the scalar load executed with no resp and no nack.
+      // Measured on spmv_bare (MegaBoomV4VectorWideConfig): wakeup of ldq 23
+      // (`ld a0,8(a2)`) killed at s1 by vector ldq 17's search, ROB head wedged.
+      // RegNext of will_fire, not of fired_*: a superset, so never unsafe.
+      vec.scalar_demand(w).lcam_s1_busy    := RegNext(will_fire_load_agen_exec(w) || will_fire_load_agen(w) ||
+        will_fire_store_agen(w) || will_fire_release(w) || will_fire_store_retry(w) || will_fire_load_retry(w) ||
+        will_fire_load_wakeup(w))
     }
   }
   assert((lsuWidth == 1).B ||
@@ -1277,6 +1297,16 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // We are making a local line visible to other harts
   val do_release_search = widthMap(w => fired_release(w))
 
+  //@req-spec-lsu.h4
+  // May an ordering check on lane w raise s1_kill? The kill lands on WHATEVER lane
+  // w's dmem_req carried last cycle. For a scalar searcher that is its own request.
+  // For a VECTOR searcher it is only recoverable when it was a vector beat
+  // (VecLsu replays it off `vec.s1_kill`); a scalar store commit or hella request
+  // killed there has no resp, no nack and nothing that re-arms it.
+  val s1_kill_victim_ok = if (usingRVV) widthMap(w => !io.core.lsu_vec.get.lcam(w).valid ||
+    RegNext(io.core.lsu_vec.get.vec_fire(w).valid && io.core.lsu_vec.get.vec_fire(w).bits.uses_dcache))
+    else widthMap(w => true.B)
+
   // Store addrs don't go to memory yet, get it from the TLB response
   // Load wakeups don't go through TLB, get it through memory
   // Load incoming and load retries go through both
@@ -1473,7 +1503,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
 	      // can also forward from the next cycle
           when (!(l_executed && (l_succeeded || l_will_succeed))) {
             s1_set_execute(lcam_ldq_idx(w))    := false.B
-            when (RegNext(dmem_req_fire(w) && !s0_kills(w)) && !fired_load_agen(w)) {
+            when (RegNext(dmem_req_fire(w) && !s0_kills(w)) && !fired_load_agen(w) && s1_kill_victim_ok(w)) {
               io.dmem.s1_kill(w)               := true.B
             }
             kill_forward(w)                    := true.B
@@ -1498,7 +1528,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
             nack_mask_overlap                  &&
             IsOlderLSU(io.dmem.nack(wi).bits.uop.ldq_idx, lcam_ldq_idx(w), ldq_head)) {
         s1_set_execute(lcam_ldq_idx(w)) := false.B
-        when (RegNext(dmem_req_fire(w) && !s0_kills(w)) && !fired_load_agen(w)) {
+        when (RegNext(dmem_req_fire(w) && !s0_kills(w)) && !fired_load_agen(w) && s1_kill_victim_ok(w)) {
           io.dmem.s1_kill(w) := true.B
         }
         kill_forward(w) := true.B
@@ -1633,7 +1663,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     val has_older_amo = (stq_amos.asUInt & age_matches(w).asUInt) =/= 0.U
     //tianrui: this is the place of the bug
     when (do_ld_search(w) && (has_older_amo || (ldst_addr_matches(w) =/= 0.U))) {
-      when (RegNext(dmem_req_fire(w) && !s0_kills(w)) && !fired_load_agen(w)) {
+      when (RegNext(dmem_req_fire(w) && !s0_kills(w)) && !fired_load_agen(w) && s1_kill_victim_ok(w)) {
         io.dmem.s1_kill(w)               := true.B
       }
       s1_set_execute(lcam_ldq_idx(w)) := false.B
@@ -2157,6 +2187,21 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     when (if (usingRVV) stq_head_is_fence || (stq_valid(stq_head) && stq_uop(stq_head).is_vec.get) else stq_head_is_fence)
     {
       stq_execute_head := WrapIncWCarry(stq_execute_head, numStqEntries)
+    }
+  }
+
+  if (usingRVV) {
+    // store_failed squashes the scalar store in D$ s0/s1 with no outcome; the s2 nack cannot
+    // rewind to it when that nack names a vector store already retired from the STQ.
+    val stFiredS0  = (will_fire_store_commit_slow(0) || will_fire_store_commit_fast(0)) && dmem_req_fire(0)
+    val stFiredS1  = RegNext(stFiredS0, false.B)
+    val stIdxS1    = RegNext(stq_commit_e.bits.uop.stq_idx)
+    val nackRewind = io.dmem.nack(0).valid && !io.dmem.nack(0).bits.is_hella && io.dmem.nack(0).bits.uop.uses_stq &&
+                     IsOlderLSU(io.dmem.nack(0).bits.uop.stq_idx, stq_execute_head, stq_head)
+    when (io.dmem.store_failed && (stFiredS0 || stFiredS1)) {
+      stq_execute_queue_flush := true.B
+      stq_execute_head := Mux(nackRewind, io.dmem.nack(0).bits.uop.stq_idx,
+                          Mux(stFiredS1, stIdxS1, stq_commit_e.bits.uop.stq_idx))
     }
   }
 

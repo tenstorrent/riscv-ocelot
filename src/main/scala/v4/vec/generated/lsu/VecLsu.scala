@@ -2109,6 +2109,7 @@ class VecLsu(
     // comment in VecDcacheArbiter: it suppresses ELEVATION, it does not participate
     // in ordinary resource arbitration.
     arb.io.scalar_agen_incoming(w) := vec.scalar_demand(w).agen_incoming
+    arb.io.scalar_lcam_s1_busy(w)  := vec.scalar_demand(w).lcam_s1_busy
     arb.io.scalar_avail(w)  := vec.scalar_avail(w)
     arb.io.dmem_req_ready(w) := vec.dmem_req_ready(w)
   }

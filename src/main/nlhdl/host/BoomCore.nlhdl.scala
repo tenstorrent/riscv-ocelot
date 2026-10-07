@@ -120,6 +120,19 @@ from Tenstorrent Inc.
   POSEDGE `clock` and ACTIVE-HIGH SYNCHRONOUS `reset`, one domain; `vec` inherits
   both implicitly. No clock, reset, gate or CDC is added anywhere.
 
+  ONE RESET IS ADDED to existing state: the `valid` of each `brinfos` entry
+  (core.scala `val brinfos = Reg(...)`) is forced false while `reset` is high;
+  the `bits` stay unreset. During reset the ALUs see randomized issue-stage
+  state and the FTQ read of an out-of-range `ftq_idx` (>= ftqSz) returns X, so
+  an unreset `brinfos.valid` raised an X `brupdate.b2.mispredict` and X
+  `redirect_val`. The FTQ `ram` (not reset) latched those X entries, the
+  post-reset repair walk sent X `bpdupdate`s into TAGE, and a TAGE write-bypass
+  tag stayed X for the rest of the run; ~287k cycles into jacobi2d_bare
+  (MegaBoomV4VectorWideConfig) the bypass mux resolved X into a table
+  counter, the f3 prediction went X and the frontend wedged ("Pipeline has
+  hung", ROB empty, fetch buffer holding a partial packet). With the reset no
+  branch resolution is reported until the pipeline is out of reset.
+
   NO PORT IS ADDED TO `class BoomCore`'s `io`, and none is widened. The vector
   subsystem is entirely internal to this module plus the two seams that already
   exist as bundles owned by other nodes:
@@ -575,6 +588,24 @@ from Tenstorrent Inc.
   io.lsu.iwakeups.map(_.bits.rebusy).reduce(_||_)` — character-for-character the
   term `alu_iss_unit.io.squash_grant` gets at core.scala:1050-1053, so a vector
   slot and a scalar ALU slot re-busy on the same cycle for the same reason.
+
+  EXCEPT the LSU fast-load-use wakeup, when `enableFastLoadUse` (MegaBoom). That
+  wakeup (`io.lsu.iwakeups(i)` with `bypassable && !rebusy`) fires at load agen,
+  three cycles before the load's IRF write; a scalar consumer catches the data on
+  the bypass network, but the CII reads the IRF at grant and snoops the write
+  ports only at grant+1, one cycle too early, and its s1 capture cannot be
+  retracted by the rebusy that arrives on that same cycle for a missing load.
+  Measured on pathfinder_bare (MegaBoomV4VectorWideConfig): `vslide1down.vx v26,
+  v24, a6` right after `lw a6` captured the stale preg contents 0x300000009 for
+  a6=5. So the vector side's wakeup vector is `int_wakeups` with those fast
+  entries masked off, plus `lsuWidth` APPENDED entries carrying the same fast
+  wakeup `RegNext`ed one cycle (branch-mask updated, killed by branch/flush);
+  the slow wakeup and the rebusy keep their own index and cycle. The grant then
+  lands at agen+2: a hit's IRF write coincides with the s1 snoop, and a miss's
+  rebusy squashes that very grant through `squash_grant`. `VecPipeline` is
+  elaborated with `numIntWakeups + vecLateLdWakeups` ports; with
+  `enableFastLoadUse` false nothing is appended and the bus is `int_wakeups`
+  exactly.
 
   `fp_wakeups := fp_pipeline.io.wakeups` is a pure tap of the existing FP wakeup
   vector, no `RegNext`, no added port in `fp-pipeline.scala`: without it there is

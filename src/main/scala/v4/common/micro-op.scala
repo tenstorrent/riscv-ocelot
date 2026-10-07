@@ -380,6 +380,7 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val debug_fsrc       = UInt(BSRC_SZ.W)
   // What prediction structure provides the prediction TO this op
   val debug_tsrc       = UInt(BSRC_SZ.W)
+  val debug_seq        = if (PIPEVIEW_PRINTF) Some(UInt(32.W)) else None
 
   // Do we allocate a branch tag for this?
   // SFB branches don't get a mask, they get a predicate bit

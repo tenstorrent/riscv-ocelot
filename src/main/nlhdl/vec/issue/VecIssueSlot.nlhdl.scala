@@ -366,9 +366,22 @@ from Tenstorrent Inc.
   Each returns ONE group-ready bit, high only when the operand's LAST valid member
   has completed.
 
-  Every instance's `prns`, `members` and `used` are END-OF-CYCLE values: driven
-  from `io.in_uop.bits` while `io.in_uop.valid` is high and from `slot_uop`
-  otherwise, and its `load` input is `io.in_uop.valid`. `in_member_rdy` is routed
+  Every instance's `prns`, `members` and `used` describe the REGISTER occupant
+  (`slot_uop`, `slot_valid`) in EVERY cycle, the store slot's `rdy_vs3` included
+  (its DGEN group is `dgen_path.io.dgen_operand*`, which is `slot_uop`'s); its
+  `load` input is `io.in_uop.valid`. VecGroupReady drops `member_hit` from the
+  loaded state on a load cycle, so the arriving uop gets its same-cycle wakeup
+  only through `in_member_rdy`, which the SOURCE slot exported against ITS
+  register occupant — the arriving uop. Driving `prns` from `io.in_uop.bits` on a
+  fill cycle instead makes this slot's `out_member_rdy` export the INCOMING uop's
+  hit as the OUTGOING uop's readiness: measured on `matmul_acc_bare`
+  (MegaBoomV4VectorWideConfig), a store holding pvs3 98 left a slot in the cycle
+  a group_done for the arriving store's pvs3 101 fired, arrived ready, and its
+  DGEN read prn 98 before its `vfmacc` producer wrote it — a stale partial sum
+  stored to memory. On a store slot the `in_member_rdy` vs3/vtmp lane is selected
+  by the INCOMING uop's `is_shared` (that is the state being loaded), while the
+  `out_member_rdy` lane and the busy mirror are selected by the REGISTER
+  occupant's (`dgen_path.io.dgen_operand_is_pvtmp`). `in_member_rdy` is routed
   per operand from this slot's `in_member_rdy` side channel, and each instance's
   `out_member_rdy` is collected into `io.out_member_rdy` so a collapse move
   carries partial readiness down. `members` is `slot_uop.v_emul` for the pvs

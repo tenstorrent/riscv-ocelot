@@ -114,7 +114,6 @@ module tt_vpu_cii_wrapper_top
 
   // ---- Fetch Signals ---
   wire                              fetch_iss_pop;
-  logic                             iss_pop_r;         // a FIFO pop is in flight
 
   logic                             f_valid;
   op_iss_s                          f_op;
@@ -159,12 +158,46 @@ module tt_vpu_cii_wrapper_top
 
 
   // ---- OP Drain Signals ---
+  // REQ hands requested ops to pq so requests run ahead of the drain; pq feeds a
+  // ring of NSLOT staging slots, filled in order by the in-order dat stream.
+  localparam int PQ_DEPTH = 8;
+  localparam int PQ_W     = $clog2(PQ_DEPTH);
+  localparam int NSLOT    = 4;
+  localparam int SLOT_W   = $clog2(NSLOT);
+
+  typedef struct packed {
+    op_iss_s op;
+    op_dec_s ctl;
+  } pq_ent_s;
+
+  pq_ent_s                          pq_mem [0:PQ_DEPTH-1];
+  logic [PQ_W-1:0]                  pq_rd, pq_wr;
+  logic [PQ_W:0]                    pq_cnt;
+  wire                              s_load;
+
+  logic                             s_valid  [0:NSLOT-1];
+  op_iss_s                          s_op     [0:NSLOT-1];
+  op_dec_s                          s_ctl    [0:NSLOT-1];
+  logic [4:0]                       s_popped [0:NSLOT-1];
+  logic [4:0]                       s_rcvd   [0:NSLOT-1];
+  logic [63:0]                      s_scalar [0:NSLOT-1];
+  logic [VLEN-1:0]                  s_p0     [0:NSLOT-1][0:MAX_MEMBERS-1];
+  logic [VLEN-1:0]                  s_p1     [0:NSLOT-1][0:MAX_MEMBERS-1];
+  logic [VLEN-1:0]                  s_p2     [0:NSLOT-1][0:MAX_MEMBERS-1];
+  logic [VLEN-1:0]                  s_vm     [0:NSLOT-1];
+  logic [SLOT_W-1:0]                s_head;
+  logic [SLOT_W:0]                  s_cnt;
+  wire  [SLOT_W-1:0]                s_tail = s_head + s_cnt[SLOT_W-1:0];
+  logic                             pop_found;
+  logic [SLOT_W-1:0]                pop_slot;
+  logic [SLOT_W-1:0]                rcv_slot;
+
+  // The head slot: the op offered to S_EX.
   logic                             n_valid;
   op_iss_s                          n_op;
   op_dec_s                          n_ctl;
-  logic [4:0]                       n_popped;          // dat beats popped
-  logic [4:0]                       n_rcvd;            // dat beats landed
-  logic [63:0]                      n_scalar;          // captured .vx/.vf scalar
+  logic [4:0]                       n_rcvd;
+  logic [63:0]                      n_scalar;
 
   // Staging operand registers, written by S_DRAIN. Each vector source holds up to
   // MAX_MEMBERS member beats (VS2 wide -> up to 2*NM, bounded by the RVV LMUL<=4
@@ -178,6 +211,7 @@ module tt_vpu_cii_wrapper_top
   logic [VLEN-1:0]                  stg_vm;                   // stg_vm = v0 mask
 
   logic                             DRAIN_EX_valid;
+  logic                             ex_offer;          // DRAIN_EX_valid, held off while tt_id replays
   logic                             EX_DRAIN_ready;
   wire                              drain_fire;
 
@@ -188,7 +222,6 @@ module tt_vpu_cii_wrapper_top
 
 
   // ---- Execute Signals ---
-  wire                              x_retire;   // final writeback beat of the op in S_EX
   logic                             x_valid;
   op_iss_s                          x_op;
   op_dec_s                          x_ctl;
@@ -216,9 +249,6 @@ module tt_vpu_cii_wrapper_top
   // op) is exposed -- measured on jacobi2d_bare, where `vfadd.vv v27,v26,v29`
   // ran with the following `vmv1r.v v29,v25`'s bundle and wrote back its old
   // dest and vs1 interleaved instead of the sum.
-  // The executing op is the right thing to hold: DRAIN_EX_valid is already
-  // gated on (!x_valid || x_retire), so it can only be high when S_EX is empty
-  // or retiring this cycle.
   op_iss_s                          iss_op;
   logic [63:0]                      iss_scalar;
 
@@ -288,13 +318,17 @@ module tt_vpu_cii_wrapper_top
   // op's tag, into the wrong architectural register. Allocate a disjoint lqid range
   // per op and hold the accept until the range has fully drained.
   // One lqid per dest-group member, exactly the span tt_id walks and the span the
-  // *_by_lqid tables cover. The range is released as a whole when the op's final
-  // writeback beat leaves (x_retire), because a vec_single_reg op's upper members
-  // never produce a VPU result of their own -- releasing per result beat would leak.
+  // *_by_lqid tables cover. Ops complete out of order: a range is marked done on its
+  // op's final writeback beat and freed in allocation order once the head is done.
   logic [LQ_DEPTH_LOG2-1:0]  lq_alloc_ptr;
   logic [LQ_DEPTH_LOG2-1:0]  lq_free_ptr;
-  logic [LQ_DEPTH_LOG2:0]    lq_outstanding;   // allocated-but-not-yet-retired lqids
+  logic [LQ_DEPTH_LOG2:0]    lq_outstanding;   // allocated-but-not-yet-freed lqids
   logic [4:0]                nm_at [0:LQ_DEPTH-1];  // range length, keyed by its base lqid
+  logic                      range_done [0:LQ_DEPTH-1];  // keyed by base lqid
+  logic [LQ_DEPTH_LOG2-1:0]  base_by_lqid [0:LQ_DEPTH-1];
+  wire                       op_retire;        // final writeback beat of some op
+  wire  [LQ_DEPTH_LOG2-1:0]  op_retire_base;   // that op's base lqid
+  wire                       lq_free = (lq_outstanding != '0) && range_done[lq_free_ptr];
   wire  [4:0]                n_alloc_n   = n_ctl.dst_nm;
   wire  [5:0]                lq_after    = {2'd0, lq_outstanding} + {1'b0, n_alloc_n};
   wire                       lq_space_ok = (lq_after <= LQ_DEPTH);
@@ -404,27 +438,22 @@ module tt_vpu_cii_wrapper_top
   assign  FETCH_DEC_valid          = f_valid;
   assign  fetch_fire               = FETCH_DEC_valid && DEC_FETCH_ready;
 
-  // tt_cii_fifo is non-FWFT: pop_data is valid the cycle AFTER pop. Only one pop
-  // may be in flight, otherwise the second one overwrites pop_data before f_op
-  // has captured the first.
-  assign  fetch_iss_pop            = !iss_fifo_empty && !iss_pop_r && (!f_valid || fetch_fire);
+  // tt_cii_fifo's pop_data register IS the S_FETCH register: it loads on pop and
+  // holds otherwise, so popping whenever it is free or being consumed is 1 op/cycle.
+  assign  fetch_iss_pop            = !iss_fifo_empty && (!f_valid || fetch_fire);
   assign  cii_intf.iss_credit      = fetch_iss_pop; // return 1 credit per FIFO pop.
+
+  always_comb begin
+    f_op.tag   = iss_fifo_data[0].tag;
+    f_op.instr = iss_fifo_data[0].instr;
+  end
 
   always_ff @(posedge clk or negedge reset_n) begin
     if ( !reset_n ) begin
       f_valid   <= 1'b0;
-      f_op      <= '0;
-      iss_pop_r <= 1'b0;
     end else begin
-      iss_pop_r <= fetch_iss_pop;
-
-      if (iss_pop_r) begin
-        f_valid       <= 1'b1;
-        f_op.tag      <= iss_fifo_data[0].tag;
-        f_op.instr    <= iss_fifo_data[0].instr;
-      end else if (fetch_fire) begin
-        f_valid       <= 1'b0;
-      end
+      if (fetch_iss_pop)   f_valid <= 1'b1;
+      else if (fetch_fire) f_valid <= 1'b0;
     end
   end
 
@@ -530,7 +559,8 @@ module tt_vpu_cii_wrapper_top
   //   register: q_valid / q_op / q_ctl / q_sent      consumer: S_DRAIN
   /////////////////////////////////////////////////////////////////////////////
   assign  REQ_DEC_ready   = !q_valid || req_fire;
-  assign  REQ_DRAIN_valid = q_valid && (q_sent >= q_ctl.max_src_beats);
+  assign  REQ_DRAIN_valid = q_valid && ((q_sent >= q_ctl.max_src_beats) ||
+                                        (req_send && ({1'b0, q_sent} + 6'd1 >= {1'b0, q_ctl.max_src_beats})));
   assign  req_fire        = REQ_DRAIN_valid && DRAIN_REQ_ready;
 
   assign  req_send        = q_valid && (q_sent < q_ctl.max_src_beats) && (req_credit_cnt != 0);
@@ -564,77 +594,124 @@ module tt_vpu_cii_wrapper_top
 
   /////////////////////////////////////////////////////////////////////////////
   // Operand Drain Stage
-  //   register: n_valid / n_op / n_ctl / n_popped / n_rcvd / stg_*
+  //   register: pq_* / s_* slot ring (head slot = n_* / stg_*)
   //   consumer: S_EX (the accept handshake of u_ex_stage_id)
   /////////////////////////////////////////////////////////////////////////////
   assign  merge_block     = n_valid && n_ctl.vec_single_reg && (n_ctl.dst_nm > 5'd1) &&
                             (wbx_pending || wbx_active);
 
-  assign  DRAIN_REQ_ready = !n_valid || drain_fire;
-  // x_valid gate: hold the next op until the current op's FINAL writeback beat has
-  // left. It must sit on the VALID side, not on EX_DRAIN_ready: read_valid drives
-  // tt_id's i_if_instrn_rts, and tt_id accepts on (rts & rtr) alone. Gating only the
-  // ready term lets tt_id swallow an instruction that drain_fire refused, so the op
-  // executes with NO wrapper bookkeeping -- no ex_p* copy, no *_by_lqid fill, and
-  // cur_insn still naming the previous op, which turns rd_mem_p* into out-of-range
-  // member indices.
-  assign  DRAIN_EX_valid  = n_valid && (n_rcvd >= n_ctl.max_src_beats) && !merge_block && lq_space_ok
-                            && (!x_valid || x_retire);
-  assign  drain_fire      = DRAIN_EX_valid && EX_DRAIN_ready;
+  assign  DRAIN_REQ_ready = (pq_cnt != PQ_DEPTH);
+  // Every accept gate must sit on the VALID side: tt_id accepts on (rts & rtr) alone,
+  // so a ready-only gate lets it swallow an op with no wrapper bookkeeping.
+  assign  DRAIN_EX_valid  = n_valid && (n_rcvd >= n_ctl.max_src_beats) && !merge_block && lq_space_ok;
+  // A replaying tt_id still reads iss_op/rd_mem_p*/vrf_p* for the op in S_EX.
+  assign  ex_offer        = DRAIN_EX_valid && !id_replay;
+  assign  drain_fire      = ex_offer && EX_DRAIN_ready;
 
-  assign  dat_pop         = n_valid && (n_popped < n_ctl.max_src_beats) && !dat_fifo_empty;
+  assign  s_load          = (pq_cnt != '0) && ((s_cnt != NSLOT) || drain_fire);
+
+  always_comb begin
+    n_valid  = (s_cnt != '0);
+    n_op     = s_op[s_head];
+    n_ctl    = s_ctl[s_head];
+    n_rcvd   = s_rcvd[s_head];
+    n_scalar = s_scalar[s_head];
+    for (int m = 0; m < MAX_MEMBERS; m++) begin
+      stg_p0[m] = s_p0[s_head][m];
+      stg_p1[m] = s_p1[s_head][m];
+      stg_p2[m] = s_p2[s_head][m];
+    end
+    stg_vm = s_vm[s_head];
+  end
+
+  // Oldest slot that still has src beats to pop; dat beats return in request order.
+  always_comb begin
+    pop_found = 1'b0;
+    pop_slot  = s_head;
+    for (int k = NSLOT-1; k >= 0; k--) begin
+      automatic logic [SLOT_W-1:0] idx = s_head + k[SLOT_W-1:0];
+      if ((k < s_cnt) && (s_popped[idx] < s_ctl[idx].max_src_beats)) begin
+        pop_found = 1'b1;
+        pop_slot  = idx;
+      end
+    end
+  end
+
+  assign  dat_pop         = pop_found && !dat_fifo_empty;
   assign  dat_beat        = dat_fifo_valid;
   assign  cii_intf.dat_credit = dat_pop;   // return 1 credit per src-data pop
 
   always_ff @(posedge clk or negedge reset_n) begin
     if (!reset_n) begin
       dat_fifo_valid <= 1'b0;
+      rcv_slot       <= '0;
     end else begin
       dat_fifo_valid <= dat_pop;
+      if (dat_pop) rcv_slot <= pop_slot;
     end
   end
 
   always_ff @(posedge clk or negedge reset_n) begin
     if (!reset_n) begin
-      n_valid  <= 1'b0;
-      n_op     <= '0;
-      n_ctl    <= '0;
-      n_popped <= 5'd0;
-      n_rcvd   <= 5'd0;
+      pq_rd  <= '0;
+      pq_wr  <= '0;
+      pq_cnt <= '0;
     end else begin
       if (req_fire) begin
-        n_valid  <= 1'b1;
-        n_op     <= q_op;
-        n_ctl    <= q_ctl;
-        n_popped <= 5'd0;
-        n_rcvd   <= 5'd0;
-      end else begin
-        if (drain_fire) n_valid  <= 1'b0;
-        if (dat_pop)    n_popped <= n_popped + 1'b1;
-        if (dat_beat)   n_rcvd   <= n_rcvd   + 1'b1;
+        pq_mem[pq_wr] <= '{op: q_op, ctl: q_ctl};
+        pq_wr         <= pq_wr + 1'b1;
       end
+      if (s_load) pq_rd <= pq_rd + 1'b1;
+      pq_cnt <= pq_cnt + {{PQ_W{1'b0}}, req_fire} - {{PQ_W{1'b0}}, s_load};
+    end
+  end
+
+  always_ff @(posedge clk or negedge reset_n) begin
+    if (!reset_n) begin
+      s_head <= '0;
+      s_cnt  <= '0;
+      for (int i = 0; i < NSLOT; i++) begin
+        s_valid[i]  <= 1'b0;
+        s_popped[i] <= 5'd0;
+        s_rcvd[i]   <= 5'd0;
+      end
+    end else begin
+      if (dat_pop)  s_popped[pop_slot] <= s_popped[pop_slot] + 1'b1;
+      if (dat_beat) s_rcvd[rcv_slot]   <= s_rcvd[rcv_slot]   + 1'b1;
+      if (drain_fire) begin
+        s_valid[s_head] <= 1'b0;
+        s_head          <= s_head + 1'b1;
+      end
+      if (s_load) begin
+        s_valid[s_tail]  <= 1'b1;
+        s_op[s_tail]     <= pq_mem[pq_rd].op;
+        s_ctl[s_tail]    <= pq_mem[pq_rd].ctl;
+        s_popped[s_tail] <= 5'd0;
+        s_rcvd[s_tail]   <= 5'd0;
+      end
+      s_cnt <= s_cnt + {{SLOT_W{1'b0}}, s_load} - {{SLOT_W{1'b0}}, drain_fire};
     end
   end
 
 
   always_ff @( posedge clk ) begin
-    // Clear the scalar latch as the op enters the stage (.vv/.vi never write it).
-    if (req_fire) n_scalar <= 64'd0;
+    // Clear the scalar latch as the op enters a slot (.vv/.vi never write it).
+    if (s_load) s_scalar[s_tail] <= 64'd0;
 
     if (dat_beat) begin
       // lane 0: VS1 vector, OR the .vx/.vf scalar (a single beat -> member 0 only;
-      //         later beats on lane 0 are NONE, so capture the scalar at n_rcvd==0).
-      if (n_ctl.scalar_src) begin
-        if (n_rcvd == 5'd0) n_scalar <= dat_fifo_data[0].rsp_dat[63:0];
+      //         later beats on lane 0 are NONE, so capture the scalar at beat 0).
+      if (s_ctl[rcv_slot].scalar_src) begin
+        if (s_rcvd[rcv_slot] == 5'd0) s_scalar[rcv_slot] <= dat_fifo_data[0].rsp_dat[63:0];
       end else begin
-        stg_p0[n_rcvd[CII_MEMBER_W-1:0]] <= dat_fifo_data[0].rsp_dat;
+        s_p0[rcv_slot][s_rcvd[rcv_slot][CII_MEMBER_W-1:0]] <= dat_fifo_data[0].rsp_dat;
       end
       // lane 1: VS2  (wide -> up to 2*NM members)
-      stg_p1[n_rcvd[CII_MEMBER_W-1:0]] <= dat_fifo_data[1].rsp_dat;
+      s_p1[rcv_slot][s_rcvd[rcv_slot][CII_MEMBER_W-1:0]] <= dat_fifo_data[1].rsp_dat;
       // lane 2: VS3 / old-dest
-      stg_p2[n_rcvd[CII_MEMBER_W-1:0]] <= dat_fifo_data[2].rsp_dat;
+      s_p2[rcv_slot][s_rcvd[rcv_slot][CII_MEMBER_W-1:0]] <= dat_fifo_data[2].rsp_dat;
       // lane 3: v0 mask -- single register (member 0 only)
-      if (n_rcvd == 5'd0) stg_vm <= dat_fifo_data[3].rsp_dat;
+      if (s_rcvd[rcv_slot] == 5'd0) s_vm[rcv_slot] <= dat_fifo_data[3].rsp_dat;
     end
   end
 
@@ -648,24 +725,13 @@ module tt_vpu_cii_wrapper_top
   // register captures the same op on the accept cycle.
   /////////////////////////////////////////////////////////////////////////////
 
-  // tt_id releases an op (o_id_instrn_rtr) as soon as it has DISPATCHED its last
-  // iteration -- its results are still 1c/2c/3c behind it inside tt_vec. Letting the
-  // next op in there means a short-latency op passes a long one (a 16-iteration
-  // reduction's 3c result lands AFTER the following vmacc's 2c result), so the CII
-  // writeback stream leaves program order; the host's per-tag completion tracking
-  // and this wrapper's per-lqid tables both assume in-order completion. The x_valid
-  // term in DRAIN_EX_valid above serializes tt_vec occupancy for that reason.
-  //
-  // The pipelining that matters is still intact: S_FETCH/S_DEC/S_REQ/S_DRAIN
-  // prefetch the next op's operands (the multi-cycle CII request round trip)
-  // WHILE this one executes -- only the tt_vec occupancy is serialized.
   assign  EX_DRAIN_ready = id_ready_to_receive;
 
-  assign  read_valid              = DRAIN_EX_valid;
+  assign  read_valid              = ex_offer;
   // Present S_DRAIN's op only on the cycles it is actually being offered to
   // tt_id; otherwise hold the op resident in S_EX. See the iss_op declaration.
-  assign  iss_op                  = DRAIN_EX_valid ? n_op     : x_op;
-  assign  iss_scalar              = DRAIN_EX_valid ? n_scalar : x_scalar;
+  assign  iss_op                  = ex_offer ? n_op     : x_op;
+  assign  iss_scalar              = ex_offer ? n_scalar : x_scalar;
 
   assign  read_issue_inst         = iss_op.instr.insn;
   assign  read_issue_scalar_opnd  = iss_scalar;   // .vx/.vf scalar (0 for .vv/.vi)
@@ -679,9 +745,9 @@ module tt_vpu_cii_wrapper_top
   assign  csr_de0.v_vstart        = iss_op.instr.vstart;
   assign  csr_de0.frm             = iss_op.instr.frm;
 
-  // Retire the S_EX slot on the final writeback beat of the op's dest group.
-  assign x_retire = wb_fire && (wb_send_merge ? (wbx_member == wbx_nm - 1'b1)
-                                             : last_by_lqid[wb_ldqid]);
+  assign op_retire      = wb_fire && (wb_send_merge ? (wbx_member == wbx_nm - 1'b1)
+                                                  : last_by_lqid[wb_ldqid]);
+  assign op_retire_base = wb_send_merge ? wbx_base_ldqid : base_by_lqid[wb_ldqid];
 
   always_ff @(posedge clk or negedge reset_n) begin
     if (!reset_n) begin
@@ -693,8 +759,6 @@ module tt_vpu_cii_wrapper_top
         x_valid <= 1'b1;
         x_op    <= n_op;
         x_ctl   <= n_ctl;
-      end else if (x_retire) begin
-        x_valid <= 1'b0;
       end
     end
   end
@@ -723,6 +787,7 @@ module tt_vpu_cii_wrapper_top
           dstkind_by_lqid[(id_vpu_uop_packet.ldqid + m) % LQ_DEPTH] <= n_ctl.dst_kind;
           dstoff_by_lqid [(id_vpu_uop_packet.ldqid + m) % LQ_DEPTH] <= m[CII_MEMBER_W-1:0];
           last_by_lqid   [(id_vpu_uop_packet.ldqid + m) % LQ_DEPTH] <= (m == (n_ctl.dst_nm-1));
+          base_by_lqid   [(id_vpu_uop_packet.ldqid + m) % LQ_DEPTH] <= id_vpu_uop_packet.ldqid;
         end
       end
     end
@@ -760,18 +825,18 @@ module tt_vpu_cii_wrapper_top
   wire [4:0] rd_mem_p2 = p2_is_rs2 ? (id_vpu_uop_packet.rf_addrp1 - cur_insn[24:20])
                                    : (id_vpu_uop_packet.rf_addrp2 - cur_insn[11:7]);
 
-  // Selected on DRAIN_EX_valid, the same term iss_op uses: the operands handed to
+  // Selected on ex_offer, the same term iss_op uses: the operands handed to
   // tt_vec always belong to the op whose instruction and decode bundle it is
-  // looking at. (drain_fire implies DRAIN_EX_valid, so the accept cycle still
+  // looking at. (drain_fire implies ex_offer, so the accept cycle still
   // reads the staging set that is being copied into ex_* on this same edge.)
-  assign vrf_p0_rddata  = DRAIN_EX_valid ? stg_p0[rd_mem_p0[CII_MEMBER_W-1:0]] : ex_p0[rd_mem_p0[CII_MEMBER_W-1:0]];
-  assign vrf_p1_rddata  = DRAIN_EX_valid ? stg_p1[rd_mem_p1[CII_MEMBER_W-1:0]] : ex_p1[rd_mem_p1[CII_MEMBER_W-1:0]];
+  assign vrf_p0_rddata  = ex_offer ? stg_p0[rd_mem_p0[CII_MEMBER_W-1:0]] : ex_p0[rd_mem_p0[CII_MEMBER_W-1:0]];
+  assign vrf_p1_rddata  = ex_offer ? stg_p1[rd_mem_p1[CII_MEMBER_W-1:0]] : ex_p1[rd_mem_p1[CII_MEMBER_W-1:0]];
   // ...and the staging SET follows the mux too: rs2 lives in the VS2 set (lane 1),
   // which is already fetched, so this needs no extra source request.
   assign vrf_p2_rddata  = p2_is_rs2
-    ? (DRAIN_EX_valid ? stg_p1[rd_mem_p2[CII_MEMBER_W-1:0]] : ex_p1[rd_mem_p2[CII_MEMBER_W-1:0]])
-    : (DRAIN_EX_valid ? stg_p2[rd_mem_p2[CII_MEMBER_W-1:0]] : ex_p2[rd_mem_p2[CII_MEMBER_W-1:0]]);
-  assign vrf_vm0_rddata = DRAIN_EX_valid ? stg_vm                              : ex_vm;
+    ? (ex_offer ? stg_p1[rd_mem_p2[CII_MEMBER_W-1:0]] : ex_p1[rd_mem_p2[CII_MEMBER_W-1:0]])
+    : (ex_offer ? stg_p2[rd_mem_p2[CII_MEMBER_W-1:0]] : ex_p2[rd_mem_p2[CII_MEMBER_W-1:0]]);
+  assign vrf_vm0_rddata = ex_offer ? stg_vm                              : ex_vm;
 
 
   /////////////////////////////////////////////////////////////////////////////
@@ -832,21 +897,26 @@ module tt_vpu_cii_wrapper_top
     wb_fp_flags     = rq_mem[rq_rd].exc;
   end
 
-  // lqid range stays owned by the op until its final writeback beat has left.
   always_ff @(posedge clk or negedge reset_n) begin
     if (!reset_n) begin
       lq_alloc_ptr   <= '0;
       lq_free_ptr    <= '0;
       lq_outstanding <= '0;
+      for (int i = 0; i < LQ_DEPTH; i++) range_done[i] <= 1'b0;
     end else begin
       if (drain_fire) begin
-        lq_alloc_ptr        <= lq_alloc_ptr + n_alloc_n[LQ_DEPTH_LOG2-1:0];
-        nm_at[lq_alloc_ptr] <= n_alloc_n;
+        lq_alloc_ptr             <= lq_alloc_ptr + n_alloc_n[LQ_DEPTH_LOG2-1:0];
+        nm_at[lq_alloc_ptr]      <= n_alloc_n;
+        range_done[lq_alloc_ptr] <= 1'b0;
       end
-      if (x_retire) lq_free_ptr <= lq_free_ptr + nm_at[lq_free_ptr][LQ_DEPTH_LOG2-1:0];
+      if (op_retire) range_done[op_retire_base] <= 1'b1;
+      if (lq_free) begin
+        lq_free_ptr             <= lq_free_ptr + nm_at[lq_free_ptr][LQ_DEPTH_LOG2-1:0];
+        range_done[lq_free_ptr] <= 1'b0;
+      end
       lq_outstanding <= lq_outstanding
                         + (drain_fire ? n_alloc_n[LQ_DEPTH_LOG2:0]          : '0)
-                        - (x_retire   ? nm_at[lq_free_ptr][LQ_DEPTH_LOG2:0] : '0);
+                        - (lq_free    ? nm_at[lq_free_ptr][LQ_DEPTH_LOG2:0] : '0);
     end
   end
 
@@ -1292,23 +1362,20 @@ module tt_vpu_cii_wrapper_top
   // it costs nothing when off. A wrong reduction is otherwise indistinguishable at
   // the CII boundary from a correctly-computed one over wrong operands.
   // ---- Runtime invariants (always on; cheap) --------------------------------
-  // Only ONE op occupies tt_vec at a time (DRAIN_EX_valid holds the next op until
-  // x_retire), so every VPU-result writeback beat must belong to the op in S_EX.
-  // A beat whose per-lqid tag does not match is a stale/aliased result, which the
-  // host turns into a completion for the WRONG rob entry.
+  // Every writeback beat must name a live lqid range, else it is a stale/aliased result.
+  wire [LQ_DEPTH_LOG2-1:0] wb_lq_age = wb_ldqid - lq_free_ptr;
   always_ff @(posedge clk) begin
     if (reset_n && wb_fire && !wb_send_merge) begin
-      if (!x_valid)
-        $fdisplay(32'h8000_0002, "[vpu] ERROR wb beat with S_EX empty: lqid=%0d tag=%0d off=%0d last=%0b",
-                  wb_ldqid, tag_by_lqid[wb_ldqid], dstoff_by_lqid[wb_ldqid], last_by_lqid[wb_ldqid]);
-      else if (tag_by_lqid[wb_ldqid] !== x_op.tag)
-        $fdisplay(32'h8000_0002, "[vpu] ERROR wb tag mismatch: lqid=%0d beat_tag=%0d ex_tag=%0d off=%0d last=%0b",
-                  wb_ldqid, tag_by_lqid[wb_ldqid], x_op.tag, dstoff_by_lqid[wb_ldqid], last_by_lqid[wb_ldqid]);
+      if (!({1'b0, wb_lq_age} < lq_outstanding))
+        $fdisplay(32'h8000_0002, "[vpu] ERROR wb beat to unallocated lqid: lqid=%0d free_ptr=%0d outstanding=%0d tag=%0d",
+                  wb_ldqid, lq_free_ptr, lq_outstanding, tag_by_lqid[wb_ldqid]);
+      else if (range_done[base_by_lqid[wb_ldqid]])
+        $fdisplay(32'h8000_0002, "[vpu] ERROR wb beat to retired range: lqid=%0d base=%0d tag=%0d",
+                  wb_ldqid, base_by_lqid[wb_ldqid], tag_by_lqid[wb_ldqid]);
     end
-    // A merge beat only exists for the vec_single_reg op currently in S_EX.
-    if (reset_n && wb_fire && wb_send_merge && (!x_valid || (wbx_tag !== x_op.tag)))
-      $fdisplay(32'h8000_0002, "[vpu] ERROR merge beat tag mismatch: merge_tag=%0d ex_valid=%0b ex_tag=%0d member=%0d",
-                wbx_tag, x_valid, x_op.tag, wbx_member);
+    if (reset_n && wb_fire && wb_send_merge && range_done[wbx_base_ldqid])
+      $fdisplay(32'h8000_0002, "[vpu] ERROR merge beat to retired range: merge_tag=%0d base=%0d member=%0d",
+                wbx_tag, wbx_base_ldqid, wbx_member);
   end
 
   bit vpu_dbg_en;
@@ -1347,7 +1414,7 @@ module tt_vpu_cii_wrapper_top
                  vrf_p0_rddata[63:0], vrf_p1_rddata[63:0], vrf_p2_rddata[63:0]);
       if (dat_beat)
         $fdisplay(32'h8000_0002, "[vpu]   dat  tag=%0d beat=%0d l0=%016x l1=%016x l2=%016x l3=%016x",
-                 n_op.tag, n_rcvd, dat_fifo_data[0].rsp_dat[63:0], dat_fifo_data[1].rsp_dat[63:0],
+                 s_op[rcv_slot].tag, s_rcvd[rcv_slot], dat_fifo_data[0].rsp_dat[63:0], dat_fifo_data[1].rsp_dat[63:0],
                  dat_fifo_data[2].rsp_dat[63:0], dat_fifo_data[3].rsp_dat[63:0]);
       if (req_send)
         $fdisplay(32'h8000_0002, "[vpu]   req  tag=%0d beat=%0d s0=%0d s1=%0d s2=%0d s3=%0d",

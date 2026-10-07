@@ -204,7 +204,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
 
   // Caracal (D2): the one added instance, Option-wrapped -- ABSENT (gate f)
   // when !usingRVV. All later connections reach it only via this Option.
-  val vec = if (usingRVV) Some(Module(new VecPipeline(int_wakeups.length, numFpWakeupPorts))) else None
+  val vecLateLdWakeups = if (enableFastLoadUse) lsuWidth else 0
+  val vec = if (usingRVV) Some(Module(new VecPipeline(int_wakeups.length + vecLateLdWakeups, numFpWakeupPorts))) else None
 
   //***********************************
   // Pipeline State Registers and Wires
@@ -249,6 +250,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   for ((b, a) <- brinfos zip alu_exe_units) {
     b.bits := UpdateBrMask(brupdate, a.io_brinfo.bits)
     b.valid := a.io_brinfo.valid && !rob.io.flush.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), a.io_brinfo.bits)
+    when (reset.asBool) { b.valid := false.B }
   }
   b1.resolve_mask := brinfos.map(x => x.valid << x.bits.uop.br_tag).reduce(_|_)
   b1.mispredict_mask := brinfos.map(x => (x.valid && x.bits.mispredict) << x.bits.uop.br_tag).reduce(_|_)
@@ -1512,7 +1514,20 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     // three terms; the seam carries them as three members rather than one
     // Caracal bundle, so BOOM's own `Wakeup` is not forked and these two stay
     // the same expressions the scalar issue units get.
-    v.io.int_wakeups := int_wakeups
+    // Fast-load-use wakeups lead the IRF write by one cycle past the CII's s1 snoop
+    // and cannot be retracted after grant: the vector side sees them one cycle late.
+    val vecIntWakeups = WireInit(VecInit(int_wakeups ++ Seq.fill(vecLateLdWakeups)(0.U.asTypeOf(Valid(new Wakeup)))))
+    for (i <- 0 until vecLateLdWakeups) {
+      val w      = io.lsu.iwakeups(i)
+      val isFast = w.valid && w.bits.bypassable && !w.bits.rebusy
+      vecIntWakeups(i).valid := w.valid && !isFast
+      val lateValid = RegNext(isFast && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), w.bits.uop), false.B)
+      val lateBits  = RegNext(UpdateBrMask(brupdate, w.bits))
+      vecIntWakeups(int_wakeups.length + i).valid := lateValid &&
+        !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), lateBits.uop)
+      vecIntWakeups(int_wakeups.length + i).bits := lateBits
+    }
+    v.io.int_wakeups := vecIntWakeups
     v.io.fp_wakeups  := fp_pipeline.io.wakeups
 
     // The retraction half of the speculative wakeup, and the grant squash.
@@ -1654,6 +1669,70 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   //-------------------------------------------------------------
   //-------------------------------------------------------------
 
+
+  if (PIPEVIEW_PRINTF) {
+    for (w <- 0 until coreWidth) {
+      val dec_seq      = dec_fbundle.uops(w).bits.debug_seq.get
+      val dec_last_seq = RegNext(dec_seq)
+      val dec_last_v   = RegNext(dec_valids(w), false.B)
+      when (dec_valids(w) && !(dec_last_v && dec_last_seq === dec_seq)) {
+        printf("O3PV decode %d %d\n", debug_tsc_reg, dec_seq)
+      }
+      when (dec_fire(w)) {
+        printf("O3PV rename %d %d\n", debug_tsc_reg, dec_seq)
+      }
+      when (rob.io.enq_valids(w)) {
+        printf("O3PV dispatch %d %d %d\n", debug_tsc_reg, rob.io.enq_uops(w).debug_seq.get, rob.io.enq_uops(w).rob_idx)
+      }
+      when (rob.io.commit.valids(w)) {
+        printf("O3PV retire %d %d\n", debug_tsc_reg, rob.io.commit.uops(w).rob_idx)
+      }
+    }
+    for (iss <- mem_iss_uops ++ alu_iss_uops ++ unq_iss_uops) {
+      when (iss.valid) {
+        printf("O3PV issue %d %d\n", debug_tsc_reg, iss.bits.rob_idx)
+      }
+    }
+    for (v <- vec) {
+      def tap[T <: Data](x: T): T = chisel3.util.experimental.BoringUtils.tapAndRead(x)
+      val cii      = v.cii
+      val send_v   = tap(cii.coproc.io.iss_valid)
+      val send_rob = tap(cii.iss.io.tag_alloc.bits.rob_idx)
+      when (send_v) {
+        printf("O3PV cii_send %d %d\n", debug_tsc_reg, send_rob)
+      }
+      for (i <- 0 until cii.opnd.io.src_req.length) {
+        val req_v   = tap(cii.opnd.io.src_req(i).valid)
+        val req_rob = tap(cii.tags.io.src_lookup(i).resp.rob_idx)
+        when (req_v) {
+          printf("O3PV cii_opreq %d %d\n", debug_tsc_reg, req_rob)
+        }
+      }
+      val wb_v    = tap(cii.coproc.io.wb_valid)
+      val wb_rob  = tap(cii.tags.io.wb_lookup(0).resp.rob_idx)
+      val wb_last = tap(cii.wbStatusTyped.last)
+      when (wb_v) {
+        printf("O3PV cii_wb %d %d %d\n", debug_tsc_reg, wb_rob, wb_last)
+      }
+    }
+    for (v <- vec; q <- v.vecQueues; iss <- q.io.iss_uops) {
+      val iss_valid   = chisel3.util.experimental.BoringUtils.tapAndRead(iss.valid)
+      val iss_rob_idx = chisel3.util.experimental.BoringUtils.tapAndRead(iss.bits.rob_idx)
+      when (iss_valid) {
+        printf("O3PV issue %d %d\n", debug_tsc_reg, iss_rob_idx)
+      }
+    }
+    for (wb <- rob.io.wb_resps) {
+      when (wb.valid) {
+        printf("O3PV complete %d %d\n", debug_tsc_reg, wb.bits.uop.rob_idx)
+      }
+    }
+    for (clr <- rob.io.lsu_clr_bsy ++ rob.io.vec_clr_bsy.getOrElse(Nil)) {
+      when (clr.valid) {
+        printf("O3PV complete %d %d\n", debug_tsc_reg, clr.bits)
+      }
+    }
+  }
 
   if (COMMIT_LOG_PRINTF) {
     var new_commit_cnt = 0.U

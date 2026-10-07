@@ -119,6 +119,7 @@ case class BoomCoreParams(
 
   /* debug stuff */
   enableCommitLogPrintf: Boolean = false,
+  enablePipeViewPrintf: Boolean = false,
   enableBranchPrintf: Boolean = false,
   enableMemtracePrintf: Boolean = false,
   enableDebugHarness: Boolean = false,
@@ -489,6 +490,7 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
   //***********************************
   // Debug printout parameters
   val COMMIT_LOG_PRINTF   = boomParams.enableCommitLogPrintf // dump commit state, for comparision against ISA sim
+  val PIPEVIEW_PRINTF     = boomParams.enablePipeViewPrintf // per-stage uop lifecycle trace, see scripts/boom_pipeview_to_es.py
   val BRANCH_PRINTF       = boomParams.enableBranchPrintf // dump branch predictor results
   val MEMTRACE_PRINTF     = boomParams.enableMemtracePrintf // dump trace of memory accesses to L1D for debugging
   val DEBUG_HARNESS       = boomParams.enableDebugHarness // attach BoomCoreHarnessWrapper BlackBox for whisper-cosim DPI bridge

@@ -504,6 +504,52 @@ from Tenstorrent Inc.
   has no recovery at all on the vector path, and its absence is invisible at the
   point where it is missing.
 
+  ===> THE SAME HOLE EXISTS FOR A SCALAR STORE KILLED BY `store_failed`. The D$
+  squashes the store request firing in s0 and the store in s1 whenever the store in
+  s2 is nacked (`dcache.scala:641,677`), with neither `store_ack` nor `nack` for the
+  victims. Baseline BOOM recovers them IMPLICITLY: the s2 victim is an older scalar
+  store, its nack rewinds `stq_execute_head` to itself under `IsOlderLSU`, and the
+  younger s0/s1 stores re-execute behind it. A vector store breaks that: its write
+  beats can still be in the D$ after `st_drain_done` has let it leave the STQ, so the
+  s2 nack names an index BEHIND `stq_head`, `IsOlderLSU` reads it as youngest, no
+  rewind happens, and the squashed scalar store is lost. Its STQ entry stays
+  committed-but-never-succeeded at `stq_head` forever; every vector store behind it
+  keeps its queue region, `st_US_ADDR_Q` fills, and VecLsu's US drain pointer laps the
+  full ring and re-drains the same ranges endlessly. Measured on
+  `matmul_acc_bare` (MegaBoomV4VectorWideConfig): `sd t3,0(sp)` (stq 13) fired the
+  cycle after a write beat of vector stq 12, which had just retired; that beat was
+  nacked at s2 and `stq_head` sat at 13 from then until the "Pipeline has hung"
+  timeout.
+
+  So, with `usingRVV`, track the scalar store-commit fire on lane 0 for s0 (this
+  cycle, `dmem_req_fire(0)`) and s1 (registered) together with its `stq_idx`, and
+  when `io.dmem.store_failed` is high and either fired, flush `stq_execute_queue` and
+  rewind `stq_execute_head` to the OLDEST victim: the s2 nack's own index when the
+  existing nack rewind applies this cycle (an older scalar store), else the s1
+  store, else the s0 store. This assignment is placed AFTER the `clear_store` block so
+  a same-cycle vector-entry advance of `stq_execute_head` cannot overwrite it; the
+  reset/exception block still has the last word. With `usingRVV = false` nothing is
+  added.
+
+  ===> AND THE LCAM ITSELF IS AN s1 RESOURCE ON THE SCALAR SIDE BUT AN s0 ONE ON
+  THE VECTOR SIDE. A scalar lcam op (`load_agen[_exec]`, `store_agen`, `release`,
+  `*_retry`, `load_wakeup`) claims `lcam_avail` in s0 and searches in s1 off the
+  `fired_*` registers; a vector beat searches in its own grant cycle. So a scalar
+  lcam op fired in cycle N and a vector lcam beat granted in N+1 meet on lane w in
+  N+1, the `lcam_*` muxes take the VECTOR search, and the scalar op is never
+  searched at all. When that vector search also raises a kill, the kill lands on the
+  scalar's D$ request while `s1_set_execute` is cleared for the VECTOR ldq index:
+  the scalar load stays executed with neither resp nor nack and never replays.
+  Measured on `spmv_bare` (MegaBoomV4VectorWideConfig): the wakeup of ldq 23
+  (`ld a0,8(a2)`) was killed at s1 by vector ldq 17's search and wedged the ROB head.
+
+  So export `scalar_demand(w).lcam_s1_busy := RegNext(<any lcam-using will_fire on
+  lane w>)` and let VecDcacheArbiter refuse an lcam-using beat on that lane, elevated
+  or not (a hard deadline, like `agen_incoming`; registered, so acyclic). And gate
+  every ordering-check `s1_kill` with `s1_kill_victim_ok(w)`: a VECTOR searcher may
+  kill only a VECTOR beat (the one VecLsu replays), never a scalar store commit or
+  hella request that has no recovery.
+
   ---- 7. Commit, drain eligibility, and the vse teardown hang ----
 
   //@req-spec-lsu.a7

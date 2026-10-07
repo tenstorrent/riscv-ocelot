@@ -304,7 +304,10 @@ from Tenstorrent Inc.
      that resource is still available on that lane: `io.scalar_avail` on the
      default path, or unconditionally on the elevated path (nothing scalar can
      have taken a pre-claimed resource). `uses_dcache` additionally requires
-     `io.dmem_req_ready`.
+     `io.dmem_req_ready`. `uses_lcam` additionally requires
+     `!io.scalar_lcam_s1_busy(w)` on BOTH paths: the scalar op fired on lane `w`
+     last cycle is doing its s1 LCAM search now, while a vector beat searches in
+     its grant cycle, so a pre-claim cannot take that lane back (host/LSU part 6).
   4. Drive `ld_req(w).ready` / `st_req(w).ready` for the winner and
      `io.vec_fire(w)` with its payload, unmodified — the arbiter is
      payload-transparent and must not rewrite a field.
