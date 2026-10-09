@@ -1,0 +1,283 @@
+<mxfile host="Electron">
+  <diagram id="nGhxVFPONbny5Nr_FJJo" name="Page-1">
+    <mxGraphModel dx="1598" dy="915" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0" adaptiveColors="auto">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="inlabel" parent="1" style="text;html=1;align=left;verticalAlign=middle;fontStyle=2;" value="OP.v logical specifiers (one uop = whole EMUL group, no cracking)" vertex="1">
+          <mxGeometry height="20" width="420" x="25" y="81" as="geometry" />
+        </mxCell>
+        <mxCell id="Nvmr3YEM5b4k8vy8wJBY-1" edge="1" parent="1" source="lvd" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="50" y="146" />
+              <mxPoint x="31" y="146" />
+              <mxPoint x="31" y="570" />
+            </Array>
+            <mxPoint x="84.35294117647072" y="569.7058823529412" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="lvd" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="lvd" vertex="1">
+          <mxGeometry height="30" width="50" x="25" y="103" as="geometry" />
+        </mxCell>
+        <mxCell id="lvs1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="lvs1" vertex="1">
+          <mxGeometry height="30" width="50" x="80" y="103" as="geometry" />
+        </mxCell>
+        <mxCell id="lvs2" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="lvs2" vertex="1">
+          <mxGeometry height="30" width="50" x="135" y="103" as="geometry" />
+        </mxCell>
+        <mxCell id="lvs3" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="lvs3" vertex="1">
+          <mxGeometry height="30" width="50" x="190" y="103" as="geometry" />
+        </mxCell>
+        <mxCell id="lvm" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="lvm (V0)" vertex="1">
+          <mxGeometry height="30" width="60" x="245" y="103" as="geometry" />
+        </mxCell>
+        <mxCell id="emul" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="EMUL (from VCFG vtype mirror)" vertex="1">
+          <mxGeometry height="30" width="190" x="315" y="103" as="geometry" />
+        </mxCell>
+        <mxCell id="rmtbox" parent="1" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#000000;verticalAlign=top;align=left;fontStyle=2;spacingLeft=6;spacingTop=4;" value="Vector Map Table (RMT) — atomic LMUL/EMUL group rename" vertex="1">
+          <mxGeometry height="370" width="520" x="25" y="173" as="geometry" />
+        </mxCell>
+        <mxCell id="maptable" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="map_table&#xa;32 entries&#xa;1 PRN per arch vreg&#xa;(speculative)" vertex="1">
+          <mxGeometry height="190" width="90" x="55" y="213" as="geometry" />
+        </mxCell>
+        <mxCell id="groupread" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;align=left;spacingLeft=4;" value="EMUL-wide group read:&#xa;one read returns up to 8 PRNs per source&#xa;(pvs1[8] / pvs2[8] / pvs3[8]) + stale group.&#xa;Correct under arbitrary fragmentation." vertex="1">
+          <mxGeometry height="111" width="160" x="165" y="223" as="geometry" />
+        </mxCell>
+        <mxCell id="tagcheck" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;spacingLeft=4;" value="LMUL Tag Table (32 x 2b)&#xa;Whole-Vector-Group checkers&#xa;is_whole_vg_1 / 2 / 4 / 8&#xa;(combinational, per valid base ARN)" vertex="1">
+          <mxGeometry height="80" width="180" x="345" y="213" as="geometry" />
+        </mxCell>
+        <mxCell id="nwcounter" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=left;spacingLeft=4;" value="non-whole-group read -&gt; observability perf counter (read still correct; no recovery)" vertex="1">
+          <mxGeometry height="50" width="180" x="345" y="303" as="geometry" />
+        </mxCell>
+        <mxCell id="commap" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="com_map_table&#xa;(committed RMT)" vertex="1">
+          <mxGeometry height="61" width="150" x="108" y="455" as="geometry" />
+        </mxCell>
+        <mxCell id="brsnap" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="br_snapshots[maxBrCount]&#xa;written off DELAYED br_tag&#xa;(cycle-2 vector-map stage)" vertex="1">
+          <mxGeometry height="60" width="180" x="317" y="456" as="geometry" />
+        </mxCell>
+        <mxCell id="emul_to_mt" edge="1" parent="1" source="emul" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;startArrow=none;dashed=1;" target="groupread" value="sizes group">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="lvs_to_mt" edge="1" parent="1" source="lvs1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="maptable" value="read group">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mt_to_gr" edge="1" parent="1" source="maptable" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="groupread" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="151" y="308" />
+              <mxPoint x="151" y="263" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="mt_to_tag" edge="1" parent="1" source="maptable" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="tagcheck" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="332" y="355" />
+              <mxPoint x="332" y="253" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="tag_to_nw" edge="1" parent="1" source="tagcheck" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="nwcounter" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="com_to_mt" edge="1" parent="1" source="commap" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#b85450;fontColor=#b85450;entryX=0.75;entryY=1;entryDx=0;entryDy=0;" target="maptable" value="exception/flush: 1-cycle copy">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="snap_to_mt" edge="1" parent="1" source="brsnap" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#6c8ebf;fontColor=#6c8ebf;" target="maptable" value="mispredict(br_tag): restore">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="265" y="497" />
+              <mxPoint x="265" y="390" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="stalecloud" parent="1" style="shape=cloud;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="stale&#xa;bypass&#xa;(group-aware)" vertex="1">
+          <mxGeometry height="70" width="120" x="605" y="173" as="geometry" />
+        </mxCell>
+        <mxCell id="srccloud" parent="1" style="shape=cloud;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="reg src&#xa;bypasses&#xa;(per-member)" vertex="1">
+          <mxGeometry height="70" width="130" x="765" y="173" as="geometry" />
+        </mxCell>
+        <mxCell id="mux1" parent="1" style="shape=trapezoid;perimeter=trapezoidPerimeter;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;direction=south;" value="mux" vertex="1">
+          <mxGeometry height="40" width="60" x="635" y="273" as="geometry" />
+        </mxCell>
+        <mxCell id="mux2" parent="1" style="shape=trapezoid;perimeter=trapezoidPerimeter;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;direction=south;" value="mux" vertex="1">
+          <mxGeometry height="40" width="60" x="795" y="273" as="geometry" />
+        </mxCell>
+        <mxCell id="cmp1" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" value="=" vertex="1">
+          <mxGeometry height="40" width="40" x="645" y="333" as="geometry" />
+        </mxCell>
+        <mxCell id="cmp2" parent="1" style="ellipse;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" value="=" vertex="1">
+          <mxGeometry height="40" width="40" x="805" y="333" as="geometry" />
+        </mxCell>
+        <mxCell id="cmpnote" parent="1" style="text;html=1;align=left;verticalAlign=middle;fontStyle=2;" value="same-dispatch-group dependency check:&amp;nbsp;&lt;div&gt;uop(0).lvd ?= uop(1).lvs* (per group member)&lt;/div&gt;" vertex="1">
+          <mxGeometry height="30" width="300" x="626" y="378" as="geometry" />
+        </mxCell>
+        <mxCell id="stale_to_mux1" edge="1" parent="1" source="stalecloud" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="mux1" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="src_to_mux2" edge="1" parent="1" source="srccloud" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="mux2" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cmp1_mux1" edge="1" parent="1" source="cmp1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="mux1" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="cmp2_mux2" edge="1" parent="1" source="cmp2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="mux2" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gr_to_mux2" edge="1" parent="1" source="groupread" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="mux2" value="group PRNs">
+          <mxGeometry relative="1" x="0.1558" y="-5" as="geometry">
+            <mxPoint x="-1" as="offset" />
+            <Array as="points">
+              <mxPoint x="245" y="374" />
+              <mxPoint x="478" y="374" />
+              <mxPoint x="478" y="440" />
+              <mxPoint x="921" y="440" />
+              <mxPoint x="921" y="293" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="outlabel" parent="1" style="text;html=1;align=left;verticalAlign=middle;fontStyle=2;" value="OP.v after vector rename  -&gt;  Issue Queue + ROB entry" vertex="1">
+          <mxGeometry height="20" width="500" x="955" y="72" as="geometry" />
+        </mxCell>
+        <mxCell id="o_pvdest" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="pvdest[up to 8]" vertex="1">
+          <mxGeometry height="34" width="90" x="955" y="95" as="geometry" />
+        </mxCell>
+        <mxCell id="o_pvs1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="pvs1[8]" vertex="1">
+          <mxGeometry height="34" width="70" x="1050" y="95" as="geometry" />
+        </mxCell>
+        <mxCell id="o_pvs2" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="pvs2[8]" vertex="1">
+          <mxGeometry height="34" width="70" x="1125" y="95" as="geometry" />
+        </mxCell>
+        <mxCell id="o_pvs3" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="pvs3[8]" vertex="1">
+          <mxGeometry height="34" width="70" x="1200" y="95" as="geometry" />
+        </mxCell>
+        <mxCell id="o_pvm" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="pvm" vertex="1">
+          <mxGeometry height="34" width="55" x="1275" y="95" as="geometry" />
+        </mxCell>
+        <mxCell id="o_stale" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="stale_pvdest[8]" vertex="1">
+          <mxGeometry height="34" width="100" x="1335" y="95" as="geometry" />
+        </mxCell>
+        <mxCell id="o_pvl" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="pvl" vertex="1">
+          <mxGeometry height="34" width="55" x="1440" y="95" as="geometry" />
+        </mxCell>
+        <mxCell id="mux2_to_out" edge="1" parent="1" source="mux2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="o_pvs1" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="mux1_to_stale" edge="1" parent="1" source="mux1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="o_stale" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="738" y="297" />
+              <mxPoint x="738" y="164" />
+              <mxPoint x="1385" y="164" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="busybox" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;verticalAlign=top;spacingLeft=6;spacingTop=6;" value="Vector Busy Table  (numVecPhysRegs bits, per-PRN)&#xa;&#xa;SET: all member bits of dest group per OP.v (up to 8)&#xa;READ: per-member bits of each source group, AND-ed&#xa;into one group-ready bit (wake on the LAST member)&#xa;CLEAR: group-done carries the member-PRN vector" vertex="1">
+          <mxGeometry height="170" width="300" x="1185" y="173" as="geometry" />
+        </mxCell>
+        <mxCell id="groupdone" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;verticalAlign=top;spacingLeft=6;spacingTop=4;" value="Group-Done wakeup&#xa;LCB (vector loads): one per dest group, after last PRN&#xa;CII (vector arith): one per OP.v&#xa;-&gt; clears member bits + wakes vector wakeup network" vertex="1">
+          <mxGeometry height="80" width="300" x="1185" y="363" as="geometry" />
+        </mxCell>
+        <mxCell id="gd_to_busy" edge="1" parent="1" source="groupdone" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="busybox" value="clear">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pvdest_to_busy" edge="1" parent="1" source="o_pvdest" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="busybox" value="set member bits">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1013" y="258" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="freebox" parent="1" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#000000;verticalAlign=top;align=left;fontStyle=2;spacingLeft=6;spacingTop=4;" value="Vector Freelist" vertex="1">
+          <mxGeometry height="270" width="560" x="25" y="583" as="geometry" />
+        </mxCell>
+        <mxCell id="freelist" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="free_list&lt;br&gt;numVec&lt;div&gt;PhysRegs&amp;nbsp;&lt;/div&gt;&lt;div&gt;bits&lt;/div&gt;" vertex="1">
+          <mxGeometry height="150" width="90" x="55" y="623" as="geometry" />
+        </mxCell>
+        <mxCell id="selfirst" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;spacingLeft=4;" value="SelectFirstN&#xa;allocWidth = coreWidth * 8&#xa;non-contiguous EMUL-group alloc&#xa;(8 PRNs / OP.v)" vertex="1">
+          <mxGeometry height="70" width="190" x="177" y="686" as="geometry" />
+        </mxCell>
+        <mxCell id="dealloc" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;align=left;spacingLeft=4;" value="deallocWidth = commitWidth * 8&#xa;free whole stale group at commit" vertex="1">
+          <mxGeometry height="50" width="190" x="177" y="629" as="geometry" />
+        </mxCell>
+        <mxCell id="bralloc" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;spacingLeft=4;" value="br_alloc_lists&#xa;branch-mispredict reclaim" vertex="1">
+          <mxGeometry height="50" width="180" x="385" y="629" as="geometry" />
+        </mxCell>
+        <mxCell id="pvtmp" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=left;spacingLeft=4;" value="is_shared (segmented LS):&#xa;allocate a 2nd group (pvtmp) from this SAME free list.&#xa;Heavy PRN use: pvdest + pvtmp = up to 16 PRNs/op." vertex="1">
+          <mxGeometry height="89" width="180" x="385" y="686" as="geometry" />
+        </mxCell>
+        <mxCell id="fl_to_sel" edge="1" parent="1" source="freelist" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="selfirst" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="sel_to_pvdest" edge="1" parent="1" source="selfirst" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="o_pvdest" value="pvdest group (alloc)">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="269" y="795" />
+              <mxPoint x="602" y="795" />
+              <mxPoint x="602" y="688" />
+              <mxPoint x="981" y="688" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="sel_to_mt" edge="1" parent="1" source="selfirst" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" target="maptable" value="write new mapping">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="162" y="721" />
+              <mxPoint x="162" y="567" />
+              <mxPoint x="100" y="567" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="stale_to_dealloc" edge="1" parent="1" source="o_stale" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;fillColor=#f8cecc;strokeColor=#b85450;" target="dealloc" value="stale group">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1385" y="148" />
+              <mxPoint x="581" y="148" />
+              <mxPoint x="581" y="567" />
+              <mxPoint x="272" y="567" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="vlbox" parent="1" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;fillColor=none;strokeColor=#000000;verticalAlign=top;align=left;fontStyle=2;spacingLeft=6;spacingTop=4;" value="VL Rename (own register space — VL is NOT in the integer RF)" vertex="1">
+          <mxGeometry height="300" width="540" x="622" y="553" as="geometry" />
+        </mxCell>
+        <mxCell id="vlmap" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;spacingLeft=4;" value="VL map table (1 entry, current pvl)&#xa;+ br_snapshots (delayed br_tag)&#xa;commit: free outgoing committed pointer" vertex="1">
+          <mxGeometry height="70" width="230" x="652" y="593" as="geometry" />
+        </mxCell>
+        <mxCell id="vlfree" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;align=left;spacingLeft=4;" value="VL free list (64)&#xa;VL busy table&#xa;VL wakeup network" vertex="1">
+          <mxGeometry height="54" width="240" x="902" y="787" as="geometry" />
+        </mxCell>
+        <mxCell id="vlprod" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;align=left;spacingLeft=4;" value="VL producers (write VL RF, wake pvl):&lt;br&gt;vsetivli  -&amp;gt;  VCFG writes VL RF (front-end, no EU)&lt;br&gt;vsetvli / vsetvl  -&amp;gt;  integer ALU EU WB&lt;div&gt;vleff  -&amp;gt;  LSU WB (possibly trimmed) VL&lt;/div&gt;" vertex="1">
+          <mxGeometry height="124" width="240" x="647" y="716" as="geometry" />
+        </mxCell>
+        <mxCell id="vtypenote" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;spacingLeft=4;" value="VTYPE: NOT renamed — held in the VCFG vtype mirror and carried in the per-uop VConfig snapshot. vstart/vxrm/vxsat live in the CSR file." vertex="1">
+          <mxGeometry height="80" width="240" x="902" y="707" as="geometry" />
+        </mxCell>
+        <mxCell id="vl_to_pvl" edge="1" parent="1" source="vlmap" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="o_pvl" value="pvl">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1507" y="658" />
+              <mxPoint x="1507" y="112" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="vlprod_to_map" edge="1" parent="1" source="vlprod" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" target="vlmap" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="4gCNhrMY01VjpQJaILgM-3" edge="1" parent="1" style="endArrow=none;dashed=1;html=1;dashPattern=8 8;strokeWidth=2;rounded=0;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="1507" y="57" as="sourcePoint" />
+            <mxPoint x="11" y="51" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="4gCNhrMY01VjpQJaILgM-4" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;fontSize=17;fontStyle=1" value="Vector Mapping Stage" vertex="1">
+          <mxGeometry height="30" width="234" x="19" y="53" as="geometry" />
+        </mxCell>
+        <mxCell id="4gCNhrMY01VjpQJaILgM-6" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;fontSize=17;fontStyle=1" value="Scalar Mapping Stage" vertex="1">
+          <mxGeometry height="30" width="234" x="19" y="6" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

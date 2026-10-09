@@ -1,0 +1,245 @@
+/*
+Tenstorrent CONFIDENTIAL
+__________________
+ Tenstorrent Inc.
+ All Rights Reserved.
+
+NOTICE:  All information contained herein is, and remains
+the property of Tenstorrent Inc.  The intellectual
+and technical concepts contained
+herein are proprietary to Tenstorrent Inc.
+and may be covered by U.S., Canadian and Foreign Patents,
+patents in process, and are protected by trade secret or copyright law.
+Dissemination of this information or reproduction of this material
+is strictly forbidden unless prior written permission is obtained
+from Tenstorrent Inc.
+*/
+
+package boom.v4.vec.generated.issue
+
+import chisel3._
+import chisel3.util._
+
+import org.chipsalliance.cde.config.Parameters
+
+import boom.v4.common.{BoomBundle, BoomModule}
+import boom.v4.vec.generated.{VecGroupDone, VecTrace}
+
+// GENERATED from src/main/nlhdl/vec/issue/VecGroupReady.nlhdl.scala. Do not
+// hand-edit; regenerate via the nlhdl gen-rtl flow instead.
+
+class VecGroupReadyIO(val isMask: Boolean)(implicit p: Parameters) extends BoomBundle
+{
+  private val groupMembers: Int = if (isMask) 1 else maxVecMembers
+
+  val load = Input(Bool())
+
+  val in_member_rdy = Input(Vec(groupMembers, Bool()))
+
+  //@req-spec-issue.g13
+  val prns = Input(Vec(groupMembers, UInt(vecPregSz.W)))
+
+  val members = if (isMask) None else Some(Input(UInt((log2Ceil(maxVecMembers) + 1).W)))
+
+  val used = Input(Bool())
+
+  //@req-spec-issue.g15
+  // PER-MEMBER LIVE BUSY, indexed from the rename busy table by this tracker's own
+  // `prns` and carrying this cycle's clears. `member_hit` alone makes readiness a
+  // ONE-CYCLE PULSE that the consumer must be comparing on exactly the right cycle;
+  // this is the same fact as a level, so a missed pulse is recoverable.
+  val live_busy = Input(Vec(groupMembers, Bool()))
+
+  //@req-spec-rename.g19
+  //@req-spec-issue.g12
+  //@req-spec-vrf.e8
+  val group_done = Input(Vec(vectorParams.numVecWbPorts, Valid(new VecGroupDone)))
+
+  val ready = Output(Bool())
+
+  val out_member_rdy = Output(Vec(groupMembers, Bool()))
+
+}
+
+class VecGroupReady(isMask: Boolean = false)(implicit p: Parameters) extends BoomModule
+{
+  private val groupMembers: Int = if (isMask) 1 else maxVecMembers
+
+  require(!isMask || groupMembers == 1,
+    "VecGroupReady: an isMask instance must elaborate exactly one member lane")
+
+  val io = IO(new VecGroupReadyIO(isMask))
+
+  // ---- What is held, and where ----
+
+  //@req-spec-issue.g14
+  val member_rdy = RegInit(VecInit(Seq.fill(groupMembers)(true.B)))
+
+  // ---- The per-member match ----
+
+  //@req-spec-issue.g15
+  //@req-spec-issue.g18
+  //@req-spec-issue.g33
+  val member_hit = Wire(Vec(groupMembers, Bool()))
+  for (i <- 0 until groupMembers) {
+    member_hit(i) := (for {
+      w <- 0 until vectorParams.numVecWbPorts
+      j <- 0 until maxVecMembers
+    } yield {
+      io.group_done(w).valid &&
+      (j.U < io.group_done(w).bits.members) &&
+      (io.group_done(w).bits.pvdest(j) === io.prns(i))
+    }).reduce(_ || _)
+  }
+
+  // ---- Next state: load, collapse move and match compose in one cycle ----
+
+  //@req-spec-rename.g20
+  //@req-spec-rename.g14
+  //@req-spec-issue.g17
+  val member_rdy_next = Wire(Vec(groupMembers, Bool()))
+  for (i <- 0 until groupMembers) {
+    //@req-spec-issue.g17
+    // ⚠ `member_hit` IS DROPPED ON A LOAD CYCLE, and that is not an omission.
+    // `io.prns` names the REGISTER occupant (VecIssueSlot drives them from
+    // `track_uop = slot_uop`, never from the incoming uop), so on a fill/collapse
+    // cycle the hit belongs to the occupant LEAVING, while `member_rdy_next` is
+    // the state of the occupant ARRIVING. OR-ing it in handed the arriving uop a
+    // wakeup meant for its predecessor: measured on matmul_bare (MegaBoom-wide),
+    // `vfmv.f.s f15,v1` was dispatched with `in_vs2_rdy=254` -- pvs2 member 0
+    // correctly busy -- and read 255 one cycle later because the slot's outgoing
+    // occupant took a group_done that cycle. It then issued ~4000 trace lines
+    // before its `vfredosum.vs` producer wrote pvs2, and the CII served it the
+    // PREVIOUS tenant of prn 97: a plausible wrong double, no assertion anywhere.
+    // NOTHING IS LOST. A group_done landing in the move cycle reaches the arriving
+    // uop through `io.in_member_rdy`, because the exporter folds its own
+    // same-cycle `member_hit` into `out_member_rdy` below (and a fresh dispatch's
+    // `dis_member_rdy` is computed off `busy_table_clr`, this cycle's clears
+    // already applied). The nlhdl text assumed the opposite `prns` contract --
+    // that they name the ARRIVING uop on a load cycle -- which VecIssueSlot's
+    // `track_uop` rule inverted; this line follows the code that exists.
+    //@req-spec-issue.g15
+    // `!io.live_busy(i)` MAKES A LOST `group_done` RECOVERABLE. The pulse stays the
+    // fast path; the level is the same fact held steady, so a member whose producer
+    // has written is ready whether or not this tracker happened to be comparing in
+    // the pulse cycle. Measured on axpy_bare with the relaxed CII gate: a vector
+    // store sat with pvs3 busy for the rest of the run after its producer's clear
+    // (prn 114) landed while the store was resident in its slot, and nothing
+    // downstream could recover it.
+    //
+    // ⚠ THE LEVEL IS ON THE HOLD ARM ONLY, AND THAT IS NOT AN OMISSION.
+    // `io.live_busy` is indexed by `io.prns`, and on a LOAD cycle `prns` names the
+    // REGISTER occupant (VecIssueSlot drives them from `track_uop = slot_uop`) --
+    // in a store slot's `rdy_vs3` it names the INCOMING uop instead. Either way it
+    // is not reliably the uop whose readiness `member_rdy_next` is becoming, so
+    // OR-ing it onto the load arm hands the arriving uop a verdict taken on someone
+    // else's registers. Measured: `vfmacc.vf v24,f10,v25` then issued against
+    // sources nothing had written and produced four uninitialised lanes (DUT
+    // d8b196b1.. / 2add40c9.. against an architectural 40141460aa64c2f9, and the
+    // values differ run to run, which is the signature of reading an unwritten
+    // physical register). Nothing is lost by the restriction: from the cycle after
+    // the move, `prns` names the resident uop and the level re-asserts on its own.
+    // MONOTONIC WITHIN A RESIDENCY -- only ever OR-ed in, never used to clear, so a
+    // prn that goes busy again under a younger tenant cannot un-ready this member.
+    member_rdy_next(i) := Mux(io.load, io.in_member_rdy(i),
+      member_rdy(i) || member_hit(i) || !io.live_busy(i))
+  }
+  member_rdy := member_rdy_next
+
+  //@req-spec-issue.g17
+  // The collapse chain pairs this with the slot's out_uop, which is the REGISTER
+  // occupant -- so this must be too. Exporting member_rdy_next would hand the slot
+  // below the INCOMING occupant's readiness while it takes the outgoing occupant's
+  // uop.
+  //
+  // `member_hit` is included UNCONDITIONALLY, load cycle or not. `io.prns` names the
+  // REGISTER occupant (the slot drives them from `slot_uop`, not from the incoming
+  // uop), so a hit is always this occupant's wakeup and the slot below is exactly
+  // who needs it. The old `&& !io.load` DROPPED it on a shift cycle: a `group_done`
+  // is a ONE-CYCLE PULSE, the outgoing occupant had already left the register, and
+  // nobody else was comparing its PRNs -- so that wakeup was lost outright and the
+  // op could sit ready-less forever. Including it here is also what lets the
+  // consumer of `in_member_rdy` skip comparing against the INCOMING prns: the
+  // exporter has already folded this cycle's hit in.
+  for (i <- 0 until groupMembers) {
+    io.out_member_rdy(i) := member_rdy(i) || member_hit(i) || (!io.load && !io.live_busy(i))
+  }
+
+  // TEMP PROBE -- READINESS DESTROYED BY A COLLAPSE FILL. On a load cycle
+  // `member_rdy_next` REPLACES the tracker with `in_member_rdy`, so a member that
+  // was already woken is re-cleared if the arriving side channel says not-ready.
+  // The producer's `group_done` is a ONE-CYCLE PULSE that will never repeat, so
+  // that member can never become ready again -- an unrecoverable stall with no
+  // signature anywhere downstream. Fires only on the regression, so it is silent
+  // unless the loss is real.
+  for (i <- 0 until groupMembers) {
+    when (io.load && io.used && (member_rdy(i) || member_hit(i)) && !io.in_member_rdy(i) && io.live_busy(i)) {
+      VecTrace.traceStruct("VecGroupReady", "rdy_regress", Seq(
+        ("member",   i.U),
+        ("prn",      io.prns(i)),
+        ("was_rdy",  (member_rdy(i) || member_hit(i)).asUInt),
+        ("in_rdy",   io.in_member_rdy(i).asUInt),
+        ("hit",      member_hit(i).asUInt)))
+    }
+  }
+
+  // Who woke this member. A member that goes ready with no legitimate producer
+  // completion is the shape of an early issue, and the only way to tell a real
+  // wakeup from a spurious PRN match is to name the group_done that matched.
+  for (i <- 0 until groupMembers) {
+    for (w <- 0 until vectorParams.numVecWbPorts) {
+      for (j <- 0 until maxVecMembers) {
+        val hit = io.group_done(w).valid && (j.U < io.group_done(w).bits.members) &&
+                  (io.group_done(w).bits.pvdest(j) === io.prns(i)) && io.used
+        when (hit && !member_rdy(i)) {
+          VecTrace.traceId("VecGroupReady", "wake", io.group_done(w).bits.rob_idx, Seq(
+            ("port", w.U), ("gd_member", j.U), ("my_member", i.U),
+            ("prn", io.prns(i)), ("gd_members", io.group_done(w).bits.members),
+            ("load", io.load.asUInt)))
+        }
+      }
+    }
+  }
+
+  // ---- AND-reduce to one bit, and conditional participation ----
+
+  //@req-spec-rename.g13
+  //@req-spec-issue.g16
+  // THE ISSUE GATE IS THE REGISTER OCCUPANT'S, AND `member_rdy_next` IS NOT IT.
+  // On a load cycle `member_rdy_next` is the INCOMING occupant's readiness, while
+  // the slot's `request`/`iss_uop` still name the outgoing one -- so gating on it
+  // let a slot grant its occupant on the strength of the NEXT occupant's operands.
+  // Measured on conv1d-vector (MegaBoom): `vmacc.vv v10,v14,v12` was granted with
+  // `members = 1` (the incoming uop's count) against its own `emul = 2`, which
+  // collapsed this AND-reduce for members 1..7, and it read a `pvs3` whose member 0
+  // was still busy. `member_rdy | member_hit` is the register occupant's own state,
+  // including a wakeup landing this cycle.
+  val member_rdy_now = (0 until groupMembers).map(i => member_rdy(i) || member_hit(i))
+  val group_all_rdy: Bool = if (isMask) {
+    member_rdy_now(0)
+  } else {
+    (0 until groupMembers)
+      .map(i => member_rdy_now(i) || (i.U >= io.members.get))
+      .reduce(_ && _)
+  }
+  io.ready := !io.used || group_all_rdy
+
+  //@req-spec-vrf.e7
+  //@req-spec-vrf.e9
+
+  //@req-spec-issue.g34
+  //@req-spec-vrf.e10
+
+  // ---- Reset, assertions ----
+
+  if (!isMask) {
+    assert(!io.used || (io.members.get >= 1.U && io.members.get <= maxVecMembers.U),
+      "VecGroupReady: members out of range 1..maxVecMembers while the operand is used")
+  }
+
+  for (w <- 0 until vectorParams.numVecWbPorts) {
+    assert(!io.group_done(w).valid ||
+      (io.group_done(w).bits.members >= 1.U && io.group_done(w).bits.members <= maxVecMembers.U),
+      "VecGroupReady: group_done member count out of range 1..maxVecMembers on a valid port")
+  }
+}

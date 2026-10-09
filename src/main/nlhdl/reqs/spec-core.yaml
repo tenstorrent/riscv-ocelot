@@ -1,0 +1,1454 @@
+family: core
+description: >
+  Machine-wide invariants: the usingRVV gate and BOOM-v4 equivalence, the uOP model
+  (one uOP per instruction, no cracking), and the vector-CSR delegation boundary.
+spec_sources:
+  - docs_caracal/src/overview.rst
+  - docs_caracal/src/glossary.rst
+  - docs_caracal/src/execution.rst
+
+groups:
+  a: the fork — BOOM v4 equivalence, RVV scope, and the usingRVV gate
+  b: per-subsystem status of the overview table (unchanged / extended / new / delegated)
+  c: the uOP model — one uOP per instruction, one ROB entry per OP.v, no frontend cracking
+  d: architectural-state ownership — vtype, precise vector state, and the VRF
+  e: per-stage pipeline attachment and per-stage BOOM v4 equivalence
+  f: the single scheduler and the PNR safety model
+  g: the group-done completion model
+  h: shared instructions and the pvtmp rendezvous
+  i: the three vector execution streams
+
+reqs:
+
+  # --- a: the fork, RVV scope, and the usingRVV gate ---------------------------
+
+  - id: spec-core.a2
+    kind: function
+    statement: >
+      Caracal must support RVV 1.0.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: boom-relationship
+      heading: "Relationship to BOOMv4 and Chipyard"
+      quote: >
+        |caracal| is a fork of BOOMv4 [5/20/2026] with a clean-slate re-architecture to
+        support RVV 1.0 and OOO vector load/store.
+    notes: >
+      The parameter envelope this is realized in (VLEN = 256, ELEN = 64, the supported SEW and
+      LMUL sets) is mined by spec-decode from frontend.rst §"Vector (RVV) Decode".
+
+  - id: spec-core.a3
+    kind: function
+    statement: >
+      Caracal must support out-of-order vector load/store.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: boom-relationship
+      heading: "Relationship to BOOMv4 and Chipyard"
+      quote: >
+        |caracal| is a fork of BOOMv4 [5/20/2026] with a clean-slate re-architecture to
+        support RVV 1.0 and OOO vector load/store.
+    notes: >
+      The mechanism — element/store-data queues, the LCB, D$ arbitration and squash by
+      pointer rollback — is owned by spec-lsu; this is the machine-wide obligation that such a
+      path exist at all.
+
+  - id: spec-core.a4
+    kind: interface
+    statement: >
+      Caracal must remain compatible with the Chipyard ecosystem.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: boom-relationship
+      heading: "Relationship to BOOMv4 and Chipyard"
+      quote: >
+        |caracal| remains compatible with the Chipyard ecosystem, allowing it to be used as a
+        drop-in core for Chipyard SoC designs and simulations.
+    notes: >
+      Drop-in use in Chipyard SoC designs and simulations is the stated consequence of the
+      obligation, not a second obligation.
+
+  - id: spec-core.a5
+    kind: structure
+    statement: >
+      Caracal must keep BOOM v4's out-of-order pipeline intact.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        |caracal| keeps |boom| v4's out-of-order pipeline intact and threads
+        a vector path through it.
+    notes: >
+      The "13-stage" figure was struck from overview.rst on 2026-08-03: the chapter's own stage
+      enumeration gives a six-stage fetch front-end plus nine back-end groups, which is not 13,
+      and no verifiable replacement count was substituted. The obligation is unchanged — the
+      pipeline is BOOM v4's, kept intact. Which stages are bit-identical is now checkable from
+      the per-stage status lines, group e.
+
+  - id: spec-core.a6
+    kind: structure
+    statement: >
+      Caracal must thread the vector path through that same pipeline.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        |caracal| keeps |boom| v4's out-of-order pipeline intact and threads
+        a vector path through it.
+    notes: >
+      Read with spec-core.a5: the vector path is added to the existing pipeline rather than
+      lengthening it or running beside it.
+
+  - id: spec-core.a7
+    kind: structure
+    statement: >
+      Every vector feature must be gated on the usingRVV core parameter.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Everything is gated on the ``usingRVV`` core parameter
+        (``common/parameters.scala``), so with vectors disabled the core elaborates as
+        stock |boom| v4.
+
+  - id: spec-core.a8
+    kind: structure
+    statement: >
+      With vectors disabled the core must elaborate as stock BOOM v4.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Everything is gated on the ``usingRVV`` core parameter
+        (``common/parameters.scala``), so with vectors disabled the core elaborates as
+        stock |boom| v4.
+    notes: >
+      The per-unit instances of this gate are mined by their owning families —
+      spec-decode.c14/c15 for the integer ALU's vset extension and spec-lsu.a2/a3 for the
+      LSU. This is the whole-core obligation the per-unit ones must add up to.
+
+  - id: spec-core.b1
+    kind: structure
+    statement: >
+      The front-end fetch and branch-prediction unit must be unchanged from BOOM v4.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: boom-relationship
+      heading: "Relationship to BOOMv4 and Chipyard"
+      quote: >
+        * - Front-end (fetch, BPU)
+          - Unchanged
+    notes: >
+      Restated per-stage as spec-core.e1/e2 (six-stage front-end and TAGE predictor) and, for
+      the fetch stage alone, by spec-decode.a2 from frontend.rst §"Instruction Fetch".
+
+  - id: spec-core.b4
+    kind: structure
+    statement: >
+      The FP execution subsystem must be unchanged from BOOM v4.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: boom-relationship
+      heading: "Relationship to BOOMv4 and Chipyard"
+      quote: >
+        * - FP execution
+          - Unchanged
+    notes: >
+      Restated per-stage as part of spec-core.e18 (the FPU is an untouched BOOM v4 functional
+      unit).
+
+  - id: spec-core.b7
+    kind: structure
+    statement: >
+      The memory system must be unchanged from BOOM v4.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: boom-relationship
+      heading: "Relationship to BOOMv4 and Chipyard"
+      quote: >
+        * - Memory system
+          - Unchanged
+    notes: >
+      loadstore.rst §"Memory SubSystem" is owned by spec-lsu, which mines what the vector
+      path may assume of the unchanged memory system.
+
+  - id: spec-core.b8
+    kind: structure
+    statement: >
+      Vector architectural CSR state must be delegated rather than implemented in Caracal.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: boom-relationship
+      heading: "Relationship to BOOMv4 and Chipyard"
+      quote: >
+        * - Vector architectural CSR state
+          - Delegated.
+    notes: >
+      This is the row-level status only. The boundary itself is mined by spec-decode from
+      frontend.rst §"Vector architectural state: ownership boundary": delegation to
+      rocket-chip's CSRFile under usingVector (g1), access through csr.io.vector (g2), the
+      CSRFile's ownership of vtype/vill, vl, vstart, vxrm, vxsat, vcsr and vlenb (g3),
+      mstatus.VS dirty tracking (g4), the VS=Off illegal-instruction gate (g5) and Caracal
+      owning only the speculative VCFG vtype mirror and the VL register file (g6). No core ID
+      duplicates them.
+
+  # --- c: the uOP model -------------------------------------------------------
+
+  - id: spec-core.c1
+    kind: function
+    statement: >
+      The Caracal decoder must emit exactly one uOP per instruction.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        The |caracal| decoder is single-cycle combinational and emits
+        exactly **one** uOP per instruction; it performs no cracking or micro-op
+        expansion, so a vector instruction is also a single uOP
+    notes: >
+      That the decoder is single-cycle combinational is mined by spec-decode.a4 from
+      frontend.rst; this family holds the machine-wide uOP model that the rest of the
+      pipeline (rename, ROB, issue) is entitled to assume.
+
+  - id: spec-core.c2
+    kind: function
+    statement: >
+      The Caracal decoder must perform no cracking or micro-op expansion.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        The |caracal| decoder is single-cycle combinational and emits
+        exactly **one** uOP per instruction; it performs no cracking or micro-op
+        expansion, so a vector instruction is also a single uOP
+
+  - id: spec-core.c3
+    kind: function
+    statement: >
+      A vector instruction must be decoded into a single uOP.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        The |caracal| decoder is single-cycle combinational and emits
+        exactly **one** uOP per instruction; it performs no cracking or micro-op
+        expansion, so a vector instruction is also a single uOP
+
+  - id: spec-core.c4
+    kind: structure
+    statement: >
+      An OP.v must be a uOP with is_vec set that carries the vector-specific MicroOp fields.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        A **vector** uOP — a uOP with ``is_vec`` set, carrying the vector-specific
+        ``MicroOp`` fields (``pvs1/pvs2/pvs3``, mask ``pvm``, ``v_eew``/``v_emul``,
+        and the ``vconfig`` snapshot).
+
+  - id: spec-core.c5
+    kind: function
+    statement: >
+      A single OP.v must represent an entire LMUL/EMUL vector-register group.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        A single OP.v represents an entire
+        ``LMUL``/``EMUL`` vector-register group and occupies **one** ROB entry — it
+        is not cracked into one uop per destination register at decode.
+
+  - id: spec-core.c6
+    kind: structure
+    statement: >
+      A single OP.v must occupy exactly one ROB entry.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        A single OP.v represents an entire
+        ``LMUL``/``EMUL`` vector-register group and occupies **one** ROB entry — it
+        is not cracked into one uop per destination register at decode.
+    notes: >
+      The ROB-side consequences — group-done completion tracking, commit and precise vector
+      exceptions — are owned by the rob family in midcore.rst. This is the entry-count
+      invariant they rest on.
+
+  - id: spec-core.c7
+    kind: function
+    statement: >
+      An OP.v must not be cracked into one uop per destination register at decode.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        A single OP.v represents an entire
+        ``LMUL``/``EMUL`` vector-register group and occupies **one** ROB entry — it
+        is not cracked into one uop per destination register at decode.
+
+  - id: spec-core.c8
+    kind: function
+    statement: >
+      Caracal must perform no frontend cracking.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        |caracal| performs **no frontend cracking**: an
+        :term:`OP.v` stays a single uOP through decode/rename/ROB/issue and is only
+        expanded into nOP.v inside the Vector LS AGEN.
+    notes: >
+      Broader than spec-decode.a6, which forbids cracking in the decoder alone: this forbids
+      it anywhere in the frontend and through rename, ROB and issue.
+
+  - id: spec-core.c9
+    kind: function
+    statement: >
+      An OP.v must stay a single uOP through decode, rename, ROB and issue.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        |caracal| performs **no frontend cracking**: an
+        :term:`OP.v` stays a single uOP through decode/rename/ROB/issue and is only
+        expanded into nOP.v inside the Vector LS AGEN.
+
+  - id: spec-core.c10
+    kind: function
+    statement: >
+      An OP.v must be expanded into nOP.v only inside the Vector LS AGEN.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        |caracal| performs **no frontend cracking**: an
+        :term:`OP.v` stays a single uOP through decode/rename/ROB/issue and is only
+        expanded into nOP.v inside the Vector LS AGEN.
+    notes: >
+      What the AGEN does with that licence — cracking into element-granularity nOP.v, per-EMUL
+      cracking, packer/skipper/walker — is owned by spec-agen (a2, a3). This is the
+      exclusivity clause: nowhere else may expand an OP.v.
+
+  - id: spec-core.c11
+    kind: structure
+    statement: >
+      The MicroOp element and segment cursor fields v_split_first, v_split_last, v_split_idx
+      and v_split_total must be nOP.v-scoped.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        The ``MicroOp`` element/segment
+        cursor fields (``v_split_first/last/idx/total``) are therefore **nOP.v-scoped** —
+        inert on the OP.v itself and populated only when the AGEN emits element accesses.
+    notes: >
+      The spec adds that they are *not* frontend-cracker state, which is the same obligation
+      seen from the other side.
+
+  - id: spec-core.c12
+    kind: function
+    statement: >
+      The element and segment cursor fields must be inert on the OP.v itself.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        The ``MicroOp`` element/segment
+        cursor fields (``v_split_first/last/idx/total``) are therefore **nOP.v-scoped** —
+        inert on the OP.v itself and populated only when the AGEN emits element accesses.
+
+  - id: spec-core.c13
+    kind: function
+    statement: >
+      The element and segment cursor fields must be populated only when the AGEN emits
+      element accesses.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        The ``MicroOp`` element/segment
+        cursor fields (``v_split_first/last/idx/total``) are therefore **nOP.v-scoped** —
+        inert on the OP.v itself and populated only when the AGEN emits element accesses.
+
+  - id: spec-core.c14
+    kind: structure
+    statement: >
+      Vector ops must allocate ROB entries through the same path as scalar ops.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Vector ops allocate ROB entries through the same path as scalar ops.
+
+  - id: spec-core.c15
+    kind: function
+    statement: >
+      Vector uops must commit in program order through the same head-pointer and exception
+      machinery as scalar ops.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        so vector uop's commit
+        in program order through the same head-pointer/exception machinery as scalar
+        ops.
+
+  # --- d: architectural-state ownership ---------------------------------------
+
+  - id: spec-core.d1
+    kind: structure
+    statement: >
+      VTYPE must not be renamed.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        ``VTYPE`` is **not** renamed — it rides the VCFG ``vtype`` mirror / ``VConfig`` snapshot.
+    notes: >
+      The mirror and the per-uop VConfig snapshot themselves are owned by spec-decode
+      (frontend.rst §"VCFG Mirror Recovery"); this is the negative obligation that no VTYPE
+      rename space exists. VL, by contrast, *is* renamed — spec-decode.i1.
+
+  - id: spec-core.d2
+    kind: function
+    statement: >
+      Precise vector state must be recovered on a redirect or exception from the per-uop
+      vconfig snapshot.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Precise vector state (``vtype``/``vl``) is recovered on redirect/exception via
+        the per-uop ``vconfig`` snapshot rather than a separate rollback path.
+
+  - id: spec-core.d3
+    kind: structure
+    statement: >
+      The design must not contain a separate rollback path for precise vector state.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Precise vector state (``vtype``/``vl``) is recovered on redirect/exception via
+        the per-uop ``vconfig`` snapshot rather than a separate rollback path.
+    notes: >
+      Recovery of the speculative VCFG mirror from the committed VCFG shadow
+      (spec-decode.h10) is not such a path — it restores a speculative mirror, not
+      architectural state.
+
+  - id: spec-core.d4
+    kind: structure
+    statement: >
+      The coprocessor must not own the vector register file.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        the coprocessor reads and writes it
+        through the CII as a client — it does not own it.
+    notes: >
+      spec-cii.h5 states the positive half from cii.rst — the architectural VRF lives in the
+      host — and the CII read/write mechanism (operand pull, writeback) is spec-cii's f and g
+      groups. This is the ownership boundary itself.
+
+  - id: spec-core.d5
+    kind: structure
+    statement: >
+      BOOM must remain the out-of-order scalar host and scheduler for RVV arithmetic executed
+      on the attached in-order coprocessor.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        BOOM remains the OoO scalar host, scheduler, and VRF owner, while RVV
+        arithmetic executes on the attached in-order coprocessor.
+    notes: >
+      The spec calls this "the core architectural divergence". The VRF-ownership half of the
+      same sentence is spec-core.d4.
+
+  # --- e: per-stage attachment and per-stage equivalence ----------------------
+  #
+  # All of group e cites §"The Caracal Pipeline". Each stage paragraph states what stays
+  # identical to BOOM v4 and where the vector path attaches; the vector mechanisms
+  # themselves belong to the stage's own family and are cross-referenced in notes.
+
+  - id: spec-core.e1
+    kind: structure
+    statement: >
+      The six-stage front-end must be identical to BOOM v4.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Identical to |boom| v4. The six-stage front-end (next-PC select, I$ access,
+        I$ response, fetch-buffer enqueue, BPD redirect, deliver-to-core) and the
+        TAGE-based branch predictor are untouched
+
+  - id: spec-core.e2
+    kind: structure
+    statement: >
+      The TAGE-based branch predictor must be untouched.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Identical to |boom| v4. The six-stage front-end (next-PC select, I$ access,
+        I$ response, fetch-buffer enqueue, BPD redirect, deliver-to-core) and the
+        TAGE-based branch predictor are untouched
+
+  - id: spec-core.e3
+    kind: function
+    statement: >
+      The front-end must not distinguish vector instructions from other instructions before
+      decode.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        vector instructions are ordinary
+        32-bit (or RVC-expanded) words and are not distinguished until decode.
+
+  - id: spec-core.e4
+    kind: function
+    statement: >
+      The fetch stages must neither read nor write vector state.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        No
+        vector state is read or written here.
+
+  - id: spec-core.e5
+    kind: structure
+    statement: >
+      The scalar decoders must be unchanged.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Extended. The scalar decoders are unchanged;
+    notes: >
+      Everything else in the Decode paragraph — VDecode and the v_legal gate, the new vector
+      MicroOp fields, the VCFG vtype mirror, vsetivli being front-end only, and vsetvl's
+      is_unique/flush_on_commit marking — is mined by spec-decode from frontend.rst.
+
+  - id: spec-core.e6
+    kind: interface
+    statement: >
+      Decode must set the iq_type routing bits for the vector issue queues.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Decode also sets the ``iq_type`` routing bits for the
+        new vector issue queues (``IQ_V_LOAD/IQ_V_STORE/IQ_V_ALU``, widened in
+        ``common/consts.scala``).
+    notes: >
+      Paired with spec-core.e11: iq_type is the only thing dispatch is allowed to route on,
+      so it must be complete at decode.
+
+  - id: spec-core.e7
+    kind: structure
+    statement: >
+      The scalar integer and FP map tables, free lists and busy tables must be the BOOM v4
+      design unchanged.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        The scalar integer/FP map tables, free lists, and busy tables are
+        the |boom| v4 design **unchanged** — integer rename is not modified.
+    notes: >
+      The spec restates the same obligation as "integer rename is not modified"; that is not
+      a second requirement.
+
+  - id: spec-core.e8
+    kind: structure
+    statement: >
+      Caracal must add a third register class, RT_VEC.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        |caracal| adds a
+        third register class — ``RT_VEC`` (``common/consts.scala``) — and a vector physical
+        register file (``numVecPhysRegs``, default 96) renamed alongside INT and FP, mapping the
+        logical ``lvs*/lvd/lvm`` specifiers to physical ``pvs*/pvdest/pvm``.
+    notes: >
+      The vector physical register file itself — its size, its map table and the
+      logical-to-physical mapping quoted here — is owned by the rename and vrf families in
+      midcore.rst. RT_VEC is mined here because it is a machine-wide encoding that the ROB
+      (spec-core.e23) and writeback also carry.
+
+  - id: spec-core.e9
+    kind: structure
+    statement: >
+      Caracal must reuse BOOM v4's dispatcher unchanged.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Reuses |boom| v4's dispatcher unchanged.
+
+  - id: spec-core.e10
+    kind: function
+    statement: >
+      Dispatch must route uops purely on the iq_type bits set in decode.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Dispatch routes purely on the
+        ``iq_type`` bits set in decode, so vector uop's fall into the vector issue queues
+        with no vector-specific dispatch logic.
+
+  - id: spec-core.e11
+    kind: structure
+    statement: >
+      Dispatch must contain no vector-specific logic.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Dispatch routes purely on the
+        ``iq_type`` bits set in decode, so vector uop's fall into the vector issue queues
+        with no vector-specific dispatch logic.
+    notes: >
+      Element-queue capacity reservation happens at dispatch but is not dispatch logic in
+      this sense; it is owned by spec-lsu and the issue family.
+
+  - id: spec-core.e12
+    kind: structure
+    statement: >
+      The age-ordered issue-unit logic must be reused.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Extended. The age-ordered issue-unit logic is reused; |caracal| instantiates
+        additional vector issue queues
+    notes: >
+      The three vector queues, their age-ordered collapsing behaviour and the IQ_V_ALU
+      per-entry past-PNR eligibility gate are owned by the issue family (issue.rst) and, for
+      the CII side, by spec-cii.d2/d3.
+
+  - id: spec-core.e13
+    kind: structure
+    statement: >
+      The issue stage must widen only the queue set and operand-readiness tracking to cover
+      vector physical registers.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Only the queue set and operand-readiness tracking are widened to
+        cover vector physical registers.
+
+  - id: spec-core.e14
+    kind: structure
+    statement: >
+      Integer and FP register read must come out of their existing regfiles unchanged.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Extended. Integer and FP read out of their existing regfiles unchanged.
+
+  - id: spec-core.e15
+    kind: interface
+    statement: >
+      Every vector execution unit must have a read port into the integer register file and
+      integer bypass network for its scalar feeders.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        has a read
+        port into the **integer register file and integer bypass network** for its remaining scalar
+        feeders — base address, stride, and the ``.vx`` operand.
+    notes: >
+      The vector-register read ports, the VL read through pvl and the vtype/vstart/vxrm
+      sources named in the same paragraph are owned by vrf (midcore.rst) and spec-decode
+      (i7, d4, d7). This entry is the scalar-feeder seam, which no other family owns.
+
+  - id: spec-core.e16
+    kind: structure
+    statement: >
+      The scalar bypass network must be otherwise unchanged.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        The scalar bypass network is
+        otherwise unchanged.
+
+  - id: spec-core.e17
+    kind: structure
+    statement: >
+      The mul/div unit, the branch unit and the FPU must be the untouched BOOM v4 functional
+      units.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        The mul/div, branch unit, and FPU are the
+        |boom| v4 functional units, untouched.
+
+  - id: spec-core.e18
+    kind: function
+    statement: >
+      Vector arithmetic must not execute on a BOOM execution unit.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Vector arithmetic is **not**
+        executed on a BOOM EU
+    notes: >
+      Where it executes instead — in-order issue over tt_CII to the VPU — is owned by
+      spec-cii (a1, a2). The exception is the vset family of instructions, which execute on an
+      integer ALU EU by spec-core.b3.
+
+  - id: spec-core.e19
+    kind: structure
+    statement: >
+      The scalar LDQ and STQ, store-to-load forwarding and the three-stage D$ pipeline must be
+      reused.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Extended. The scalar LDQ/STQ, store-to-load forwarding, and 3-stage D$ pipeline
+        (``s0/s1/s2``) are reused.
+    notes: >
+      Everything the Memory paragraph adds — the access descriptor, the vector queues, the
+      priority round-robin D$ arbiter, bidirectional cross-queue disambiguation, the LCB,
+      element-fault restart with vstart = 0, and program-order reservation at dispatch — is
+      owned by spec-lsu, spec-memord and spec-agen.
+
+  - id: spec-core.e20
+    kind: structure
+    statement: >
+      Scalar results must write back to the INT and FP regfiles exactly as in BOOM v4.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Scalar results write back to the INT/FP regfiles exactly as in
+        |boom| v4.
+
+  - id: spec-core.e21
+    kind: structure
+    statement: >
+      The writeback arbitration must be the BOOM v4 design widened for the additional vector
+      write ports.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        the writeback arbitration is the |boom| v4 design widened for
+        the additional vector write ports.
+    notes: >
+      That RT_VEC results write back to the vector register file, and the port budget that
+      widening implies, are owned by the vrf family in midcore.rst.
+
+  - id: spec-core.e22
+    kind: structure
+    statement: >
+      Caracal must reuse BOOM v4's ROB unchanged in structure.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        Reuses |boom| v4's ROB unchanged in structure.
+
+  - id: spec-core.e23
+    kind: structure
+    statement: >
+      The ROB entry's dst_rtype field must be widened to 3 bits to encode RT_VEC.
+    source:
+      file: docs_caracal/src/overview.rst
+      anchor: caracal-pipeline
+      heading: "The Caracal Pipeline"
+      quote: >
+        The ROB entry's ``dst_rtype`` was
+        widened to 3 bits (``exu/rob.scala``; ``RT_VEC = 4`` fits in 3 bits alongside the
+        existing ``RT_FIX/RT_FLT/RT_X/RT_ZERO``) to encode ``RT_VEC``
+    notes: >
+      3 bits and RT_VEC = 4 are the spec's own numbers. The rob family owns what the ROB then
+      does with vector entries (completion tracking, commit, precise exceptions) in
+      midcore.rst.
+
+  # --- f: the single scheduler and the PNR safety model ------------------------
+
+  - id: spec-core.f2
+    kind: structure
+    statement: >
+      The scalar issue queues must be unchanged from BOOM.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        |caracal|'s **single** issue stage. The scalar queues
+        (``IQ_MEM``/``IQ_UNQ``/``IQ_ALU``/``IQ_FP``) are unchanged from |boom|;
+
+  - id: spec-core.f10
+    kind: structure
+    statement: >
+      A non-shared OP.v must occupy one issue slot.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        A **non-shared** :term:`OP.v` occupies **one**
+        slot, and each slot is granted **once**, when
+        **all** of its operands are ready
+    notes: >
+      Supersedes the retired spec-core.f3, which stated this of every OP.v. Matches
+      spec-issue.e6, which has carried the non-shared qualifier from the start.
+
+  - id: spec-core.f11
+    kind: function
+    statement: >
+      Each issue slot must be granted once.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        A **non-shared** :term:`OP.v` occupies **one**
+        slot, and each slot is granted **once**, when
+        **all** of its operands are ready
+    notes: >
+      Supersedes the retired spec-core.f4, which stated the grant as per-OP.v. Resolved on
+      2026-08-03: "granted once" is per issue slot per execution path. The two cases that make
+      the distinction matter are spec-core.f12 and f13.
+
+  - id: spec-core.f12
+    kind: function
+    statement: >
+      Each of a shared instruction's two issue slots must be granted once.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        a :term:`shared instruction` occupies **two** slots and each is granted
+        once
+    notes: >
+      That a shared instruction occupies two slots is spec-core.h1; this is the grant rule for
+      them.
+
+  - id: spec-core.f13
+    kind: function
+    statement: >
+      A vector store slot's AGEN and DGEN paths must be independently grantable.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        a vector **store** slot's AGEN and DGEN paths are **independently grantable** — for
+        a segmented store, hundreds of cycles apart (see :ref:`shared-store-chain`).
+    notes: >
+      Stated from the glossary here; issue.rst states the same obligation in the
+      segmented-store chain, which is spec-issue group d. Mined in both because the glossary
+      sentence is what makes "granted once" unambiguous.
+
+  - id: spec-core.f14
+    kind: structure
+    statement: >
+      An OP.v must be allocated and selected once, with no second issue stage.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        The invariant the
+        phrase names is that an ``OP.v`` is allocated and selected **once**, with no second issue
+        stage and no second priority-encoder select.
+    notes: >
+      This is the invariant "granted once" was reaching for. The same obligation is
+      spec-issue.e5 from issue.rst; both are kept because each chapter states it normatively.
+
+  - id: spec-core.f5
+    kind: function
+    statement: >
+      An OP.v must be granted only when all of its operands are ready.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        A **non-shared** :term:`OP.v` occupies **one**
+        slot, and each slot is granted **once**, when
+        **all** of its operands are ready — scalar feeders (base/stride/``.vx``) on the integer
+        network, ``pvl`` on the VL network, and vector registers (``pvs*``, mask ``pvm``) on the
+        vector network.
+    notes: >
+      The three wakeup networks the readiness is tracked on are named in the quote; the
+      networks themselves are owned by the issue, vrf and decode families. spec-cii.d12
+      states the same grant rule for IQ_V_ALU.
+
+  - id: spec-core.f6
+    kind: interface
+    statement: >
+      Only the IQ_V_* queues must connect to the vector wakeup network.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        Only the ``IQ_V_*`` queues connect to the vector wakeup network.
+
+  - id: spec-core.f7
+    kind: function
+    statement: >
+      The PNR must never sweep past an unresolved branch.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        ``is_br``/``is_jalr`` set ``starts_unsafe``,
+        so the PNR never sweeps past an unresolved branch.
+    notes: >
+      spec-cii.e3 draws the CII-specific consequence (no in-flight tag is ever younger than
+      an unresolved branch); this is the machine-wide invariant it depends on.
+
+  - id: spec-core.f8
+    kind: function
+    statement: >
+      A uop with is_br or is_jalr set must set starts_unsafe.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        ``is_br``/``is_jalr`` set ``starts_unsafe``,
+        so the PNR never sweeps past an unresolved branch.
+
+  - id: spec-core.g1
+    kind: function
+    statement: >
+      A vector producer must emit exactly one group-done event per OP.v.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        The **single** completion event a vector producer emits per ``OP.v``, carrying the completing
+        destination group's full **member-PRN vector**.
+    notes: >
+      This is the machine-wide completion contract that follows from one ROB entry per OP.v
+      (spec-core.c6). Its two producers are owned elsewhere: the LCB after the last
+      destination PRN lands (spec-lsu.e15) and the CII on the writeback beat marked last
+      (spec-cii's g group).
+
+  - id: spec-core.g2
+    kind: interface
+    statement: >
+      A group-done event must carry the completing destination group's full member-PRN vector.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        The **single** completion event a vector producer emits per ``OP.v``, carrying the completing
+        destination group's full **member-PRN vector**.
+    notes: >
+      spec-lsu.e16 states the same for the LCB's instance of the event; this is the obligation
+      on every producer.
+
+  - id: spec-core.g3
+    kind: interface
+    statement: >
+      One group-done event must drive the ROB's single-shot rob_bsy clear, the vector
+      Busy-Table clear and the vector wakeup network at once.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        One event drives all three consumers at once: the ROB's single-shot ``rob_bsy``
+        clear, the vector Busy-Table clear, and the vector wakeup network.
+    notes: >
+      One idea — a single event with three fanouts, not three events. The consumers'
+      behaviour is owned by rob, rename and vrf in midcore.rst.
+
+  # --- h: shared instructions and the pvtmp rendezvous ------------------------
+
+  - id: spec-core.h1
+    kind: structure
+    statement: >
+      pvtmp must be an ordinary VRF group.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        It is an
+        **ordinary VRF group** — no separate temp register file — with a real busy lifetime, reclaimed
+        on mispredict and freed at commit alongside ``stale_pvdest``.
+    notes: >
+      That the vector mapper allocates it, and that it is reclaimed on mispredict and freed at
+      commit, are rename-family obligations in midcore.rst §"CII Shared Instruction Mapping".
+
+  - id: spec-core.h2
+    kind: structure
+    statement: >
+      The design must not contain a separate temp register file for pvtmp.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        It is an
+        **ordinary VRF group** — no separate temp register file — with a real busy lifetime, reclaimed
+        on mispredict and freed at commit alongside ``stale_pvdest``.
+
+  - id: spec-core.h3
+    kind: function
+    statement: >
+      pvtmp must have a real busy lifetime in the vector busy table.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        It is an
+        **ordinary VRF group** — no separate temp register file — with a real busy lifetime, reclaimed
+        on mispredict and freed at commit alongside ``stale_pvdest``.
+
+  - id: spec-core.h4
+    kind: function
+    statement: >
+      pvtmp must never be installed in the vector RMT.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        Never installed in the vector
+        RMT, so no architectural read can alias it.
+    notes: >
+      That no architectural read can then alias it is the consequence the obligation buys, not
+      a second obligation.
+
+  - id: spec-core.h5
+    kind: structure
+    statement: >
+      A shared instruction must occupy a single ROB entry.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        An ``OP.v`` marked ``is_shared`` that needs **two** execution resources: one issue slot in
+        ``IQ_V_ALU`` (coprocessor half) and one in ``IQ_V_LOAD``/``IQ_V_STORE`` (LSU half), but a
+        **single** ROB entry.
+
+  - id: spec-core.h6
+    kind: structure
+    statement: >
+      A shared instruction must occupy one IQ_V_ALU issue slot and one IQ_V_LOAD or
+      IQ_V_STORE issue slot.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        An ``OP.v`` marked ``is_shared`` that needs **two** execution resources: one issue slot in
+        ``IQ_V_ALU`` (coprocessor half) and one in ``IQ_V_LOAD``/``IQ_V_STORE`` (LSU half), but a
+        **single** ROB entry.
+    notes: >
+      The spec states that segmented load/store is currently the only shared instruction;
+      that is scope, not an obligation to reject others.
+
+  - id: spec-core.h7
+    kind: function
+    statement: >
+      The two halves of a shared instruction must always complete
+      producer-half-then-consumer-half.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        The halves hand off through :term:`pvtmp` and always complete producer-half-then-consumer-half.
+    notes: >
+      That the halves hand off through pvtmp is already spec-lsu.l9; the general write/read
+      direction is spec-core.i7/i8. This entry is the completion-order obligation only.
+
+  # Where the pvtmp-to-PRN binding lives, resolved 2026-08-03.
+
+  - id: spec-core.h8
+    kind: structure
+    statement: >
+      The pvtmp-to-PRN binding must be held in the ``OP.v``'s ``pvtmp`` ``MicroOp`` field.
+    source:
+      file: docs_caracal/src/glossary.rst
+      anchor: glossary-terms
+      heading: "Glossary"
+      quote: >
+        The binding is held in the ``OP.v``'s own **``pvtmp`` ``MicroOp`` field**, written by the
+        vector mapper at rename.
+    notes: >
+      Resolved 2026-08-03: the question was what holds the binding given that pvtmp is never
+      installed in the vector RMT (spec-core.h5). Both halves derive from one uop and one ROB
+      entry, so each half's issue slot carries the member PRNs directly and no RMT entry is
+      needed. The mapper-side allocation is spec-rename group e.
+
+  # --- i: the three vector execution streams (execution.rst) ------------------
+
+  - id: spec-core.i1
+    kind: structure
+    statement: >
+      Caracal must not modify any BOOM execution pipeline.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: execution-pipelines
+      heading: "The Execution Pipelines"
+      quote: >
+        |caracal| does not modify any |boom| execution pipeline, scalar execution is untouched.
+
+  - id: spec-core.i2
+    kind: structure
+    statement: >
+      Scalar execution must be untouched.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: execution-pipelines
+      heading: "The Execution Pipelines"
+      quote: >
+        |caracal| does not modify any |boom| execution pipeline, scalar execution is untouched.
+    notes: >
+      Read against spec-core.b3: the integer ALU EU's vset extension is the one stated
+      exception to scalar-execution equivalence, and it is bit-identical to BOOM with usingRVV
+      off (spec-decode.c15).
+
+  - id: spec-core.i3
+    kind: structure
+    statement: >
+      The execution of vector instructions must be split into three streams: vector
+      arithmetic/reduction/permutation, vector loads, and vector stores.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: execution-pipelines
+      heading: "The Execution Pipelines"
+      quote: >
+        The execution of vector instructions is split into 3 streams:
+        1. Vector Arithmetic, Reduction, Permutation
+        2. Vector Loads
+        3. Vector Stores
+
+  - id: spec-core.i4
+    kind: function
+    statement: >
+      A vector OP.v must always execute atomically.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: execution-pipelines
+      heading: "The Execution Pipelines"
+      quote: >
+        Vector instruction OP.v's may execute out-of-order relative to program order, but must always execute atomically
+        and in element order.
+    notes: >
+      That an OP.v *may* execute out-of-order relative to program order is an allowance, not
+      an obligation, so it is not a requirement of its own.
+
+  - id: spec-core.i5
+    kind: function
+    statement: >
+      A vector OP.v must always execute in element order.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: execution-pipelines
+      heading: "The Execution Pipelines"
+      quote: >
+        Vector instruction OP.v's may execute out-of-order relative to program order, but must always execute atomically
+        and in element order.
+    notes: >
+      spec-lsu.a8 and spec-lsu.f8 state the memory-path instances of element order; this is
+      the obligation on all three streams.
+
+  - id: spec-core.i6
+    kind: structure
+    statement: >
+      A shared instruction must require more than one execution unit to activate.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: execution-pipelines
+      heading: "The Execution Pipelines"
+      quote: >
+        Shared instructions require more than 1 EU to activate and hand off intermediate results
+        through a temp vector group (``pvtmp``) in the VRF — one half writes it, the other reads it.
+
+  - id: spec-core.i7
+    kind: interface
+    statement: >
+      The producer half of a shared instruction must write the pvtmp vector group in the VRF.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: execution-pipelines
+      heading: "The Execution Pipelines"
+      quote: >
+        Shared instructions require more than 1 EU to activate and hand off intermediate results
+        through a temp vector group (``pvtmp``) in the VRF — one half writes it, the other reads it.
+    notes: >
+      The per-case producers are owned elsewhere: the LSU half writes pvtmp for a segmented
+      load (spec-lsu.l3) and the coprocessor half writes it for a segmented store
+      (spec-cii.i11).
+
+  - id: spec-core.i8
+    kind: interface
+    statement: >
+      The consumer half of a shared instruction must read the pvtmp vector group from the VRF.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: execution-pipelines
+      heading: "The Execution Pipelines"
+      quote: >
+        Shared instructions require more than 1 EU to activate and hand off intermediate results
+        through a temp vector group (``pvtmp``) in the VRF — one half writes it, the other reads it.
+
+  # What atomicity means for a mid-group fault, resolved 2026-08-03.
+
+  - id: spec-core.i9
+    kind: function
+    statement: >
+      No partial result of an ``OP.v`` must ever be architecturally visible.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: execution-pipelines
+      heading: "The Execution Pipelines"
+      quote: >
+        **Atomically means architecturally atomic**, not that an ``OP.v``'s element accesses are
+        indivisible. No partial result of an ``OP.v`` is ever architecturally visible.
+    notes: >
+      Resolved 2026-08-03. This defines the atomicity spec-core.i5 requires, which previously
+      rested on text in another chapter. Atomicity is architectural, not per-access: element
+      accesses below a fault point do fire and their responses do land in the LCB.
+
+  - id: spec-core.i10
+    kind: function
+    statement: >
+      An ``OP.v`` whose element stream faults mid-group must restart the whole instruction with
+      ``vstart = 0``.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: execution-pipelines
+      heading: "The Execution Pipelines"
+      quote: >
+        ``pvdest`` is a *fresh* physical group that a
+        non-committing instruction never installs in ``com_map_table``, so the trap discards those
+        responses
+        and restarts the whole instruction with ``vstart = 0`` (see :ref:`elem-progress`).
+    notes: >
+      Stated here as what makes spec-core.i9 hold for the mid-group fault case. The mechanism
+      is spec-lsu group f (elem-progress); the fresh-group premise is spec-rename group d.
+
+coverage:
+
+  # overview.rst has no `assignments:` block in families.yaml, so the legacy rule applies:
+  # core ledgers all three of its sections. All three are owned and mined.
+  - file: docs_caracal/src/overview.rst
+    heading: "Overview"
+    anchor: caracal-overview
+    skipped: >
+      Chapter introduction and a figure. Its one normative-looking sentence is the .. note::
+      telling the reader to assume Caracal does not modify the existing BOOM micro-architecture
+      unless stated; that was ruled a documentation convention rather than a design obligation
+      on 2026-07-31 and the requirement mined from it is retired (spec-core.a1). The checkable
+      equivalence content is spec-core.b1, b4, b7 and the per-stage e group.
+
+  - file: docs_caracal/src/overview.rst
+    heading: "Relationship to BOOMv4 and Chipyard"
+    anchor: boom-relationship
+    reqs: [spec-core.a2, spec-core.a3, spec-core.a4,
+           spec-core.b1, spec-core.b4,
+           spec-core.b7, spec-core.b8]
+
+  - file: docs_caracal/src/overview.rst
+    heading: "The Caracal Pipeline"
+    anchor: caracal-pipeline
+    reqs: [spec-core.a5, spec-core.a6, spec-core.a7, spec-core.a8,
+           spec-core.c14, spec-core.c15,
+           spec-core.d1, spec-core.d2, spec-core.d3, spec-core.d4, spec-core.d5,
+           spec-core.e1, spec-core.e2, spec-core.e3, spec-core.e4, spec-core.e5,
+           spec-core.e6, spec-core.e7, spec-core.e8, spec-core.e9, spec-core.e10,
+           spec-core.e11, spec-core.e12, spec-core.e13, spec-core.e14, spec-core.e15,
+           spec-core.e16, spec-core.e17, spec-core.e18, spec-core.e19, spec-core.e20,
+           spec-core.e21, spec-core.e22, spec-core.e23]
+
+  # glossary.rst is a single `.. glossary::` section. Its terms are mined for the
+  # obligations the chapters do not state; terms whose obligations are restatements of
+  # another family's chapter text are not given core IDs, and the pointer is recorded in
+  # the notes of the nearest core requirement. Not given IDs here, by term:
+  #   Scheduler (age-ordered collapsing, IQ_V_ALU past-PNR gate) -> issue, spec-cii.d2/d3
+  #   past-PNR (IQ_V_ALU grants only past-PNR entries)           -> spec-cii.d3
+  #   group-done producers (LCB / CII last beat)                 -> spec-lsu.e15, spec-cii
+  #   stale_pvdest (only source of undisturbed lanes, pvdest is
+  #     always a fresh group, distinct from pvs3)                -> vrf, spec-lsu.e9/e10,
+  #                                                                  spec-cii.f10/f17/f18
+  #   pvtmp allocation and reclaim                               -> rename
+  #   shared instruction hand-off through pvtmp                  -> spec-lsu.l9
+  #   LCB (VLEN-wide assembly, one write per PRN)                -> spec-lsu's e group
+  #   is_vl_producer (orthogonal to dst_rtype, dual destination) -> spec-decode.c16/c18
+  #   VCFG mirror (speculative, snapshotted, vill poisoning)     -> spec-decode's g/h groups
+  #   reservation (program-order dispatch, worst-case sizing)    -> spec-lsu, issue
+  #   AGEN / DGEN (FC_AGEN, FC_DGEN, per-element addresses)      -> spec-agen
+  #   RMT (ARN-to-PRN mapping) is a definition with no obligation.
+  - file: docs_caracal/src/glossary.rst
+    heading: "Glossary"
+    anchor: glossary-terms
+    reqs: [spec-core.c1, spec-core.c2, spec-core.c3, spec-core.c4, spec-core.c5,
+           spec-core.c6, spec-core.c7, spec-core.c8, spec-core.c9, spec-core.c10,
+           spec-core.c11, spec-core.c12, spec-core.c13,
+           spec-core.f2, spec-core.f10, spec-core.f11, spec-core.f5,
+           spec-core.f6, spec-core.f7, spec-core.f8,
+           spec-core.g1, spec-core.g2, spec-core.g3,
+           spec-core.h1, spec-core.h2, spec-core.h3, spec-core.h4, spec-core.h5,
+           spec-core.h6, spec-core.h7,
+           spec-core.h8, spec-core.f12, spec-core.f13, spec-core.f14]
+
+  # execution.rst: core owns exactly one section there, per families.yaml.
+  - file: docs_caracal/src/execution.rst
+    heading: "The Execution Pipelines"
+    anchor: execution-pipelines
+    reqs: [spec-core.i1, spec-core.i2, spec-core.i3, spec-core.i4, spec-core.i5,
+           spec-core.i6, spec-core.i7, spec-core.i8,
+           spec-core.i9, spec-core.i10]
+
+retired:
+
+  - id: spec-core.f3
+    statement: >
+      An OP.v must occupy one issue slot.
+    retired_because: >
+      False for a shared instruction, which occupies two. The glossary sentence was scoped to
+      non-shared ops on 2026-08-03, resolving the open question on whether "one slot / granted
+      once" was per OP.v or per issue slot. Superseded by spec-core.f10.
+
+  - id: spec-core.f4
+    statement: >
+      An OP.v must be granted exactly once.
+    retired_because: >
+      The grant is per issue slot per execution path, not per OP.v — a shared instruction is
+      granted twice, and a vector store slot's AGEN and DGEN paths are independently grantable.
+      Resolved on 2026-08-03. Superseded by spec-core.f11, with the two exceptions stated as
+      spec-core.f12 and f13 and the underlying invariant as spec-core.f14.
+
+  - id: spec-core.a1
+    statement: >
+      Caracal must not modify the existing BOOM micro-architecture except where this specification specifically mentions otherwise.
+    retired_because: >
+      The quote is a .. note:: instructing the reader how to read the document ("the reader should assume that Caracal does not modify the existing BOOM micro-architecture"). Converting "the reader should assume X" into "the design must X" is a different proposition, and the result is an unbounded negative universal with no tag site - as this family's own open question conceded. Retired by decision on 2026-07-31. The checkable equivalence content is spec-core.b1, b4, b7 and the per-stage e group.
+
+  - id: spec-core.a9
+    statement: >
+      The pipeline stages shown greyed in the pipeline figure must be bit-identical to BOOM v4.
+    retired_because: >
+      The referent exists only inside a PNG figure ("the pipeline stages shown greyed"), so the requirement is not checkable from the text. This family had already recorded that in an open question. The per-stage equivalence obligations are enumerated in group e.
+
+  - id: spec-core.b2
+    statement: >
+      The decode and rename stages must be extended from BOOM v4 to support RVV.
+    retired_because: >
+      A summary-table status label ("Decode / Rename | Extended") with no failure mode - no RTL can violate "must be extended". The statement also asserted "to support RVV" and "from BOOM v4", neither of which is in the quoted cell. Substance is owned by spec-decode and spec-rename.
+
+  - id: spec-core.b3
+    statement: >
+      The integer execution subsystem must be extended under usingRVV.
+    retired_because: >
+      A summary-table status label ("Integer execution | Extended") with no failure mode. The mechanisms are spec-decode.c11, c14, c15, c16 and c18.
+
+  - id: spec-core.b5
+    statement: >
+      Caracal must add a new vector (RVV) execution subsystem.
+    retired_because: >
+      A summary-table status label ("Load/Store Unit | Extended") with no failure mode. Substance is owned by spec-lsu.
+
+  - id: spec-core.b6
+    statement: >
+      The load/store unit must be extended from BOOM v4.
+    retired_because: >
+      A summary-table status label ("Vector (RVV) execution | New") with no failure mode. Substance is owned by spec-cii and spec-agen.
+
+  - id: spec-core.f1
+    statement: >
+      Caracal must have a single issue stage.
+    retired_because: >
+      The quote is the glossary definition of the term "Scheduler" ("Caracal's single issue stage") - a term gloss, not an obligation, and BOOM v4 already has a single issue stage. The normative form is spec-issue.e5, from issue.rst: "Caracal does not add a second issue stage".
+
+  - id: spec-core.f9
+    statement: >
+      The design must not treat past-PNR status as a commit guarantee.
+    retired_because: >
+      The quote is a .. warning:: about a machine property ("Past-PNR is not a commit guarantee"), whose second sentence is a "can" allowance. The statement names no subject that can be tagged. The obligation it points at is the CII drain-on-flush contract, spec-cii group e.
+
+# All six open questions recorded against this family were resolved on 2026-08-03:
+#
+#   "front-end extended" vs "unchanged" -> prose reworded to name decode/rename; the fetch
+#     front-end is unchanged, as the subsystem table and the per-stage list both already said.
+#   scalar modification set closed?     -> CLOSED WITHOUT ENUMERATING. The premise was stale:
+#     spec-core.a1, which made every unstated change a violation, was already retired on
+#     2026-07-31 as an unbounded negative universal with no tag site. Equivalence is covered
+#     stage by stage in group e and by the per-stage status lines, so no separate list was added.
+#   13 stages vs ten stage groups       -> the standalone count was struck. The premise was also
+#     part stale: spec-core.a9, the greyed-figure requirement, was already retired as
+#     uncheckable. What survived was arithmetic — a six-stage fetch plus nine back-end groups is
+#     not 13 — and no verifiable replacement number was substituted. spec-core.a5/a6 re-quoted.
+#   "granted once" per OP.v or slot?    -> per issue slot per execution path; f3/f4 retired,
+#     spec-core.f10-f14 issued.
+#   atomicity of a mid-group fault      -> architectural atomicity; spec-core.i9, i10
+#   what holds the pvtmp binding        -> the OP.v's pvtmp MicroOp field; spec-core.h8

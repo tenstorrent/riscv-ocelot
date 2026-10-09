@@ -1,0 +1,6 @@
+Sphinx>=5,<8
+Pygments
+sphinx-autobuild
+sphinx_rtd_theme
+# Pure-Python PDF builder (no LaTeX/TeX Live required): `make pdf`
+rinohtype

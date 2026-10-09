@@ -18,6 +18,7 @@ import freechips.rocketchip.tile._
 import boom.v4.ifu._
 import boom.v4.exu._
 import boom.v4.lsu._
+import boom.v4.vec.generated.VectorParams
 
 // ---------------------
 // BOOM Config Fragments
@@ -32,6 +33,15 @@ class WithBoomCommitLogPrintf extends Config((site, here, up) => {
   }
 })
 
+
+class WithBoomPipeViewPrintf extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+      enablePipeViewPrintf = true
+    )))
+    case other => other
+  }
+})
 
 class WithBoomBranchPrintf extends Config((site, here, up) => {
   case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
@@ -48,6 +58,33 @@ class WithBoomMemtracePrintf extends Config((site, here, up) => {
       enableMemtracePrintf = true
     )))
     case other => other
+  }
+})
+
+// Attach the whisper-cosim debug harness (BoomCoreHarnessWrapper_N BlackBox + monitor_* DPI imports).
+// The BlackBox SV uses `import "DPI-C"` constructs that VCS handles natively but Verilator does not,
+// so we auto-disable on Verilator builds by sniffing the cwd / SIMULATOR env var. Set SIMULATOR=vcs
+// (or SIM_NAME=vcs) to force-enable from a non-vcs path.
+class WithBoomDebugHarness extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => {
+    val cwd = System.getProperty("user.dir", "")
+    val cwdAbs = try {
+      new java.io.File(cwd).getAbsolutePath
+    } catch {
+      // Fully-qualified: `Exception` unqualified here resolves to boom.v4.exu.Exception (the ROB bundle).
+      case _: java.lang.Exception => cwd
+    }
+    val simEnv = sys.env.get("SIMULATOR").orElse(sys.env.get("SIM_NAME"))
+    val isVcs = simEnv.map(_.toLowerCase == "vcs").getOrElse {
+      val pathLower = (cwd + " " + cwdAbs).toLowerCase
+      pathLower.contains("vcs") && !pathLower.contains("verilator")
+    }
+    up(TilesLocated(InSubsystem), site) map {
+      case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+        enableDebugHarness = isVcs
+      )))
+      case other => other
+    }
   }
 })
 
@@ -687,3 +724,192 @@ class WithSWBPD extends Config((site, here, up) => {
     case other => other
   }
 })
+
+/**
+  *  Vector (Caracal) configs below
+  */
+
+//@req-spec-core.a4
+// Composable vector fragment: maps over up(TilesLocated(InSubsystem)) in the
+// same shape as every other fragment here, so it composes in any position,
+// e.g. `new WithVector ++ new WithNMediumBooms(1)`. Sets enableVector/vector
+// and APPENDS the three vector issue queues; every other core field
+// (fetchWidth, decodeWidth, numRobEntries, PRF/LDQ/STQ sizes, ...) is left
+// untouched. Defaults describe the Medium-tier machine.
+class WithVector(
+  numVecPhysRegisters: Int = VectorParams().numVecPhysRegisters,
+  numVlPhysRegisters: Int = VectorParams().numVlPhysRegisters,
+  ssiQueueEntries: Int = VectorParams().ssiQueueEntries,
+  usQueueEntries: Int = VectorParams().usQueueEntries,
+  lcbEntries: Int = VectorParams().lcbEntries,
+  ldRespTags: Int = VectorParams().ldRespTags,
+  vecIssueEntries: Int = VectorParams().vecIssueEntries,
+  vecIssueGrantWidth: Int = VectorParams().vecIssueGrantWidth,
+  dcacheArbiterMode: String = VectorParams().dcacheArbiterMode,
+  lsuWidth: Int = 1,
+  // 0 keeps the 64-bit D$ request lane. 128 doubles the bytes one lane moves
+  // per cycle, i.e. doubles peak vector memory bandwidth to
+  // `lsuWidth * 16 B/cycle`. The D$ cannot deliver a word wider than one SRAM
+  // row, so this fragment raises the tier's `dcache.rowBits` to match when it is
+  // narrower (Medium is 64; Large/Mega/Giga are already 128) -- same pairing
+  // saturn uses for its `dLen` port.
+  dcacheDataBits: Int = 0
+) extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+      enableVector = true,
+      vector = Some(VectorParams(
+        numVecPhysRegisters = numVecPhysRegisters,
+        numVlPhysRegisters  = numVlPhysRegisters,
+        ssiQueueEntries     = ssiQueueEntries,
+        usQueueEntries      = usQueueEntries,
+        lcbEntries          = lcbEntries,
+        ldRespTags          = ldRespTags,
+        vecIssueEntries     = vecIssueEntries,
+        vecIssueGrantWidth  = vecIssueGrantWidth,
+        dcacheArbiterMode   = dcacheArbiterMode
+      )),
+      lsuWidth = lsuWidth,
+      dcacheDataBits = dcacheDataBits,
+      // APPEND to the tier's existing issueParams, never rebuild it: the
+      // four scalar entries are counted-by-iqType in HasBoomCoreParameters
+      // and a tier's carefully-sized scalar queues must survive untouched.
+      issueParams = tp.tileParams.core.issueParams ++ Seq(
+        IssueParams(issueWidth=vecIssueGrantWidth, numEntries=vecIssueEntries, iqType=IQ_V_LOAD,  dispatchWidth=tp.tileParams.core.decodeWidth),
+        IssueParams(issueWidth=vecIssueGrantWidth, numEntries=vecIssueEntries, iqType=IQ_V_STORE, dispatchWidth=tp.tileParams.core.decodeWidth),
+        IssueParams(issueWidth=vecIssueGrantWidth, numEntries=vecIssueEntries, iqType=IQ_V_ALU,   dispatchWidth=tp.tileParams.core.decodeWidth)
+      )
+    ),
+    // rocket requires `rowBits >= coreDataBits` (HellaCache.scala), and BOOM's
+    // D$ arrays/refill/writeback are all row-parameterized, so raising the row
+    // to the word costs nothing beyond `rowWords` going 2 -> 1. Left untouched
+    // when the row is already wide enough, so Large/Mega/Giga stay bit-identical
+    // here. The I$ is NOT touched: its `fetchBytes` is pinned by `fetchWidth`
+    // and the two L1 masters have independent width widgets (see tile.scala).
+    dcache = tp.tileParams.dcache.map(dc =>
+      if (dcacheDataBits > dc.rowBits) dc.copy(rowBits = dcacheDataBits) else dc)
+    ))
+    case other => other
+  }
+})
+
+//@req-spec-lsu.a12
+//@req-spec-lsu.h2
+// Large: WithNLargeBooms leaves lsuWidth at its default of 1, so raise it to
+// 2 HERE (not there) in step with dcacheArbiterMode="dual-dynamic". Legal: the
+// Large tier's IQ_MEM issueWidth is already 2 (require(memWidth >= lsuWidth) in
+// HasBoomCoreParameters).
+// vecIssueGrantWidth stays 1 on EVERY tier: the CII Issue channel carries
+// CII_NUM_INST_ISSUE=1 beat per cycle and has no ready line, so a second
+// same-cycle grant is a DROPPED INSTRUCTION, not a stall. VecCiiIssue requires
+// it and fails elaboration otherwise. lsuWidth and the grant width are
+// independent -- widening the memory path does not widen the coprocessor's.
+class WithLargeBoomsVector extends Config(
+  new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic")
+)
+
+//@req-spec-lsu.a12
+//@req-spec-lsu.h2
+// Mega: same pair as Large. Idempotent on lsuWidth -- WithNMegaBooms
+// already sets it to 2 on the scalar tier. vecIssueGrantWidth stays 1; see above.
+class WithMegaBoomsVector extends Config(
+  new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic")
+)
+
+// Wide-D$-lane variants. Kept as SEPARATE fragments rather than flipping the
+// default so the existing narrow configs stay as the regression baseline.
+// 128 is legal on both tiers: their dcache.rowBits is already 128, so the whole
+// SRAM row becomes one word (rowWords == 1) and nothing about the arrays,
+// banking, refill or TL beat width changes.
+class WithMediumBoomsVectorWide extends Config(
+  new WithVector(dcacheDataBits = 128)
+)
+
+class WithLargeBoomsVectorWide extends Config(
+  new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic", dcacheDataBits = 128)
+)
+
+// ⚠ DO NOT SET enableFastPNR ON THIS FORK. Tried 2026-09-22 to attack the CII
+// queue's past-PNR stall: it fails BOOM's OWN sanity assertion
+// (`rob.scala:1005`, "head overrunning PNR") at 851000 ps -- on `lui x11` at
+// PC 0x10000, the FIRST instruction of the bootrom, before any vector op exists.
+// The option defaults false upstream and is plainly unmaintained; this is not a
+// vector-side regression and fixing it is a scalar-ROB project, not a config knob.
+class WithMegaBoomsVectorWide extends Config(
+  new WithVector(lsuWidth = 2, dcacheArbiterMode = "dual-dynamic", dcacheDataBits = 128)
+)
+
+// EXPERIMENT, not a shipping tier. Wide Mega tier with every LSU-side queue /
+// buffer / FIFO, the vector register file and the ROB scaled 4x, to test whether
+// axpy-vector is capacity-bound at all. Single-knob depth increases have already
+// measured null (usQueueEntries 16->32/64/256, numVecPhysRegisters 128->256), so
+// this raises all of them at once. Its own fragment so MegaBoomV4VectorWideConfig
+// stays the regression baseline.
+//
+// RE-MEASURED 2026-09-14, after the rdy_vold false dependency was removed and
+// axpy_bare stopped being D$-throughput-bound -- the earlier null was taken while a
+// different thing was binding, so it was worth redoing. usQueueEntries 16->64 is
+// STILL a null. It does REMOVE the queue as a suspect rather than merely failing to
+// help: `resv_deny` goes 5261 -> 0 and dispatch stalls 3115 -> 652 cycles, so
+// dispatch is genuinely unblocked. And yet the cycle count is IDENTICAL (17097 both)
+// and memory-level parallelism does not move (1.71 -> 1.68 load ops in flight). The
+// US queues were critically sized as a CONSEQUENCE of the loop period, not a cause
+// of it -- Little's law cannot tell those apart from an occupancy trace, only the
+// counterfactual can. The residual 652 stalls are `vec_alloc_ok=0`, the vector free
+// list, not the LSU.
+class WithMegaBoomsVectorWide4x extends Config(
+  new WithVector(
+    numVecPhysRegisters = 4 * VectorParams().numVecPhysRegisters,  // 128  -> 512
+    numVlPhysRegisters  = 4 * VectorParams().numVlPhysRegisters,   // 64   -> 256
+    ssiQueueEntries     = 4 * VectorParams().ssiQueueEntries,      // 512  -> 2048
+    usQueueEntries      = 4 * VectorParams().usQueueEntries,       // 16   -> 64
+    lcbEntries          = 4 * VectorParams().lcbEntries,           // 8    -> 32
+    ldRespTags          = 4 * VectorParams().ldRespTags,           // 8    -> 32
+    vecIssueEntries     = 4 * VectorParams().vecIssueEntries,      // 16   -> 64
+    lsuWidth = 2, dcacheArbiterMode = "dual-dynamic", dcacheDataBits = 128) ++
+  new Config((site, here, up) => {
+    // Scalar-side structures the vector pipeline shares: the ROB every vector uop
+    // occupies an entry in, the LDQ/STQ the vector LSU orders against, and the D$
+    // miss-side queues. WithVector above re-copies `core` and `dcache`, but only
+    // fields disjoint from these, so composition order does not matter.
+    case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+      case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(
+        core = tp.tileParams.core.copy(
+          numRobEntries = 4 * 128,   // Mega: 128 -> 512
+          numLdqEntries = 4 * 32,    // Mega:  32 -> 128
+          numStqEntries = 4 * 32     // Mega:  32 -> 128
+        ),
+        dcache = tp.tileParams.dcache.map(dc => dc.copy(
+          nMSHRs = 4 * 8,            // Mega:   8 -> 32
+          nSDQ   = 4 * 17,           // rocket 17 -> 68
+          nRPQ   = 4 * 16            // rocket 16 -> 64
+        ))))
+      case other => other
+    }
+  })
+)
+
+// Sub-flags, so Track A (vector LSU) and Track B (CII arith / cross-LSU
+// snoop) land independently. Both require enableVector at elaboration.
+class WithVectorArith extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+      enableVectorArith = true
+    )))
+    case other => other
+  }
+})
+
+class WithVecScalarSnoop extends Config((site, here, up) => {
+  case TilesLocated(InSubsystem) => up(TilesLocated(InSubsystem), site) map {
+    case tp: BoomTileAttachParams => tp.copy(tileParams = tp.tileParams.copy(core = tp.tileParams.core.copy(
+      vecScalarSnoopEnable = true
+    )))
+    case other => other
+  }
+})
+
+//@req-spec-rename.c1
+// No fragment here adds an option to disable the committed rename map table
+// (rename-maptable.scala declares com_map_table unconditionally); vector
+// flush recovery depends on it always being present.

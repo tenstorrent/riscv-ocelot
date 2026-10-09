@@ -6,7 +6,7 @@
 package boom.v4.common
 
 import chisel3._
-import chisel3.util.{RRArbiter, Queue}
+import chisel3.util.{RRArbiter, Queue, isPow2}
 
 import scala.collection.mutable.{ListBuffer}
 
@@ -140,7 +140,19 @@ class BoomTile private(
   frontend.resetVectorSinkNode := resetVectorNexusNode
   tlMasterXbar.node := TLBuffer() := TLWidthWidget(tileParams.icache.get.fetchBytes) := frontend.masterNode
 
-  require(tileParams.dcache.get.rowBits == tileParams.icache.get.fetchBytes * 8, s"${tileParams.dcache.get.rowBits} != ${tileParams.icache.get.rowBits}")
+  // The two L1 masters each get their own TLWidthWidget above, so their row
+  // widths are independent. The former `dcache.rowBits == icache.fetchBytes * 8`
+  // equality coupled them for no structural reason and made widening the D$ word
+  // alone impossible on tiers whose `icache.fetchBytes` is pinned by the fetch
+  // width (frontend.scala's `require(fetchWidth*coreInstBytes ==
+  // icacheParams.fetchBytes)`) -- e.g. the Medium tier with
+  // `BoomCoreParams.dcacheDataBits = 128`. What actually has to hold is that each
+  // row is a whole number of bytes and a power of two, which is what the width
+  // widgets and the refill counters assume.
+  require(isPow2(tileParams.dcache.get.rowBits) && tileParams.dcache.get.rowBits % 8 == 0,
+    s"dcache rowBits (${tileParams.dcache.get.rowBits}) must be a power-of-two multiple of 8")
+  require(isPow2(tileParams.icache.get.fetchBytes),
+    s"icache fetchBytes (${tileParams.icache.get.fetchBytes}) must be a power of two")
 
   // ROCC
   val roccs = p(BuildRoCC).map(_(p))

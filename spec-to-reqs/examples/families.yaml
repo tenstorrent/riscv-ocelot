@@ -1,0 +1,64 @@
+# =============================================================================
+# families.yaml — WORKED EXAMPLE
+# =============================================================================
+# Illustrates the registry format from references/schema.md §3, scoped to a single
+# spec file so it can be validated standalone:
+#
+#   python3 ../scripts/validate-reqs.py --repo-root <repo> \
+#       --reqs-dir spec-to-reqs/examples --rtl-dir src/main/nlhdl
+#
+# Note the three-way distinction the assignments block makes, which is the whole
+# point of `curate`:
+#
+#   owned by cii     -> spec-cii.yaml must ledger it
+#   owned by lsu     -> spec-cii.yaml must NOT ledger it (it is a sibling's section)
+#   unowned          -> nobody ledgers it; the reason lives here, once
+#
+# And the distinction it does NOT make: a section cii owns but declines to mine
+# ("Flush recovery…", pure rationale) stays owned, and is skipped in spec-cii.yaml's
+# ledger with a reason. Owned-but-skipped is a family's own judgement call; unowned is
+# a taxonomy fact.
+# =============================================================================
+
+spec_corpus:
+  - docs_caracal/src/cii.rst
+
+families:
+
+  cii:
+    description: >
+      Vector arithmetic offload over the TT-CII coprocessor interface: channels and
+      credits, the host bridge, issue, the flush/kill contract, operand delivery, and
+      result writeback.
+    sources:
+      - docs_caracal/src/cii.rst
+
+  lsu:
+    description: >
+      The vector path through the unified LSU. In this example it owns only the two
+      cii.rst sections that describe memory-side behaviour; a real lsu family also
+      sources loadstore.rst.
+    sources:
+      - docs_caracal/src/cii.rst
+
+assignments:
+
+  - file: docs_caracal/src/cii.rst
+    owned:
+      cii:
+        - "The interface"
+        - "Host bridge: Chisel ↔ SystemVerilog"
+        - "Issue: from ``IQ_V_ALU`` to the CII"
+        - "Flush recovery: past-PNR is not a commit guarantee"
+        - "The kill contract"
+        - "Register operand delivery (VRF read ports)"
+        - "Result writeback and completion (VRF write port + group-done)"
+      lsu:
+        - "Segmented load/store"
+        - "Ordering with memory operations"
+    unowned:
+      "Vector Arithmetic and the CII Coprocessor": >
+        Chapter introduction and RTL inventory — non-normative framing, no obligations.
+      "The VPU (coprocessor) side": >
+        Coprocessor-internal behaviour. Governed by the TT-CII protocol spec in
+        src/main/sv/v4/tt-cii, which is not part of this spec corpus.

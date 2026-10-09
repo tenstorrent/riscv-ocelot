@@ -32,6 +32,7 @@ import java.nio.file.{Paths}
 
 import chisel3._
 import chisel3.util._
+import chisel3.experimental.IntParam
 
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.rocket.Instructions._
@@ -44,6 +45,8 @@ import freechips.rocketchip.trace.{TraceCoreIngress, TraceCoreInterface, TraceCo
 import boom.v4.common._
 import boom.v4.ifu.{GlobalHistory, HasBoomFrontendParameters}
 import boom.v4.util._
+// Caracal (D2): the one instance + the two non-VecPipelineIO seam types.
+import boom.v4.vec.generated.{VecPipeline, IntWbSnoop, VecTrace}
 
 /**
  * Top level core object that connects the Frontend to the rest of the pipeline.
@@ -109,10 +112,17 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   fp_pipeline.io.ll_wports := DontCare
 
 
-  val numIrfWritePorts        = aluWidth + lsuWidth + 1
-  val numIrfLogicalReadPorts  = all_exe_units.map(_.nReaders).reduce(_+_)
+  require(!usingRVV || usingVector, "BoomCore: usingRVV requires rocket's usingVector")
+  require(!usingRVV || boomParams.vector.isDefined, "BoomCore: usingRVV requires boomParams.vector")
 
-  val numIntWakeups           = coreWidth + lsuWidth + 1
+  // numVecIrfWritePorts / numVecIrfReadPorts / numIrfWritePorts come from
+  // HasBoomCoreParameters -- the vec/lsu modules that need them get no constructor arg.
+  val numIrfLogicalReadPorts  = all_exe_units.map(_.nReaders).reduce(_+_) + numVecIrfReadPorts
+  // Index of the CII scalar feeder within VecPipeline's 5 INT lanes (0-3 are
+  // VecLsu's base/stride lanes). See the arbitrate stage for why it is special.
+  val ciiIrfLane = 4
+
+  val numIntWakeups           = coreWidth + lsuWidth + 1 + numVecIrfWritePorts
   val numFpWakeupPorts        = fp_pipeline.io.wakeups.length
 
   val numImmReaders     = aluWidth + memWidth + 1 // "Wakeup" immediates when they are read
@@ -128,8 +138,13 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   val mem_iss_unit     = IssueUnit(memIssueParam, numIntWakeups, false, false)
   val unq_iss_unit     = IssueUnit(unqIssueParam, numIntWakeups, false, false)
   val alu_iss_unit     = IssueUnit(aluIssueParam, numIntWakeups, enableColumnALUIssue, enableALUSingleWideDispatch)
-  val dispatcher       = Module(new BasicDispatcher)
-  val iregfileBankedWriteArray = Seq.fill(lsuWidth + 1) { None } ++ ((0 until aluWidth).map { w => if (enableColumnALUWrites) Some(w) else None })
+  //@req-spec-core.e9
+  //@req-spec-issue.a5
+  // Caracal (D2): config-selected class; unchanged BasicDispatcher when !usingRVV.
+  val dispatcher       = Module(if (usingRVV) new CompactingDispatcher else new BasicDispatcher)
+  val iregfileBankedWriteArray = Seq.fill(lsuWidth + 1) { None } ++
+    ((0 until aluWidth).map { w => if (enableColumnALUWrites) Some(w) else None }) ++
+    (if (usingRVV) Seq(None) else Seq()) // vector scalar-dest write port, appended last
   val iregfile         = Module(new BankedRF(
     UInt(xLen.W),
     numIrfBanks,
@@ -162,8 +177,16 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     coreWidth,
     "Branch"
   ))
+  // Caracal (D2): SCALAR count, not widened numIrfWritePorts (vec writeback
+  // reaches the ROB via vec_clr_bsy/vec_rob_flags, not wb_resps).
+  // Caracal (F): +numVecIrfWritePorts for the CII scalar-destination INT
+  // writeback. It needs a wb_resps slot of its own: the wakeup frees dependent
+  // issue slots but ONLY wb_resps clears the ROB busy bit, and without it a
+  // vmv.x.s never commits and dispatch backs up behind it. 0 when !usingRVV, so
+  // a vectors-off build is unchanged. The FP side is already covered because
+  // numFpWakeupPorts counts the CII's FP port.
   val rob              = Module(new Rob(
-    numIrfWritePorts + numFpWakeupPorts,
+    (aluWidth + lsuWidth + 1 + numVecIrfWritePorts) + numFpWakeupPorts,
     trace
   ))
   // Used to wakeup registers in rename and issue. ROB needs to listen to something else.
@@ -178,6 +201,11 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   pred_wakeup.bits.uop.pdst := Mux1H(pred_wakeups.map(_.valid), pred_wakeups.map(_.bits.uop.pdst))
 
   val int_bypasses  = Wire(Vec(coreWidth + lsuWidth, Valid(new ExeUnitResp(xLen))))
+
+  // Caracal (D2): the one added instance, Option-wrapped -- ABSENT (gate f)
+  // when !usingRVV. All later connections reach it only via this Option.
+  val vecLateLdWakeups = if (enableFastLoadUse) lsuWidth else 0
+  val vec = if (usingRVV) Some(Module(new VecPipeline(int_wakeups.length + vecLateLdWakeups, numFpWakeupPorts))) else None
 
   //***********************************
   // Pipeline State Registers and Wires
@@ -222,6 +250,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   for ((b, a) <- brinfos zip alu_exe_units) {
     b.bits := UpdateBrMask(brupdate, a.io_brinfo.bits)
     b.valid := a.io_brinfo.valid && !rob.io.flush.valid && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), a.io_brinfo.bits)
+    when (reset.asBool) { b.valid := false.B }
   }
   b1.resolve_mask := brinfos.map(x => x.valid << x.bits.uop.br_tag).reduce(_|_)
   b1.mispredict_mask := brinfos.map(x => (x.valid && x.bits.mispredict) << x.bits.uop.br_tag).reduce(_|_)
@@ -532,6 +561,16 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     decode_units(w).io.fcsr_rm         := csr.io.fcsr_rm
 
     dec_uops(w) := decode_units(w).io.deq.uop
+
+    // Caracal (D2): decode seam, unconditional over lanes; DecodeUnit owns the merge.
+    vec.foreach { v =>
+      v.io.dec_insns(w)                        := dec_fbundle.uops(w).bits.inst
+      v.io.dec_valids(w)                        := dec_valids(w)
+      v.io.dec_fire(w)                          := dec_fire(w)
+      v.io.dec_uops_in(w)                       := decode_units(w).io.vec.get.uop_to_vdec
+      decode_units(w).io.vec.get.uop_from_vdec  := v.io.dec_uops_out(w)
+      decode_units(w).io.vec.get.illegal        := v.io.dec_vec_illegal(w)
+    }
   }
 
   //-------------------------------------------------------------
@@ -690,6 +729,10 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
    * split the INT/FP rename pipelines into separate instantiations.
    * Won't have to do this anymore with a properly decoupled FP pipeline.
    */
+  // Caracal (D2): vector ALLOCATION, one broadcast bit; queue CAPACITY enters
+  // separately via the existing !dispatcher.io.ren_uops(w).ready term below.
+  val vec_stall = vec.map(v => !v.io.dis_ready).getOrElse(false.B)
+
   for (w <- 0 until coreWidth) {
     val i_uop     = rename_stage.io.ren2_uops(w)
     val f_uop     = fp_rename_stage.io.ren2_uops(w)
@@ -722,7 +765,17 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     dis_uops(w).prs3_busy := f_uop.prs3_busy && dis_uops(w).frs3_en
     dis_uops(w).ppred_busy := p_uop.ppred_busy && dis_uops(w).is_sfb_shadow
 
-    ren_stalls(w) := rename_stage.io.ren_stalls(w) || f_stall || p_stall || imm_stall
+    ren_stalls(w) := rename_stage.io.ren_stalls(w) || f_stall || p_stall || imm_stall || vec_stall
+  }
+
+  // Caracal (D2): source is REGISTERED dis_uops, never dec_uops/dec_fire (M1's PRN double-free).
+  vec.foreach { v =>
+    //@req-spec-rename.b9
+    //@req-spec-rename.i1
+    //@req-spec-decode.h7
+    v.io.ren2_uops := dis_uops
+    v.io.ren2_mask := dis_valids
+    v.io.dis_fire  := dis_fire
   }
 
   //-------------------------------------------------------------
@@ -774,6 +827,51 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   dis_fire := dis_valids zip dis_stalls map {case (v,s) => v && !s}
   dis_ready := !dis_stalls.last
 
+  // SCALAR DISPATCH-STALL ATTRIBUTION. `VecPipeline`'s DisProbe reports only the
+  // three VECTOR terms (vec_alloc_ok / vl_alloc_ok / vlsu_dis_ok), so a dispatch
+  // paced by the ROB, the LDQ/STQ, a rename free list or an issue queue looks
+  // IDENTICAL to one that is not stalled at all. On axpy_bare that blind spot cost
+  // several wrong conclusions in a row: the vector-visible terms were cleared one by
+  // one -- the US reservation queues, then the vsetvli VL dependence -- and each time
+  // the loop period did not move, because whatever actually paces it is in here and
+  // nothing could see it. One line per cycle in which at least one valid uop is held
+  // back, each term OR-reduced across the dispatch lanes.
+  if (usingRVV) {
+    val anyValid = dis_valids.reduce(_ || _)
+    val anyHeld  = (dis_valids zip dis_stalls).map { case (v, s) => v && s }.reduce(_ || _)
+    val ldqFull  = (0 until coreWidth).map(w =>
+      io.lsu.ldq_full(w) && dis_valids(w) && dis_uops(w).uses_ldq).reduce(_ || _)
+    val stqFull  = (0 until coreWidth).map(w =>
+      io.lsu.stq_full(w) && dis_valids(w) && dis_uops(w).uses_stq).reduce(_ || _)
+    val iqFull   = (0 until coreWidth).map(w =>
+      dis_valids(w) && !dispatcher.io.ren_uops(w).ready).reduce(_ || _)
+    val renAny   = (dis_valids zip ren_stalls).map { case (v, r) => v && r }.reduce(_ || _)
+    val intRen   = (0 until coreWidth).map(w =>
+      dis_valids(w) && rename_stage.io.ren_stalls(w)).reduce(_ || _)
+    val brtag    = (dis_valids zip brtag_stall).map { case (v, b) => v && b }.reduce(_ || _)
+    val empty    = (dis_valids zip wait_for_empty_pipeline).map { case (v, e) => v && e }.reduce(_ || _)
+    when (anyValid && anyHeld) {
+      VecTrace.trace("DisProbe", "scalar_stall", dis_uops(0), Seq(
+        ("rob_rdy",  rob.io.ready),
+        ("ldq_full", ldqFull),
+        ("stq_full", stqFull),
+        ("iq_full",  iqFull),
+        ("ren",      renAny),
+        ("int_ren",  intRen),
+        ("vec_ren",  vec_stall),
+        ("brtag",    brtag),
+        ("uniq",     empty),
+        ("mispred",  brupdate.b1.mispredict_mask =/= 0.U || brupdate.b2.mispredict),
+        ("redir",    io.ifu.redirect_flush)))
+    }
+    // And the other side of it: a cycle with dispatch WIDE OPEN and nothing to
+    // dispatch is a front-end problem, which is a different fix entirely. Without
+    // this line the two are indistinguishable in the trace.
+    when (!anyValid && dis_ready) {
+      VecTrace.trace("DisProbe", "dis_empty", dis_uops(0), Seq(("dec_rdy", dec_ready)))
+    }
+  }
+
   //-------------------------------------------------------------
   // LDQ/STQ Allocation Logic
 
@@ -788,6 +886,8 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
 
   rob.io.enq_valids := dis_fire
   rob.io.enq_uops   := dis_uops
+  // Caracal (D2): chained-rename return path, consumed HERE ONLY (never dis_uops -- comb. loop).
+  vec.foreach { v => rob.io.enq_uops := v.io.dis_uops_out }
   rob.io.enq_partial_stall := dis_stalls.last // TODO come up with better ROB compacting scheme.
   rob.io.debug_tsc := debug_tsc_reg
   rob.io.csr_stall := csr.io.csr_stall
@@ -828,7 +928,15 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   // Get uops from rename2
   for (w <- 0 until coreWidth) {
     dispatcher.io.ren_uops(w).valid := dis_fire(w)
-    dispatcher.io.ren_uops(w).bits  := dis_uops(w)
+    // The vector-renamed stream when usingRVV: it is dis_uops plus the vector fields, and
+    // the vector queues need the pvdest/pvs* the rename assigned. Feeding the scalar stream
+    // here forces the consumer to re-pair a compacted valid with an uncompacted uop.
+    dispatcher.io.ren_uops(w).bits  := (if (usingRVV) vec.get.io.dis_uops_out(w) else dis_uops(w))
+  }
+
+  // Caracal (D2): payload does NOT cross this seam; sound only if dispatchWidth == coreWidth.
+  for (ip <- issueParams if Seq(IQ_V_LOAD, IQ_V_STORE, IQ_V_ALU).contains(ip.iqType)) {
+    require(ip.dispatchWidth == coreWidth, "BoomCore: vector issueParams entries need dispatchWidth == coreWidth")
   }
 
   var iu_idx = 0
@@ -843,6 +951,33 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
       alu_iss_unit.io.dis_uops <> dispatcher.io.dis_uops(i)
     } else if (issueParams(i).iqType == IQ_UNQ) {
       unq_iss_unit.io.dis_uops <> dispatcher.io.dis_uops(i)
+    } else if (issueParams(i).iqType == IQ_V_LOAD) {
+      // Caracal (D2): wired NATIVELY, never `ready := true.B`.
+      //@req-spec-core.e10
+      //@req-spec-core.e11
+      //@req-spec-issue.a1
+      //@req-spec-issue.a2
+      //@req-spec-issue.a3
+      //@req-spec-issue.a6
+      //@req-spec-issue.a7
+      //@req-spec-issue.c2
+      for (w <- 0 until coreWidth) {
+        vec.get.io.dis_vec_valids(0)(w)    := dispatcher.io.dis_uops(i)(w).valid
+        vec.get.io.dis_vec_uops(0)(w)      := dispatcher.io.dis_uops(i)(w).bits
+        dispatcher.io.dis_uops(i)(w).ready := vec.get.io.dis_vec_ready(0)(w)
+      }
+    } else if (issueParams(i).iqType == IQ_V_STORE) {
+      for (w <- 0 until coreWidth) {
+        vec.get.io.dis_vec_valids(1)(w)    := dispatcher.io.dis_uops(i)(w).valid
+        vec.get.io.dis_vec_uops(1)(w)      := dispatcher.io.dis_uops(i)(w).bits
+        dispatcher.io.dis_uops(i)(w).ready := vec.get.io.dis_vec_ready(1)(w)
+      }
+    } else if (issueParams(i).iqType == IQ_V_ALU) {
+      for (w <- 0 until coreWidth) {
+        vec.get.io.dis_vec_valids(2)(w)    := dispatcher.io.dis_uops(i)(w).valid
+        vec.get.io.dis_vec_uops(2)(w)      := dispatcher.io.dis_uops(i)(w).bits
+        dispatcher.io.dis_uops(i)(w).ready := vec.get.io.dis_vec_ready(2)(w)
+      }
     } else {
       require(false)
     }
@@ -979,7 +1114,27 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
 
     pred_wakeups(i) := unit.io_fast_pred_wakeup
 
+    // Caracal (D2): vset_resp taps io_alu_resp RAW (no dst_rtype qualifier -- keeps vsetvli x0,rs1's VL write).
+    vec.foreach { v =>
+      v.io.vset_resp(i).valid := unit.io_alu_resp.valid
+      v.io.vset_resp(i).bits  := unit.io_alu_resp.bits
+    }
+  }
 
+  // Caracal (D2): dedicated write port + wakeup slot (not ll_arb, which can DENY).
+  vec.foreach { v =>
+    //@req-spec-core.e21
+    iregfile.io.write_ports(wb_idx).valid     := v.io.int_wb.valid
+    iregfile.io.write_ports(wb_idx).bits.addr := v.io.int_wb.bits.uop.pdst
+    iregfile.io.write_ports(wb_idx).bits.data := v.io.int_wb.bits.data
+    wb_idx += 1
+
+    int_wakeups(wu_idx).valid                 := v.io.int_wb.valid
+    int_wakeups(wu_idx).bits.uop              := v.io.int_wb.bits.uop
+    int_wakeups(wu_idx).bits.speculative_mask := 0.U
+    int_wakeups(wu_idx).bits.rebusy           := false.B
+    int_wakeups(wu_idx).bits.bypassable       := false.B
+    wu_idx += 1
   }
   require (wu_idx == numIntWakeups)
   require (wb_idx == numIrfWritePorts)
@@ -1061,7 +1216,43 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   // **** Register Read Arbitrate Stage ****
   //-------------------------------------------------------------
   //-------------------------------------------------------------
+  // Caracal (D2): the CII's INT scalar feeder (vector lane 4) takes the
+  // HIGHEST-PRIORITY logical read port, ahead of every scalar reader.
+  //
+  // WHY IT CANNOT BE APPENDED WITH THE OTHERS. PartiallyPortedRF grants in
+  // ascending logical index -- `ready(i) = PopCount(earlier valids) <
+  // numPhysicalReadPorts` -- so a lane at the back can be denied. Every other
+  // reader on this file has a retry path for that: a scalar EU raises
+  // `io_squash_iss` and the issue slot re-grants, and VecScalarOperandRead holds
+  // its request until it fires. VecCiiHost has NEITHER. Its read is issued in the
+  // grant cycle and consumed at grant+1 into the tag table's `scalar_operands`,
+  // and the CII issue packet it feeds is already committed by then -- there is no
+  // cycle in which the grant can be taken back, which is why VecCiiHost:283
+  // asserts its `ready` rather than handling it. On MegaBoomV4VectorConfig that
+  // assertion FIRES (conv2d-vector): the wide machine's scalar readers plus the
+  // four VecLsu lanes ahead of it exhaust `numIrfReadPorts`, and the CII would
+  // otherwise clock a stale register value into a coprocessor op.
+  //
+  // At logical index 0 the ready term is `PopCount(Nil) < numPhysicalReadPorts`,
+  // i.e. constant true, per bank -- the guarantee the CII's as-built pipeline
+  // needs, for the cost of shifting the scalar readers down one slot. THE COST IS
+  // BOUNDED AND SELF-CORRECTING: this lane is valid only in the grant cycle of a
+  // `.vx`/`.vf` CII op, and a scalar reader displaced by it retries through
+  // `io_squash_iss`, which is the same path it already takes whenever the file is
+  // oversubscribed. Feeding the denial into `int_squash_grant` instead was
+  // rejected: that signal kills ALL vector grants, including the VecLsu lanes
+  // whose valids this lane's `ready` is a function of, which closes a
+  // combinational loop.
+  //
+  // The FP mirror of this hazard is solved the other way -- fp-pipeline.scala:171
+  // buys the vector lane a DEDICATED physical port -- because the FRF has spare
+  // ports to give. Do not "harmonise" the two by moving this lane back.
+  //@req-spec-core.e15
   arb_idx = 0
+  vec.foreach { v =>
+    iregfile.io.arb_read_reqs(arb_idx) <> v.io.int_rf_read_req(ciiIrfLane)
+    arb_idx += 1
+  }
   for ((unit, w) <- all_exe_units.zipWithIndex) {
     for (i <- 0 until unit.nReaders) {
       iregfile.io.arb_read_reqs(arb_idx) <> unit.io_arb_irf_reqs(i)
@@ -1069,6 +1260,15 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     }
     immregfile.io.arb_read_reqs(w) <> unit.io_arb_immrf_req
     unit.io_arb_rebusys := io.lsu.iwakeups
+  }
+  // The four VecLsu lanes stay LAST: they hold their request until it fires, so a
+  // denial costs them a cycle and nothing else.
+  //@req-spec-core.e15
+  vec.foreach { v =>
+    for (i <- 0 until 5 if i != ciiIrfLane) {
+      iregfile.io.arb_read_reqs(arb_idx) <> v.io.int_rf_read_req(i)
+      arb_idx += 1
+    }
   }
   require(arb_idx == numIrfLogicalReadPorts)
   for ((unit, w) <- (alu_exe_units).zipWithIndex) {
@@ -1084,7 +1284,14 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   //-------------------------------------------------------------
 
   // Register Read <- Issue (rrd <- iss)
+  // Response half, registered at t+1 off the grant. THE ORDER HERE MUST MATCH THE
+  // ARBITRATE STAGE ABOVE EXACTLY -- the two loops index one shared port vector,
+  // so the CII lane leads here too.
   var rd_idx = 0
+  vec.foreach { v =>
+    v.io.int_rf_read_rsp(ciiIrfLane) := iregfile.io.rrd_read_resps(rd_idx)
+    rd_idx += 1
+  }
   for ((unit, w) <- all_exe_units.zipWithIndex) {
     for (i <- 0 until unit.nReaders) {
       unit.io_rrd_irf_resps(i) := iregfile.io.rrd_read_resps(rd_idx)
@@ -1092,6 +1299,12 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     }
     unit.io_rrd_immrf_resp := immregfile.io.rrd_read_resps(w)
     unit.io_rrd_irf_bypasses := int_bypasses
+  }
+  vec.foreach { v =>
+    for (i <- 0 until 5 if i != ciiIrfLane) {
+      v.io.int_rf_read_rsp(i) := iregfile.io.rrd_read_resps(rd_idx)
+      rd_idx += 1
+    }
   }
   require (rd_idx == numIrfLogicalReadPorts)
   for ((unit, w) <- alu_exe_units.zipWithIndex) {
@@ -1223,7 +1436,17 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   //-------------------------------------------------------------
   //-------------------------------------------------------------
 
-  var cnt = numIrfWritePorts
+  // Caracal (D2): SCALAR count again (matches the Rob(...) arg); rob.io.wb_resps is sized off it.
+  var cnt = aluWidth + lsuWidth + 1
+  // Caracal (F): the CII scalar-destination INT writeback clears its own ROB
+  // entry. Registered like the ll_arb block above, one cycle after the register
+  // write, which is the convention rob.io.wb_resps expects.
+  vec.foreach { v =>
+    rob.io.wb_resps(cnt).valid := RegNext(v.io.int_wb.valid &&
+      !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), v.io.int_wb.bits))
+    rob.io.wb_resps(cnt).bits  := RegNext(v.io.int_wb.bits)
+    cnt += 1
+  }
   for (wb <- fp_pipeline.io.wb) {
     rob.io.wb_resps(cnt) := wb
     rob.io.wb_resps(cnt).bits.data := ieee(wb.bits.data)
@@ -1248,6 +1471,147 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   rob.io.lsu_clr_bsy    := io.lsu.clr_bsy
   rob.io.lsu_clr_unsafe := io.lsu.clr_unsafe
   rob.io.lxcpt          <> io.lsu.lxcpt
+
+  // Caracal (D2): remaining seam connections; each names a vec_pipeline_io
+  // member. Only non-trivial logic: the lxcpt age merge (part 6) and the
+  // youngest-VL-producer select (part 10) -- no single child sees both inputs.
+  vec.foreach { v =>
+    // PART 5: speculation / recovery fan-out.
+    v.io.brupdate       := brupdate
+    v.io.rob_pnr_idx     := rob.io.rob_pnr_idx
+    v.io.rob_head_idx    := rob.io.rob_head_idx
+    v.io.rob_flush       := rob.io.flush.valid
+    v.io.rob_flush_kill  := RegNext(rob.io.flush.valid)
+    v.io.rob_empty       := rob.io.empty
+    v.io.commit_valids   := rob.io.commit.valids
+    v.io.commit_uops     := rob.io.commit.uops
+    v.io.commit_rollback := rob.io.rollback
+
+    // PART 6: completion into the ROB, lane-preserving (never an arbiter/
+    // OR-reduction/Mux1H -- a lost clear/CSR-flag is unrecoverable).
+    rob.io.vec_clr_bsy.get    := v.io.vec_clr_bsy
+    rob.io.vec_clr_unsafe.get := v.io.vec_clr_unsafe
+    rob.io.vec_rob_flags.get  := v.io.vec_rob_flags
+
+    // rob.io.lxcpt merge: io.lsu.lxcpt vs. v.io.vec_xcpt, oldest wins (same
+    // 3-arg IsOlder form rob.scala's lxcpt/csr_replay merge uses). Dropping the
+    // younger is safe: it is squashed by the taken exception and re-faults.
+    val vecXcptAsExc = Wire(new Exception)
+    vecXcptAsExc.uop      := v.io.vec_xcpt.bits.uop
+    vecXcptAsExc.cause    := v.io.vec_xcpt.bits.cause
+    vecXcptAsExc.badvaddr := v.io.vec_xcpt.bits.badvaddr
+    val lxcptScalarOlder = !v.io.vec_xcpt.valid ||
+      (io.lsu.lxcpt.valid && IsOlder(io.lsu.lxcpt.bits.uop.rob_idx, v.io.vec_xcpt.bits.uop.rob_idx, rob.io.rob_head_idx))
+    rob.io.lxcpt.valid := io.lsu.lxcpt.valid || v.io.vec_xcpt.valid
+    rob.io.lxcpt.bits  := Mux(lxcptScalarOlder, io.lsu.lxcpt.bits, vecXcptAsExc)
+    assert(!(io.lsu.lxcpt.valid && v.io.vec_xcpt.valid) ||
+      rob.io.lxcpt.bits.uop.rob_idx === Mux(
+        IsOlder(io.lsu.lxcpt.bits.uop.rob_idx, v.io.vec_xcpt.bits.uop.rob_idx, rob.io.rob_head_idx),
+        io.lsu.lxcpt.bits.uop.rob_idx, v.io.vec_xcpt.bits.uop.rob_idx),
+      "BoomCore: rob.io.lxcpt age merge (part 6) did not keep the older of io.lsu.lxcpt/vec_xcpt")
+
+    // PART 7: the wakeup taps. The nlhdl's "IntWakeupBus" is an AGGREGATE of
+    // three terms; the seam carries them as three members rather than one
+    // Caracal bundle, so BOOM's own `Wakeup` is not forked and these two stay
+    // the same expressions the scalar issue units get.
+    // Fast-load-use wakeups lead the IRF write by one cycle past the CII's s1 snoop
+    // and cannot be retracted after grant: the vector side sees them one cycle late.
+    val vecIntWakeups = WireInit(VecInit(int_wakeups ++ Seq.fill(vecLateLdWakeups)(0.U.asTypeOf(Valid(new Wakeup)))))
+    for (i <- 0 until vecLateLdWakeups) {
+      val w      = io.lsu.iwakeups(i)
+      val isFast = w.valid && w.bits.bypassable && !w.bits.rebusy
+      vecIntWakeups(i).valid := w.valid && !isFast
+      val lateValid = RegNext(isFast && !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), w.bits.uop), false.B)
+      val lateBits  = RegNext(UpdateBrMask(brupdate, w.bits))
+      vecIntWakeups(int_wakeups.length + i).valid := lateValid &&
+        !IsKilledByBranch(brupdate, RegNext(rob.io.flush.valid), lateBits.uop)
+      vecIntWakeups(int_wakeups.length + i).bits := lateBits
+    }
+    v.io.int_wakeups := vecIntWakeups
+    v.io.fp_wakeups  := fp_pipeline.io.wakeups
+
+    // The retraction half of the speculative wakeup, and the grant squash.
+    // These are NOT optional and a tie-off is NOT conservative: a vector slot
+    // whose scalar .vx/.vf feeder was woken speculatively needs `child_rebusys`
+    // to be re-marked busy when the parent load misses, or the OP.v issues
+    // against a stale GPR with no error anywhere.
+    //
+    // Both expressions are IDENTICAL to what alu_iss_unit gets (see the scalar
+    // issue-unit block above) and are written that way deliberately: a vector
+    // queue's scalar operands are woken by exactly the same ALU column wakeups
+    // and the same LSU rebusy, so a DIFFERENT expression here would be a
+    // divergence to keep in step, not a specialization. `alu_iss_unit`'s form
+    // is the right one to mirror rather than `mem_`/`unq_`'s, because the
+    // vector queues hold no memory or unique-EU grant of their own.
+    v.io.int_child_rebusys := alu_exe_units.map(_.io_child_rebusy).reduce(_|_)
+    v.io.int_squash_grant  := (
+      alu_exe_units.map(_.io_squash_iss).reduce(_||_) ||
+      io.lsu.iwakeups.map(_.bits.rebusy).reduce(_||_)
+    )
+
+    // INT-writeback snoop: {addr,data}, no RegNext -- fixes the M1 stale-scalar-base bug.
+    v.io.int_wb_snoop := VecInit((0 until numIrfWritePorts).map { i =>
+      val snoop = Wire(Valid(new IntWbSnoop))
+      snoop.valid     := iregfile.io.write_ports(i).valid
+      snoop.bits.addr := iregfile.io.write_ports(i).bits.addr
+      snoop.bits.data := iregfile.io.write_ports(i).bits.data
+      snoop
+    })
+
+    // Lone FP feeder lane (D4) and D7's dedicated FP writeback landing site.
+    fp_pipeline.io.vec_frf_read_req.get := v.io.fp_rf_read_req
+    v.io.fp_rf_read_rsp                 := fp_pipeline.io.vec_frf_read_rsp.get
+    fp_pipeline.io.vec_fp_wb.get        := v.io.fp_wb
+
+    // PART 10: the CSR seam. Read side: csr.io.vector is rocket's own.
+    v.io.csr_vector.vconfig := csr.io.vector.get.vconfig
+    v.io.csr_vector.vstart  := csr.io.vector.get.vstart
+    v.io.csr_vector.vxrm    := csr.io.vector.get.vxrm
+    v.io.csr_frm            := csr.io.fcsr_rm
+
+    // Write side: from COMMIT (a past-PNR CII op can still be flush-squashed).
+    // vtype half redoes VecPipeline's own youngest-is_vl_producer select --
+    // only this file has both commit_uops and csr.io.vector in scope.
+    val commitVlProducer    = (0 until coreWidth).map(w => rob.io.commit.valids(w) && rob.io.commit.uops(w).is_vl_producer.get)
+    val commitVlProducerAny = commitVlProducer.reduce(_ || _)
+    val commitVlVtype       = PriorityMux(commitVlProducer.reverse,
+      (0 until coreWidth).reverse.map(w => rob.io.commit.uops(w).vconfig.get))
+
+    //@req-spec-decode.g2
+    csr.io.vector.get.set_vconfig.valid      := v.io.commit_vl.valid
+    csr.io.vector.get.set_vconfig.bits.vl    := v.io.commit_vl.bits
+    csr.io.vector.get.set_vconfig.bits.vtype := commitVlVtype
+    csr.io.vector.get.set_vxsat              := rob.io.com_vxsat.get
+    csr.io.vector.get.set_vs_dirty           := v.io.csr_vs_dirty
+    // Caracal never writes a non-zero vstart; clear it at retirement.
+    // Also clear it ONCE, when vector state is first enabled: rocket's reg_vstart is
+    // a `Reg`, not a `RegInit`, so until then it holds power-on garbage.
+    val vstartInitDone = RegInit(false.B)
+    val vstartInitNow  = !vstartInitDone && csr.io.status.vs > 0.U
+    val setVstartValid = commitVlProducerAny || vstartInitNow
+    when (setVstartValid) { vstartInitDone := true.B }
+    csr.io.vector.get.set_vstart.valid       := setVstartValid
+    csr.io.vector.get.set_vstart.bits        := 0.U
+
+    assert(v.io.commit_vl.valid === commitVlProducerAny,
+      "BoomCore: commit_vl.valid disagrees with the local youngest-VL-producer select (part 10)")
+
+    // PART 11: the LSU tap. One bundle connect -- VecLsu owns its contents and this
+    // file inspects no member of it. fencei_rdy is folded INSIDE the LSU.
+    io.lsu.lsu_vec.get       <> v.io.lsu_vec
+    io.lsu.vec_lsu_empty.get := v.io.lsu_fencei_rdy_vec
+
+    v.io.vec_trace_en := VecTrace.traceEnabled
+
+    // Cheap end of A23: no RT_VEC uop reaches rob.io.enq_uops unnamed in a vector queue.
+    for (w <- 0 until coreWidth) {
+      assert(!(dis_fire(w) && v.io.dis_uops_out(w).dst_rtype === RT_VEC) ||
+        v.io.dis_uops_out(w).iq_type(IQ_V_LOAD) ||
+        v.io.dis_uops_out(w).iq_type(IQ_V_STORE) ||
+        v.io.dis_uops_out(w).iq_type(IQ_V_ALU),
+        "BoomCore: a dst_rtype===RT_VEC uop reached rob.io.enq_uops naming no vector queue")
+    }
+  }
 
   assert (!(csr.io.singleStep), "[core] single-step is unsupported.")
 
@@ -1280,6 +1644,20 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
         reset.asBool) {
     idle_cycles := 0.U
   }
+  // TEMP PROBE -- remove
+  val hang_probe_fired = RegInit(false.B)
+  when (idle_cycles.value(11) && !hang_probe_fired) {
+    hang_probe_fired := true.B
+    printf("HANGPROBE rob_empty=%d rob_rdy=%d rollback=%d dis_ready=%d dec_ready=%d " +
+      "fetch_v=%d fetch_pc=%x redirect_flush=%d dec_valids=%x dis_valids=%x " +
+      "fencei_rdy=%d ldq_full=%d stq_full=%d bmask_full=%x b2_mispred=%d\n",
+      rob.io.empty, rob.io.ready, rob.io.rollback, dis_ready, dec_ready,
+      io.ifu.fetchpacket.valid, dec_fbundle.uops(0).bits.debug_pc, io.ifu.redirect_flush,
+      dec_valids.asUInt, dis_valids.asUInt,
+      io.lsu.fencei_rdy, io.lsu.ldq_full(0), io.lsu.stq_full(0),
+      branch_mask_full.asUInt, brupdate.b2.mispredict)
+  }
+
   assert (!(idle_cycles.value(PlusArg("boom_timeout", 13, width=5))), "Pipeline has hung.")
 
   fp_pipeline.io.debug_tsc_reg := debug_tsc_reg
@@ -1291,6 +1669,71 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
   //-------------------------------------------------------------
   //-------------------------------------------------------------
 
+
+  if (PIPEVIEW_PRINTF) {
+    printf("O3PV cyc %d\n", debug_tsc_reg)
+    for (w <- 0 until coreWidth) {
+      val dec_seq      = dec_fbundle.uops(w).bits.debug_seq.get
+      val dec_last_seq = RegNext(dec_seq)
+      val dec_last_v   = RegNext(dec_valids(w), false.B)
+      when (dec_valids(w) && !(dec_last_v && dec_last_seq === dec_seq)) {
+        printf("O3PV decode %d %d\n", debug_tsc_reg, dec_seq)
+      }
+      when (dec_fire(w)) {
+        printf("O3PV rename %d %d\n", debug_tsc_reg, dec_seq)
+      }
+      when (rob.io.enq_valids(w)) {
+        printf("O3PV dispatch %d %d %d\n", debug_tsc_reg, rob.io.enq_uops(w).debug_seq.get, rob.io.enq_uops(w).rob_idx)
+      }
+      when (rob.io.commit.valids(w)) {
+        printf("O3PV retire %d %d\n", debug_tsc_reg, rob.io.commit.uops(w).rob_idx)
+      }
+    }
+    for (iss <- mem_iss_uops ++ alu_iss_uops ++ unq_iss_uops) {
+      when (iss.valid) {
+        printf("O3PV issue %d %d\n", debug_tsc_reg, iss.bits.rob_idx)
+      }
+    }
+    for (v <- vec) {
+      def tap[T <: Data](x: T): T = chisel3.util.experimental.BoringUtils.tapAndRead(x)
+      val cii      = v.cii
+      val send_v   = tap(cii.coproc.io.iss_valid)
+      val send_rob = tap(cii.iss.io.tag_alloc.bits.rob_idx)
+      when (send_v) {
+        printf("O3PV cii_send %d %d\n", debug_tsc_reg, send_rob)
+      }
+      for (i <- 0 until cii.opnd.io.src_req.length) {
+        val req_v   = tap(cii.opnd.io.src_req(i).valid)
+        val req_rob = tap(cii.tags.io.src_lookup(i).resp.rob_idx)
+        when (req_v) {
+          printf("O3PV cii_opreq %d %d\n", debug_tsc_reg, req_rob)
+        }
+      }
+      val wb_v    = tap(cii.coproc.io.wb_valid)
+      val wb_rob  = tap(cii.tags.io.wb_lookup(0).resp.rob_idx)
+      val wb_last = tap(cii.wbStatusTyped.last)
+      when (wb_v) {
+        printf("O3PV cii_wb %d %d %d\n", debug_tsc_reg, wb_rob, wb_last)
+      }
+    }
+    for (v <- vec; q <- v.vecQueues; iss <- q.io.iss_uops) {
+      val iss_valid   = chisel3.util.experimental.BoringUtils.tapAndRead(iss.valid)
+      val iss_rob_idx = chisel3.util.experimental.BoringUtils.tapAndRead(iss.bits.rob_idx)
+      when (iss_valid) {
+        printf("O3PV issue %d %d\n", debug_tsc_reg, iss_rob_idx)
+      }
+    }
+    for (wb <- rob.io.wb_resps) {
+      when (wb.valid) {
+        printf("O3PV complete %d %d\n", debug_tsc_reg, wb.bits.uop.rob_idx)
+      }
+    }
+    for (clr <- rob.io.lsu_clr_bsy ++ rob.io.vec_clr_bsy.getOrElse(Nil)) {
+      when (clr.valid) {
+        printf("O3PV complete %d %d\n", debug_tsc_reg, clr.bits)
+      }
+    }
+  }
 
   if (COMMIT_LOG_PRINTF) {
     var new_commit_cnt = 0.U
@@ -1468,4 +1911,297 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
     io.trace_core_ingress.get.time := RegNext(csr.io.time)
     io.trace_core_ingress.get.priv := RegNext(csr.io.status.prv)
   }
+
+
+  //-------------------------------------------------------------
+  //-------------------------------------------------------------
+  // **** Connect debugging harness for DV COSIM bridge ****
+  //-------------------------------------------------------------
+  //-------------------------------------------------------------
+  // Commit-time vector state for the cosim compare. `debug_vec_wmask` is what
+  // arms core_harness.v's rtype==4 branch: while it was 0 the harness compared no
+  // vector register at all, so a garbage VRF was invisible unless it reached a GPR.
+  val dbgVecLen = coreParams.vLen.max(64)
+  val dbg_vec_wdata = Wire(Vec(coreWidth, UInt((dbgVecLen * 8).W)))
+  val dbg_vec_wmask = Wire(Vec(coreWidth, UInt(8.W)))
+  if (usingRVV && enableVecCosimCheck) {
+    val MM = maxVecMembers
+    for (w <- 0 until coreWidth) {
+      val cuop = rob.io.commit.uops(w)
+      // pvdest, not stale_pvdest: the architectural value of v[ldst] AFTER this
+      // instruction is the register it wrote. Reading the whole PRN also yields the
+      // already-merged value, so masked / tail-undisturbed writes need no rebuild.
+      for (m <- 0 until MM) {
+        vec.get.io.debug_read_addr(w * MM + m) := cuop.pvdest.get(m)
+      }
+      // Member m at [vLen*m +: vLen], matching core_harness.v's
+      // debug_vec_wdata[(vLen*lmul + 64*i) +: 64] unpack.
+      dbg_vec_wdata(w) := Cat((0 until MM).reverse.map(m =>
+        vec.get.io.debug_read_data(w * MM + m))).pad(dbgVecLen * 8)
+      // One bit per group member, and zero for any uop without a vector
+      // destination -- otherwise the harness compares a register it never wrote.
+      dbg_vec_wmask(w) := Mux(cuop.dst_rtype === RT_VEC,
+        ((1.U << cuop.v_emul.get) - 1.U)(MM - 1, 0), 0.U)
+
+      // Exactly what the cosim harness compares, at the cycle it compares it: the
+      // PRN it read and the low element it got back. A cosim vector mismatch is
+      // otherwise unattributable -- a wrong result, a wrong PRN and a wrong read
+      // all print the same way on the harness side.
+      when (rob.io.commit.arch_valids(w) && cuop.dst_rtype === RT_VEC) {
+        VecTrace.traceId("Rob", "commit_vec_dbg", cuop.rob_idx, Seq(
+          ("lane", w.U), ("ldst", cuop.ldst), ("v_emul", cuop.v_emul.get),
+          ("pv0", cuop.pvdest.get(0)), ("pv1", cuop.pvdest.get(1)),
+          ("d0", vec.get.io.debug_read_data(w * MM)(31, 0)),
+          ("d1", vec.get.io.debug_read_data(w * MM)(63, 32))))
+      }
+    }
+  } else {
+    for (w <- 0 until coreWidth) {
+      dbg_vec_wdata(w) := 0.U
+      dbg_vec_wmask(w) := 0.U
+    }
+  }
+
+  if (DEBUG_HARNESS) {
+     if (coreParams.retireWidth == 1) {
+       val harness_1 = Module(new BoomCoreHarnessWrapper_1(coreParams.vLen.max(64)))  // safe min for no-VPU configs
+                     
+       harness_1.io.clock        := clock.asBool
+       harness_1.io.reset        := reset.asBool
+       harness_1.io.hartid       := io.hartid
+
+       harness_1.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_1.io.csrwr.addr  := csr.io.rw.addr
+       harness_1.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_1.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 1) {
+          harness_1.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_1.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_1.io.commit.uops(w).debug_tag   := 0.U  // v4 MicroOp lacks debug_tag (dispatch-assigned MCM ID)
+          harness_1.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_1.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_1.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_1.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_1.io.commit.uops(w).debug_vec_wdata := dbg_vec_wdata(w)
+          harness_1.io.commit.uops(w).debug_vec_wmask := dbg_vec_wmask(w)
+       }
+     } else if (coreParams.retireWidth == 2) {
+       val harness_2 = Module(new BoomCoreHarnessWrapper_2(coreParams.vLen.max(64)))  // safe min for no-VPU configs
+                     
+       harness_2.io.clock        := clock.asBool
+       harness_2.io.reset        := reset.asBool
+       harness_2.io.hartid       := io.hartid
+       
+       harness_2.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_2.io.csrwr.addr  := csr.io.rw.addr
+       harness_2.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_2.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 2) {
+          harness_2.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_2.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_2.io.commit.uops(w).debug_tag   := 0.U  // v4 MicroOp lacks debug_tag (dispatch-assigned MCM ID)
+          harness_2.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_2.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_2.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_2.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_2.io.commit.uops(w).debug_vec_wdata := dbg_vec_wdata(w)
+          harness_2.io.commit.uops(w).debug_vec_wmask := dbg_vec_wmask(w)
+       }
+     } else if (coreParams.retireWidth == 3) {
+       val harness_3 = Module(new BoomCoreHarnessWrapper_3(coreParams.vLen.max(64)))  // safe min for no-VPU configs
+                     
+       harness_3.io.clock        := clock.asBool
+       harness_3.io.reset        := reset.asBool
+       harness_3.io.hartid       := io.hartid
+       
+       harness_3.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_3.io.csrwr.addr  := csr.io.rw.addr
+       harness_3.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_3.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 3) {
+          harness_3.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_3.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_3.io.commit.uops(w).debug_tag   := 0.U  // v4 MicroOp lacks debug_tag (dispatch-assigned MCM ID)
+          harness_3.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_3.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_3.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_3.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_3.io.commit.uops(w).debug_vec_wdata := dbg_vec_wdata(w)
+          harness_3.io.commit.uops(w).debug_vec_wmask := dbg_vec_wmask(w)
+       }
+     } else if (coreParams.retireWidth == 4) {
+       val harness_4 = Module(new BoomCoreHarnessWrapper_4(coreParams.vLen.max(64)))  // safe min for no-VPU configs
+                     
+       harness_4.io.clock        := clock.asBool
+       harness_4.io.reset        := reset.asBool
+       harness_4.io.hartid       := io.hartid
+       
+       harness_4.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_4.io.csrwr.addr  := csr.io.rw.addr
+       harness_4.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_4.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 4) {
+          harness_4.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_4.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_4.io.commit.uops(w).debug_tag   := 0.U  // v4 MicroOp lacks debug_tag (dispatch-assigned MCM ID)
+          harness_4.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_4.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_4.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_4.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_4.io.commit.uops(w).debug_vec_wdata := dbg_vec_wdata(w)
+          harness_4.io.commit.uops(w).debug_vec_wmask := dbg_vec_wmask(w)
+       }
+     } else if (coreParams.retireWidth == 6) {
+       val harness_6 = Module(new BoomCoreHarnessWrapper_6(coreParams.vLen.max(64)))  // safe min for no-VPU configs
+                     
+       harness_6.io.clock        := clock.asBool
+       harness_6.io.reset        := reset.asBool
+       harness_6.io.hartid       := io.hartid
+       
+       harness_6.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_6.io.csrwr.addr  := csr.io.rw.addr
+       harness_6.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_6.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 6) {
+          harness_6.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_6.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_6.io.commit.uops(w).debug_tag   := 0.U  // v4 MicroOp lacks debug_tag (dispatch-assigned MCM ID)
+          harness_6.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_6.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_6.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_6.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_6.io.commit.uops(w).debug_vec_wdata := dbg_vec_wdata(w)
+          harness_6.io.commit.uops(w).debug_vec_wmask := dbg_vec_wmask(w)
+       }
+     } else if (coreParams.retireWidth == 8) {
+       val harness_8 = Module(new BoomCoreHarnessWrapper_8(coreParams.vLen.max(64)))  // safe min for no-VPU configs
+                     
+       harness_8.io.clock        := clock.asBool
+       harness_8.io.reset        := reset.asBool
+       harness_8.io.hartid       := io.hartid
+       
+       harness_8.io.csrwr.cmd   := csr.io.rw.cmd
+       harness_8.io.csrwr.addr  := csr.io.rw.addr
+       harness_8.io.csrwr.wdata := csr.io.rw.wdata    
+       harness_8.io.csrwr.rdata := csr.io.rw.rdata    
+
+       for (w <- 0 until 8) {
+          harness_8.io.commit.arch_valids(w)      := rob.io.commit.arch_valids(w)
+          harness_8.io.commit.uops(w).debug_pc    := rob.io.commit.uops(w).debug_pc(vaddrBits-1,0)
+          harness_8.io.commit.uops(w).debug_tag   := 0.U  // v4 MicroOp lacks debug_tag (dispatch-assigned MCM ID)
+          harness_8.io.commit.uops(w).debug_inst  := rob.io.commit.uops(w).debug_inst
+          harness_8.io.commit.uops(w).dst_rtype   := rob.io.commit.uops(w).dst_rtype
+          harness_8.io.commit.uops(w).ldst        := rob.io.commit.uops(w).ldst
+          harness_8.io.commit.uops(w).debug_wdata := rob.io.commit.debug_wdata(w)
+          harness_8.io.commit.uops(w).debug_vec_wdata := dbg_vec_wdata(w)
+          harness_8.io.commit.uops(w).debug_vec_wmask := dbg_vec_wmask(w)
+       }
+     }
+  }
+
+}
+
+
+
+
+//-------------------------------------------------------------
+// Below these classes instatiate black box wrappers for the COSIM harness
+//-------------------------------------------------------------
+
+// Snapshot of the CSR write port sampled by the cosim harness for differential checking.
+class CSRWrite(val xLen: Int) extends Bundle
+{
+  val cmd   = UInt(3.W) // 0:Nop, 2:Read, 4:SystemInsn, 5:Write, 6:Set, 7:Clear
+  val addr  = UInt(12.W)
+  val wdata = Bits(xLen.W)
+  val rdata = Bits(xLen.W)
+}
+
+class BoomCoreHarnessWrapper_1(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(vlen)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 1, 64, vlen, 5, 1))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_1.v")
+}
+
+class BoomCoreHarnessWrapper_2(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(vlen)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 2, 64, vlen, 5, 1))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_2.v")
+}
+
+class BoomCoreHarnessWrapper_3(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(vlen)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 3, 64, vlen, 5, 1))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_3.v")
+}
+
+class BoomCoreHarnessWrapper_4(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(vlen)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 4, 64, vlen, 5, 2))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_4.v")
+}
+
+class BoomCoreHarnessWrapper_6(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(vlen)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 6, 64, vlen, 5, 2))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_6.v")
+}
+
+class BoomCoreHarnessWrapper_8(val vlen: Int) extends BlackBox(Map("VLEN" -> IntParam(vlen)))
+with HasBlackBoxResource {
+  val io = IO(new Bundle {
+    val clock = Input(Bool())
+    val reset = Input(Bool())
+    val hartid = Input(UInt(8.W))
+    val commit = Input(new DebugCommitSignals(40, 8, 64, vlen, 5, 2))
+    val csrwr = Input(new CSRWrite(64))
+  })
+  addResource("/vsrc/core_harness_interface.v")
+  addResource("/vsrc/core_harness.v")
+  addResource("/vsrc/core_harness_wrapper_8.v")
 }

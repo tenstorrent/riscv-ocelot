@@ -1,0 +1,1658 @@
+family: decode
+description: >
+  The frontend: fetch-stage equivalence to BOOM v4, RVV opcode decode, vset handling,
+  the speculative VCFG vtype mirror and its recovery, VL renaming and delivery, and
+  vector-CSR access legality.
+spec_sources:
+  - docs_caracal/src/frontend.rst
+
+groups:
+  a: decoder structure, machine parameters, and BOOM-v4 equivalence
+  b: shared-instruction (is_shared) decoding
+  c: where each vset executes, and the dual-destination rule
+  d: the speculative VCFG vtype mirror and EMUL derivation
+  e: vsetvl serialization
+  f: explicit vector-CSR accesses
+  g: vector architectural state ownership boundary
+  h: VCFG mirror snapshot and recovery
+  i: VL renaming and delivery
+
+reqs:
+
+  # --- a: decoder structure, machine parameters, BOOM-v4 equivalence ----------
+
+  - id: spec-decode.a1
+    kind: structure
+    statement: >
+      The frontend must include two stages, an instruction fetch stage and a decoder.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: frontend-stages
+      heading: "The Frontend Stages"
+      quote: >
+        The frontend includes 2 stages the Instruction Fetch and Decoder. Nominally the IF
+        should consume 5 cycles and the Decoder 1 cycle, with support for super-scalar issue.
+    notes: >
+      The nominal 5-cycle fetch / 1-cycle decode figures in the quoted sentence were ruled
+      non-normative on 2026-07-31 — "nominally ... should" describes the inherited BOOM v4
+      pipeline depth rather than imposing a new obligation, so no timing requirement is
+      recorded from them. Super-scalar decode is captured as a must by spec-decode.a5.
+
+  - id: spec-decode.a2
+    kind: structure
+    statement: >
+      The instruction fetch stage must be unchanged from BOOM v4.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: frontend-fetch
+      heading: "Instruction Fetch"
+      quote: >
+        The Instruction fetch stage is unchanged from BOOMv4.
+
+  - id: spec-decode.a3
+    kind: function
+    statement: >
+      The decoder must decode the RVV 1.0 instruction opcodes.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "Vector (RVV) Decode"
+      quote: >
+        The Decoder is extended to support RVV1.0 instruction opcodes.
+
+  - id: spec-decode.a4
+    kind: structure
+    statement: >
+      The decoder must be a single-cycle combinational module that produces the decoded uOP
+      packet bundle.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "Vector (RVV) Decode"
+      quote: >
+        The decoder itself is single cycle combinational module which produces the decoded
+        uOP packet bundle.
+
+  - id: spec-decode.a5
+    kind: structure
+    statement: >
+      The decoder must maintain parameterizable super-scalar decode support.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "Vector (RVV) Decode"
+      quote: >
+        For |caracal|, parameterizable super-scalar decoder support is also maintained.
+
+  - id: spec-decode.a6
+    kind: function
+    statement: >
+      The decoder must not perform any instruction cracking or micro-op expansion.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "Vector (RVV) Decode"
+      quote: >
+        The decoder does not perform any cracking or micro-op expansion; all instructions,
+        including vector instructions, are decoded into a single uOP.
+
+  - id: spec-decode.a7
+    kind: function
+    statement: >
+      The decoder must decode every instruction, including every vector instruction, into a
+      single uOP.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "Vector (RVV) Decode"
+      quote: >
+        The decoder does not perform any cracking or micro-op expansion; all instructions,
+        including vector instructions, are decoded into a single uOP.
+
+  - id: spec-decode.a8
+    kind: structure
+    statement: >
+      VLEN must be 256.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "Vector (RVV) Decode"
+      quote: >
+        * - VLEN - 256
+
+  - id: spec-decode.a9
+    kind: structure
+    statement: >
+      ELEN must be 64.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "Vector (RVV) Decode"
+      quote: >
+        * - ELEN - 64
+
+  - id: spec-decode.a10
+    kind: structure
+    statement: >
+      The supported SEW values must be 8, 16, 32 and 64.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "Vector (RVV) Decode"
+      quote: >
+        * - Supported SEW(s) - 8, 16, 32, 64
+
+  - id: spec-decode.a11
+    kind: structure
+    statement: >
+      The supported LMUL values must be 1/8, 1/4, 1/2, 1, 2, 4 and 8, subject to VLMAX >= 1.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "Vector (RVV) Decode"
+      quote: >
+        ``1/8, 1/4, 1/2, 1, 2, 4, 8`` — subject to ``VLMAX ≥ 1``.
+
+  - id: spec-decode.a12
+    kind: function
+    statement: >
+      A vtype whose SEW/LMUL combination gives VLMAX = VLEN*LMUL/SEW < 1 must set vill.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "Vector (RVV) Decode"
+      quote: >
+        A ``vtype`` whose ``SEW``/``LMUL`` combination gives ``VLMAX = VLEN*LMUL/SEW < 1``
+        is **reserved** and sets ``vill``
+
+  - id: spec-decode.a13
+    kind: function
+    statement: >
+      A vtype with SEW greater than ELEN must set vill.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "Vector (RVV) Decode"
+      quote: >
+        ``SEW > ELEN`` and the reserved ``vlmul=3'b100`` encoding likewise set ``vill``.
+
+  - id: spec-decode.a14
+    kind: function
+    statement: >
+      The reserved vlmul=3'b100 encoding must set vill.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "Vector (RVV) Decode"
+      quote: >
+        ``SEW > ELEN`` and the reserved ``vlmul=3'b100`` encoding likewise set ``vill``.
+
+  # --- b: shared-instruction (is_shared) decoding -----------------------------
+
+  - id: spec-decode.b1
+    kind: function
+    statement: >
+      The decoder must mark as is_shared every instruction that requires shared resources
+      between the vector load/store unit and the vector coprocessor.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "CII Shared Instruction Decoding"
+      quote: >
+        Certain instructions may require shared resources between the vector load store units
+        and the vector co-processor. These instructions are marked as *is_shared* by the
+        Decoder and require special handling.
+
+  - id: spec-decode.b2
+    kind: function
+    statement: >
+      The decoder must mark only segmented load/store instructions as is_shared.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "CII Shared Instruction Decoding"
+      quote: >
+        Currently the only instruction type that will be marked *is_shared* is the segmented
+        load store.
+
+  - id: spec-decode.b3
+    kind: function
+    statement: >
+      The decoder must mark only RVV 1.0 instructions as is_shared.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "CII Shared Instruction Decoding"
+      quote: >
+        Shared instructions are only applicable to RVV1.0 instructions as only the CII
+        attached co-processor may want to read intermediate results from the LSU and
+        vice-versa.
+
+  - id: spec-decode.b4
+    kind: structure
+    statement: >
+      A shared instruction must hand off its partial results between the LSU and the
+      coprocessor through an intermediate temp vector group pvtmp.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "CII Shared Instruction Decoding"
+      quote: >
+        The primary differentiator for shared instructions is their use of an intermediate
+        temp vector group (``pvtmp``, allocated in the VRF by the vector mapper) to hand off
+        partial results between the LSU and Co-processor.
+    notes: >
+      Allocation of pvtmp is a rename-stage obligation and is left to spec-rename, which
+      mines midcore.rst §"CII Shared Instruction Mapping". This requirement covers only the
+      decode-visible fact that the handoff goes through pvtmp.
+
+  # --- c: where each vset executes, and the dual-destination rule -------------
+
+  - id: spec-decode.c1
+    kind: function
+    statement: >
+      The VCFG must resolve a vsetivli with rd == x0 at decode in a single cycle.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        A ``vsetivli`` **with ``rd == x0``** is **front-end only**: both VTYPE and AVL are
+        immediate, so the VCFG resolves it at decode in a single cycle — updating the ``vtype``
+        mirror and computing ``VL = min(uimm, VLMAX)`` — with **no back-end issue slot or EU**.
+    notes: >
+      Statement narrowed and quote refreshed after the frontend.rst correction: the section
+      previously said "only ``vsetivli`` is front-end only" without qualification, which cannot
+      hold for ``rd != x0`` because ``rd`` must receive the new ``vl`` and there is no front-end
+      integer-register-file write port. That case is routed down the ALU path uniformly with
+      ``vsetvli``.
+
+  - id: spec-decode.c2
+    kind: function
+    statement: >
+      The VCFG must compute a vsetivli's VL as min(uimm, VLMAX).
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        A ``vsetivli`` **with ``rd == x0``** is **front-end only**: both VTYPE and AVL are
+        immediate, so the VCFG resolves it at decode in a single cycle — updating the ``vtype``
+        mirror and computing ``VL = min(uimm, VLMAX)`` — with **no back-end issue slot or EU**.
+
+  - id: spec-decode.c3
+    kind: structure
+    statement: >
+      A vsetivli with rd == x0 must not occupy a back-end issue slot or execution unit.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        A ``vsetivli`` **with ``rd == x0``** is **front-end only**: both VTYPE and AVL are
+        immediate, so the VCFG resolves it at decode in a single cycle — updating the ``vtype``
+        mirror and computing ``VL = min(uimm, VLMAX)`` — with **no back-end issue slot or EU**.
+    notes: >
+      Statement narrowed and quote refreshed after the frontend.rst correction: the section
+      previously said "only ``vsetivli`` is front-end only" without qualification, which cannot
+      hold for ``rd != x0`` because ``rd`` must receive the new ``vl`` and there is no front-end
+      integer-register-file write port. That case is routed down the ALU path uniformly with
+      ``vsetvli``.
+
+  - id: spec-decode.c4
+    kind: timing
+    statement: >
+      A vsetivli's computed VL must be written to VL_RF[pvl] in the rename cycle, not at
+      decode.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        The computed VL is written to ``VL_RF[pvl]`` in the **rename** cycle, not at decode
+
+  - id: spec-decode.c5
+    kind: function
+    statement: >
+      A vsetivli's VL-register-file write must set no busy bit.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        The write sets **no** busy bit — a ``vsetivli``'s ``pvl`` is *born ready*, so a
+        dependent vector uOP in the same or the next dispatch group never waits on it.
+
+  - id: spec-decode.c6
+    kind: structure
+    statement: >
+      A vsetivli's ROB entry must be dispatched non-busy.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        Because the uop has no writeback, its ROB entry is dispatched **non-busy** and commits
+        as soon as it reaches the head (where it writes the architectural ``vtype``/``vl`` and
+        the committed VCFG shadow).
+
+  - id: spec-decode.c7
+    kind: structure
+    statement: >
+      A vsetvli or vsetvl must execute on an integer ALU execution unit.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        ``vsetvli`` (register AVL) and ``vsetvl`` (register VTYPE and AVL) **execute on an
+        integer ALU EU**, because their VL (and ``vsetvl``'s VTYPE) depends on a runtime
+        register value.
+
+  - id: spec-decode.c8
+    kind: structure
+    statement: >
+      A vsetvli or vsetvl must be dispatched to a scalar integer issue queue.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        They are dispatched to a scalar integer issue queue and woken by ``rs1`` (and ``rs2``
+        for ``vsetvl``) on the **integer** wakeup network like any integer op
+
+  - id: spec-decode.c9
+    kind: function
+    statement: >
+      A vsetvli must be woken by rs1, and a vsetvl by rs1 and rs2, on the integer wakeup
+      network.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        They are dispatched to a scalar integer issue queue and woken by ``rs1`` (and ``rs2``
+        for ``vsetvl``) on the **integer** wakeup network like any integer op
+
+  - id: spec-decode.c10
+    kind: function
+    statement: >
+      The integer ALU must compute a register-sourced vset's VL as min(rs1, VLMAX).
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        the ALU reads the source(s) from the integer RF/bypass, computes
+        ``VL = min(rs1, VLMAX)`` (and VTYPE for ``vsetvl``), and on writeback **targets the VL
+        RF** and drives the **VL wakeup network** (``pvl``).
+
+  - id: spec-decode.c11
+    kind: function
+    statement: >
+      The integer ALU must compute VTYPE for a vsetvl.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        the ALU reads the source(s) from the integer RF/bypass, computes
+        ``VL = min(rs1, VLMAX)`` (and VTYPE for ``vsetvl``), and on writeback **targets the VL
+        RF** and drives the **VL wakeup network** (``pvl``).
+
+  - id: spec-decode.c12
+    kind: function
+    statement: >
+      When rd is not x0 the integer ALU must additionally write rd in the integer register
+      file for a register-sourced vset.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        When ``rd != x0`` the ALU additionally writes ``rd`` in the integer RF as normal.
+
+  - id: spec-decode.c13
+    kind: structure
+    statement: >
+      The design must not add a dedicated VCFG wakeup network.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        No dedicated VCFG wakeup network is added — a register-sourced vset consumes the
+        integer network and produces on the VL network.
+
+  - id: spec-decode.c14
+    kind: structure
+    statement: >
+      The integer-ALU VL/VTYPE compute and VL-RF writeback extension must be gated by
+      usingRVV.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        This integer-ALU extension (VL/VTYPE compute + VL-RF writeback) is **gated by
+        ``usingRVV``**: with the switch off, the ALU is bit-identical to |boom| v4.
+
+  - id: spec-decode.c15
+    kind: structure
+    statement: >
+      With usingRVV off the integer ALU must be bit-identical to BOOM v4.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        This integer-ALU extension (VL/VTYPE compute + VL-RF writeback) is **gated by
+        ``usingRVV``**: with the switch off, the ALU is bit-identical to |boom| v4.
+
+  - id: spec-decode.c16
+    kind: structure
+    statement: >
+      A register-sourced vset must have two destinations in two independent rename spaces,
+      pdst in the integer register file and pvl in the VL register file.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vset-dual-dest
+      heading: "VSET Special Handling"
+      quote: >
+        A register-sourced ``vset`` is **not** an ordinary integer-ALU uop: it has **two
+        destinations in two independent rename spaces** — ``pdst`` in the integer RF and
+        ``pvl`` in the VL RF.
+
+  - id: spec-decode.c17
+    kind: interface
+    statement: >
+      A register-sourced vset must write the new vl value to rd.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vset-dual-dest
+      heading: "VSET Special Handling"
+      quote: >
+        What makes this cheap is that ``rd`` receives the *new* ``vl``, so both destinations
+        take the **same value** off one result bus.
+
+  - id: spec-decode.c18
+    kind: structure
+    statement: >
+      The MicroOp must carry an is_vl_producer bit that is orthogonal to dst_rtype.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vset-dual-dest
+      heading: "VSET Special Handling"
+      quote: >
+        a **new ``is_vl_producer`` bit** on the ``MicroOp``, orthogonal to ``dst_rtype``;
+
+  - id: spec-decode.c19
+    kind: interface
+    statement: >
+      Writeback must fan out to the integer register file when dst_rtype === RT_FIX.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vset-dual-dest
+      heading: "VSET Special Handling"
+      quote: >
+        writeback fans out to the integer RF when ``dst_rtype === RT_FIX`` **and** to the VL
+        RF when ``is_vl_producer``;
+
+  - id: spec-decode.c20
+    kind: interface
+    statement: >
+      Writeback must fan out to the VL register file when is_vl_producer is set.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vset-dual-dest
+      heading: "VSET Special Handling"
+      quote: >
+        writeback fans out to the integer RF when ``dst_rtype === RT_FIX`` **and** to the VL
+        RF when ``is_vl_producer``;
+
+  - id: spec-decode.c21
+    kind: function
+    statement: >
+      Rename must set both busy bits for a register-sourced vset, integer busy for pdst and
+      VL busy for pvl.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vset-dual-dest
+      heading: "VSET Special Handling"
+      quote: >
+        rename sets **both** busy bits — integer busy for ``pdst``, VL busy for ``pvl`` — and
+        both wakeup networks fire;
+
+  - id: spec-decode.c22
+    kind: function
+    statement: >
+      Both wakeup networks must fire for a register-sourced vset.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vset-dual-dest
+      heading: "VSET Special Handling"
+      quote: >
+        rename sets **both** busy bits — integer busy for ``pdst``, VL busy for ``pvl`` — and
+        both wakeup networks fire;
+
+  - id: spec-decode.c23
+    kind: function
+    statement: >
+      Commit must free a register-sourced vset's stale integer pdst through the normal
+      integer free path.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vset-dual-dest
+      heading: "VSET Special Handling"
+      quote: >
+        commit runs **both** free paths — the stale integer ``pdst`` through the normal path,
+        and the outgoing committed VL pointer through the VL path.
+
+  - id: spec-decode.c24
+    kind: function
+    statement: >
+      Commit must free a register-sourced vset's outgoing committed VL pointer through the VL
+      free path.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vset-dual-dest
+      heading: "VSET Special Handling"
+      quote: >
+        commit runs **both** free paths — the stale integer ``pdst`` through the normal path,
+        and the outgoing committed VL pointer through the VL path.
+
+  - id: spec-decode.c25
+    kind: interface
+    statement: >
+      dst_rtype must keep its unmodified integer meaning end to end.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vset-dual-dest
+      heading: "VSET Special Handling"
+      quote: >
+        ``dst_rtype`` therefore keeps its unmodified integer meaning end to end, which is what
+        "integer rename is not modified" actually requires.
+
+  - id: spec-decode.c26
+    kind: function
+    statement: >
+      A vsetivli must be renamed like any other VL producer, with no decode-time VL fast
+      path.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        **vsetivli** has an immediate VTYPE and AVL: VTYPE updates the VCFG mirror at decode,
+        and the computed VL (``min(AVL, VLMAX)``) is written to the VL register file and
+        renamed (``pvl``) like any VL producer — there is no decode-time VL fast path.
+
+  # VL-RF write-port arbitration, resolved 2026-08-01.
+
+  - id: spec-decode.c27
+    kind: structure
+    statement: >
+      VL-RF write ports must be statically partitioned rather than arbitrated.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        **VL-RF write ports are statically partitioned, not arbitrated**, so this rename-cycle
+        write never contends with a writeback.
+    notes: >
+      Resolved 2026-08-01. Same discipline as the VRF (spec-vrf's port partition). The spec's
+      stated reason it matters: the ALU and LSU writeback paths have no back-pressure line, so
+      a producer that could stall on a VL-RF port would have nowhere to hold the write.
+
+  - id: spec-decode.c28
+    kind: structure
+    statement: >
+      The VL RF must provide one write port per producer class.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        There is one write port per producer class: the **rename-side** port,
+        replicated per rename lane because one dispatch bundle may hold several ``vsetivli``; the
+        **integer-ALU writeback** port for ``vsetvli``/``vsetvl``; and the **LSU writeback** port for
+        ``vleff``'s trimmed VL.
+    notes: >
+      The three producer classes are the rename-side vsetivli write (spec-decode.c9), the
+      integer-ALU writeback for vsetvli/vsetvl, and the LSU writeback for vleff. The spec notes
+      the ports are nearly free because the VL RF is 64 entries of about 9 bits; that sizing is
+      spec-rename group h.
+
+  - id: spec-decode.c29
+    kind: structure
+    statement: >
+      The rename-side VL-RF write port must be replicated per rename lane.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        the **rename-side** port,
+        replicated per rename lane because one dispatch bundle may hold several ``vsetivli``
+    notes: >
+      Needed because a single dispatch bundle may hold several vsetivli, each allocating its own
+      pvl and each write being readable by a uop between them in the bundle.
+
+  # --- d: the speculative VCFG vtype mirror and EMUL derivation ---------------
+
+  - id: spec-decode.d1
+    kind: interface
+    statement: >
+      Every uOP emitted by the decoder must contain the calculated EMUL of the instruction.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        Thus all uOP's emitted by the decoder must contain the calculated EMUL of the
+        instruction.
+
+  - id: spec-decode.d2
+    kind: structure
+    statement: >
+      The design must contain a Vector Config Unit.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        We introduce a new unit called **Vector Config Unit**.
+
+  - id: spec-decode.d3
+    kind: structure
+    statement: >
+      The VCFG must keep a local copy of the VTYPE value set by a vset instruction.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        The VCFG keeps a local copy of the **VTYPE** value set by a vset instruction, so that
+        dependent, subsequent instructions can derive ``EMUL`` and snapshot ``vtype`` into the
+        uOP at decode.
+
+  - id: spec-decode.d4
+    kind: function
+    statement: >
+      The decoder must snapshot vtype into the uOP at decode.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        The VCFG keeps a local copy of the **VTYPE** value set by a vset instruction, so that
+        dependent, subsequent instructions can derive ``EMUL`` and snapshot ``vtype`` into the
+        uOP at decode.
+
+  - id: spec-decode.d5
+    kind: structure
+    statement: >
+      The VCFG must not mirror vl.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        The VCFG
+        mirrors only ``vtype`` — it does **not** mirror ``vl``
+    notes: >
+      Re-quoted on 2026-08-01 when "(plus vector performance counters)" was struck from the
+      sentence. No counter was ever named, owned, or given a recovery story, and none is
+      referenced elsewhere; the VCFG is exactly the vtype mirror. The obligation this
+      requirement states is unchanged.
+
+  - id: spec-decode.d6
+    kind: interface
+    statement: >
+      The decoder must not snapshot vstart, vxrm or vxsat into the uOP.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        (``vstart``/``vxrm``/
+        ``vxsat`` are read from the CSR file at execute, not snapshotted in the uOP)
+
+  - id: spec-decode.d7
+    kind: interface
+    statement: >
+      vstart, vxrm and vxsat must be read from the CSR file at execute.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        (``vstart``/``vxrm``/
+        ``vxsat`` are read from the CSR file at execute, not snapshotted in the uOP)
+
+  - id: spec-decode.d8
+    kind: function
+    statement: >
+      A vset's own vconfig field must hold its new vtype.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        A ``vset``'s **own** ``vconfig`` field holds its **new** ``vtype``, because that is
+        what the ROB writes to the architectural ``vtype`` CSR and the committed VCFG shadow
+        at commit.
+
+  - id: spec-decode.d9
+    kind: function
+    statement: >
+      The per-lane prefix select must be self-inclusive for vsets and self-exclusive for
+      consumers.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        The per-lane prefix select is therefore **self-inclusive for ``vset``\ s and
+        self-exclusive for consumers**.
+
+  - id: spec-decode.d10
+    kind: structure
+    statement: >
+      The VCFG must handle the NxWide instruction decoder width.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        The VCFG must also handle NxWide instruction decoder width.
+
+  - id: spec-decode.d11
+    kind: function
+    statement: >
+      When more than one vset appears in a single decode bundle, each vector uOP must use the
+      nearest preceding vset in program order within the bundle.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        When more than one vset instruction appears in a single decode bundle, the selection
+        is **per lane**: each vector uOP uses the **nearest preceding** vset in program order
+        within the bundle (a prefix select across the lanes), not simply the globally newest
+        one.
+    notes: >
+      The [vsetvli, vadd, vsetivli, vadd] example following the quote is illustrative only
+      and, per the spec's own note, covers the consumer case rather than spec-decode.d9's
+      self-inclusive vset case.
+
+  - id: spec-decode.d12
+    kind: function
+    statement: >
+      A vsetvli must update the VCFG vtype mirror at decode.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        VTYPE updates the VCFG mirror at decode, but VL needs ``rs1``
+
+  - id: spec-decode.d13
+    kind: interface
+    statement: >
+      VL must not be broadcast back to the VCFG.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        VL is **not** broadcast back to the VCFG; younger vector uOPs carry ``pvl`` and read
+        it from the VL RF at execute.
+
+  # --- e: vsetvl serialization -----------------------------------------------
+
+  - id: spec-decode.e1
+    kind: function
+    statement: >
+      A vsetvl must serialize against younger vector uOPs.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        this is why **vsetvli** (VTYPE immediate, EMUL known at decode) need not serialize,
+        while **vsetvl** (VTYPE from a register) must.
+    notes: >
+      The same sentence permits vsetvli not to serialize; that is an allowance, not an
+      obligation, so it is not a separate requirement. The reason vsetvl must serialize is
+      that the vector mapper needs VTYPE to derive EMUL and allocate the correct number of
+      vector PRNs per group.
+
+  - id: spec-decode.e2
+    kind: structure
+    statement: >
+      The design must not rely on is_unique alone to order the vtype mirror against younger
+      decode.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        It stalls ``vsetvl`` until all **older** instructions have retired. It says nothing
+        about **younger** ones, which dispatch on the very next cycle while ``vsetvl`` is
+        still in the ALU.
+    notes: >
+      From the section's warning block. The failure it rules out is silent group mis-sizing:
+      a younger vector uOP decoding against a stale vtype mirror derives the wrong EMUL, and
+      because no misprediction is involved the vcfg_snapshots(br_tag) recovery never fires.
+
+  - id: spec-decode.e3
+    kind: function
+    statement: >
+      A vsetvl must be decoded as is_unique.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        |caracal| therefore marks ``vsetvl`` **both ``is_unique`` and ``flush_on_commit``**
+
+  - id: spec-decode.e4
+    kind: function
+    statement: >
+      A vsetvl must be decoded as flush_on_commit.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        |caracal| therefore marks ``vsetvl`` **both ``is_unique`` and ``flush_on_commit``**
+    notes: >
+      The spec accepts the resulting cost — a drain and a refetch — because vsetvl is not a
+      common instruction form.
+
+  - id: spec-decode.e5
+    kind: function
+    statement: >
+      The ALU execution unit must not write the speculative vtype mirror.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-rvv-decode
+      heading: "VSET Special Handling"
+      quote: >
+        The ALU EU **does not write the speculative ``vtype`` mirror**.
+
+  # --- f: explicit vector-CSR accesses ---------------------------------------
+
+  - id: spec-decode.f1
+    kind: function
+    statement: >
+      Every explicit vector-CSR access must be decoded as is_unique.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-explicit
+      heading: "Explicit vector-CSR accesses"
+      quote: >
+        Every **explicit** vector-CSR access — any ``csrr``/``csrw``/``csrrw``-family
+        instruction targeting ``vstart``, ``vxrm``, ``vxsat``, ``vcsr``, ``vl``, ``vtype``, or
+        ``vlenb`` — is decoded as ``is_unique``, and every such **write** is additionally
+        ``flush_on_commit``.
+
+  - id: spec-decode.f2
+    kind: function
+    statement: >
+      Every explicit vector-CSR write must additionally be decoded as flush_on_commit.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-explicit
+      heading: "Explicit vector-CSR accesses"
+      quote: >
+        Every **explicit** vector-CSR access — any ``csrr``/``csrw``/``csrrw``-family
+        instruction targeting ``vstart``, ``vxrm``, ``vxsat``, ``vcsr``, ``vl``, ``vtype``, or
+        ``vlenb`` — is decoded as ``is_unique``, and every such **write** is additionally
+        ``flush_on_commit``.
+    notes: >
+      Both bits are required: is_unique makes a read return the committed value, but only
+      flush_on_commit makes a write take effect before a younger uOP observes it, since
+      younger uops dispatch one cycle behind the unique one.
+
+  - id: spec-decode.f3
+    kind: interface
+    statement: >
+      The vector CSRs must assert io.csr_decode.write_flush in the CSRFile.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-explicit
+      heading: "Explicit vector-CSR accesses"
+      quote: >
+        so the requirement is that the vector CSRs assert ``io.csr_decode.write_flush`` in the
+        ``CSRFile``
+
+  - id: spec-decode.f4
+    kind: function
+    statement: >
+      Implicit vector-CSR updates must be committed precisely.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-explicit
+      heading: "Explicit vector-CSR accesses"
+      quote: >
+        Implicit updates are unaffected and use their normal paths: ``vtype``/``vl`` from
+        ``vset``, ``vstart`` set on a trap, and the sticky ``vxsat`` accumulated by the
+        coprocessor — all committed precisely.
+    notes: >
+      The individual implicit paths named in the quote belong to other families — vstart on
+      a trap to spec-lsu, the sticky vxsat accumulation to spec-cii. This requirement covers
+      only the precise-commit obligation common to all of them.
+
+  # --- g: vector architectural state ownership boundary -----------------------
+
+  - id: spec-decode.g1
+    kind: structure
+    statement: >
+      Caracal must delegate all vector CSR state to rocket-chip's CSRFile under usingVector.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-ownership
+      heading: "Vector architectural state: ownership boundary"
+      quote: >
+        |caracal| does **not** implement vector CSR state itself. It is delegated to
+        rocket-chip's ``CSRFile`` under ``usingVector``, reached through ``csr.io.vector``
+
+  - id: spec-decode.g2
+    kind: interface
+    statement: >
+      Caracal must reach the delegated vector CSR state through csr.io.vector.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-ownership
+      heading: "Vector architectural state: ownership boundary"
+      quote: >
+        |caracal| does **not** implement vector CSR state itself. It is delegated to
+        rocket-chip's ``CSRFile`` under ``usingVector``, reached through ``csr.io.vector``
+
+  - id: spec-decode.g3
+    kind: structure
+    statement: >
+      The rocket CSRFile must own vtype including vill, vl, vstart, vxrm, vxsat, vcsr and
+      read-only vlenb.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-ownership
+      heading: "Vector architectural state: ownership boundary"
+      quote: >
+        ``vtype`` including **``vill``**; ``vl``; ``vstart``; ``vxrm``/``vxsat``/``vcsr``;
+        read-only ``vlenb``;
+
+  - id: spec-decode.g4
+    kind: function
+    statement: >
+      The rocket CSRFile must perform mstatus.VS and sstatus.VS dirty tracking on any write
+      to vector state.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-ownership
+      heading: "Vector architectural state: ownership boundary"
+      quote: >
+        **``mstatus.VS``/``sstatus.VS``** — dirty tracking on any write to vector state, plus
+        the **``VS=Off`` illegal-instruction gate**.
+    notes: >
+      The spec states mstatus.VS is not optional: without the VS=Off trap and dirty tracking
+      the vector context cannot be saved or restored, so the core cannot context-switch.
+
+  - id: spec-decode.g5
+    kind: function
+    statement: >
+      The rocket CSRFile must implement the VS=Off illegal-instruction gate.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-ownership
+      heading: "Vector architectural state: ownership boundary"
+      quote: >
+        **``mstatus.VS``/``sstatus.VS``** — dirty tracking on any write to vector state, plus
+        the **``VS=Off`` illegal-instruction gate**.
+
+  - id: spec-decode.g6
+    kind: structure
+    statement: >
+      Caracal must own only the speculative VCFG vtype mirror and the VL register file.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-ownership
+      heading: "Vector architectural state: ownership boundary"
+      quote: >
+        The **speculative VCFG ``vtype`` mirror** (decode-stage, branch-snapshotted) and the
+        **VL register file** (:ref:`vl-vtype-rename`). Neither is architectural state; both
+        are recovered from the committed shadow / committed VL pointer.
+
+  - id: spec-decode.g7
+    kind: structure
+    statement: >
+      The speculative VCFG vtype mirror and the VL register file must not be architectural
+      state.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-ownership
+      heading: "Vector architectural state: ownership boundary"
+      quote: >
+        The **speculative VCFG ``vtype`` mirror** (decode-stage, branch-snapshotted) and the
+        **VL register file** (:ref:`vl-vtype-rename`). Neither is architectural state; both
+        are recovered from the committed shadow / committed VL pointer.
+
+  - id: spec-decode.g8
+    kind: function
+    statement: >
+      A vill-setting vset must mark the VCFG mirror invalid.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-ownership
+      heading: "Vector architectural state: ownership boundary"
+      quote: >
+        a ``vill``-setting ``vset`` must mark the mirror invalid so every younger
+        vtype-dependent vector uOP raises illegal-instruction **at decode**, rather than
+        allocating a garbage-sized PRN group.
+
+  - id: spec-decode.g9
+    kind: function
+    statement: >
+      Every younger vtype-dependent vector uOP must raise illegal-instruction at decode while
+      the VCFG mirror is invalid.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-ownership
+      heading: "Vector architectural state: ownership boundary"
+      quote: >
+        a ``vill``-setting ``vset`` must mark the mirror invalid so every younger
+        vtype-dependent vector uOP raises illegal-instruction **at decode**, rather than
+        allocating a garbage-sized PRN group.
+
+  - id: spec-decode.g10
+    kind: function
+    statement: >
+      A vsetivli or vsetvli must poison the VCFG mirror directly at decode from its immediate
+      vtype.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-ownership
+      heading: "Vector architectural state: ownership boundary"
+      quote: >
+        For ``vsetivli``/``vsetvli`` the vtype is immediate, so ``vill`` is known at decode
+        and poisons the mirror directly
+    notes: >
+      The vsetvl half of the same sentence needs no extra mechanism because flush_on_commit
+      refetches younger uops against the committed shadow — see spec-decode.e4.
+
+  - id: spec-decode.g11
+    kind: function
+    statement: >
+      Every vector instruction that completes without trapping must reset vstart to 0.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-ownership
+      heading: "Vector architectural state: ownership boundary"
+      quote: >
+        RVV requires every vector instruction that completes without trapping to reset
+        ``vstart`` to 0.
+    notes: >
+      Load-bearing because the CII issue packet carries the real vstart; were it not cleared,
+      the next vector instruction would silently skip its prefix.
+
+  # What the mirror poison does and does not gate, resolved 2026-08-01.
+
+  - id: spec-decode.g12
+    kind: function
+    statement: >
+      The mirror poison must gate vtype-dependent uOPs only.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-ownership
+      heading: "Vector architectural state: ownership boundary"
+      quote: >
+        The poison gates **vtype-dependent** uOPs only.
+    notes: >
+      Resolved 2026-08-01. The complement is spec-decode.g13; the trap obligation for
+      vtype-dependent uOPs is spec-decode.g6.
+
+  - id: spec-decode.g13
+    kind: function
+    statement: >
+      A whole-register move, load or store must decode and execute normally while the mirror is
+      poisoned.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vector-csr-ownership
+      heading: "Vector architectural state: ownership boundary"
+      quote: >
+        A **whole-register** move, load or store
+        (``vmv<n>r.v``, ``vl<n>r.v``, ``vs<n>r.v``) decodes and executes normally while the mirror is
+        poisoned, because it takes its ``EMUL`` from the ``NREG`` field of its own encoding rather than
+        from the mirror
+    notes: >
+      The spec's reason is that EMUL comes from the encoding's NREG field, so the
+      garbage-sized-PRN-group hazard the poison exists to prevent cannot arise. It also records
+      that this keeps vector state restorable after a vill, which is what these instructions are
+      for; that is rationale, not a separate obligation.
+
+  # --- h: VCFG mirror snapshot and recovery -----------------------------------
+
+  - id: spec-decode.h1
+    kind: function
+    statement: >
+      The speculative VCFG mirror must be updated in program order as vset* uOPs decode.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        The VCFG mirror is **speculative decode-time state**: it is updated in program order
+        as ``vset*`` uop's decode, and every younger vector uop snapshots its ``vtype`` into
+        its ``vconfig``.
+
+  - id: spec-decode.h2
+    kind: structure
+    statement: >
+      The VCFG mirror must have the same recovery machinery as the rename map table.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        The mirror therefore needs the **same recovery machinery as the RMT**, not just the
+        RMT itself.
+
+  - id: spec-decode.h3
+    kind: structure
+    statement: >
+      The design must contain a speculative VCFG mirror holding the working vtype copy
+      updated at decode.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        **Speculative VCFG mirror** — the working ``vtype`` copy updated at decode.
+
+  - id: spec-decode.h4
+    kind: structure
+    statement: >
+      The design must contain a committed VCFG shadow.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        **Committed VCFG shadow** — updated **only** by the ROB when a ``vset*`` uop commits
+        (the same retire event that writes the architectural ``vtype`` CSR; ``vl`` is
+        committed via the VL register file's commit path).
+
+  - id: spec-decode.h5
+    kind: function
+    statement: >
+      The committed VCFG shadow must be updated only by the ROB when a vset* uOP commits.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        **Committed VCFG shadow** — updated **only** by the ROB when a ``vset*`` uop commits
+        (the same retire event that writes the architectural ``vtype`` CSR; ``vl`` is
+        committed via the VL register file's commit path).
+
+  - id: spec-decode.h6
+    kind: structure
+    statement: >
+      The design must contain a maxBrCount-deep per-br_tag snapshot array of the speculative
+      VCFG mirror.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        **Per-``br_tag`` snapshot** — on the same ``ren_br_tags`` allocation event that
+        snapshots the scalar/vector RMTs, the speculative mirror is snapshotted into a
+        ``maxBrCount``-deep array (≈9 bits/entry — ``vtype`` only — small).
+
+  - id: spec-decode.h7
+    kind: timing
+    statement: >
+      The speculative VCFG mirror must be snapshotted on the same ren_br_tags allocation
+      event that snapshots the scalar and vector RMTs.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        **Per-``br_tag`` snapshot** — on the same ``ren_br_tags`` allocation event that
+        snapshots the scalar/vector RMTs, the speculative mirror is snapshotted into a
+        ``maxBrCount``-deep array (≈9 bits/entry — ``vtype`` only — small).
+
+  - id: spec-decode.h8
+    kind: function
+    statement: >
+      On a branch mispredict the speculative VCFG mirror must be restored from
+      vcfg_snapshots(br_tag).
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        * - Branch mispredict - ``vcfg_snapshots(br_tag)`` - 1 cycle, restores the speculative
+        mirror in lockstep with the RMT restore
+
+  - id: spec-decode.h9
+    kind: timing
+    statement: >
+      The branch-mispredict restore of the speculative VCFG mirror must complete in one
+      cycle, in lockstep with the RMT restore.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        * - Branch mispredict - ``vcfg_snapshots(br_tag)`` - 1 cycle, restores the speculative
+        mirror in lockstep with the RMT restore
+
+  - id: spec-decode.h10
+    kind: function
+    statement: >
+      On an exception or pipeline flush the speculative VCFG mirror must be restored from the
+      committed VCFG shadow.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        * - Exception / pipeline flush - committed VCFG shadow - 1 cycle, parallel to
+        ``map_table := com_map_table``
+
+  - id: spec-decode.h11
+    kind: timing
+    statement: >
+      The flush restore of the speculative VCFG mirror must complete in one cycle, in
+      parallel with map_table := com_map_table.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        * - Exception / pipeline flush - committed VCFG shadow - 1 cycle, parallel to
+        ``map_table := com_map_table``
+
+  - id: spec-decode.h12
+    kind: function
+    statement: >
+      The per-br_tag VCFG snapshot must be sourced from the branch's carried vconfig.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        The per-``br_tag`` snapshot is therefore sourced from the **branch's carried
+        ``vconfig``** — the nearest-preceding-``vset`` value from the per-lane prefix select —
+        captured on the same ``ren_br_tags`` event as the RMT snapshots, so it reflects all
+        ``vset*`` updates older than the branch in program order without any
+        delayed-``br_tag`` path.
+
+  - id: spec-decode.h13
+    kind: structure
+    statement: >
+      The per-br_tag VCFG snapshot must not require a delayed-br_tag path.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        The per-``br_tag`` snapshot is therefore sourced from the **branch's carried
+        ``vconfig``** — the nearest-preceding-``vset`` value from the per-lane prefix select —
+        captured on the same ``ren_br_tags`` event as the RMT snapshots, so it reflects all
+        ``vset*`` updates older than the branch in program order without any
+        delayed-``br_tag`` path.
+
+  # What the per-br_tag snapshot contains, resolved 2026-08-01.
+
+  - id: spec-decode.h14
+    kind: structure
+    statement: >
+      The per-``br_tag`` VCFG snapshot must contain ``vlmul[2:0]``, ``vsew[2:0]``, ``vta``,
+      ``vma`` and ``vill``.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        Those nine bits are
+        ``vlmul[2:0]``, ``vsew[2:0]``, ``vta``, ``vma`` and **``vill``**
+    notes: >
+      Resolved 2026-08-01. The nine bits were already stated as the snapshot size
+      (spec-decode.h8); this enumerates them. The count is what settled the question: eight
+      config bits plus vill is exactly nine.
+
+  - id: spec-decode.h15
+    kind: structure
+    statement: >
+      The poison flag must be a field of the mirrored ``vtype`` rather than a bit beside it.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vcfg-recovery
+      heading: "VCFG Mirror Recovery (speculative vtype)"
+      quote: >
+        the poison flag is a *field of
+        the mirrored ``vtype``*, not a bit beside it, so it is snapshotted and restored with the rest and
+        needs no recovery path of its own.
+    notes: >
+      Consistent with the ownership table, which assigns rocket's CSRFile "vtype including
+      vill" (spec-decode.g1) — the mirror shadows the same field. That the poison therefore
+      needs no recovery path of its own is a consequence, not a separate obligation: the
+      snapshot and restore obligations are spec-decode.h9 and h11.
+
+  # --- i: VL renaming and delivery -------------------------------------------
+
+  - id: spec-decode.i1
+    kind: structure
+    statement: >
+      VL must be renamed into a dedicated VL register file rather than the integer register
+      file.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        VL is renamed into a dedicated **VL register file**, not the integer RF
+
+  - id: spec-decode.i2
+    kind: function
+    statement: >
+      A VL-producing instruction must allocate a fresh VL PRN.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        A VL-producing instruction allocates a fresh ``VL`` PRN, writes the new VL value into
+        the VL RF, and broadcasts ``pvl`` on the VL wakeup network.
+
+  - id: spec-decode.i3
+    kind: function
+    statement: >
+      A VL-producing instruction must write the new VL value into the VL register file.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        A VL-producing instruction allocates a fresh ``VL`` PRN, writes the new VL value into
+        the VL RF, and broadcasts ``pvl`` on the VL wakeup network.
+
+  - id: spec-decode.i4
+    kind: interface
+    statement: >
+      A VL-producing instruction must broadcast pvl on the VL wakeup network.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        A VL-producing instruction allocates a fresh ``VL`` PRN, writes the new VL value into
+        the VL RF, and broadcasts ``pvl`` on the VL wakeup network.
+
+  - id: spec-decode.i5
+    kind: interface
+    statement: >
+      Every younger vector uOP must carry the current pvl from the VL map table as an
+      implicit operand.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        Every younger vector uOP carries the current ``pvl`` (from the VL map table at rename)
+        as an implicit operand, woken on the **VL** wakeup network and read from the VL RF by
+        the vector EU at execute.
+
+  - id: spec-decode.i6
+    kind: function
+    statement: >
+      Every younger vector uOP must be woken on the VL wakeup network.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        Every younger vector uOP carries the current ``pvl`` (from the VL map table at rename)
+        as an implicit operand, woken on the **VL** wakeup network and read from the VL RF by
+        the vector EU at execute.
+
+  - id: spec-decode.i7
+    kind: interface
+    statement: >
+      The vector execution unit must read VL from the VL register file at execute.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        Every younger vector uOP carries the current ``pvl`` (from the VL map table at rename)
+        as an implicit operand, woken on the **VL** wakeup network and read from the VL RF by
+        the vector EU at execute.
+
+  - id: spec-decode.i8
+    kind: structure
+    statement: >
+      The VL map table must be branch-snapshotted per br_tag.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        The VL map table is branch-snapshotted per ``br_tag`` and restored on mispredict, so a
+        vset on a squashed path does not corrupt the VL mapping of the surviving path.
+
+  - id: spec-decode.i9
+    kind: function
+    statement: >
+      The VL map table must be restored on a branch mispredict.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        The VL map table is branch-snapshotted per ``br_tag`` and restored on mispredict, so a
+        vset on a squashed path does not corrupt the VL mapping of the surviving path.
+
+  - id: spec-decode.i10
+    kind: function
+    statement: >
+      For a vsetvli with rs1 == x0 and rd != x0, VL must be VLMAX computed from vtype.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        ``rs1 == x0, rd != x0`` → VL = VLMAX; the producer computes VLMAX from ``vtype`` and
+        writes the VL RF (no decode-time fast path).
+
+  - id: spec-decode.i11
+    kind: function
+    statement: >
+      For a vsetvli with rs1 == x0 and rd == x0, VL must be kept unchanged.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        ``rs1 == x0, rd == x0`` → **keep VL unchanged**; *not* a VL producer, so the VL map
+        table is left untouched and younger uOPs keep the existing ``pvl``.
+
+  - id: spec-decode.i12
+    kind: function
+    statement: >
+      For a vsetvli with rs1 == x0 and rd == x0, the VL map table must be left untouched.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        ``rs1 == x0, rd == x0`` → **keep VL unchanged**; *not* a VL producer, so the VL map
+        table is left untouched and younger uOPs keep the existing ``pvl``.
+
+  - id: spec-decode.i13
+    kind: function
+    statement: >
+      A vsetvli with rs1 == x0 and rd == x0 whose vtype changes VLMAX must set vill.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        **Reserved case:** using this form with a ``vtype`` whose ``SEW``/``LMUL`` ratio
+        changes ``VLMAX`` is a reserved encoding per RVV 1.0 §6.2; |caracal| sets ``vill``
+
+  - id: spec-decode.i14
+    kind: function
+    statement: >
+      A vsetvli with rd == x0 that changes VL must still allocate a VL PRN to hold VL.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        Otherwise (``rd == x0`` with a VL change) a VL PRN is still allocated to hold VL.
+
+  - id: spec-decode.i15
+    kind: function
+    statement: >
+      Every VL-producing case must set the is_vl_producer bit.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        Every producing case sets the ``is_vl_producer`` bit described in
+        :ref:`the dual-destination rule <vset-dual-dest>`; the
+        non-producing case above leaves it clear.
+
+  - id: spec-decode.i16
+    kind: function
+    statement: >
+      The non-producing vsetvli case must leave the is_vl_producer bit clear.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        Every producing case sets the ``is_vl_producer`` bit described in
+        :ref:`the dual-destination rule <vset-dual-dest>`; the
+        non-producing case above leaves it clear.
+
+  - id: spec-decode.i17
+    kind: structure
+    statement: >
+      There must be no statically-known-VL path that bypasses the VL register file.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        In every producing case VL is written to the VL RF and read back via ``pvl`` — there
+        is no statically-known-VL path that bypasses the VL RF.
+
+  - id: spec-decode.i18
+    kind: interface
+    statement: >
+      Vector consumers must read VL only from the VL register file.
+    source:
+      file: docs_caracal/src/frontend.rst
+      anchor: vl-delivery
+      heading: "VL delivery — VL lives in its own register file"
+      quote: >
+        In all producing cases, when ``rd != x0`` the ``vset`` also writes ``rd`` as an
+        ordinary integer destination (normal, unmodified integer rename); vector consumers
+        read VL only from the VL RF.
+
+# The chapter-title section "Frontend" is declared `unowned:` in families.yaml — no family
+# ledgers it, so it is deliberately absent here.
+coverage:
+
+  - file: docs_caracal/src/frontend.rst
+    heading: "The Frontend Stages"
+    anchor: frontend-stages
+    reqs: [spec-decode.a1]
+
+  - file: docs_caracal/src/frontend.rst
+    heading: "Instruction Fetch"
+    anchor: frontend-fetch
+    reqs: [spec-decode.a2]
+
+  # The "Vector regfile depth / 96 (numVecPhysRegisters)" row of this section's parameter
+  # table is deliberately not mined here: the vector physical register file is spec-vrf's
+  # structure, and midcore.rst §"The Vector Register File" states the same number. It is
+  # mined there so one obligation does not end up with two IDs and two RTL tags.
+  - file: docs_caracal/src/frontend.rst
+    heading: "Vector (RVV) Decode"
+    anchor: vector-rvv-decode
+    reqs: [spec-decode.a3, spec-decode.a4, spec-decode.a5, spec-decode.a6, spec-decode.a7,
+           spec-decode.a8, spec-decode.a9, spec-decode.a10, spec-decode.a11,
+           spec-decode.a12, spec-decode.a13, spec-decode.a14]
+
+  - file: docs_caracal/src/frontend.rst
+    heading: "CII Shared Instruction Decoding"
+    anchor: vector-rvv-decode
+    reqs: [spec-decode.b1, spec-decode.b2, spec-decode.b3, spec-decode.b4]
+
+  - file: docs_caracal/src/frontend.rst
+    heading: "VSET Special Handling"
+    anchor: vector-rvv-decode
+    reqs: [spec-decode.c1, spec-decode.c2, spec-decode.c3, spec-decode.c4, spec-decode.c5,
+           spec-decode.c6, spec-decode.c7, spec-decode.c8, spec-decode.c9, spec-decode.c10,
+           spec-decode.c11, spec-decode.c12, spec-decode.c13, spec-decode.c14,
+           spec-decode.c15, spec-decode.c16, spec-decode.c17, spec-decode.c18,
+           spec-decode.c19, spec-decode.c20, spec-decode.c21, spec-decode.c22,
+           spec-decode.c23, spec-decode.c24, spec-decode.c25, spec-decode.c26,
+           spec-decode.d1, spec-decode.d2, spec-decode.d3, spec-decode.d4, spec-decode.d5,
+           spec-decode.d6, spec-decode.d7, spec-decode.d8, spec-decode.d9, spec-decode.d10,
+           spec-decode.d11, spec-decode.d12, spec-decode.d13,
+           spec-decode.e1, spec-decode.e2, spec-decode.e3, spec-decode.e4, spec-decode.e5,
+           spec-decode.c27, spec-decode.c28, spec-decode.c29]
+
+  - file: docs_caracal/src/frontend.rst
+    heading: "Explicit vector-CSR accesses"
+    anchor: vector-csr-explicit
+    reqs: [spec-decode.f1, spec-decode.f2, spec-decode.f3, spec-decode.f4]
+
+  - file: docs_caracal/src/frontend.rst
+    heading: "Vector architectural state: ownership boundary"
+    anchor: vector-csr-ownership
+    reqs: [spec-decode.g1, spec-decode.g2, spec-decode.g3, spec-decode.g4, spec-decode.g5,
+           spec-decode.g6, spec-decode.g7, spec-decode.g8, spec-decode.g9, spec-decode.g10,
+           spec-decode.g11,
+           spec-decode.g12, spec-decode.g13]
+
+  - file: docs_caracal/src/frontend.rst
+    heading: "VCFG Mirror Recovery (speculative vtype)"
+    anchor: vcfg-recovery
+    reqs: [spec-decode.h1, spec-decode.h2, spec-decode.h3, spec-decode.h4, spec-decode.h5,
+           spec-decode.h6, spec-decode.h7, spec-decode.h8, spec-decode.h9, spec-decode.h10,
+           spec-decode.h11, spec-decode.h12, spec-decode.h13,
+           spec-decode.h14, spec-decode.h15]
+
+  - file: docs_caracal/src/frontend.rst
+    heading: "VL delivery — VL lives in its own register file"
+    anchor: vl-delivery
+    reqs: [spec-decode.i1, spec-decode.i2, spec-decode.i3, spec-decode.i4, spec-decode.i5,
+           spec-decode.i6, spec-decode.i7, spec-decode.i8, spec-decode.i9, spec-decode.i10,
+           spec-decode.i11, spec-decode.i12, spec-decode.i13, spec-decode.i14,
+           spec-decode.i15, spec-decode.i16, spec-decode.i17, spec-decode.i18]
+
+# All four open questions recorded against this family were resolved on 2026-08-01:
+#
+#   vill in the VCFG snapshot -> a field of the mirrored vtype; spec-decode.h14, h15. The
+#     stated ~9 bits settled it: vlmul[2:0] + vsew[2:0] + vta + vma is eight, plus vill is nine.
+#   poison vs vtype-agnostic ops -> whole-register moves/loads/stores run; spec-decode.g12, g13
+#   VL-RF write ports         -> statically partitioned, one per producer class;
+#     spec-decode.c27-c29
+#   "vector performance counters" -> struck from frontend.rst. No counter was named, owned, or
+#     given a recovery story, and none is referenced elsewhere, so the phrase was removed rather
+#     than specified. spec-decode.d5 was re-quoted; its obligation is unchanged. If vector
+#     performance counters are wanted later they are not speculative decode state and do not
+#     belong in the VCFG mirror.

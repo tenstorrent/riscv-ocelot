@@ -1,0 +1,2003 @@
+family: rename
+description: >
+  Vector and VL renaming: map tables, free lists, busy tables, branch snapshots, and
+  pvtmp allocation for shared instructions.
+spec_sources:
+  - docs_caracal/src/midcore.rst
+
+groups:
+  a: single-stage rename — structure and scalar/vector parallelism
+  b: the rename→dispatch boundary — the atomic reservation actions
+  c: the speculative and committed rename map tables
+  d: the vector map table, group mapping, and stale-group capture
+  e: CII shared-instruction mapping — the pvtmp temp group
+  f: the vector free list
+  g: the vector busy table, group readiness, and group-done
+  h: the VL rename space — map table, free list, busy table, wakeup, commit
+  i: branch snapshots and rollback
+
+reqs:
+
+  # --- a: single-stage rename — structure and parallelism ----------------------
+
+  - id: spec-rename.a1
+    kind: structure
+    statement: >
+      The Rename Stage must rename vector registers in a single pipeline stage.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-rename
+      heading: "The Rename Stage"
+      quote: >
+        The Rename Stage is extended to support vector register renaming in a **single pipeline
+        stage**.
+
+  - id: spec-rename.a2
+    kind: timing
+    statement: >
+      For a vector instruction the scalar rename and the vector group rename must run in
+      parallel in the same cycle.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-rename
+      heading: "The Rename Stage"
+      quote: >
+        For a vector instruction the scalar (INT/FP) rename and the vector group rename run
+        **in parallel in the same cycle** — they target independent register spaces, free
+        lists, and busy tables, so neither depends on the other for a given ``OP.v``.
+    notes: >
+      The consequence the spec draws — "the combined rename cycle is therefore the *max* of the
+      scalar and vector-group rename latencies, not their sum" — is rationale for this
+      requirement, not a separate obligation; the unbounded timing budget it leaves behind is
+      recorded in open_questions.
+
+  - id: spec-rename.a3
+    kind: structure
+    statement: >
+      The vector rename must use register spaces, free lists and busy tables independent of
+      those used by the scalar rename.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-rename
+      heading: "The Rename Stage"
+      quote: >
+        they target independent register spaces, free lists, and busy tables, so neither
+        depends on the other for a given ``OP.v``
+
+  - id: spec-rename.a4
+    kind: function
+    statement: >
+      For a given OP.v the scalar rename and the vector group rename must each complete
+      without depending on the other.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-rename
+      heading: "The Rename Stage"
+      quote: >
+        so neither depends on the other for a given ``OP.v``
+
+  - id: spec-rename.a5
+    kind: structure
+    statement: >
+      The design must not contain a separate vector-mapping pipeline stage.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-rename
+      heading: "The Rename Stage"
+      quote: >
+        There is **no** separate vector-mapping pipeline stage and **no** 1-cycle-delayed
+        pipeline register
+
+  - id: spec-rename.a6
+    kind: structure
+    statement: >
+      The rename stage must not contain a 1-cycle-delayed pipeline register.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-rename
+      heading: "The Rename Stage"
+      quote: >
+        There is **no** separate vector-mapping pipeline stage and **no** 1-cycle-delayed
+        pipeline register
+
+  - id: spec-rename.a7
+    kind: timing
+    statement: >
+      The whole dispatch group, scalar and vector, must emerge from rename together in one
+      cycle.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-rename
+      heading: "The Rename Stage"
+      quote: >
+        the whole dispatch group (scalar and vector) emerges from rename together, in one
+        cycle.
+
+  - id: spec-rename.a8
+    kind: structure
+    statement: >
+      The scalar side of rename must be unchanged from the original BOOM implementation.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-rename
+      heading: "The Rename Stage"
+      quote: >
+        On the scalar side the original |boom| implementation is unchanged
+
+  - id: spec-rename.a9
+    kind: function
+    statement: >
+      The integer rename_stage and fp_rename_stage must rename scalar destinations and sources
+      to INT/FP PRNs for vector uops as well as for scalar uops.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-rename
+      heading: "The Rename Stage"
+      quote: >
+        the integer ``rename_stage`` and
+        ``fp_rename_stage`` still rename scalar destinations/sources to INT/FP PRNs for both
+        scalar and vector uops (e.g. a vector load's base/stride, a ``.vx``/``.vf`` operand)
+
+  - id: spec-rename.a10
+    kind: function
+    statement: >
+      The vector mapper must rename lvd, lvs* and lvm to pvdest, pvs* and pvm.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-rename
+      heading: "The Rename Stage"
+      quote: >
+        the vector
+        mapper renames the vector group (``lvd``/``lvs*``/``lvm`` → ``pvdest``/``pvs*``/``pvm``)
+
+  - id: spec-rename.a11
+    kind: timing
+    statement: >
+      The VL mapper must rename VL into the VL register file in parallel with the vector
+      mapper's group rename.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-rename
+      heading: "The Rename Stage"
+      quote: >
+        In parallel, the vector
+        mapper renames the vector group (``lvd``/``lvs*``/``lvm`` → ``pvdest``/``pvs*``/``pvm``)
+        and the VL
+        mapper renames VL into the VL register file.
+    notes: >
+      That VL is renamed into a dedicated VL register file rather than the integer RF is
+      spec-decode.i1; younger vector uOPs carrying ``pvl`` as an implicit operand and reading
+      VL from the VL RF at execute are spec-decode.i5 and spec-decode.i7, so neither is
+      duplicated here.
+
+  # --- b: the rename→dispatch boundary ----------------------------------------
+
+  - id: spec-rename.b1
+    kind: timing
+    statement: >
+      Rename must not insert a 1-cycle bubble between the scalar and vector halves of a
+      dispatch group.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        the whole dispatch group reaches
+        dispatch together — there is no cross-group skew to reconcile, no 1-cycle bubble, and
+        no delayed pipeline register.
+
+  - id: spec-rename.b2
+    kind: timing
+    statement: >
+      The rename→dispatch boundary must complete all of its reservation actions in the single
+      rename cycle.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        Everything the rename→dispatch boundary does happens atomically, in program
+        order, in that single cycle:
+    notes: >
+      The `.. warning::` in this section recommends a timing spike on the vector mapper plus
+      busy table before Milestone 1 Step 4 lands. That was ruled NON-NORMATIVE on 2026-07-31 —
+      it is engineering analysis to be done before a decision, not RTL behaviour — so no
+      requirement is written for it. The unbounded budget it describes is an open question.
+
+  - id: spec-rename.b3
+    kind: function
+    statement: >
+      The rename→dispatch boundary must perform its reservation actions in program order.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        Everything the rename→dispatch boundary does happens atomically, in program
+        order, in that single cycle:
+
+  - id: spec-rename.b4
+    kind: structure
+    statement: >
+      Rename must allocate exactly one ROB entry per OP.v.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        **ROB allocation** — one entry per uop (one per ``OP.v``), reserved in program order
+        for the whole group, exactly as in |boom|.
+    notes: >
+      The internal behaviour of that single ROB entry — completion tracking, commit, exceptions
+      — belongs to the `rob` family; this requirement is only the rename-side allocation. The
+      in-program-order property is spec-rename.b3.
+
+  - id: spec-rename.b5
+    kind: structure
+    statement: >
+      Each vector load or store OP.v must claim a single LDQ or STQ entry.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        every memory uop, including each vector load/store ``OP.v`` (a
+        **single** LDQ or STQ entry), claims its slot at the in-order ``ldq_tail`` /
+        ``stq_tail`` this cycle
+
+  - id: spec-rename.b6
+    kind: timing
+    statement: >
+      Every memory uop must claim its queue slot at the in-order ldq_tail or stq_tail in the
+      rename cycle.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        claims its slot at the in-order ``ldq_tail`` /
+        ``stq_tail`` this cycle
+
+  - id: spec-rename.b7
+    kind: interface
+    statement: >
+      Rename must write ldq_idx or stq_idx into the OP.v as its program-age stamp for
+      cross-queue disambiguation.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        with ``ldq_idx``/``stq_idx`` written into the ``OP.v`` as the program-age stamp for
+        cross-queue disambiguation.
+
+  - id: spec-rename.b8
+    kind: structure
+    statement: >
+      The LDQ or STQ entry of a vector memory OP.v must not hold that OP.v's per-element
+      addresses or data.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        The per-element addresses/data are produced later at the Vector LS
+        AGEN/DGEN (they live in the SSI/US queues, not the LDQ/STQ entry); only the *slot* is
+        reserved here.
+
+  - id: spec-rename.b9
+    kind: timing
+    statement: >
+      br_tag allocation must be taken on the ren_br_tags event in the rename cycle.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        **``br_tag`` allocation and branch snapshots** — taken on the ``ren_br_tags`` event
+        this cycle.
+
+  - id: spec-rename.b10
+    kind: timing
+    statement: >
+      Every uop, scalar and vector, must write its issue-queue slot in the rename cycle.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        **Issue-queue slot write** — every uop (scalar and vector) writes its IQ slot this
+        cycle; no uop lags its group-mates.
+
+  - id: spec-rename.b11
+    kind: timing
+    statement: >
+      A uop must not lag its group-mates in writing its issue-queue slot.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        no uop lags its group-mates.
+
+  # --- c: the speculative and committed rename map tables ---------------------
+
+  - id: spec-rename.c1
+    kind: structure
+    statement: >
+      Caracal must always keep the Committed RMT enabled.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        The Committed RMT is an optional feature, which we will always keep enabled in
+        |caracal|.
+
+  - id: spec-rename.c2
+    kind: function
+    statement: >
+      The speculative map_table must be updated at rename time as physical destinations are
+      allocated.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        This is the working table updated at rename time as physical destinations are
+        allocated.
+
+  - id: spec-rename.c3
+    kind: interface
+    statement: >
+      Source operands must be read from the speculative map_table as map_resps.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        Source operands are read from it (``map_resps``).
+
+  - id: spec-rename.c4
+    kind: function
+    statement: >
+      The com_map_table must be updated only by committed uops.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        Updated only by committed uop's (driven from the ROB via ``com_remap_reqs``).
+
+  - id: spec-rename.c5
+    kind: interface
+    statement: >
+      The com_map_table's updates must be driven from the ROB via com_remap_reqs.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        driven from the ROB via ``com_remap_reqs``
+
+  - id: spec-rename.c6
+    kind: function
+    statement: >
+      On an exception the com_map_table must be copied to the speculative map_table.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        When an exception occurs, the ``com_map_table`` is copied to the speculative
+        ``map_table``.
+
+  - id: spec-rename.c7
+    kind: timing
+    statement: >
+      The map_table rollback on an exception must complete as a single-cycle copy.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        thus instead of a ROB 1 entry/cycle walk back a single cycle copy is all that is
+        needed to roll back the ``map_table``.
+    notes: >
+      Correctness rests on the com_map_table holding the most recent correct state before the
+      trapping instruction, which is spec-rename.c4.
+
+  - id: spec-rename.c8
+    kind: structure
+    statement: >
+      The map_table rollback must not use a ROB one-entry-per-cycle walk back.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        instead of a ROB 1 entry/cycle walk back a single cycle copy is all that is
+        needed
+
+  # --- d: the vector map table, group mapping, stale-group capture -------------
+
+  - id: spec-rename.d1
+    kind: structure
+    statement: >
+      The vector mapper must extend the existing RenameStage implementation.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        The vector mapper extends the existing RenameStage implementation to support vector
+        renaming.
+
+  - id: spec-rename.d2
+    kind: function
+    statement: >
+      The vector mapper must map vector registers atomically per LMUL/EMUL group.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        The vector mapper implements atomic LMUL/EMUL based vector register mapping.
+    notes: >
+      "The mapper *may* rename and allocate up to LMUL=8 PRNs for a single vdest" is an
+      allowance as written, so it is not a requirement here; the 8-PRN width obligations are
+      spec-rename.f3, f10 and g8. Removing vector uOP cracking and reducing ROB entries is
+      rationale. The mapper's need for ``vtype``/``EMUL`` at decode is covered by
+      spec-decode.d3/d4 and the ``vsetvl`` ``is_unique`` serialization by spec-decode group e.
+
+  - id: spec-rename.d3
+    kind: function
+    statement: >
+      The vector mapper must read the old stale vdest group when renaming a vector
+      destination.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        The Vector Mapper should also get the old stale vdest group and update the OP.v
+        ``stale_pvdest`` field
+    notes: >
+      This note is worded with **should**. It was ruled A REAL REQUIREMENT on 2026-07-31,
+      because spec-lsu.e9, spec-cii.f10 and midcore §old-vd all depend on ``stale_pvdest``
+      existing — it is the only source of undisturbed lanes in the machine. Do not re-litigate.
+
+  - id: spec-rename.d4
+    kind: function
+    statement: >
+      The vector mapper must write the stale vdest group into the OP.v stale_pvdest field.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        update the OP.v
+        ``stale_pvdest`` field — a ``Vec`` of up to ``EMUL`` stale PRNs, not a single reg,
+        since a vector dest renames a whole group.
+    notes: >
+      Mined as a must under the 2026-07-31 ruling recorded on spec-rename.d3. It is what lets
+      commit free the entire stale group (spec-rename.f12) and what feeds tail-undisturbed
+      handling.
+
+  - id: spec-rename.d5
+    kind: structure
+    statement: >
+      The OP.v stale_pvdest field must be a Vec of up to EMUL stale PRNs rather than a single
+      register.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        a ``Vec`` of up to ``EMUL`` stale PRNs, not a single reg, since a vector dest renames
+        a whole group
+    notes: >
+      Mined as a must under the 2026-07-31 ruling recorded on spec-rename.d3.
+
+  - id: spec-rename.d6
+    kind: timing
+    statement: >
+      The stale-group capture must happen in the single rename cycle, in parallel with scalar
+      rename.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        This stale-group capture happens in the single rename cycle, in parallel with scalar
+        rename (see :ref:`rename-stage`).
+    notes: >
+      Mined as a must under the 2026-07-31 ruling recorded on spec-rename.d3.
+
+  - id: spec-rename.d7
+    kind: structure
+    statement: >
+      The vector map table must store one PRN per architectural vreg.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        The vector map table stores **one PRN per architectural vreg**
+
+  - id: spec-rename.d8
+    kind: function
+    statement: >
+      An EMUL-wide read of the vector map table must return the group's current mappings
+      directly.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        so an ``EMUL``-wide read returns the
+        group's current mappings directly
+
+  - id: spec-rename.d9
+    kind: function
+    statement: >
+      An EMUL-wide read of the vector map table must be correct under arbitrary fragmentation.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        is correct under **arbitrary fragmentation**
+
+  - id: spec-rename.d10
+    kind: structure
+    statement: >
+      The vector mapper must not contain a contiguous-run allocator.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        That single
+        property is what makes the mapper simple: no contiguous-run allocator, no whole-group
+        validity check, and no fragmentation-recovery walk.
+
+  - id: spec-rename.d11
+    kind: structure
+    statement: >
+      The vector mapper must not contain a whole-group validity check.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        no contiguous-run allocator, no whole-group
+        validity check, and no fragmentation-recovery walk.
+
+  - id: spec-rename.d12
+    kind: structure
+    statement: >
+      The vector mapper must not contain a fragmentation-recovery walk.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        and no fragmentation-recovery walk.
+    notes: >
+      §"Checkpoint RMT Snapshots" restates this ("the per-ARN map table needs no
+      fragmentation-recovery walk") as the reason there is no periodic snapshot
+      (spec-rename.i11).
+
+  - id: spec-rename.d13
+    kind: structure
+    statement: >
+      The vector mapper must not implement the LMUL TAG Whole Vector Group Checker.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rmt
+      heading: "Rename Map Table (RMT)"
+      quote: >
+        **Removed: the "LMUL TAG Whole Vector Group Checker."** Earlier drafts added a 32×2-bit
+        per-ARN tag table plus combinational whole-group comparators for every valid base ARN
+        at each LMUL. It has been deleted, for two reasons:
+    notes: >
+      A negative structural obligation: neither the 32×2-bit per-ARN tag table nor the
+      combinational whole-group comparators may be built. The spec's two reasons are that the
+      structure gated nothing (a FALSE result needed no exception and no recovery, since a
+      per-ARN map table is always whole-group correct — spec-rename.d7/d9) and that its test
+      was wrong anyway (eight independent LMUL=1 writes classify as "fragmented"). Deleting it
+      also removes a wide comparator tree from the single-cycle rename path. A per-ARN
+      "last-write ``EMUL``" performance counter is offered as an optional cheaper substitute —
+      an allowance, not an obligation.
+
+  - id: spec-rename.d14
+    kind: interface
+    statement: >
+      The vector mapper must write v_emul into the OP.v in the rename cycle.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        the vector group (``pvdest``/``pvs*``/``pvm`` + the ``EMUL`` ``stale_pvdest``
+        group + ``v_emul``) from the vector mapper, and ``pvl`` from the VL mapper — all in
+        the same cycle.
+
+  # --- e: CII shared-instruction mapping — the pvtmp temp group ----------------
+
+  - id: spec-rename.e1
+    kind: structure
+    statement: >
+      A shared vector instruction must be allocated PRNs as a normal instruction is.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        Shared vector instructions are allocated PRNs and a single ROB entry as normal
+        instructions.
+
+  - id: spec-rename.e2
+    kind: structure
+    statement: >
+      A shared vector instruction must be allocated a single ROB entry.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        Shared vector instructions are allocated PRNs and a single ROB entry as normal
+        instructions.
+
+  - id: spec-rename.e3
+    kind: function
+    statement: >
+      When the vector mapper sees is_shared it must allocate a second vector group as the
+      intermediate temp group.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        when the vector mapper sees ``is_shared`` it allocates a **second vector group —
+        the intermediate temp group — from the main vector free list**
+
+  - id: spec-rename.e4
+    kind: structure
+    statement: >
+      The intermediate temp group must be allocated from the main vector free list.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        the intermediate temp group — from the main vector free list
+
+  - id: spec-rename.e5
+    kind: function
+    statement: >
+      The vector mapper must write the temp group's PRNs into the OP.v pvtmp field.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        and writes its PRNs into the
+        ``OP.v``'s ``pvtmp`` field (up to ``EMUL`` members)
+
+  - id: spec-rename.e6
+    kind: structure
+    statement: >
+      The OP.v pvtmp field must hold up to EMUL members.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        ``pvtmp`` field (up to ``EMUL`` members)
+
+  - id: spec-rename.e7
+    kind: function
+    statement: >
+      The temp group must have a real busy lifetime.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        The temp group is an ordinary VRF group: it
+        has a real busy lifetime
+
+  - id: spec-rename.e8
+    kind: function
+    statement: >
+      The temp group must be reclaimed on a branch mispredict through br_alloc_lists.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        is reclaimed on branch-mispredict through ``br_alloc_lists``
+
+  - id: spec-rename.e9
+    kind: function
+    statement: >
+      The temp group must be freed at commit alongside the stale vdest group.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        is
+        **freed at commit** alongside the stale vdest group.
+
+  - id: spec-rename.e10
+    kind: structure
+    statement: >
+      The temp group must not be installed in the vector RMT.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        It is not installed in the vector RMT, so no
+        architectural read can alias it.
+    notes: >
+      The stated purpose is that no architectural read can alias the temp group.
+
+  - id: spec-rename.e11
+    kind: function
+    statement: >
+      The two halves of a shared instruction must rendezvous through the temp group in the
+      VRF.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        The two halves rendezvous entirely through this temp group in the
+        VRF — one half writes it as a destination, the other reads it as a source
+
+  - id: spec-rename.e12
+    kind: interface
+    statement: >
+      The temp group must use the same busy-table and group-done machinery as any other vector
+      operand.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        using the same
+        busy-table / group-done machinery as any vector operand (see :ref:`group-done wakeup
+        <group-done>`).
+
+  - id: spec-rename.e13
+    kind: function
+    statement: >
+      An OP.v that cannot allocate its vector group must stall at rename.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        Rename is in program
+        order, so an ``OP.v`` that cannot allocate simply stalls at rename while every older
+        instruction continues to commit and free its stale group — the oldest op is never the
+        one that starves.
+    notes: >
+      The spec states that **no free-list headroom reservation is required for forward
+      progress**; that is a statement that a structure is unnecessary, not an obligation to
+      omit one, so it is recorded here rather than mined. A segmented load/store consuming two
+      groups (``pvdest`` + ``pvtmp``, up to 16 PRNs total) and thereby back-pressuring dispatch
+      is described consequence, not a separate requirement.
+
+  - id: spec-rename.e14
+    kind: function
+    statement: >
+      The allocation of pvdest and pvtmp must be all-or-nothing.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        The actual requirement is narrower and must be stated explicitly: allocation of
+        ``pvdest`` + ``pvtmp`` is **all-or-nothing**.
+
+  - id: spec-rename.e15
+    kind: function
+    statement: >
+      A segmented op must never take a partial vector group and wait for the remainder.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        A segmented op must never take a partial group and wait for the remainder,
+        because those held PRNs cannot be freed until it commits
+    notes: >
+      Held partial PRNs cannot be freed until the op commits, which is the deadlock the spec
+      names.
+
+  # Stall granularity on a failed allocation, resolved 2026-08-01.
+
+  - id: spec-rename.e16
+    kind: function
+    statement: >
+      A failed allocation must stall the whole dispatch group.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: cii-shared-mapping
+      heading: "CII Shared Instruction Mapping"
+      quote: >
+        **A failed allocation stalls the whole dispatch group**, not just the failing ``OP.v``:
+        no uop in the bundle renames that cycle, and the bundle retries intact on the next.
+    notes: >
+      Resolved 2026-08-01. No uop in the bundle renames that cycle and the bundle retries
+      intact on the next; that is the same obligation stated twice, not a second one. The spec
+      chooses the coarse rule deliberately: it is trivially order-preserving, needs no per-lane
+      stall mask, and keeps the atomic rename to dispatch actions of spec-rename groups a and b
+      from ever being applied to a partially renamed bundle. The cost is dispatch bandwidth,
+      since older group-mates re-attempt each retry cycle.
+
+  # --- f: the vector free list ------------------------------------------------
+
+  - id: spec-rename.f1
+    kind: structure
+    statement: >
+      The Free List must track the physical registers that are currently unused.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: free-list
+      heading: "Free List"
+      quote: >
+        The Free List tracks the physical registers that are currently un-used and
+        is used to allocate new physical registers to instructions passing through the Rename
+        stage
+
+  - id: spec-rename.f2
+    kind: function
+    statement: >
+      The Free List must allocate new physical registers to instructions passing through the
+      Rename stage.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: free-list
+      heading: "Free List"
+      quote: >
+        is used to allocate new physical registers to instructions passing through the Rename
+        stage
+
+  - id: spec-rename.f3
+    kind: function
+    statement: >
+      The vector free list must allocate an entire EMUL group per OP.v.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: free-list
+      heading: "Free List"
+      quote: >
+        Because we rename whole vector groups
+        atomically, the vector free list allocates an entire EMUL group per OP.v.
+
+  - id: spec-rename.f4
+    kind: structure
+    statement: >
+      The vector free list must reuse BOOM's SelectFirstN selector.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: free-list
+      heading: "Free List"
+      quote: >
+        It reuses |boom|'s
+        ``SelectFirstN`` selector with ``allocWidth = coreWidth*8``
+
+  - id: spec-rename.f5
+    kind: structure
+    statement: >
+      The vector free list's allocWidth must be coreWidth*8.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: free-list
+      heading: "Free List"
+      quote: >
+        ``SelectFirstN`` selector with ``allocWidth = coreWidth*8``
+
+  - id: spec-rename.f6
+    kind: structure
+    statement: >
+      The pregs the vector free list selects must be grouped per OP.v.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: free-list
+      heading: "Free List"
+      quote: >
+        the selected pregs are
+        **non-contiguous** (no contiguous-run allocator is needed) and are grouped per OP.v.
+
+  - id: spec-rename.f7
+    kind: structure
+    statement: >
+      The vector free list must allocate a group without requiring its pregs to be contiguous.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: free-list
+      heading: "Free List"
+      quote: >
+        the selected pregs are
+        **non-contiguous** (no contiguous-run allocator is needed)
+    notes: >
+      The absence of a contiguous-run allocator is spec-rename.d10; this requirement is the
+      allocator behaviour that absence implies for the free list itself.
+
+  - id: spec-rename.f8
+    kind: structure
+    statement: >
+      The vector free list's branch reclaim must be unchanged from the scalar free list.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: free-list
+      heading: "Free List"
+      quote: >
+        Branch and
+        commit reclaim are unchanged from the scalar free list
+
+  - id: spec-rename.f9
+    kind: structure
+    statement: >
+      The vector free list's commit reclaim must be unchanged from the scalar free list.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: free-list
+      heading: "Free List"
+      quote: >
+        commit reclaim are unchanged from the scalar free list
+
+  - id: spec-rename.f10
+    kind: structure
+    statement: >
+      Vector free-list allocations must be performed as bit-vector ORs.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: free-list
+      heading: "Free List"
+      quote: >
+        allocations are bit-vector ORs, so
+        setting 8 bits per OP.v needs no new logic, only wider ports
+
+  - id: spec-rename.f11
+    kind: structure
+    statement: >
+      The vector free list's allocation ports must be wide enough to set 8 bits per OP.v.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: free-list
+      heading: "Free List"
+      quote: >
+        setting 8 bits per OP.v needs no new logic, only wider ports
+
+  - id: spec-rename.f12
+    kind: structure
+    statement: >
+      The vector free list's deallocWidth must be commitWidth*8.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: free-list
+      heading: "Free List"
+      quote: >
+        (``deallocWidth = commitWidth*8`` to
+        free a whole stale group at commit)
+
+  - id: spec-rename.f13
+    kind: function
+    statement: >
+      The vector free list must free a whole stale group at commit.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: free-list
+      heading: "Free List"
+      quote: >
+        to
+        free a whole stale group at commit
+    notes: >
+      The stale group being freed is the ``stale_pvdest`` Vec captured at rename
+      (spec-rename.d4/d5).
+
+  # --- g: the vector busy table, group readiness, group-done ------------------
+
+  - id: spec-rename.g1
+    kind: structure
+    statement: >
+      The Busy Table must track the readiness status of each physical register.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: busy-table
+      heading: "Busy Table"
+      quote: >
+        The Busy Table tracks the readiness status of each physical register.
+
+  - id: spec-rename.g2
+    kind: function
+    statement: >
+      An instruction must be ready to be issued when all of its physical operands are ready.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: busy-table
+      heading: "Busy Table"
+      quote: >
+        If all physical operands are
+        ready, the instruction will be ready to be issued.
+
+  - id: spec-rename.g3
+    kind: function
+    statement: >
+      The scalar Busy Table must set one busy bit per allocated pdst.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: busy-table
+      heading: "Busy Table"
+      quote: >
+        it
+        **sets** one busy bit per allocated ``pdst``
+
+  - id: spec-rename.g4
+    kind: function
+    statement: >
+      The scalar Busy Table must clear a bit per writeback port.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: busy-table
+      heading: "Busy Table"
+      quote: >
+        **clears** a bit per writeback port
+
+  - id: spec-rename.g5
+    kind: interface
+    statement: >
+      The scalar Busy Table must be read for the source operands prs1, prs2 and prs3 of each
+      rename lane.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: busy-table
+      heading: "Busy Table"
+      quote: >
+        is **read**
+        for the source operands (``prs1``/``prs2``/``prs3``) of each rename lane.
+
+  - id: spec-rename.g6
+    kind: structure
+    statement: >
+      Vector readiness must be tracked per member PRN rather than by a group base.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        Readiness is tracked **per member PRN**, not by a group base.
+    notes: >
+      The spec's reason: a consumer may read a source group that is a sub-range of a larger
+      destination group, and a group's members may come from different producers, so a
+      base-only busy bit would wake the consumer early on a stale read.
+
+  - id: spec-rename.g7
+    kind: structure
+    statement: >
+      The Vector Busy Table must be a per-PRN bit vector over numVecPhysRegisters.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        The Vector Busy Table is therefore a per-PRN bit vector over ``numVecPhysRegisters``
+
+  - id: spec-rename.g8
+    kind: function
+    statement: >
+      On allocation the Vector Busy Table must set all member bits of the destination group,
+      up to 8 per OP.v.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        Set **all** member bits of the destination group — up to 8 per ``OP.v``
+
+  - id: spec-rename.g9
+    kind: structure
+    statement: >
+      The set-busy path must form the OR of UIntToOH(pvdest_j) over the group's PRNs.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        as the ``OR`` of
+        ``UIntToOH(pvdest_j)`` over the group's (non-contiguous) PRNs
+
+  - id: spec-rename.g10
+    kind: structure
+    statement: >
+      The set-busy path must be up to coreWidth*8 bits per cycle wide.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        up to ``coreWidth*8`` bits/cycle.
+
+  - id: spec-rename.g11
+    kind: function
+    statement: >
+      The Vector Busy Table must be read for the busy bit of each member of each source group
+      including the mask pvm.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        Read the busy bit of **each member** of each source group (``pvs1``/``pvs2``/``pvs3``
+        plus the mask ``pvm``)
+
+  - id: spec-rename.g12
+    kind: function
+    statement: >
+      Each rename lane's busy read must also include the pvl read.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        times ``plWidth``, plus the ``pvl``
+        read.
+    notes: >
+      The "~25 bit-reads per lane" figure is an order-of-magnitude estimate ("on the order
+      of"), not a stated width, so no number is asserted here. Which table that bit comes from
+      was ambiguous until 2026-08-01, when the section's "the integer ``pvl`` read" was
+      corrected; it is the VL busy table, and that is spec-rename.g26.
+
+  - id: spec-rename.g13
+    kind: function
+    statement: >
+      The per-member busy bits of a source group must be AND-ed into one group-ready bit per
+      operand.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        The per-member bits are **AND-ed into one group-ready bit** per operand
+
+  - id: spec-rename.g14
+    kind: function
+    statement: >
+      An operand must wake only when its last member is ready.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        the
+        operand wakes only when its **last** member is ready.
+
+  - id: spec-rename.g15
+    kind: interface
+    statement: >
+      Each group-done must carry the completing group's full member-PRN vector.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        Each group-done **carries the completing group's full member-PRN vector** (up to 8
+        PRNs)
+
+  - id: spec-rename.g16
+    kind: function
+    statement: >
+      A group-done must clear the busy bits of all of its member PRNs.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        and clears all of those bits
+
+  - id: spec-rename.g17
+    kind: structure
+    statement: >
+      The busy-clear side must be numVecWbPorts by up-to-8 bits wide.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        the clear side is ``numVecWbPorts`` × up-to-8 bits wide.
+
+  - id: spec-rename.g18
+    kind: interface
+    statement: >
+      A producer must emit one group-done per OP.v.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        A producer still emits **one** group-done per
+        ``OP.v``
+    notes: >
+      Which unit emits it and when — the CII once per instruction, the LCB once after the last
+      destination PRN lands — is specified in §"Completion tracking" (:ref:`group-done-wb`),
+      owned by the `rob` family, and is not restated here. The single-shot property is what
+      keeps the ROB busy-clear free of a per-entry counter.
+
+  - id: spec-rename.g19
+    kind: interface
+    statement: >
+      The issue-slot wakeup must remain per-member.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        That single event simply carries the member-PRN vector, so the Busy-Table clear and the
+        issue-slot wakeup remain per-member.
+
+  - id: spec-rename.g20
+    kind: function
+    statement: >
+      A consumer reading a sub-range of an in-flight group must wake when that producer's
+      group-done fires.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        A consumer reading a sub-range of an in-flight group wakes when
+        that producer's group-done fires (conservative but correct).
+    notes: >
+      The spec labels this conservative but correct: the consumer may wake later than strictly
+      necessary, never earlier.
+
+  - id: spec-rename.g21
+    kind: interface
+    statement: >
+      busy_resps must carry per-group source readiness aggregated to group-ready bits.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        Accordingly ``busy_resps`` carries per-group source readiness (aggregated to
+        group-ready bits)
+
+  - id: spec-rename.g22
+    kind: interface
+    statement: >
+      ren_uops must carry the group member PRNs plus EMUL.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        ``ren_uops`` carries the group member PRNs plus ``EMUL``
+
+  - id: spec-rename.g23
+    kind: interface
+    statement: >
+      rebusy_reqs must set up to 8 bits per OP.v.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        ``rebusy_reqs`` set up to 8 bits per
+        ``OP.v``
+
+  - id: spec-rename.g24
+    kind: structure
+    statement: >
+      wakeups must be numVecWbPorts wide.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        and ``wakeups`` is ``numVecWbPorts`` wide
+
+  - id: spec-rename.g25
+    kind: interface
+    statement: >
+      Each wakeup port must carry the completing group's member-PRN vector.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        each carrying the completing group's member-PRN
+        vector.
+
+  # Which busy table supplies the pvl bit, resolved 2026-08-01.
+
+  - id: spec-rename.g26
+    kind: interface
+    statement: >
+      The ``pvl`` busy bit must be read from the VL busy table.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done
+      heading: "Busy Table"
+      quote: >
+        **The ``pvl`` bit is read from the VL busy table** (:ref:`vl-vtype-rename`), not the
+        integer one: ``VL`` is renamed into its own register space, so ``pvl`` indexes
+        ``VL_RF`` and has exactly one busy bit, in that table.
+    notes: >
+      Resolved 2026-08-01, correcting this section's "the integer ``pvl`` read", which
+      contradicted §"VL Rename". The spec's reason is that VL is renamed into its own register
+      space, so pvl indexes VL_RF and has exactly one busy bit. The VL busy table itself is
+      spec-rename group h; the read that includes this bit is spec-rename.g12.
+
+  # --- h: the VL rename space -------------------------------------------------
+
+  - id: spec-rename.h1
+    kind: structure
+    statement: >
+      The VL register space must contain 64 entries.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        ``VL`` is renamed by the vl mapper into **its own register space** (64 entries),
+        separate from the integer/FP/vector PRFs.
+    notes: >
+      That VL is renamed into a dedicated space at all is spec-decode.i1; this family mines the
+      rename-side structure of that space. §"The Rename Stage" attributes the VL rename to a
+      "VL mapper" and this section to "the vector mapper" — see open_questions.
+
+  - id: spec-rename.h2
+    kind: structure
+    statement: >
+      The VL register space must be separate from the integer, FP and vector PRFs.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        separate from the integer/FP/vector PRFs.
+
+  - id: spec-rename.h3
+    kind: structure
+    statement: >
+      Integer rename must not be modified to support VL renaming.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        **Integer rename is not modified** — the VL value no longer lives in the
+        integer RF.
+
+  - id: spec-rename.h4
+    kind: structure
+    statement: >
+      The VL value must not live in the integer register file.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        the VL value no longer lives in the
+        integer RF.
+
+  - id: spec-rename.h5
+    kind: structure
+    statement: >
+      The VL rename must reuse the structures the scalar rename already provides, one ARN
+      wide.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        It is a one-architectural-register rename with the same structures the scalar rename
+        already provides, just one ARN wide.
+
+  - id: spec-rename.h6
+    kind: structure
+    statement: >
+      VTYPE must not be renamed.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        (``VTYPE`` is **not** renamed — it rides the VCFG ``vtype``
+        mirror and the per-uOP ``VConfig`` snapshot; only ``VL`` gets a register file.)
+    notes: >
+      The VCFG vtype mirror and its per-``br_tag`` snapshot are spec-decode group h; the
+      per-uOP ``VConfig`` snapshot is spec-decode group d.
+
+  - id: spec-rename.h7
+    kind: structure
+    statement: >
+      The VL map table must be a single current-PRN pointer.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        **Map table** — a current-PRN pointer (the renamed ``VL``), branch-snapshotted per
+        ``br_tag`` and
+        restored on mispredict
+    notes: >
+      The per-``br_tag`` snapshot and mispredict restore of the VL map table are
+      spec-decode.i8 and spec-decode.i9; the rename-side timing obligation (same
+      ``ren_br_tags`` event, no delayed-``br_tag`` path) is spec-rename.i3 and i4. The spec
+      records that this pointer replaces the earlier current-VL-PRN tracker.
+
+  - id: spec-rename.h8
+    kind: function
+    statement: >
+      On an exception or pipeline flush the VL map table must be restored from a committed
+      pointer.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        restored from a committed pointer on exception/flush.
+
+  - id: spec-rename.h9
+    kind: timing
+    statement: >
+      VL must be renamed in the single rename cycle.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        VL is renamed in the **single rename cycle** (in parallel with scalar
+        and vector-group rename, see :ref:`rename-stage`)
+
+  - id: spec-rename.h10
+    kind: function
+    statement: >
+      Within one dispatch group a dependent of a vset must obtain the just-renamed pvl through
+      the in-bundle prefix bypass.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        a ``vset``→dependent pair in
+        one dispatch group uses the in-bundle prefix bypass so the dependent picks up the
+        just-renamed ``pvl``.
+
+  - id: spec-rename.h11
+    kind: structure
+    statement: >
+      The VL free list must be a 64-bit free vector.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        **Free list** — 64-bit free vector; a producer allocates a fresh PRN.
+    notes: >
+      That every VL producer allocates a fresh VL PRN and writes the VL RF is spec-decode.i2
+      and spec-decode.i3, so it is not restated here.
+
+  - id: spec-rename.h12
+    kind: structure
+    statement: >
+      The VL busy table must have one bit per VL PRN.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        **Busy table** — one bit per PRN; set on allocation, cleared by the producer's VL
+        writeback.
+
+  - id: spec-rename.h13
+    kind: function
+    statement: >
+      A VL busy bit must be set on allocation of its PRN.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        one bit per PRN; set on allocation
+    notes: >
+      ``vsetivli`` is the exception the spec calls out: its VL value is written to
+      ``VL_RF[pvl]`` in the rename cycle and no busy bit is set, so its ``pvl`` is born ready —
+      spec-decode.c4 and spec-decode.c5.
+
+  - id: spec-rename.h14
+    kind: function
+    statement: >
+      A VL busy bit must be cleared by the producer's VL writeback.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        cleared by the producer's VL
+        writeback.
+    notes: >
+      Who produces the value differs by form: ``vsetvli``/``vsetvl`` compute VL on an integer
+      ALU EU whose writeback targets the VL RF (spec-decode group c), and ``vleff`` writes the
+      trimmed VL on completion (spec-lsu group g).
+
+  - id: spec-rename.h15
+    kind: structure
+    statement: >
+      The design must contain a dedicated VL wakeup network.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        **Wakeup network** — a dedicated ``VL`` network
+
+  - id: spec-rename.h16
+    kind: interface
+    statement: >
+      Vector issue slots must match pvl on the VL wakeup network.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        vector issue slots match ``pvl`` on it (see the
+        Vector Issue Slot).
+    notes: >
+      Every VL producer sets the ``is_vl_producer`` bit and a register-sourced ``vset`` has two
+      destinations in two rename spaces; that dual-destination rule, its writeback fan-out, the
+      two busy bits set at rename and the two free paths run at commit are spec-decode.c16
+      through c25.
+
+  - id: spec-rename.h17
+    kind: function
+    statement: >
+      At commit of a VL producer the outgoing committed VL pointer must be freed.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        at commit of a VL producer the **outgoing committed pointer is freed**
+
+  - id: spec-rename.h18
+    kind: structure
+    statement: >
+      A VL producer uop must not carry a per-uop stale VL field.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        (no
+        per-uop stale field is needed: the single-entry committed map table already holds the
+        PRN this producer displaces)
+    notes: >
+      This is the VL-space counterpart of the vector ``stale_pvdest`` Vec (spec-rename.d5): the
+      single-entry committed VL map table already holds the displaced PRN, so no stale field is
+      carried in the uop.
+
+  - id: spec-rename.h19
+    kind: structure
+    statement: >
+      The committed VL map table must be a single entry.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        the single-entry committed map table already holds the
+        PRN this producer displaces
+
+  - id: spec-rename.h20
+    kind: function
+    statement: >
+      At commit of a VL producer the committed VL pointer must be advanced to the new PRN.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        the committed pointer is advanced to the new PRN
+
+  - id: spec-rename.h21
+    kind: function
+    statement: >
+      At commit of a VL producer the architectural vl CSR must be written precisely.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        and the architectural
+        ``vl`` CSR is written (precise).
+
+  - id: spec-rename.h22
+    kind: function
+    statement: >
+      Wrong-path VL producers must be reclaimed by the VL free list's branch machinery.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        Wrong-path producers are reclaimed by the free list's branch
+        machinery, as usual.
+
+  - id: spec-rename.h23
+    kind: interface
+    statement: >
+      Every vector EU must read VL from VL_RF indexed by pvl.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        **EU read ports** — every vector EU reads ``VL`` from ``VL_RF[pvl]``
+    notes: >
+      That the vector EU reads VL from the VL RF at execute is spec-decode.i7; this requirement
+      adds only the ``pvl`` indexing. Reading ``vtype`` from the uOP's ``VConfig`` snapshot is
+      spec-decode group d.
+
+  - id: spec-rename.h24
+    kind: structure
+    statement: >
+      A vset's read of its integer AVL source must not touch integer rename.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        Reading the integer ``AVL`` source is an ordinary integer RF **read** — it does not
+        touch integer
+        rename.
+    notes: >
+      That a ``vset`` with ``rd != x0`` also writes ``rd`` as a normal integer destination is
+      part of the dual-destination rule, spec-decode.c16 through c25.
+
+  - id: spec-rename.h25
+    kind: function
+    statement: >
+      Vector consumers must read VL only from the VL register file.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        but vector consumers read VL only from ``VL_RF``.
+    notes: >
+      The delivery path itself — every younger vector uOP carrying the current ``pvl`` read
+      from the VL map table at rename as an implicit operand — is spec-decode.i5.
+
+  # VL free-list exhaustion, resolved 2026-08-01.
+
+  - id: spec-rename.h26
+    kind: function
+    statement: >
+      A VL producer that finds no free VL PRN must stall at rename.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vl-vtype-rename
+      heading: "VL Rename"
+      quote: >
+        **A producer that finds no free VL PRN stalls at rename**, exactly as an ``OP.v`` short
+        of vector PRNs does (:ref:`cii-shared-mapping`), and is deadlock-free for the same
+        reason: rename is in program order, so older producers keep committing and freeing the
+        pointer each displaces, and the oldest producer is never the one that starves.
+    notes: >
+      Resolved 2026-08-01. The deadlock-freedom argument is the one spec-rename.e16's section
+      gives for the vector free list, reused: in-order rename means the oldest producer never
+      starves. The spec also records that the 64 entries can genuinely be exhausted, the live
+      count being one committed pointer plus one per in-flight producer, so any ROB deeper than
+      63 can reach this stall. That is an observation about sizing, not a separate obligation.
+
+  # --- i: branch snapshots and rollback ---------------------------------------
+
+  - id: spec-rename.i1
+    kind: timing
+    statement: >
+      Branch snapshots must be taken on the ren_br_tags event in the rename cycle.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        branch snapshots** — taken on the ``ren_br_tags`` event
+        this cycle.
+
+  - id: spec-rename.i2
+    kind: function
+    statement: >
+      The vector RMT must be snapshotted on the same ren_br_tags event as the scalar RMT.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        they are
+        snapshotted on the **same ``ren_br_tags`` event** as the scalar RMT
+
+  - id: spec-rename.i3
+    kind: function
+    statement: >
+      The VL map table must be snapshotted on the same ren_br_tags event as the scalar RMT.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        Since the vector RMT, the VL map table, and the
+        :ref:`VCFG mirror <vector-rvv-decode>` all update in the *same* cycle as the scalar
+        RMT, they are
+        snapshotted on the **same ``ren_br_tags`` event** as the scalar RMT
+    notes: >
+      That the VL map table is branch-snapshotted per ``br_tag`` at all is spec-decode.i8; the
+      obligation here is that it happens on the scalar RMT's event. The VCFG mirror's
+      per-``br_tag`` snapshot is spec-decode group h.
+
+  - id: spec-rename.i4
+    kind: structure
+    statement: >
+      The design must not contain a delayed-br_tag snapshot path.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        there is **no** delayed-``br_tag``
+        path.
+
+  - id: spec-rename.i5
+    kind: function
+    statement: >
+      On brupdate.b2.mispredict the vector RMT must restore from br_snapshots(br_tag).
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        On ``brupdate.b2.mispredict`` the vector RMT / VL map table / VCFG mirror restore from
+        ``br_snapshots(br_tag)`` / ``vcfg_snapshots(br_tag)`` in lockstep with the scalar RMT
+
+  - id: spec-rename.i6
+    kind: function
+    statement: >
+      The vector RMT and VL map table restores must be indexed by the same br_tag as the
+      scalar RMT restore.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rename-stage
+      heading: "Single-stage rename: reservation and dispatch-group atomicity"
+      quote: >
+        in lockstep with the scalar RMT, all indexed by
+        the same ``br_tag``.
+    notes: >
+      That the VL map table is restored on a mispredict at all is spec-decode.i9; the
+      obligation here is lockstep with the scalar RMT under one ``br_tag``.
+
+  - id: spec-rename.i7
+    kind: timing
+    statement: >
+      The RMT rollback on a branch mispredict must complete in a single cycle.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: snapshots
+      heading: "Checkpoint RMT Snapshots"
+      quote: >
+        BOOM implements a branch snapshot mechanism to roll back the RMT upon branch mispredicts
+        in a
+        single cycle.
+
+  - id: spec-rename.i8
+    kind: structure
+    statement: >
+      A copy of the speculative scalar RMTs must be taken per outstanding branch, up to
+      maxBrCount entries.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: snapshots
+      heading: "Checkpoint RMT Snapshots"
+      quote: >
+        A copy of the speculative scalar RMTs is taken per outstanding branch
+        (upto maxBrCount entries).
+
+  - id: spec-rename.i9
+    kind: structure
+    statement: >
+      The vector mapper must reuse BOOM's branch snapshot mechanism.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: snapshots
+      heading: "Checkpoint RMT Snapshots"
+      quote: >
+        We will reuse this mechanism for the vector mapper.
+
+  - id: spec-rename.i10
+    kind: structure
+    statement: >
+      The vector mapper must hold one speculative vector RMT snapshot per outstanding branch,
+      up to maxBrCount.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: snapshots
+      heading: "Checkpoint RMT Snapshots"
+      quote: >
+        The vector mapper takes a snapshot of the speculative vector RMT on the same event the
+        scalar
+        RMT is branch-snapshotted (per outstanding branch, up to maxBrCount).
+
+  - id: spec-rename.i11
+    kind: structure
+    statement: >
+      The vector mapper must not take periodic snapshots of the vector RMT.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: snapshots
+      heading: "Checkpoint RMT Snapshots"
+      quote: >
+        There is no periodic
+        snapshot — the per-ARN map table needs no fragmentation-recovery walk.
+    notes: >
+      The stated reason is that the per-ARN map table needs no fragmentation-recovery walk,
+      which is spec-rename.d12.
+
+  - id: spec-rename.i12
+    kind: function
+    statement: >
+      A branch-mispredict recovery must flush only state younger than the branch.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: snapshots
+      heading: "Checkpoint RMT Snapshots"
+      quote: >
+        * - Branch mispredict
+          - ``br_snapshots(br_tag)``
+          - 1 cycle, only flushes younger-than-branch
+
+  - id: spec-rename.i13
+    kind: function
+    statement: >
+      An exception or pipeline flush recovery must flush everything in flight.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: snapshots
+      heading: "Checkpoint RMT Snapshots"
+      quote: >
+        * - Exception / pipeline flush
+          - ``com_map_table``
+          - 1 cycle, flushes everything in flight
+    notes: >
+      The recovery source is the ``com_map_table`` copy, spec-rename.c6, and its single-cycle
+      cost is spec-rename.c7.
+
+  # The recovery table's "Normal" row, resolved 2026-08-01.
+
+  - id: spec-rename.i15
+    kind: function
+    statement: >
+      In normal operation the vector RMT must advance through its remap requests.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: snapshots
+      heading: "Checkpoint RMT Snapshots"
+      quote: >
+        * - Normal
+          - ``map_table``
+          - the vector RMT advances through its remap requests
+    notes: >
+      Reissues the substance of the retired spec-rename.i14 under a fresh ID. That entry was
+      retired because the row named ``remap_table``, a structure defined nowhere in the
+      chapter, and never named the vector RMT — so the statement supplied both the subject and
+      the meaning of "advance". The row was corrected on 2026-08-01 to name ``map_table``, the
+      speculative RMT of §"Rename Map Table (RMT)" (spec-rename.c1), and to name its subject,
+      so the obligation is now dictated rather than implied.
+
+coverage:
+
+  # midcore.rst is a three-way file; families.yaml assigns these 8 sections to `rename`.
+  # The other 14 belong to rob, vrf, lsu and cii, or are unowned, and are not ledgered here.
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "The Rename Stage"
+    anchor: midcore-rename
+    reqs: [spec-rename.a1, spec-rename.a2, spec-rename.a3, spec-rename.a4, spec-rename.a5,
+           spec-rename.a6, spec-rename.a7, spec-rename.a8, spec-rename.a9, spec-rename.a10,
+           spec-rename.a11]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "Single-stage rename: reservation and dispatch-group atomicity"
+    anchor: rename-stage
+    reqs: [spec-rename.b1, spec-rename.b2, spec-rename.b3, spec-rename.b4, spec-rename.b5,
+           spec-rename.b6, spec-rename.b7, spec-rename.b8, spec-rename.b9, spec-rename.b10,
+           spec-rename.b11, spec-rename.d14,
+           spec-rename.i1, spec-rename.i2, spec-rename.i3, spec-rename.i4, spec-rename.i5,
+           spec-rename.i6]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "Rename Map Table (RMT)"
+    anchor: rmt
+    reqs: [spec-rename.c1, spec-rename.c2, spec-rename.c3, spec-rename.c4, spec-rename.c5,
+           spec-rename.c6, spec-rename.c7, spec-rename.c8,
+           spec-rename.d1, spec-rename.d2, spec-rename.d3, spec-rename.d4, spec-rename.d5,
+           spec-rename.d6, spec-rename.d7, spec-rename.d8, spec-rename.d9, spec-rename.d10,
+           spec-rename.d11, spec-rename.d12, spec-rename.d13]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "CII Shared Instruction Mapping"
+    anchor: cii-shared-mapping
+    reqs: [spec-rename.e1, spec-rename.e2, spec-rename.e3, spec-rename.e4, spec-rename.e5,
+           spec-rename.e6, spec-rename.e7, spec-rename.e8, spec-rename.e9, spec-rename.e10,
+           spec-rename.e11, spec-rename.e12, spec-rename.e13, spec-rename.e14,
+           spec-rename.e15,
+           spec-rename.e16]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "Free List"
+    anchor: free-list
+    reqs: [spec-rename.f1, spec-rename.f2, spec-rename.f3, spec-rename.f4, spec-rename.f5,
+           spec-rename.f6, spec-rename.f7, spec-rename.f8, spec-rename.f9, spec-rename.f10,
+           spec-rename.f11, spec-rename.f12, spec-rename.f13]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "Busy Table"
+    anchor: busy-table
+    reqs: [spec-rename.g1, spec-rename.g2, spec-rename.g3, spec-rename.g4, spec-rename.g5,
+           spec-rename.g6, spec-rename.g7, spec-rename.g8, spec-rename.g9, spec-rename.g10,
+           spec-rename.g11, spec-rename.g12, spec-rename.g13, spec-rename.g14,
+           spec-rename.g15, spec-rename.g16, spec-rename.g17, spec-rename.g18,
+           spec-rename.g19, spec-rename.g20, spec-rename.g21, spec-rename.g22,
+           spec-rename.g23, spec-rename.g24, spec-rename.g25,
+           spec-rename.g26]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "VL Rename"
+    anchor: vl-vtype-rename
+    reqs: [spec-rename.h1, spec-rename.h2, spec-rename.h3, spec-rename.h4, spec-rename.h5,
+           spec-rename.h6, spec-rename.h7, spec-rename.h8, spec-rename.h9, spec-rename.h10,
+           spec-rename.h11, spec-rename.h12, spec-rename.h13, spec-rename.h14,
+           spec-rename.h15, spec-rename.h16, spec-rename.h17, spec-rename.h18,
+           spec-rename.h19, spec-rename.h20, spec-rename.h21, spec-rename.h22,
+           spec-rename.h23, spec-rename.h24, spec-rename.h25,
+           spec-rename.h26]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "Checkpoint RMT Snapshots"
+    anchor: snapshots
+    reqs: [spec-rename.i7, spec-rename.i8, spec-rename.i9, spec-rename.i10, spec-rename.i11,
+           spec-rename.i12, spec-rename.i13,
+           spec-rename.i15]
+
+retired:
+
+  - id: spec-rename.i14
+    statement: >
+      In normal operation the vector RMT must advance through remap_table.
+    retired_because: >
+      The quote is a three-cell row of the generic RMT recovery table ("Normal | remap_table | advance") that never names the vector RMT, and remap_table is defined nowhere in the eight owned sections. The statement supplied both the subject and the meaning of "advance", so the quote implies rather than dictates. Recorded as an open question instead.
+
+# All four open questions recorded against this family were resolved on 2026-08-01:
+#
+#   single-cycle timing budget -> closed as a project risk, NOT a spec gap. No number can be
+#     written until the recommended timing spike runs, and no requirement follows either way:
+#     the spec's mitigation ("run a timing spike on the vector mapper + busy table before
+#     Milestone 1 Step 4 lands") is a process recommendation, not an obligation on RTL. The
+#     warning and the mitigation stay in midcore.rst §"Single-stage rename"; the risk is tracked
+#     in the milestone plan, not here. Nothing was mined and nothing is expected to be.
+#   pvl busy-table source      -> the VL busy table; spec-rename.g26, g12 re-quoted
+#   allocation stall scope     -> the whole dispatch group stalls; spec-rename.e16
+#   VL free-list exhaustion    -> rename stalls, as for the vector free list; spec-rename.h26
+#
+# Also closed on 2026-08-01: the recovery table's "Normal | remap_table | advance" row, which
+# named a structure defined nowhere in the chapter. spec-rename.i14's retirement note claimed an
+# open question had been filed for it, but none ever was. The row now names map_table and its
+# subject, and the obligation is reissued as spec-rename.i15.

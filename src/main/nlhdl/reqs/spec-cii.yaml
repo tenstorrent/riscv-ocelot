@@ -1,0 +1,2975 @@
+family: cii
+description: >
+  Vector arithmetic offload over the TT-CII coprocessor interface: channels and
+  credits, the host bridge, issue, the flush/kill contract, operand delivery, and
+  result writeback.
+spec_sources:
+  - docs_caracal/src/cii.rst
+  - docs_caracal/src/execution.rst
+  - docs_caracal/src/midcore.rst
+
+groups:
+  a: offload scope, the four channels, and interface parameters
+  b: the credit protocol and the tag
+  c: the host bridge — Chisel to SystemVerilog
+  d: issue from IQ_V_ALU
+  e: flush recovery and the kill contract
+  f: operand delivery — pull, slots, and VRF read ports
+  g: result writeback and completion
+  h: the VPU (coprocessor) side
+  i: segmented load/store — the CII half
+  j: ordering with memory operations
+  k: the instruction issue packet
+
+reqs:
+
+  # --- a: offload scope, the four channels, interface parameters ---------------
+  #
+  # The chapter-title section carries no enclosing anchor: `.. _cii:` sits *after* the
+  # heading, so a1-a3 cite heading only.
+
+  - id: spec-cii.a1
+    kind: structure
+    statement: >
+      Vector arithmetic must execute on an in-order vector unit attached through the
+      Tenstorrent Custom Instruction Interface.
+    source:
+      file: docs_caracal/src/cii.rst
+      heading: "Vector Arithmetic and the CII Coprocessor"
+      quote: >
+        |caracal| executes vector *arithmetic* on an in-order vector unit attached through the
+        **Tenstorrent Custom Instruction Interface (TT-CII)** — a loosely-coupled coprocessor
+        interface.
+
+  - id: spec-cii.a2
+    kind: structure
+    statement: >
+      Only the arithmetic OP.v stream must be offloaded to the CII.
+    source:
+      file: docs_caracal/src/cii.rst
+      heading: "Vector Arithmetic and the CII Coprocessor"
+      quote: >
+        Vector *loads and stores* stay in the unified LSU (see :doc:`loadstore`); only
+        the arithmetic ``OP.v`` stream is offloaded to the CII.
+
+  - id: spec-cii.a3
+    kind: interface
+    statement: >
+      Both the host and the coprocessor must bind to the Caracal parameterization in
+      tt_cii_caracal_pkg.svh.
+    source:
+      file: docs_caracal/src/cii.rst
+      heading: "Vector Arithmetic and the CII Coprocessor"
+      quote: >
+        ``tt_cii_caracal_pkg.svh`` (the |caracal| parameterization — **the contract both
+        sides bind to**).
+
+  - id: spec-cii.a4
+    kind: structure
+    statement: >
+      The CII must be reached over four unidirectional, credit-metered channels.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        The CII is a loosely-coupled coprocessor reached over **four unidirectional,
+        credit-metered channels** (each a ``tt_cii_channel`` credit FIFO, default depth 16).
+
+  - id: spec-cii.a5
+    kind: structure
+    statement: >
+      Each channel must be a tt_cii_channel credit FIFO with a default depth of 16.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        The CII is a loosely-coupled coprocessor reached over **four unidirectional,
+        credit-metered channels** (each a ``tt_cii_channel`` credit FIFO, default depth 16).
+
+  - id: spec-cii.a6
+    kind: interface
+    statement: >
+      The Issue channel must carry {tag[4], instr[32], vtype{sew,lmul,vta,vma}, vl, vstart,
+      vxrm, frm, src_reuse_hint[3]} from host to CII.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        ``{tag[4], instr[32], vtype{sew,lmul,vta,vma}, vl, vstart, vxrm, frm, src_reuse_hint[3]}``
+
+  - id: spec-cii.a7
+    kind: structure
+    statement: >
+      NUM_INST_ISSUE must be 1.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        ``NUM_INST_ISSUE=1``
+
+  - id: spec-cii.a8
+    kind: interface
+    statement: >
+      The Src-Request channel must carry {tag[4], op_id[3], op_offset[3]} from CII to host.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        ``{tag[4], op_id[3], op_offset[3]}``
+    notes: >
+      Widths reconciled against the frozen SV on 2026-07-31: tt_cii_caracal_pkg.svh defines
+      cii_caracal_srcid_t as logic [2:0] and cii_caracal_offset_t as CII_MEMBER_W =
+      $clog2(CII_MAX_MEMBERS) = 3 b. The 3-bit op_id is what makes STALE_VD = 6 encodable
+      (spec-cii.f10); the previously stated [8] widths matched neither.
+
+  - id: spec-cii.a9
+    kind: structure
+    statement: >
+      NUM_SRC_REQ must be 4.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        *pull* model; ``NUM_SRC_REQ=4``
+
+  - id: spec-cii.a10
+    kind: interface
+    statement: >
+      The Src-Data channel must carry {data[VLEN]} from host to CII.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        ``{data[VLEN]}``
+
+  - id: spec-cii.a11
+    kind: structure
+    statement: >
+      NUM_SRC_DAT_RSP must be 4.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        host answers **in request order**; ``NUM_SRC_DAT_RSP=4``
+
+  - id: spec-cii.a12
+    kind: interface
+    statement: >
+      The Writeback channel must carry {tag[4], wb_data[VLEN], wb_dst_offset[3], wb_wr_en,
+      wb_status[9]} from CII to host.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        ``{tag[4], wb_data[VLEN], wb_dst_offset[3], wb_wr_en, wb_status[9]}``
+    notes: >
+      Widths reconciled against the frozen SV on 2026-07-31. tt_cii_caracal_pkg.svh defines
+      cii_caracal_wb_status_t as {last, dst_kind[2], vxsat, fflags[5]} = 9 b, so ``last`` sits
+      inside wb_status rather than beside it, and cii_caracal_offset_t is CII_MEMBER_W =
+      $clog2(CII_MAX_MEMBERS) = 3 b. The previous ``wb_status[6], last`` could not hold its own
+      contents. The field list itself is spec-cii.g19.
+
+  - id: spec-cii.a13
+    kind: structure
+    statement: >
+      NUM_DST_WB must be 1.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        tagged, may return out-of-order; ``NUM_DST_WB=1``
+    notes: >
+      That writeback beats *may* return out of order is an allowance, not an obligation, so it
+      is not a separate requirement; the correlation obligation is spec-cii.b7.
+
+  - id: spec-cii.a14
+    kind: interface
+    statement: >
+      The Issue packet must extend the generic tt_cii_interface.sv struct with vtype, vl and
+      vxrm.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        |caracal| extends two of the generic ``tt_cii_interface.sv`` packet structs: the
+        **Issue** packet carries ``vtype``/``vl``/``vxrm`` (the SV has no CSR channel, and a
+        32-bit RVV instruction does not encode vtype)
+    notes: >
+      Both extensions are coordinated changes shared by the host adapter and the VPU
+      coprocessor.
+
+  - id: spec-cii.a15
+    kind: interface
+    statement: >
+      The Writeback packet must extend the generic struct with a last bit marking the final
+      beat of a tag.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        and the **Writeback** packet carries a ``last`` bit
+        marking the final beat of a ``tag`` (the generic struct has no end-of-transaction
+        marker).
+
+  - id: spec-cii.a16
+    kind: structure
+    statement: >
+      The operand and result buses must be VLEN wide, 256 b by default.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        Operand and result buses are ``VLEN`` wide (256 b default).
+
+  - id: spec-cii.a18
+    kind: function
+    statement: >
+      The coprocessor must drive all register-file reads and writes indirectly through the
+      host, using abstract operand slots and member offsets rather than register numbers.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "Tenstorrent Custom Instruction Interface (tt_CII)"
+      quote: >
+        The coprocessor drives all register-file reads and writes **indirectly**, through the
+        host, using abstract operand slots and member offsets — never register numbers (see
+        :ref:`cii-prn-arn`).
+
+  - id: spec-cii.a19
+    kind: structure
+    statement: >
+      MAX_MEMBERS must be 8.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "Channel overview"
+      quote: >
+        ``MAX_MEMBERS = 8`` (EMUL ≤ m8)
+    notes: >
+      The VLEN and XLEN/ELEN values in the same parameter list are machine-wide and are mined
+      under spec-decode (a8, a9); the lane counts restate spec-cii.a7/a9/a11/a13.
+
+  # --- b: the credit protocol and the tag -------------------------------------
+
+  - id: spec-cii.b1
+    kind: interface
+    statement: >
+      A channel sender must hold a free-running credit counter.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        Handshake is credit-based: a sender holds a free-running credit counter and stalls at
+        zero — there is no ``ready`` line.
+
+  - id: spec-cii.b2
+    kind: interface
+    statement: >
+      A channel sender must stall at zero credits.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        Handshake is credit-based: a sender holds a free-running credit counter and stalls at
+        zero — there is no ``ready`` line.
+
+  - id: spec-cii.b3
+    kind: interface
+    statement: >
+      The CII channels must have no ready line.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        Handshake is credit-based: a sender holds a free-running credit counter and stalls at
+        zero — there is no ``ready`` line.
+
+  - id: spec-cii.b4
+    kind: structure
+    statement: >
+      The tag must be 4 bits wide with 16 in flight, parameterized by ciiTagBits.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        **Tag width is 4 bits (16 in-flight), one parameter ``ciiTagBits``.**
+
+  - id: spec-cii.b5
+    kind: structure
+    statement: >
+      An LMUL register group must be one transaction identified by its tag.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        An ``LMUL`` register group is
+        **one transaction** identified by its ``tag``
+
+  - id: spec-cii.b6
+    kind: interface
+    statement: >
+      Individual group members must be selected by op_offset on an operand pull and by
+      wb_dst_offset on a writeback.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        individual group members are selected by
+        ``op_offset`` (operand pull) and ``wb_dst_offset`` (writeback).
+
+  - id: spec-cii.b7
+    kind: interface
+    statement: >
+      Results must be correlated back to the issuing instruction by tag.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-interface
+      heading: "The interface"
+      quote: >
+        The CII is variable-latency
+        and may complete internally out of order — results are correlated back to the issuing
+        instruction by ``tag``.
+    notes: >
+      TT-CII is its own four-channel protocol, not a CVXIF variant, even though the
+      verification tree references CV-X-IF.
+
+  - id: spec-cii.b8
+    kind: structure
+    statement: >
+      The relay between host and coprocessor must be pure latency pipes with no buffering.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "Channel overview"
+      quote: >
+        The relay between host and coprocessor is pure latency pipes with no buffering;
+
+  - id: spec-cii.b9
+    kind: interface
+    statement: >
+      Each channel's receiver must own the FIFO and return one credit per pop.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "Channel overview"
+      quote: >
+        each channel's **receiver** owns the FIFO and returns one credit per pop.
+    notes: >
+      This asymmetry is what makes the killed-tag Src-Data beat mandatory rather than
+      creditable — see the danger block behind spec-cii.e14.
+
+  - id: spec-cii.b10
+    kind: interface
+    statement: >
+      The coprocessor must echo the tag on every request and writeback beat.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "Channel overview"
+      quote: >
+        allocated by the
+        host at issue and echoed by the
+        coprocessor on every request/writeback beat.
+
+  - id: spec-cii.b11
+    kind: structure
+    statement: >
+      The tag must index the host's per-tag side-table.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "Channel overview"
+      quote: >
+        It indexes the host's per-tag **side-table**
+    notes: >
+      The field list given here differs from the one in cii.rst §"Issue: from ``IQ_V_ALU`` to
+      the CII" (spec-cii.d8). No requirement is written from either list's contents — see the
+      open question on side-table membership.
+
+  - id: spec-cii.b12
+    kind: function
+    statement: >
+      The coprocessor must treat the tag as an identifier only.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "Channel overview"
+      quote: >
+        The coprocessor treats the tag as an identifier only; it never inspects its
+        contents.
+
+  - id: spec-cii.b13
+    kind: function
+    statement: >
+      The coprocessor must never inspect the side-table contents.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "Channel overview"
+      quote: >
+        The coprocessor treats the tag as an identifier only; it never inspects its
+        contents.
+
+  # --- c: the host bridge -----------------------------------------------------
+
+  - id: spec-cii.c1
+    kind: structure
+    statement: >
+      The CII interface, its credit relay and the VPU must be SystemVerilog while the core is
+      Chisel.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        |caracal|'s core is Chisel; the CII interface, its credit relay, and the VPU are
+        SystemVerilog.
+
+  - id: spec-cii.c2
+    kind: structure
+    statement: >
+      A thin SV flatten wrapper must join the Chisel core to the SystemVerilog CII.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        So the two are joined by a thin SV
+        flatten wrapper
+    notes: >
+      Required because a Chisel BlackBox can only bind flat Bits ports — not an SV
+      interface/modport port, and not ports typed by parameter-type packed structs, which is
+      exactly what tt_cii_interface and the VPU use.
+
+  - id: spec-cii.c3
+    kind: interface
+    statement: >
+      The Chisel host adapter VecCiiHost must drive a flat four-channel bundle to a BlackBox.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        the Chisel host adapter (``VecCiiHost``) drives a **flat** four-channel
+        bundle to a ``BlackBox``
+
+  - id: spec-cii.c4
+    kind: function
+    statement: >
+      The wrapper must repack flat signals to and from structs.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        and the wrapper repacks flat ⇄ structs and hides the interface,
+        the credit relay, and the VPU coprocessor inside.
+
+  - id: spec-cii.c5
+    kind: structure
+    statement: >
+      The wrapper must hide the interface, the credit relay and the VPU coprocessor inside
+      itself.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        and the wrapper repacks flat ⇄ structs and hides the interface,
+        the credit relay, and the VPU coprocessor inside.
+
+  - id: spec-cii.c6
+    kind: structure
+    statement: >
+      The Chisel side must see only the flat host-channel wires.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        Everything SystemVerilog — the ``tt_cii`` credit relay and the VPU — lives **inside**
+        the ``BlackBox``; the Chisel side sees only the flat host-channel wires.
+
+  - id: spec-cii.c7
+    kind: function
+    statement: >
+      The wrapper must pack the flat iss_* inputs into cii_h.iss_data[0] and unpack req_data
+      and wb_data back to flat outputs.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        The wrapper packs the
+        flat ``iss_*`` inputs into ``cii_h.iss_data[0]`` (a ``cii_caracal_issue_req_t``) and unpacks
+        ``req_data``/``wb_data`` back to flat outputs.
+
+  - id: spec-cii.c8
+    kind: interface
+    statement: >
+      The tag must label every req and wb beat end to end.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        The ``tag`` threads end to end: it labels
+        every ``req`` and ``wb`` beat, and ``VecCiiHost`` keys its side-table on it (operand-pull →
+        PRN, result placement, and ``clr_rob`` on the ``last`` beat).
+
+  - id: spec-cii.c9
+    kind: structure
+    statement: >
+      VecCiiHost must key its side-table on the tag.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        The ``tag`` threads end to end: it labels
+        every ``req`` and ``wb`` beat, and ``VecCiiHost`` keys its side-table on it (operand-pull →
+        PRN, result placement, and ``clr_rob`` on the ``last`` beat).
+
+  - id: spec-cii.c10
+    kind: function
+    statement: >
+      The adapter must advertise fu_types only when a real issue credit is available.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        Because ``IQ_V_ALU``'s grant is fire-and-forget (a ``Valid`` with no ``ready``), the adapter
+        must advertise ``fu_types`` **only** when a real issue credit is available
+
+  - id: spec-cii.c11
+    kind: structure
+    statement: >
+      The adapter must mirror the issue FIFO's occupancy in a local credit counter.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        it mirrors the
+        issue FIFO's occupancy in a local credit counter (``+1`` per returned ``iss_credit``, ``−1``
+        per issued beat) and gates ``fu_types`` on it.
+
+  - id: spec-cii.c12
+    kind: function
+    statement: >
+      The adapter must gate fu_types on that local credit counter.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        it mirrors the
+        issue FIFO's occupancy in a local credit counter (``+1`` per returned ``iss_credit``, ``−1``
+        per issued beat) and gates ``fu_types`` on it.
+
+  - id: spec-cii.c13
+    kind: structure
+    statement: >
+      The fu_types gate must be registered.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        The gate is registered — a combinational
+        ``fu_types → grant → iss_valid`` path would form a loop
+
+  - id: spec-cii.c14
+    kind: function
+    statement: >
+      The issue credit accounting must be exact.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-host-bridge
+      heading: "Host bridge: Chisel ↔ SystemVerilog"
+      quote: >
+        so the credit accounting must be
+        exact and never advertise at zero credits.
+
+  # --- d: issue from IQ_V_ALU -------------------------------------------------
+
+  - id: spec-cii.d1
+    kind: structure
+    statement: >
+      Vector arithmetic must dispatch to IQ_V_ALU.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        Vector arithmetic dispatches to ``IQ_V_ALU`` (:doc:`issue`), which is **age-ordered
+        collapsing with a per-entry past-PNR gate**
+
+  - id: spec-cii.d2
+    kind: structure
+    statement: >
+      IQ_V_ALU must be age-ordered collapsing with a per-entry past-PNR gate.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        Vector arithmetic dispatches to ``IQ_V_ALU`` (:doc:`issue`), which is **age-ordered
+        collapsing with a per-entry past-PNR gate**
+    notes: >
+      The queue's own structure is also specified by issue.rst and will be mined under
+      spec-issue; this entry records the obligation the CII contract depends on.
+
+  - id: spec-cii.d3
+    kind: function
+    statement: >
+      An IQ_V_ALU entry must become eligible only once it is past the PNR.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        every entry becomes eligible only once it is **past the PNR**, so each
+        op handed to the CII is individually non-speculative, RoCC-style.
+
+  - id: spec-cii.d4
+    kind: function
+    statement: >
+      Each op handed to the CII must be individually non-speculative.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        every entry becomes eligible only once it is **past the PNR**, so each
+        op handed to the CII is individually non-speculative, RoCC-style.
+
+  - id: spec-cii.d5
+    kind: structure
+    statement: >
+      The design must not implement the speculative rename model with a shadow table and
+      cv0-cv31 copy registers.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        |caracal| therefore does **not**
+        implement the speculative *rename* model from ``interface_details.adoc`` (its shadow table and
+        ``cv0–cv31`` copy registers)
+
+  - id: spec-cii.d6
+    kind: function
+    statement: >
+      On grant the host adapter must allocate a 4-bit tag.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        allocates a 4-bit ``tag`` and emits the **extended Issue packet**
+        (:ref:`cii-issue-packet`) on the
+        Issue channel, and
+
+  - id: spec-cii.d7
+    kind: function
+    statement: >
+      On grant the host adapter must emit the extended Issue packet on the Issue channel.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        allocates a 4-bit ``tag`` and emits the **extended Issue packet**
+        (:ref:`cii-issue-packet`) on the
+        Issue channel, and
+
+  - id: spec-cii.d8
+    kind: structure
+    statement: >
+      On grant the host adapter must record a tag side-table entry used to service operand
+      pulls and to place the result.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        records a **tag side-table** entry, used later to service operand pulls and to place the
+        result.
+    notes: >
+      The membership disagreement between this section and execution.rst §"Channel overview" was
+      resolved on 2026-08-01: this section is now the single source of truth and execution.rst
+      cross-references it. The fields are enumerated by spec-cii.d16 through d23 rather than by this
+      requirement, which states only that the entry is recorded.
+
+  - id: spec-cii.d9
+    kind: interface
+    statement: >
+      Vector configuration must travel in the issue packet, per instruction.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        Vector configuration travels **in the issue packet, per instruction** — ``vtype``, ``vl``,
+        ``vstart`` and ``vxrm`` are fields of ``cii_caracal_instr_t`` (:ref:`cii-issue-packet`).
+
+  - id: spec-cii.d10
+    kind: structure
+    statement: >
+      There must be no serializing VCONFIG CSR write.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        **There is no serializing VCONFIG CSR write.**
+    notes: >
+      An earlier version of the section said vtype/vl were delivered with a serializing
+      VCONFIG CSR write, contradicting the chapter's own channel table. Out-of-band
+      configuration would impose program-order issue on the CII, which is precisely the
+      constraint issue.rst relies on not existing in order to drop the head-only FIFO.
+
+  - id: spec-cii.d11
+    kind: function
+    statement: >
+      The CII issue queue must issue all vector arithmetic, reduction, permutation and shared
+      instructions to the VPU.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "CII Vector Co-processor"
+      quote: >
+        The vector Coprocessor (VPU) will be issued instructions from the CII IQ (``IQ_V_ALU``). These
+        instructions include all vector arithmetic, reduction, permutation, and shared instructions such as
+        segmented LS.
+
+  - id: spec-cii.d12
+    kind: function
+    statement: >
+      An IQ_V_ALU entry must be granted only once its operands are ready.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "CII Vector Co-processor"
+      quote: >
+        an entry is granted only once it is **past the PNR** (older than
+        ``rob_pnr_idx``) **and** its operands are ready.
+
+  - id: spec-cii.d13
+    kind: function
+    statement: >
+      Squashed IQ_V_ALU entries must be dropped from the queue before they ever issue.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "CII Vector Co-processor"
+      quote: >
+        Squashed
+        ``IQ_V_ALU`` entries are dropped from the queue before they ever issue.
+
+  - id: spec-cii.d14
+    kind: structure
+    statement: >
+      Caracal must be out-of-order for vector memory and in-order for vector arithmetic.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "Performance: in-order vector arithmetic is a deliberate trade-off"
+      quote: >
+        |caracal| is **out-of-order for vector memory and in-order for vector arithmetic.**
+
+  # Side-table membership, resolved 2026-08-01. cii.rst §"Issue" is now the single source of
+  # truth and execution.rst §"Channel overview" cross-references it. Each requirement below
+  # quotes one row of that section's table. The fields the resolution deliberately excludes —
+  # vl, vconfig/vtype, vstart, vxrm, frm (issue-packet only, never re-read by the host) and
+  # writeback routing (carried per beat on wb_status.dst_kind) — are not written as negative
+  # requirements, for the same reason the retired spec-cii entries on absent mechanisms were
+  # not: nothing in RTL implements the absence of a field.
+
+  - id: spec-cii.d16
+    kind: structure
+    statement: >
+      The tag side-table must retain ``rob_idx``.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        * - ``rob_idx``
+          - completes the ROB entry on the ``last`` beat
+    notes: >
+      Retained so the host can complete the ROB entry on the ``last`` beat.
+
+  - id: spec-cii.d17
+    kind: structure
+    statement: >
+      The tag side-table must retain ``killed``.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        * - ``killed``
+          - routes the drain-on-flush of :ref:`cii-kill-contract`
+    notes: >
+      Retained to route the drain-on-flush; the contract itself is group e.
+
+  - id: spec-cii.d18
+    kind: structure
+    statement: >
+      The tag side-table must retain ``is_shared``.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        * - ``is_shared``
+          - marks one half of a shared instruction, for the ROB's "other half pending" flag
+    notes: >
+      The ROB's "other half pending" flag is spec-rob's.
+
+  - id: spec-cii.d19
+    kind: structure
+    statement: >
+      The tag side-table must retain ``pvdest_grp`` and ``pvdest_grp_mask``.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        * - ``pvdest_grp``, ``pvdest_grp_mask``
+          - resolve ``wb_dst_offset`` to a physical destination member and its write enable
+    notes: >
+      One row and one obligation: the pair is what resolves a writeback beat's member offset to
+      a physical destination and its write enable.
+
+  - id: spec-cii.d20
+    kind: structure
+    statement: >
+      The tag side-table must retain ``pvs1_grp``, ``pvs2_grp``, ``pvs3_grp`` and ``pvm``.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        * - ``pvs1_grp``, ``pvs2_grp``, ``pvs3_grp``, ``pvm``
+          - resolve ``VS1``/``VS2``/``VS3``/``VM`` pulls to a physical member (:ref:`cii-operands`)
+    notes: >
+      These four are the fields cii.rst §"Issue" was missing before 2026-08-01, even though
+      §cii-operands and §cii-prn-arn both require them. The slot-to-member resolution itself is
+      group f.
+
+  - id: spec-cii.d21
+    kind: structure
+    statement: >
+      The tag side-table must retain ``stale_pvdest_grp``.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        * - ``stale_pvdest_grp``
+          - resolves the ``STALE_VD`` pull (:ref:`old-vd`)
+
+  - id: spec-cii.d22
+    kind: structure
+    statement: >
+      The tag side-table must retain ``pdst``.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        * - ``pdst``
+          - completes a scalar result to the renamed physical scalar destination
+
+  - id: spec-cii.d23
+    kind: structure
+    statement: >
+      The tag side-table must retain ``scalar_operands``.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-issue
+      heading: "Issue: from ``IQ_V_ALU`` to the CII"
+      quote: >
+        * - ``scalar_operands``
+          - serves the ``SCALAR`` slot by value, with no VRF read
+
+  - id: spec-cii.e1
+    kind: function
+    statement: >
+      In-flight CII work must be squashable by a ROB-head flush.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "Flush recovery: past-PNR is not a commit guarantee"
+      quote: >
+        So a load goes
+        safe → the PNR sweeps past it → CII ops issue → *then* the load order-fails → the ROB-head flush
+        squashes everything younger, **including in-flight CII work**.
+    notes: >
+      Caracal makes this more frequent than baseline BOOM, because mem-order deliberately
+      extends order_fail to fire on cross-queue vector/scalar matches.
+
+  - id: spec-cii.e2
+    kind: function
+    statement: >
+      The flush path must cover MINI_EXCEPTION_CSR_REPLAY, ERET and ordinary exceptions.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "Flush recovery: past-PNR is not a commit guarantee"
+      quote: >
+        ``MINI_EXCEPTION_CSR_REPLAY``, ERET
+        and ordinary exceptions have the same shape.
+
+  - id: spec-cii.e3
+    kind: function
+    statement: >
+      No in-flight CII tag must ever be younger than an unresolved branch.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-flush
+      heading: "Flush recovery: past-PNR is not a commit guarantee"
+      quote: >
+        ``is_br``/``is_jalr`` set
+        ``starts_unsafe`` (``micro-op.scala:164``), so the PNR can never sweep past an unresolved branch, so
+        no in-flight tag is ever younger than one.
+
+  - id: spec-cii.e4
+    kind: structure
+    statement: >
+      The VPU must need no branch-kill path.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "CII Vector Co-processor"
+      quote: >
+        The VPU therefore needs no **branch**-kill path: the PNR cannot sweep past an unresolved branch, so
+        nothing it accepts is ever younger than one.
+
+  - id: spec-cii.e5
+    kind: function
+    statement: >
+      Kill must be triggered on rob.io.flush.valid only.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        **Trigger — ``rob.io.flush.valid`` only.** Never ``brupdate.b2.mispredict`` (unreachable by
+        construction, above; assert it).
+
+  - id: spec-cii.e6
+    kind: function
+    statement: >
+      Kill must never be triggered on brupdate.b2.mispredict.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        **Trigger — ``rob.io.flush.valid`` only.** Never ``brupdate.b2.mispredict`` (unreachable by
+        construction, above; assert it).
+
+  - id: spec-cii.e7
+    kind: function
+    statement: >
+      The design must assert that brupdate.b2.mispredict never triggers kill.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        **Trigger — ``rob.io.flush.valid`` only.** Never ``brupdate.b2.mispredict`` (unreachable by
+        construction, above; assert it).
+
+  - id: spec-cii.e8
+    kind: function
+    statement: >
+      The kill scope must be every live tag.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        **Scope — every live tag, with no age comparison.**
+
+  - id: spec-cii.e9
+    kind: function
+    statement: >
+      Kill must perform no age comparison.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        **Scope — every live tag, with no age comparison.**
+    notes: >
+      io.flush.bits carries no rob_idx and does not need to: flush_val = exception_thrown ||
+      flush_commit and both fire at the ROB head, while an in-flight tag can never be older
+      than the head, since commit requires rob_bsy cleared, which requires the CII's last beat.
+
+  - id: spec-cii.e10
+    kind: function
+    statement: >
+      On a flush the adapter must set killed on all live side-table entries.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        So on a flush the adapter simply sets
+        ``killed`` on all live side-table entries.
+
+  - id: spec-cii.e11
+    kind: function
+    statement: >
+      The design must assert that no in-flight CII tag sets flush_on_commit.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        Assert that no in-flight CII tag sets ``flush_on_commit``,
+        which is what would make the head itself a survivor.
+
+  - id: spec-cii.e12
+    kind: function
+    statement: >
+      A killed instruction must be allowed to finish on junk data.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        **Behaviour — drain and discard, never ignore.** The VPU is in-order and the SV has **no kill line**,
+        so a killed instruction must be allowed to *finish* on junk:
+
+  - id: spec-cii.e13
+    kind: function
+    statement: >
+      For a killed tag the host must pop the Src-Request and return req_credit.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        Pop, return ``req_credit``, **and return a don't-care Src-Data beat.** No VRF read (which is
+        the real saving — the read ports stay free).
+
+  - id: spec-cii.e14
+    kind: function
+    statement: >
+      For a killed tag the host must return a don't-care Src-Data beat.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        Pop, return ``req_credit``, **and return a don't-care Src-Data beat.** No VRF read (which is
+        the real saving — the read ports stay free).
+    notes: >
+      From this section's danger block, the sharpest obligation in the chapter: the Src-Data
+      beat is mandatory. On Src-Data the host is the sender and has no credit to return, so
+      "ignore the request and hand back a credit" does not apply. Otherwise the VPU waits
+      forever, never emits last, never frees its tag, every surviving instruction behind it is
+      stuck, and a squash becomes a permanent hang.
+
+  - id: spec-cii.e15
+    kind: function
+    statement: >
+      For a killed tag the host must perform no VRF read.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        Pop, return ``req_credit``, **and return a don't-care Src-Data beat.** No VRF read (which is
+        the real saving — the read ports stay free).
+
+  - id: spec-cii.e16
+    kind: function
+    statement: >
+      For a killed tag the host must pop the Writeback beat and return wb_credit.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        Pop, return ``wb_credit``, and suppress **all four** effects: the VRF/INT/FP write, ``clr_rob``,
+        ``VecGroupDone``, and ``fflags``/``vxsat`` accrual.
+
+  - id: spec-cii.e17
+    kind: function
+    statement: >
+      For a killed tag the VRF, INT and FP write must be suppressed.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        Pop, return ``wb_credit``, and suppress **all four** effects: the VRF/INT/FP write, ``clr_rob``,
+        ``VecGroupDone``, and ``fflags``/``vxsat`` accrual.
+
+  - id: spec-cii.e18
+    kind: function
+    statement: >
+      For a killed tag clr_rob must be suppressed.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        Pop, return ``wb_credit``, and suppress **all four** effects: the VRF/INT/FP write, ``clr_rob``,
+        ``VecGroupDone``, and ``fflags``/``vxsat`` accrual.
+
+  - id: spec-cii.e19
+    kind: function
+    statement: >
+      For a killed tag VecGroupDone must be suppressed.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        Pop, return ``wb_credit``, and suppress **all four** effects: the VRF/INT/FP write, ``clr_rob``,
+        ``VecGroupDone``, and ``fflags``/``vxsat`` accrual.
+
+  - id: spec-cii.e20
+    kind: function
+    statement: >
+      For a killed tag the fflags and vxsat accrual must be suppressed.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        Pop, return ``wb_credit``, and suppress **all four** effects: the VRF/INT/FP write, ``clr_rob``,
+        ``VecGroupDone``, and ``fflags``/``vxsat`` accrual.
+
+  - id: spec-cii.e21
+    kind: function
+    statement: >
+      A killed tag must be freed on its dropped last beat, exactly like a live one.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        **Tag lifetime.** A killed tag is freed on its (dropped) ``last`` beat, exactly like a live one.
+
+  - id: spec-cii.e22
+    kind: structure
+    statement: >
+      The killed bit and enough side-table state to route the drain must survive the flush.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        The
+        ``killed`` bit and enough side-table state to route the drain must survive the flush, and the tag must
+        not be reallocated before its ``last`` arrives.
+
+  - id: spec-cii.e23
+    kind: function
+    statement: >
+      A killed tag must not be reallocated before its last beat arrives.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        The
+        ``killed`` bit and enough side-table state to route the drain must survive the flush, and the tag must
+        not be reallocated before its ``last`` arrives.
+
+  - id: spec-cii.e24
+    kind: structure
+    statement: >
+      CII tags must not be recycled during the drain.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        CII tags are not recycled during the drain, whereas vector destination PRNs *are* returned to
+        the free list on the flush and promptly reallocated.
+    notes: >
+      This is why the kill contract cannot be reused for the vector LSU path, which needs real
+      squashing — see spec-lsu.i9.
+
+  # Repeated flushes during a drain, resolved 2026-08-01.
+
+  - id: spec-cii.e26
+    kind: function
+    statement: >
+      The ``killed`` bit must be idempotent under repeated flushes.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        **``killed`` is idempotent.** A second flush arriving while a tag is still draining sets
+        ``killed`` on every live entry again, which changes nothing for an entry that already
+        carries it.
+    notes: >
+      The consequences the spec draws are covered elsewhere: the drain continues uninterrupted
+      and the tag is still freed on its last beat (spec-cii.e21) however many flushes
+      intervened. The spec also states there is no re-initialization on the second flush and no
+      per-tag flush counter; those absences are not written as requirements, since no RTL
+      implements the absence of a mechanism.
+
+  - id: spec-cii.e27
+    kind: function
+    statement: >
+      The ``killed`` bit must be cleared only when the tag is allocated.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-kill-contract
+      heading: "The kill contract"
+      quote: >
+        The bit and the side-table state that routes the drain are never cleared while the tag
+        is live — ``killed`` is cleared only when the tag is allocated
+    notes: >
+      Distinct from spec-cii.e22, which requires the bit and its routing state to survive a
+      flush; this fixes the only point at which the bit may be cleared.
+
+  - id: spec-cii.e25
+    kind: structure
+    statement: >
+      The VPU must have a drain-on-flush path.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "CII Vector Co-processor"
+      quote: >
+        It *does* need a **drain-on-flush** path, because
+        past-PNR is not a commit guarantee — a ROB-head flush (exception,
+        ``MINI_EXCEPTION_MEM_ORDERING``, CSR replay, ERET) can squash work the CII has already accepted.
+
+  # --- f: operand delivery ----------------------------------------------------
+
+  - id: spec-cii.f1
+    kind: structure
+    statement: >
+      The CII must pull its operands.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        The CII **pulls** operands.
+    notes: >
+      Stated as design goal 1 in execution.rst §"Tenstorrent Custom Instruction Interface
+      (tt_CII)": the coprocessor requests the register operands it needs, rather than the host
+      pushing a fixed operand set.
+
+  - id: spec-cii.f2
+    kind: function
+    statement: >
+      On a Src-Request the host adapter must decode op_id to a source class.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        On a Src-Request the host adapter decodes ``op_id``
+        (``cii_caracal_srcid_e``) to a source class and ``op_offset`` to the group member index:
+
+  - id: spec-cii.f3
+    kind: function
+    statement: >
+      On a Src-Request the host adapter must decode op_offset to the group member index.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        On a Src-Request the host adapter decodes ``op_id``
+        (``cii_caracal_srcid_e``) to a source class and ``op_offset`` to the group member index:
+
+  - id: spec-cii.f4
+    kind: interface
+    statement: >
+      The op_id value NONE must be reserved and request no source.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        reserved — "no source needed"
+
+  - id: spec-cii.f5
+    kind: interface
+    statement: >
+      The op_id value VS1 must resolve to pvs1_grp(op_offset).
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        ``pvs1_grp(op_offset)``
+
+  - id: spec-cii.f6
+    kind: interface
+    statement: >
+      The op_id value VS2 must resolve to pvs2_grp(op_offset).
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        ``pvs2_grp(op_offset)``
+
+  - id: spec-cii.f7
+    kind: interface
+    statement: >
+      The op_id value VS3 must resolve to pvs3_grp(op_offset), the explicitly encoded third
+      source and nothing else.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        ``pvs3_grp(op_offset)`` — the **explicitly encoded** third source, nothing else
+
+  - id: spec-cii.f8
+    kind: interface
+    statement: >
+      The op_id value VM must resolve to pvm, the v0 mask.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        ``pvm`` (the ``v0`` mask)
+
+  - id: spec-cii.f9
+    kind: interface
+    statement: >
+      The op_id value SCALAR must resolve to the .vx/.vf value from the side-table with no VRF
+      read.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        the ``.vx``/``.vf`` **value** from the side-table (no VRF read)
+
+  - id: spec-cii.f10
+    kind: interface
+    statement: >
+      The op_id value STALE_VD must resolve to stale_pvdest_grp(op_offset), the old-vd group
+      used for merging.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        ``stale_pvdest_grp(op_offset)`` — the old-``vd`` group, for merging
+
+  - id: spec-cii.f11
+    kind: structure
+    statement: >
+      VS3 and STALE_VD must be two distinct slots naming two distinct groups.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        **``VS3`` and ``STALE_VD`` are two distinct slots naming two distinct groups, and the host never
+        conflates them.**
+    notes: >
+      Earlier drafts had a single VS3 slot the host resolved to stale_pvdest when the
+      instruction encoded no third source. That put instruction decoding in the host adapter
+      and made the two-different-groups case unrepresentable. execution.rst carried the same
+      superseded model until it was corrected on 2026-07-31.
+
+  - id: spec-cii.f12
+    kind: function
+    statement: >
+      The host must never conflate the VS3 and STALE_VD slots.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        **``VS3`` and ``STALE_VD`` are two distinct slots naming two distinct groups, and the host never
+        conflates them.**
+
+  - id: spec-cii.f13
+    kind: function
+    statement: >
+      The host must serve whichever slot is requested straight from the per-tag side-table.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        The host serves whichever slot is requested, straight from the per-tag side-table, and applies no
+        instruction-dependent reinterpretation.
+
+  - id: spec-cii.f14
+    kind: function
+    statement: >
+      The host must apply no instruction-dependent reinterpretation to a requested slot.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        The host serves whichever slot is requested, straight from the per-tag side-table, and applies no
+        instruction-dependent reinterpretation.
+
+  - id: spec-cii.f15
+    kind: function
+    statement: >
+      The coprocessor must decide which operand slots to pull.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        **The coprocessor decides what to pull.** With four Src-Request lanes it issues one request per
+        slot it actually needs:
+
+  - id: spec-cii.f16
+    kind: function
+    statement: >
+      The coprocessor must issue one Src-Request per slot it actually needs.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        **The coprocessor decides what to pull.** With four Src-Request lanes it issues one request per
+        slot it actually needs:
+
+  - id: spec-cii.f17
+    kind: function
+    statement: >
+      When pvs3 and stale_pvdest name the same group the VPU must pull only one of them.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        the third source *is* the old destination, so ``pvs3`` and ``stale_pvdest`` name the **same**
+        group and the VPU pulls **one** of them.
+
+  - id: spec-cii.f18
+    kind: function
+    statement: >
+      When pvs3 and stale_pvdest differ the VPU must pull both.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        the VPU pulls **both**, spending an additional lane.
+
+  - id: spec-cii.f19
+    kind: structure
+    statement: >
+      The op_id wire type must be logic [2:0].
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        the wire type is already
+        ``logic [2:0]``, so values 6 and 7 were free and no payload width changes.
+
+  - id: spec-cii.f20
+    kind: function
+    statement: >
+      The VPU decoder must be able to emit the STALE_VD slot.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        It does require the VPU
+        decoder to be able to emit it, which is a small SV-side delta rather than a host-only change.
+
+  - id: spec-cii.f21
+    kind: interface
+    statement: >
+      The host must return 256 b on Src-Data for a vector slot request.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        The host reads that member from the VRF and returns 256 b on Src-Data **in the exact order the
+        requests arrived**.
+
+  - id: spec-cii.f22
+    kind: function
+    statement: >
+      The host must return Src-Data beats in the exact order the requests arrived.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        The host reads that member from the VRF and returns 256 b on Src-Data **in the exact order the
+        requests arrived**.
+
+  - id: spec-cii.f23
+    kind: structure
+    statement: >
+      An ordering FIFO must cover the registered, one-cycle VRF read.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        A small ordering FIFO covers the registered, one-cycle VRF read;
+        because all four reads share the same latency, preserving the order costs no reordering
+        logic.
+    notes: >
+      Re-quoted on 2026-08-01 when the lane-ordering rule was made explicit; the obligation is
+      unchanged. The order the FIFO preserves is defined by spec-cii.f44 and f45. Because all
+      four reads share one registered-read latency, the FIFO needs no reordering logic.
+
+  - id: spec-cii.f24
+    kind: function
+    statement: >
+      Scalar .vx and .vf operands must be captured from the INT/FP bypass at issue into the
+      side-table.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        Scalar
+        ``.vx``/``.vf`` operands are captured from the INT/FP bypass at issue into the side-table and served
+        on request without touching the VRF.
+
+  - id: spec-cii.f25
+    kind: structure
+    statement: >
+      The CII must own VRF read ports R5 through R8, one per Src-Request lane.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        the CII owns **read ports ``R5``–``R8``** (one
+        per Src-Request lane, ``CII_NUM_SRC_REQ = 4``)
+
+  - id: spec-cii.f26
+    kind: structure
+    statement: >
+      The CII must own VRF write port W2.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        and **write port ``W2``** (``CII_NUM_DST_WB = 1``);
+
+  - id: spec-cii.f27
+    kind: interface
+    statement: >
+      The VL register file must be read to resolve pvl to vl at issue.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        the VL register file is read to resolve
+        ``pvl`` → ``vl`` at issue.
+
+  - id: spec-cii.f29
+    kind: structure
+    statement: >
+      The VRF ports must be statically partitioned.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        Ports are 0-based and statically partitioned;
+
+  - id: spec-cii.f30
+    kind: function
+    statement: >
+      The CII must never stall on a VRF port.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        because the partition is
+        static, the CII **never stalls on a VRF port**, which the credit-metered Writeback channel requires
+        since it has no back-pressure line.
+
+  - id: spec-cii.f31
+    kind: function
+    statement: >
+      The host must apply no vta or vma masking on the operand read.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "What the host provides"
+      quote: >
+        The host applies **no** ``vta``/``vma`` masking on the operand read
+
+  - id: spec-cii.f32
+    kind: interface
+    statement: >
+      op_offset must be the LMUL member index within the range 0 to MAX_MEMBERS-1.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "What the coprocessor provides"
+      quote: >
+        ``op_offset`` is the **LMUL member index** (0..MAX_MEMBERS-1) within the register group.
+
+  - id: spec-cii.f33
+    kind: function
+    statement: >
+      For a register group of NM = EMUL members the coprocessor must walk op_offset from 0 to
+      NM-1.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "What the coprocessor provides"
+      quote: >
+        For a
+        register group of ``NM = EMUL`` members the coprocessor walks ``op_offset = 0..NM-1``; widening
+        doubles the destination/relevant-source member count.
+
+  - id: spec-cii.f34
+    kind: function
+    statement: >
+      Widening must double the destination and relevant-source member count.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "What the coprocessor provides"
+      quote: >
+        For a
+        register group of ``NM = EMUL`` members the coprocessor walks ``op_offset = 0..NM-1``; widening
+        doubles the destination/relevant-source member count.
+
+  - id: spec-cii.f35
+    kind: function
+    statement: >
+      Rename must be fully resolved on the host before an op crosses the CII.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-prn-arn
+      heading: "Physical vs. architectural registers: the coprocessor sees neither"
+      quote: >
+        **Rename is fully resolved on the host before an op crosses the CII, and the coprocessor never
+        addresses a register file by number — architectural (ARN) or physical (PRN).**
+
+  - id: spec-cii.f36
+    kind: function
+    statement: >
+      The coprocessor must never address a register file by architectural or physical number.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-prn-arn
+      heading: "Physical vs. architectural registers: the coprocessor sees neither"
+      quote: >
+        **Rename is fully resolved on the host before an op crosses the CII, and the coprocessor never
+        addresses a register file by number — architectural (ARN) or physical (PRN).**
+
+  - id: spec-cii.f37
+    kind: function
+    statement: >
+      The coprocessor must decode the issue packet's architectural specifiers only to derive
+      its operand set and the op semantics.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-prn-arn
+      heading: "Physical vs. architectural registers: the coprocessor sees neither"
+      quote: >
+        The coprocessor decodes these only to derive its operand
+        *set* (which ``op_id``\ s to pull) and the op semantics — **not** to address any register file.
+
+  - id: spec-cii.f38
+    kind: interface
+    statement: >
+      Every Source-Request and Writeback beat must identify operands by an abstract slot and
+      member index with no register number.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-prn-arn
+      heading: "Physical vs. architectural registers: the coprocessor sees neither"
+      quote: >
+        Every **Source-Request** and **Writeback** beat identifies operands by the **abstract**
+        ``{op_id, op_offset}`` / ``{tag, wb_dst_offset}`` pair — a slot and a member index, with no
+        register number at all.
+
+  - id: spec-cii.f39
+    kind: structure
+    statement: >
+      The host must own the entire ARN to PRN mapping.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-prn-arn
+      heading: "Physical vs. architectural registers: the coprocessor sees neither"
+      quote: >
+        The **host** owns the entire ARN→PRN mapping.
+
+  - id: spec-cii.f40
+    kind: function
+    statement: >
+      At issue the host must snapshot the renamed physical groups into the side-table.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-prn-arn
+      heading: "Physical vs. architectural registers: the coprocessor sees neither"
+      quote: >
+        At issue it snapshots the renamed **physical**
+        groups (``pvs1/2/3_grp``, ``pvm``, ``pvdest_grp`` — vectors of PRNs, one per LMUL member) into the
+        side-table.
+
+  - id: spec-cii.f41
+    kind: function
+    statement: >
+      Scalar .vx and .vf sources must be delivered by value rather than by address.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-prn-arn
+      heading: "Physical vs. architectural registers: the coprocessor sees neither"
+      quote: >
+        Scalar ``.vx``/``.vf`` sources are delivered **by value**, not by address: the host reads the INT/FP
+        RF at the renamed physical scalar reg (``prs1``) at grant and stores the *value* in the side-table.
+
+  - id: spec-cii.f42
+    kind: function
+    statement: >
+      Scalar destinations must be completed to the renamed physical pdst recorded at issue.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-prn-arn
+      heading: "Physical vs. architectural registers: the coprocessor sees neither"
+      quote: >
+        Scalar destinations are completed to the renamed physical ``pdst`` recorded at issue.
+
+  - id: spec-cii.f43
+    kind: structure
+    statement: >
+      The coprocessor must be free of rename, wakeup and replay logic.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-prn-arn
+      heading: "Physical vs. architectural registers: the coprocessor sees neither"
+      quote: >
+        This keeps the coprocessor free of rename, wakeup, and replay logic (consistent with the past-PNR,
+        non-speculative issue model)
+
+  # Source-Data lane ordering and duplicate reads, resolved 2026-08-01.
+
+  - id: spec-cii.f44
+    kind: interface
+    statement: >
+      Source-Requests arriving in the same cycle must be ordered by ascending lane index.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        That order is **global across all four lanes**, not per lane: Source-Requests
+        arriving in the same cycle are ordered by **ascending lane index**
+    notes: >
+      This is the intra-cycle tie-break that makes spec-cii.f22's "exact order the requests
+      arrived" well defined across four lanes. The order is global, not per lane.
+
+  - id: spec-cii.f45
+    kind: interface
+    statement: >
+      Source-Data beats returned in one cycle must occupy ascending lane indices in the global
+      request order.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        and the Source-Data beats
+        returned in a cycle occupy ascending lane indices in that same order, so the global
+        sequence is ``(cycle, lane)`` lexicographic.
+    notes: >
+      The return-side half of spec-cii.f44, giving a (cycle, lane) lexicographic global
+      sequence. The spec's stated reason is that this is what lets the Source-Data payload stay
+      a bare data[VLEN] carrying no tag and no op_id — the coprocessor identifies each beat by
+      its position in the sequence.
+
+  - id: spec-cii.f46
+    kind: function
+    statement: >
+      The host must perform one read per lane when two Source-Request lanes name the same
+      member in the same cycle.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-operands
+      heading: "Register operand delivery (VRF read ports)"
+      quote: >
+        **Two lanes may name the same member in the same cycle, and the host simply reads it
+        twice.** Nothing coalesces the duplicate.
+    notes: >
+      The case is reachable: vadd.vv v1, v2, v2 renames both sources to a single PRN. It is
+      free because each Src-Request lane owns its own read port under the static partition,
+      which is the same property that guarantees the host never stalls on a VRF port.
+
+  # --- g: result writeback and completion -------------------------------------
+
+  - id: spec-cii.g1
+    kind: function
+    statement: >
+      A vector-destination Writeback beat must be placed into pvdest_grp(wb_dst_offset) via
+      VRF write port W2.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        For a **vector-destination** op, a Writeback beat ``{tag, wb_data, wb_dst_offset, wb_wr_en,
+        last}`` is placed into ``pvdest_grp(wb_dst_offset)`` via VRF **write port ``W2``**
+
+  - id: spec-cii.g2
+    kind: function
+    statement: >
+      The coprocessor must not present two result beats in one cycle.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        one port, because
+        ``CII_NUM_DST_WB = 1`` means the coprocessor cannot present two result beats in a cycle.
+
+  - id: spec-cii.g3
+    kind: function
+    statement: >
+      The host must write the Writeback beat verbatim.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        The VPU has
+        already applied tail-/mask-undisturbed (``vta``/``vma``) policy, so the host writes the beat
+        **verbatim** — it does not re-apply vl/vtype.
+
+  - id: spec-cii.g4
+    kind: function
+    statement: >
+      The host must not re-apply vl or vtype to a Writeback beat.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        The VPU has
+        already applied tail-/mask-undisturbed (``vta``/``vma``) policy, so the host writes the beat
+        **verbatim** — it does not re-apply vl/vtype.
+
+  - id: spec-cii.g5
+    kind: function
+    statement: >
+      The wb_status FP flags must accrue toward fflags at commit.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        ``wb_status`` FP flags accrue toward
+        ``fflags`` at commit.
+
+  - id: spec-cii.g6
+    kind: function
+    statement: >
+      The adapter must route a scalar-destination writeback to the INT or FP register file
+      rather than to the VRF.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        The
+        adapter routes their writeback to the INT/FP register file with a scalar wakeup, rather than
+        to the VRF, selected by the instruction's destination register type.
+
+  - id: spec-cii.g7
+    kind: function
+    statement: >
+      A scalar-destination writeback must carry a scalar wakeup.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        The
+        adapter routes their writeback to the INT/FP register file with a scalar wakeup, rather than
+        to the VRF, selected by the instruction's destination register type.
+
+  - id: spec-cii.g8
+    kind: function
+    statement: >
+      The writeback routing must be selected by the instruction's destination register type.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        The
+        adapter routes their writeback to the INT/FP register file with a scalar wakeup, rather than
+        to the VRF, selected by the instruction's destination register type.
+
+  - id: spec-cii.g9
+    kind: interface
+    statement: >
+      The beat marked last for a tag must be that tag's final beat.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        Completion uses the writeback **``last`` bit**: the beat marked ``last`` for a ``tag`` is the
+        final one
+
+  - id: spec-cii.g10
+    kind: function
+    statement: >
+      On the last beat of a vector-destination op whose tag is not killed, the adapter must
+      emit one VecGroupDone carrying the member-PRN vector.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        on it the adapter emits — for a vector-destination op, **and only if the tag is not
+        ``killed``** (:ref:`cii-flush`) — **one**
+        ``VecGroupDone`` (member-PRN vector) plus a single ROB busy-clear (``clr_rob``) for
+        ``rob_idx``, then frees the ``tag``.
+
+  - id: spec-cii.g11
+    kind: function
+    statement: >
+      On the last beat of a vector-destination op whose tag is not killed, the adapter must
+      emit a single ROB busy-clear for rob_idx.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        on it the adapter emits — for a vector-destination op, **and only if the tag is not
+        ``killed``** (:ref:`cii-flush`) — **one**
+        ``VecGroupDone`` (member-PRN vector) plus a single ROB busy-clear (``clr_rob``) for
+        ``rob_idx``, then frees the ``tag``.
+
+  - id: spec-cii.g12
+    kind: function
+    statement: >
+      The adapter must free the tag after emitting completion.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        on it the adapter emits — for a vector-destination op, **and only if the tag is not
+        ``killed``** (:ref:`cii-flush`) — **one**
+        ``VecGroupDone`` (member-PRN vector) plus a single ROB busy-clear (``clr_rob``) for
+        ``rob_idx``, then frees the ``tag``.
+
+  - id: spec-cii.g13
+    kind: function
+    statement: >
+      The completion effects must be emitted only if the tag is not killed.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        A killed tag is freed on ``last`` with all four effects
+        suppressed.
+
+  - id: spec-cii.g14
+    kind: structure
+    statement: >
+      There must be no per-member ROB completion.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        there is no
+        per-member ROB completion, and the host does not infer completion by counting beats.
+
+  - id: spec-cii.g15
+    kind: function
+    statement: >
+      The host must not infer completion by counting beats.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-writeback
+      heading: "Result writeback and completion (VRF write port + group-done)"
+      quote: >
+        there is no
+        per-member ROB completion, and the host does not infer completion by counting beats.
+
+  - id: spec-cii.g16
+    kind: interface
+    statement: >
+      A scalar result must occupy the low XLEN bits of wb_data.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "What the coprocessor provides"
+      quote: >
+        A scalar result (``vmv.x.s``/``vfmv.f.s``/…)
+        occupies the low ``XLEN`` bits.
+
+  - id: spec-cii.g17
+    kind: interface
+    statement: >
+      wb_dst_offset must be the destination member index within the group.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "What the coprocessor provides"
+      quote: >
+        ``wb_dst_offset`` — the destination **member index** (again a group offset, not a register).
+
+  - id: spec-cii.g18
+    kind: interface
+    statement: >
+      wb_wr_en must be a per-beat write enable.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "What the coprocessor provides"
+      quote: >
+        ``wb_wr_en`` — per-beat write enable.
+
+  - id: spec-cii.g19
+    kind: interface
+    statement: >
+      wb_status must carry last, dst_kind, vxsat and fflags.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "What the coprocessor provides"
+      quote: >
+        ``wb_status`` = ``{last, dst_kind, vxsat, fflags}``
+
+  - id: spec-cii.g20
+    kind: function
+    statement: >
+      dst_kind must route the write to the VRF, the INT register file or the FP register file.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "What the coprocessor provides"
+      quote: >
+        ``dst_kind`` routes the write to ``VEC`` (VRF), ``INT`` RF, or ``FP`` RF;
+
+  - id: spec-cii.g21
+    kind: interface
+    statement: >
+      vxsat must be the sticky fixed-point saturation bit.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "What the coprocessor provides"
+      quote: >
+        ``vxsat`` is the sticky fixed-point saturation bit;
+
+  - id: spec-cii.g22
+    kind: interface
+    statement: >
+      fflags must be the NV, DZ, OF, UF and NX FP exception flags.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "What the coprocessor provides"
+      quote: >
+        ``fflags`` are the ``{NV,DZ,OF,UF,NX}`` FP
+        exception flags.
+
+  - id: spec-cii.g23
+    kind: structure
+    statement: >
+      The Writeback channel must carry no expected-count field.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "What the coprocessor provides"
+      quote: >
+        There is no expected-count — the host frees the ``tag`` and completes the ROB
+        entry on the beat with ``last`` set.
+
+  # --- h: the VPU (coprocessor) side ------------------------------------------
+
+  - id: spec-cii.h1
+    kind: structure
+    statement: >
+      The vector unit behind the CII must be Tenstorrent's VPU.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        The vector unit that sits behind the CII is Tenstorrent's VPU (``src/main/sv/v4/vpu``).
+
+  - id: spec-cii.h2
+    kind: structure
+    statement: >
+      The VPU's top-level register plumbing must be refactored to the CII protocol.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        Its
+        top-level register plumbing is refactored to the CII protocol while its execution datapaths
+        (the integer and floating-point units) are left largely unchanged.
+
+  - id: spec-cii.h4
+    kind: structure
+    statement: >
+      The VPU's register file must be a staging buffer rather than architectural state.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        **The VPU's register file is a staging buffer, not architectural state.**
+
+  - id: spec-cii.h5
+    kind: structure
+    statement: >
+      The architectural vector register file must live in the host.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        The architectural
+        vector RF lives in |caracal| (the host).
+
+  - id: spec-cii.h6
+    kind: function
+    statement: >
+      The wrapper must write each Src-Data beat into the staging buffer at the member address.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        the wrapper writes each ``Src-Data`` beat
+        into it at the member address, the datapath reads it via its existing iterate addresses
+        (unchanged), and results drain from the datapath's result ports to CII Writeback.
+
+  - id: spec-cii.h7
+    kind: function
+    statement: >
+      The datapath must read the staging buffer via its existing iterate addresses.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        the wrapper writes each ``Src-Data`` beat
+        into it at the member address, the datapath reads it via its existing iterate addresses
+        (unchanged), and results drain from the datapath's result ports to CII Writeback.
+
+  - id: spec-cii.h8
+    kind: function
+    statement: >
+      Results must drain from the datapath's result ports to CII Writeback.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        the wrapper writes each ``Src-Data`` beat
+        into it at the member address, the datapath reads it via its existing iterate addresses
+        (unchanged), and results drain from the datapath's result ports to CII Writeback.
+
+  - id: spec-cii.h9
+    kind: function
+    statement: >
+      Nothing in the staging register file must persist across instructions.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        Nothing in
+        that staging RF persists across instructions — the host owns the architectural values.
+
+  - id: spec-cii.h10
+    kind: function
+    statement: >
+      The CII wrapper must unpack {tag, instr[31:0]} and feed the VPU decoder.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        **Issue** — the CII wrapper unpacks ``{tag, instr[31:0]}`` and feeds the VPU decoder; the
+        ``tag`` is correlated with the VPU's internal instruction id so results can be matched
+        back.
+
+  - id: spec-cii.h11
+    kind: function
+    statement: >
+      The tag must be correlated with the VPU's internal instruction id.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        **Issue** — the CII wrapper unpacks ``{tag, instr[31:0]}`` and feeds the VPU decoder; the
+        ``tag`` is correlated with the VPU's internal instruction id so results can be matched
+        back.
+
+  - id: spec-cii.h12
+    kind: function
+    statement: >
+      The src_reuse_hint must be ignored.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        The ``src_reuse_hint`` is **ignored** — the VPU always re-pulls its source operands
+        (eliding redundant pulls is a later optimization).
+
+  - id: spec-cii.h13
+    kind: function
+    statement: >
+      The VPU must always re-pull its source operands.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        The ``src_reuse_hint`` is **ignored** — the VPU always re-pulls its source operands
+        (eliding redundant pulls is a later optimization).
+
+  - id: spec-cii.h14
+    kind: function
+    statement: >
+      The wrapper must issue a Src-Request for each needed operand member from the decoded
+      source enables.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        **Operand pull** — from the decoded source enables the wrapper issues a Src-Request for
+        each needed member, **including the ``v0`` mask and, for tail-/mask-undisturbed
+        operations, the old destination group**.
+
+  - id: spec-cii.h15
+    kind: function
+    statement: >
+      The wrapper must include the v0 mask among the members it pulls.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        **Operand pull** — from the decoded source enables the wrapper issues a Src-Request for
+        each needed member, **including the ``v0`` mask and, for tail-/mask-undisturbed
+        operations, the old destination group**.
+
+  - id: spec-cii.h16
+    kind: function
+    statement: >
+      For tail- or mask-undisturbed operations the wrapper must pull the old destination
+      group.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        **Operand pull** — from the decoded source enables the wrapper issues a Src-Request for
+        each needed member, **including the ``v0`` mask and, for tail-/mask-undisturbed
+        operations, the old destination group**.
+
+  - id: spec-cii.h17
+    kind: function
+    statement: >
+      Returned Src-Data must be presented to the datapath in member order.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        Returned Src-Data is presented to the datapath in
+        member (``op_offset``) order.
+
+  - id: spec-cii.h18
+    kind: function
+    statement: >
+      The VPU must apply vta and vma internally.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        it applies ``vta``/``vma`` (from the vtype it is configured with) internally
+        and returns **fully-formed** ``VLEN`` results.
+
+  - id: spec-cii.h19
+    kind: function
+    statement: >
+      The VPU must return fully-formed VLEN results.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        it applies ``vta``/``vma`` (from the vtype it is configured with) internally
+        and returns **fully-formed** ``VLEN`` results.
+
+  - id: spec-cii.h20
+    kind: function
+    statement: >
+      Vector configuration must be latched per tag in the VPU.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        reaches the VPU **in the
+        per-instruction Issue packet** (:ref:`cii-issue-packet`) and is latched per ``tag``; there is no
+        separate configuration-write path and no cross-instruction configuration state.
+
+  - id: spec-cii.h21
+    kind: structure
+    statement: >
+      There must be no separate configuration-write path to the VPU.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        reaches the VPU **in the
+        per-instruction Issue packet** (:ref:`cii-issue-packet`) and is latched per ``tag``; there is no
+        separate configuration-write path and no cross-instruction configuration state.
+
+  - id: spec-cii.h22
+    kind: structure
+    statement: >
+      The VPU must hold no cross-instruction configuration state.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        reaches the VPU **in the
+        per-instruction Issue packet** (:ref:`cii-issue-packet`) and is latched per ``tag``; there is no
+        separate configuration-write path and no cross-instruction configuration state.
+
+  - id: spec-cii.h23
+    kind: function
+    statement: >
+      The VPU must honour a non-zero vstart, leaving elements below it untouched.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        The VPU must
+        **honour a non-zero ``vstart``**, leaving elements below it untouched — software can set ``vstart``
+        directly with ``csrw vstart``, and RVV requires those elements to be unmodified.
+
+  - id: spec-cii.h24
+    kind: interface
+    statement: >
+      Each result member must be emitted on the Writeback channel tagged with its tag and
+      destination wb_dst_offset.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-vpu-side
+      heading: "The VPU (coprocessor) side"
+      quote: >
+        **Writeback** — each result member is emitted on the Writeback channel tagged with its
+        ``tag`` and destination ``wb_dst_offset``
+
+  - id: spec-cii.h25
+    kind: structure
+    statement: >
+      The VPU must reuse the Baby RISCV Vector Unit from bobtail with modifications to
+      implement the CII interface.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "CII Vector Co-processor"
+      quote: >
+        The VPU will reuse the Baby RISCV Vector Unit from bobtail, with modifications to
+        implement the CII interface.
+
+  - id: spec-cii.h26
+    kind: structure
+    statement: >
+      The VPU must include a data transpose unit to support segmented load/store.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: vector-execution
+      heading: "CII Vector Co-processor"
+      quote: >
+        Improvements from the previous generation include a data transpose unit
+        to support segmented LS.
+
+  # --- i: segmented load/store — the CII half ---------------------------------
+
+  - id: spec-cii.i1
+    kind: function
+    statement: >
+      For a segmented load the CII must transpose pvtmp into pvdest.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-segmented
+      heading: "Segmented load/store"
+      quote: >
+        A segment load/store is a two-half operation: the LSU writes an intermediate ``pvtmp``
+        group and the CII transposes ``pvtmp`` → ``pvdest``.
+
+  - id: spec-cii.i2
+    kind: function
+    statement: >
+      An is_shared instruction must wait for a group-done from both halves.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-segmented
+      heading: "Segmented load/store"
+      quote: >
+        Such ``is_shared`` instructions wait
+        for a group-done from **both** halves (the ROB's "other half pending" flag).
+    notes: >
+      The ROB-side flag itself is specified by midcore.rst §"Completion tracking" and belongs
+      to spec-rob; this entry records the CII-side obligation.
+
+  - id: spec-cii.i3
+    kind: function
+    statement: >
+      The CII's transpose group-done must be the second half of a segmented load.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-segmented
+      heading: "Segmented load/store"
+      quote: >
+        The CII's
+        transpose group-done is the second half; with it wired, full segmented LS — deferred in
+        Milestone 1 — completes.
+
+  - id: spec-cii.i4
+    kind: function
+    statement: >
+      For a segmented store the CII must write the pvtmp group.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-segmented
+      heading: "Segmented load/store"
+      quote: >
+        For a segmented **store** the roles reverse (the CII writes ``pvtmp``, the LSU reads it as store
+        data)
+    notes: >
+      The LSU-reads-pvtmp half of the same sentence is spec-lsu's obligation.
+
+  - id: spec-cii.i5
+    kind: function
+    statement: >
+      The coprocessor half of a segmented store must not be granted until the LSU half has
+      translated its address set.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-segmented
+      heading: "Segmented load/store"
+      quote: >
+        and the coprocessor half cannot be granted until the LSU half has already translated its
+        address set — a six-step serial chain documented in :ref:`shared-store-chain`.
+
+  - id: spec-cii.i6
+    kind: interface
+    statement: >
+      A segmented store's DGEN wakeup must be muxed onto pvtmp rather than pvs3.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-segmented
+      heading: "Segmented load/store"
+      quote: >
+        the store's DGEN wakeup must be muxed onto ``pvtmp`` rather than ``pvs3``
+
+  - id: spec-cii.i7
+    kind: structure
+    statement: >
+      IQ_V_ALU must not be a head-only FIFO.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-segmented
+      heading: "Segmented load/store"
+      quote: >
+        ``IQ_V_ALU`` must not be a head-only FIFO, or that chain would stall every younger vector arithmetic
+        op behind it.
+
+  - id: spec-cii.i8
+    kind: structure
+    statement: >
+      For a segmented store the pvtmp group must be the destination of the coprocessor half.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-segmented-store
+      heading: "Segmented Store"
+      quote: >
+        Roles reverse: the ``pvtmp`` group is the **destination** of the coprocessor half and the **source**
+        of the LSU half.
+
+  - id: spec-cii.i9
+    kind: function
+    statement: >
+      The coprocessor half of a segmented store must issue when its source operands are ready.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-segmented-store
+      heading: "Segmented Store"
+      quote: >
+        The coprocessor issues when its source operands are ready, transposes the data, and writes it into
+        the ``pvtmp`` group in the VRF.
+
+  - id: spec-cii.i10
+    kind: function
+    statement: >
+      The coprocessor half of a segmented store must transpose the data.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-segmented-store
+      heading: "Segmented Store"
+      quote: >
+        The coprocessor issues when its source operands are ready, transposes the data, and writes it into
+        the ``pvtmp`` group in the VRF.
+
+  - id: spec-cii.i11
+    kind: function
+    statement: >
+      The coprocessor half of a segmented store must write the transposed data into the pvtmp
+      group in the VRF.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-segmented-store
+      heading: "Segmented Store"
+      quote: >
+        The coprocessor issues when its source operands are ready, transposes the data, and writes it into
+        the ``pvtmp`` group in the VRF.
+
+  - id: spec-cii.i12
+    kind: interface
+    statement: >
+      The pvtmp group-done must wake the store issue-queue slot.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: midcore-segmented-store
+      heading: "Segmented Store"
+      quote: >
+        ``pvtmp``'s group-done wakes the store IQ slot.
+    notes: >
+      The LSU half then reads pvtmp from the VRF as its store data and writes memory once the
+      ROB entry commits; that half is spec-lsu's.
+
+  # How the coprocessor half learns the LSU half has translated, resolved 2026-08-01.
+
+  - id: spec-cii.i13
+    kind: function
+    statement: >
+      The coprocessor half of a segmented store must become eligible through the same
+      per-entry past-PNR gate as every other CII op.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-segmented
+      heading: "Segmented load/store"
+      quote: >
+        The LSU
+        half's AGEN clears ``unsafe`` on the shared ROB entry, the PNR advances past it, and the
+        half sitting in ``IQ_V_ALU`` becomes eligible under the same per-entry past-PNR gate
+        every other CII op passes — steps 2 to 4 of that chain.
+    notes: >
+      Resolved 2026-08-01: no new mechanism. The gate itself is spec-cii.d2/d3 and the
+      six-step chain is issue.rst §shared-store-chain. The spec states there is no
+      translation-complete signal and that the handoff is not a pvtmp group-done — for a store
+      the CII writes pvtmp and the LSU reads it, so that group-done (spec-cii.i12) is produced
+      by the very half that would be waiting on it. Neither absence is written as a
+      requirement.
+
+  # --- j: ordering with memory operations -------------------------------------
+
+  - id: spec-cii.j1
+    kind: structure
+    statement: >
+      The CII must move no memory traffic of its own.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-mem-order
+      heading: "Ordering with memory operations"
+      quote: >
+        The CII moves no memory traffic of its own; every vector load/store is a host LSU operation
+        (:doc:`loadstore`).
+
+  - id: spec-cii.j2
+    kind: structure
+    statement: >
+      Every vector load/store must be a host LSU operation.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-mem-order
+      heading: "Ordering with memory operations"
+      quote: >
+        The CII moves no memory traffic of its own; every vector load/store is a host LSU operation
+        (:doc:`loadstore`).
+
+  - id: spec-cii.j3
+    kind: function
+    statement: >
+      Arithmetic offloaded to the CII must be ordered relative to memory purely by the ROB and
+      the register dependences resolved through rename.
+    source:
+      file: docs_caracal/src/cii.rst
+      anchor: cii-mem-order
+      heading: "Ordering with memory operations"
+      quote: >
+        Arithmetic offloaded to the CII is ordered relative to memory purely by
+        the ROB and the register dependences resolved through rename
+
+  - id: spec-cii.k1
+    kind: function
+    statement: >
+      The host must fold the full dynamic vector context into the issue packet.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-issue-packet
+      heading: "Instruction issue packet"
+      quote: >
+        the host folds the full dynamic vector context into the issue packet
+        (``cii_caracal_instr_t``):
+
+  - id: spec-cii.k2
+    kind: interface
+    statement: >
+      The issue packet's insn field must be 32 b, the raw RVV instruction word from
+      uop.debug_inst.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-issue-packet
+      heading: "Instruction issue packet"
+      quote: >
+        Raw RVV instruction word (architectural ``vs1``/``vs2``/``vd`` fields) — from ``uop.debug_inst``.
+
+  - id: spec-cii.k3
+    kind: interface
+    statement: >
+      The issue packet's vtype field must be 8 b, the {vsew, vlmul, vta, vma} snapshot from
+      uop.vconfig.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-issue-packet
+      heading: "Instruction issue packet"
+      quote: >
+        ``{vsew, vlmul, vta, vma}`` snapshot — from ``uop.vconfig``.
+
+  - id: spec-cii.k4
+    kind: interface
+    statement: >
+      The issue packet's vl field must be 9 b, taken from the VL-RF read of uop.pvl.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-issue-packet
+      heading: "Instruction issue packet"
+      quote: >
+        Active vector length — from the VL-RF read of ``uop.pvl``.
+
+  - id: spec-cii.k5
+    kind: interface
+    statement: >
+      The issue packet's vstart field must be 9 b, read from the vstart CSR at issue.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-issue-packet
+      heading: "Instruction issue packet"
+      quote: >
+        Start element — read from the ``vstart`` CSR at issue and **honoured by the VPU** (elements
+        below it are left untouched).
+
+  - id: spec-cii.k6
+    kind: function
+    statement: >
+      The issue packet's vstart field must not be forced to 0.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-issue-packet
+      heading: "Instruction issue packet"
+      quote: >
+        It is **not** forced to ``0``: software may set ``vstart``
+        directly with ``csrw vstart``, and RVV requires elements below it to be unmodified — visible
+        whenever ``vd`` overlaps a source.
+
+  - id: spec-cii.k7
+    kind: function
+    statement: >
+      Hardware must never produce a non-zero vstart.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-issue-packet
+      heading: "Instruction issue packet"
+      quote: >
+        Hardware never *produces* a non-zero ``vstart``, because
+        vector LS faults trap with ``vstart = 0`` and restart (see :ref:`elem-progress`).
+
+  - id: spec-cii.k8
+    kind: interface
+    statement: >
+      The issue packet's vxrm field must be 2 b, taken from csr.io.vector.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-issue-packet
+      heading: "Instruction issue packet"
+      quote: >
+        Fixed-point rounding mode — from ``csr.io.vector``.
+
+  - id: spec-cii.k9
+    kind: interface
+    statement: >
+      The issue packet's frm field must be 3 b, taken from fcsr.frm.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-issue-packet
+      heading: "Instruction issue packet"
+      quote: >
+        FP rounding mode — from ``fcsr.frm``.
+
+  - id: spec-cii.k10
+    kind: interface
+    statement: >
+      The issue packet must be prefixed with the 4-bit tag.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-issue-packet
+      heading: "Instruction issue packet"
+      quote: >
+        The packet is prefixed with the 4-bit ``tag``.
+
+  - id: spec-cii.k11
+    kind: function
+    statement: >
+      The host must drive the per-source src_reuse hint to 0.
+    source:
+      file: docs_caracal/src/execution.rst
+      anchor: cii-issue-packet
+      heading: "Instruction issue packet"
+      quote: >
+        A per-source ``src_reuse`` hint field exists in the
+        type but is **ignored in M2** (the host drives 0 and the coprocessor re-pulls every operand);
+        honoring it to elide redundant pulls is a future optimization.
+
+coverage:
+
+  # cii.rst has no assignments block in families.yaml, so the legacy rule applies and every
+  # section of that file is ledgered here.
+  - file: docs_caracal/src/cii.rst
+    heading: "Vector Arithmetic and the CII Coprocessor"
+    reqs: [spec-cii.a1, spec-cii.a2, spec-cii.a3]
+
+  - file: docs_caracal/src/cii.rst
+    heading: "The interface"
+    anchor: cii-interface
+    reqs: [spec-cii.a4, spec-cii.a5, spec-cii.a6, spec-cii.a7, spec-cii.a8, spec-cii.a9,
+           spec-cii.a10, spec-cii.a11, spec-cii.a12, spec-cii.a13, spec-cii.a14,
+           spec-cii.a15, spec-cii.a16,
+           spec-cii.b1, spec-cii.b2, spec-cii.b3, spec-cii.b4, spec-cii.b5, spec-cii.b6,
+           spec-cii.b7]
+
+  - file: docs_caracal/src/cii.rst
+    heading: "Host bridge: Chisel ↔ SystemVerilog"
+    anchor: cii-host-bridge
+    reqs: [spec-cii.c1, spec-cii.c2, spec-cii.c3, spec-cii.c4, spec-cii.c5, spec-cii.c6,
+           spec-cii.c7, spec-cii.c8, spec-cii.c9, spec-cii.c10, spec-cii.c11, spec-cii.c12,
+           spec-cii.c13, spec-cii.c14]
+
+  - file: docs_caracal/src/cii.rst
+    heading: "Issue: from ``IQ_V_ALU`` to the CII"
+    anchor: cii-issue
+    reqs: [spec-cii.d1, spec-cii.d2, spec-cii.d3, spec-cii.d4, spec-cii.d5, spec-cii.d6,
+           spec-cii.d7, spec-cii.d8, spec-cii.d9, spec-cii.d10,
+           spec-cii.d16, spec-cii.d17, spec-cii.d18, spec-cii.d19, spec-cii.d20,
+           spec-cii.d21, spec-cii.d22, spec-cii.d23]
+
+  - file: docs_caracal/src/cii.rst
+    heading: "Flush recovery: past-PNR is not a commit guarantee"
+    anchor: cii-flush
+    reqs: [spec-cii.e1, spec-cii.e2, spec-cii.e3]
+
+  - file: docs_caracal/src/cii.rst
+    heading: "The kill contract"
+    anchor: cii-kill-contract
+    reqs: [spec-cii.e5, spec-cii.e6, spec-cii.e7, spec-cii.e8, spec-cii.e9, spec-cii.e10,
+           spec-cii.e11, spec-cii.e12, spec-cii.e13, spec-cii.e14, spec-cii.e15,
+           spec-cii.e16, spec-cii.e17, spec-cii.e18, spec-cii.e19, spec-cii.e20,
+           spec-cii.e21, spec-cii.e22, spec-cii.e23, spec-cii.e24,
+           spec-cii.e26, spec-cii.e27]
+
+  - file: docs_caracal/src/cii.rst
+    heading: "Register operand delivery (VRF read ports)"
+    anchor: cii-operands
+    reqs: [spec-cii.f1, spec-cii.f2, spec-cii.f3, spec-cii.f4, spec-cii.f5, spec-cii.f6,
+           spec-cii.f7, spec-cii.f8, spec-cii.f9, spec-cii.f10, spec-cii.f11, spec-cii.f12,
+           spec-cii.f13, spec-cii.f14, spec-cii.f15, spec-cii.f16, spec-cii.f17,
+           spec-cii.f18, spec-cii.f19, spec-cii.f20, spec-cii.f21, spec-cii.f22,
+           spec-cii.f23, spec-cii.f24, spec-cii.f25, spec-cii.f26, spec-cii.f27,
+           spec-cii.f29, spec-cii.f30, spec-cii.f44, spec-cii.f45, spec-cii.f46]
+
+  - file: docs_caracal/src/cii.rst
+    heading: "Result writeback and completion (VRF write port + group-done)"
+    anchor: cii-writeback
+    reqs: [spec-cii.g1, spec-cii.g2, spec-cii.g3, spec-cii.g4, spec-cii.g5, spec-cii.g6,
+           spec-cii.g7, spec-cii.g8, spec-cii.g9, spec-cii.g10, spec-cii.g11, spec-cii.g12,
+           spec-cii.g13, spec-cii.g14, spec-cii.g15]
+
+  - file: docs_caracal/src/cii.rst
+    heading: "The VPU (coprocessor) side"
+    anchor: cii-vpu-side
+    reqs: [spec-cii.h1, spec-cii.h2, spec-cii.h4, spec-cii.h5, spec-cii.h6,
+           spec-cii.h7, spec-cii.h8, spec-cii.h9, spec-cii.h10, spec-cii.h11, spec-cii.h12,
+           spec-cii.h13, spec-cii.h14, spec-cii.h15, spec-cii.h16, spec-cii.h17,
+           spec-cii.h18, spec-cii.h19, spec-cii.h20, spec-cii.h21, spec-cii.h22,
+           spec-cii.h23, spec-cii.h24]
+
+  - file: docs_caracal/src/cii.rst
+    heading: "Segmented load/store"
+    anchor: cii-segmented
+    reqs: [spec-cii.i1, spec-cii.i2, spec-cii.i3, spec-cii.i4, spec-cii.i5, spec-cii.i6,
+           spec-cii.i7, spec-cii.i13]
+
+  - file: docs_caracal/src/cii.rst
+    heading: "Ordering with memory operations"
+    anchor: cii-mem-order
+    reqs: [spec-cii.j1, spec-cii.j2, spec-cii.j3]
+
+  # execution.rst: the 8 sections assigned to cii in families.yaml.
+  - file: docs_caracal/src/execution.rst
+    heading: "CII Vector Co-processor"
+    anchor: vector-execution
+    reqs: [spec-cii.d11, spec-cii.d12, spec-cii.d13, spec-cii.e4, spec-cii.e25,
+           spec-cii.h25, spec-cii.h26]
+
+  - file: docs_caracal/src/execution.rst
+    heading: "Performance: in-order vector arithmetic is a deliberate trade-off"
+    anchor: vector-execution
+    reqs: [spec-cii.d14]
+
+  - file: docs_caracal/src/execution.rst
+    heading: "Tenstorrent Custom Instruction Interface (tt_CII)"
+    anchor: vector-execution
+    reqs: [spec-cii.a18]
+
+  - file: docs_caracal/src/execution.rst
+    heading: "Channel overview"
+    anchor: vector-execution
+    reqs: [spec-cii.a19, spec-cii.b8, spec-cii.b9, spec-cii.b10, spec-cii.b11,
+           spec-cii.b12, spec-cii.b13]
+
+  - file: docs_caracal/src/execution.rst
+    heading: "What the host provides"
+    anchor: vector-execution
+    reqs: [spec-cii.f31]
+
+  - file: docs_caracal/src/execution.rst
+    heading: "What the coprocessor provides"
+    anchor: vector-execution
+    reqs: [spec-cii.f32, spec-cii.f33, spec-cii.f34, spec-cii.g16, spec-cii.g17,
+           spec-cii.g18, spec-cii.g19, spec-cii.g20, spec-cii.g21, spec-cii.g22,
+           spec-cii.g23]
+
+  - file: docs_caracal/src/execution.rst
+    heading: "Physical vs. architectural registers: the coprocessor sees neither"
+    anchor: cii-prn-arn
+    reqs: [spec-cii.f35, spec-cii.f36, spec-cii.f37, spec-cii.f38, spec-cii.f39,
+           spec-cii.f40, spec-cii.f41, spec-cii.f42, spec-cii.f43]
+
+  - file: docs_caracal/src/execution.rst
+    heading: "Instruction issue packet"
+    anchor: cii-issue-packet
+    reqs: [spec-cii.k1, spec-cii.k2, spec-cii.k3, spec-cii.k4, spec-cii.k5, spec-cii.k6,
+           spec-cii.k7, spec-cii.k8, spec-cii.k9, spec-cii.k10, spec-cii.k11]
+
+  # midcore.rst: cii owns exactly one section there.
+  - file: docs_caracal/src/midcore.rst
+    heading: "Segmented Store"
+    anchor: midcore-segmented-store
+    reqs: [spec-cii.i8, spec-cii.i9, spec-cii.i10, spec-cii.i11, spec-cii.i12]
+
+retired:
+
+  - id: spec-cii.a17
+    statement: >
+      The tt_CII interface must be extensible for custom instructions.
+    retired_because: >
+      A design-goals list item ("Extensible interface for custom instructions") - aspirational, with no RTL that can be shown to satisfy or fail it.
+
+  - id: spec-cii.d15
+    statement: >
+      Vector arithmetic, reduction and permutation OP.v's must be issued from IQ_V_ALU in program order over the CII.
+    retired_because: >
+      The statement obligated program-order issue from IQ_V_ALU, which spec-cii.d2 (age-ordered collapsing), d3 (per-entry past-PNR gate) and i7 (must not be a head-only FIFO) all forbid, and which execution.rst contradicts within itself - line 174 says "in program order" while line 365 says the per-instruction packet "permits IQ_V_ALU to issue age-ordered rather than in program order". Retired as a wrong obligation pending an author ruling on the source contradiction; the in-order VPU property is spec-cii.a1 and d14.
+
+  - id: spec-cii.f28
+    statement: >
+      VRF port numbering must be 0-based.
+    retired_because: >
+      A documentation convention from a draft-correction paragraph ("Ports are 0-based"), not an RTL obligation. The port assignments themselves are spec-cii.f25 and f26.
+
+  - id: spec-cii.h3
+    statement: >
+      The VPU's integer and floating-point execution datapaths must be left largely unchanged.
+    retired_because: >
+      A scoping statement about implementation effort ("left largely unchanged"), unverifiable as written.
+
+  - id: spec-cii.j4
+    statement: >
+      No additional cross-unit memory-ordering machinery must be required beyond the LSU's.
+    retired_because: >
+      The paragraph's conclusion ("so no additional cross-unit memory-ordering machinery is required beyond the LSU's"). A theorem about the design, not an obligation on it; spec-cii.j3 carries the ordering obligation.
+
+# All five open questions recorded against this family were resolved on 2026-08-01 and the
+# specs were amended accordingly:
+#
+#   side-table membership   -> cii.rst §"Issue" is authoritative; spec-cii.d16-d23
+#   ordering-FIFO lane count-> global (cycle, lane) order; spec-cii.f44, f45
+#   second flush on a drain -> killed is idempotent; spec-cii.e26, e27
+#   same member on two lanes-> read once per lane, no coalescing; spec-cii.f46
+#   segmented-store handoff -> the existing past-PNR gate; spec-cii.i13
+#
+# execution.rst §"Channel overview" and §"What the host provides" now cross-reference cii.rst
+# for side-table membership and Source-Data ordering rather than restating either.

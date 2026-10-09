@@ -1,0 +1,231 @@
+# =============================================================================
+# WORKED EXAMPLE — the ledger for examples/SkidBufferChecks.scala
+# =============================================================================
+# A 1-entry skid buffer with a made-up requirement family (`skid`) standing in
+# for a real one, so the ledger's shape can be read end to end without needing
+# spec-decode.yaml open beside it.
+#
+# `scripts/validate-formal.py` cannot fully check this file: `reqs_source` points
+# at a family that does not exist, by design (the example must not pollute the
+# real requirement corpus). Every OTHER structural rule in references/schema.md
+# is followed here exactly, so use it as the shape reference.
+#
+#   python3 req-formal-chisel/scripts/validate-formal.py \
+#       --plan-only --formal-dir req-formal-chisel/examples skid
+#
+# Expect exactly one error ("family 'skid' is not declared in families.yaml") and
+# no warnings. Anything else is a regression.
+#
+# Read alongside references/schema.md §3-§6.
+# =============================================================================
+
+family: skid
+description: >
+  Properties for a 1-entry skid buffer: the full/empty invariant, the Decoupled
+  handshake contract, drain liveness, and one environment assumption.
+reqs_source: src/main/nlhdl/reqs/spec-skid.yaml   # illustrative; no such family
+layer: BoomSvaLayer
+
+checkers:
+  - name: SkidBufferChecks
+    file: src/main/scala/v4/vec/formal/SkidBufferChecks.scala
+    dut: SkidBuffer
+    dut_file: src/main/scala/v4/vec/generated/SkidBuffer.scala
+    signals:
+      - { name: enqFire,  expr: "io.enq.fire",  kind: bool }
+      - { name: enqValid, expr: "io.enq.valid", kind: bool }
+      - { name: enqBits,  expr: "io.enq.bits",  kind: uint }
+      - { name: deqFire,  expr: "io.deq.fire",  kind: bool }
+      - { name: deqValid, expr: "io.deq.valid", kind: bool }
+      - { name: deqReady, expr: "io.deq.ready", kind: bool }
+      - { name: deqBits,  expr: "io.deq.bits",  kind: uint }
+      - { name: full,     expr: "full",         kind: bool, internal: true }
+      - { name: data,     expr: "data",         kind: uint, internal: true }
+    notes: >
+      `full` and `data` are module-level registers, in scope at the anchor at the
+      end of the module body. No ports were added to reach them.
+
+assertions:
+
+  # --- a: the full/empty invariant -------------------------------------------
+
+  - id: formal-skid.a1
+    checker: SkidBufferChecks
+    label: skid_no_enq_when_full
+    kind: assert
+    reqs: [spec-skid.a1]
+    statement: >
+      An enqueue must never fire while the buffer already holds an entry.
+    property: >
+      !(enqFire && full)
+    notes: >
+      Bare invariant, no antecedent, so no reachability cover is required. Note
+      that in the trivial skid buffer this folds to a constant during lowering
+      because ready is literally !full — see references/validate.md layer 2 on
+      the tautology grep. In a design where ready is computed from more than
+      `full` it does not fold, which is the case this property exists for.
+
+  - id: formal-skid.a2
+    checker: SkidBufferChecks
+    label: skid_enq_then_deq_valid
+    kind: assert
+    reqs: [spec-skid.a2]
+    statement: >
+      An accepted enqueue must make the dequeue side valid on the following cycle.
+    property: >
+      enqFire |=> deqValid
+    reachability: formal-skid.a6
+
+  - id: formal-skid.a6
+    checker: SkidBufferChecks
+    label: skid_enq_fire_seen
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-skid.a2
+    statement: >
+      An enqueue fires at least once.
+    property: >
+      enqFire
+
+  # --- b: the Decoupled contract --------------------------------------------
+
+  - id: formal-skid.b1
+    checker: SkidBufferChecks
+    label: skid_deq_valid_stable
+    kind: assert
+    reqs: [spec-skid.b1]
+    statement: >
+      A dequeue that is valid and not accepted must remain valid next cycle.
+    property: >
+      (deqValid && !deqReady) |-> deqValid.delay(1)
+    reachability: formal-skid.b5
+
+  - id: formal-skid.b2
+    checker: SkidBufferChecks
+    label: skid_deq_bits_matches_reg
+    kind: assert
+    reqs: [spec-skid.b2]
+    statement: >
+      While the dequeue side is valid, its payload must equal the held register.
+    property: >
+      deqValid |-> Sequence.BoolSequence(deqBits === data)
+    reachability: formal-skid.b5
+    notes: >
+      `Sequence.BoolSequence(...)` is needed because the consequent is a raw
+      comparison rather than an already-lifted Sequence.
+
+  - id: formal-skid.b5
+    checker: SkidBufferChecks
+    label: skid_deq_backpressured
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-skid.b1
+    statement: >
+      The dequeue side is valid while backpressured.
+    property: >
+      deqValid && !deqReady
+    notes: >
+      Backs both formal-skid.b1 and .b2; `covers_antecedent_of:` names the first.
+
+  # --- c: liveness -----------------------------------------------------------
+
+  - id: formal-skid.c1
+    checker: SkidBufferChecks
+    label: skid_drains
+    kind: assert
+    reqs: [spec-skid.c1]
+    statement: >
+      A held entry must eventually be dequeued.
+    property: >
+      full |-> deqFire.delayAtLeast(0).eventually
+    reachability: formal-skid.a6
+    notes: >
+      Emits `s_eventually`, which needs `-assert svaext` (already on in
+      sims/vcs/vcs.mk) and is rejected outright by Verilator.
+
+  # --- d: environment assumptions -------------------------------------------
+
+  - id: formal-skid.d1
+    checker: SkidBufferChecks
+    label: skid_no_zero_input
+    kind: assume
+    reqs: []
+    statement: >
+      The producer never presents a zero payload.
+    property: >
+      enqValid |-> Sequence.BoolSequence(enqBits =/= 0.U)
+    justification: >
+      spec-skid.d1 states the zero encoding is reserved on this interface, so it
+      is an obligation on the producer rather than on this module. `reqs:` is
+      empty because an assume checks nothing — see schema.md §5.
+    reachability: formal-skid.d2
+
+  - id: formal-skid.d2
+    checker: SkidBufferChecks
+    label: skid_enq_valid_reachable
+    kind: cover
+    reqs: []
+    covers_antecedent_of: formal-skid.d1
+    statement: >
+      Enqueues still occur under the zero-payload assumption.
+    property: >
+      enqValid
+    notes: >
+      Mandatory partner for the assume: proves the constraint did not remove
+      every enqueue and leave the asserts vacuously true.
+
+  # --- functional coverage, no requirement attached --------------------------
+
+  - id: formal-skid.e1
+    checker: SkidBufferChecks
+    label: skid_two_cycles_full
+    kind: cover
+    reqs: []
+    purpose: functional
+    statement: >
+      The buffer stays full for two consecutive cycles.
+    property: >
+      full ### full
+
+  - id: formal-skid.e2
+    checker: SkidBufferChecks
+    label: skid_enq_then_deq_fire
+    kind: cover
+    reqs: []
+    purpose: functional
+    statement: >
+      An enqueue is immediately followed by a dequeue.
+    property: >
+      enqFire |=> deqFire
+
+coverage:
+  - req: spec-skid.a1
+    assertions: [formal-skid.a1]
+  - req: spec-skid.a2
+    assertions: [formal-skid.a2]
+  - req: spec-skid.b1
+    assertions: [formal-skid.b1]
+  - req: spec-skid.b2
+    assertions: [formal-skid.b2]
+  - req: spec-skid.c1
+    assertions: [formal-skid.c1]
+    partial: >
+      Checks that a held entry eventually drains, but not the requirement's
+      further clause that it drains in bounded time — the module has no credit or
+      timeout signal to bound it against.
+  - req: spec-skid.d1
+    unassertable: >
+      Obligation on the producer, not on this module. Modelled here as the
+      environment assume formal-skid.d1 (skid_no_zero_input) so the downstream
+      asserts are meaningful; verifying that the producer honours it belongs to
+      the producer's family. An assume checks nothing, so this row is not
+      coverage — see schema.md §5.
+  - req: spec-skid.a3
+    unassertable: >
+      Provenance requirement: "the enqueue path must be structurally identical to
+      the v3 skid buffer" is a claim about the source's history, not about any
+      signal. Checked by review and git, not by a property.
+  - req: spec-skid.a4
+    unassertable: >
+      Parameter obligation (DEPTH must be 1) — discharged at elaboration by
+      `require(depth == 1)` in the module, not by a runtime property.

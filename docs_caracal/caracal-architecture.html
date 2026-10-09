@@ -1,0 +1,1341 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"
+    "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+<head>
+<meta http-equiv="Content-Type" content="application/xhtml+xml; charset=UTF-8" />
+<meta name="generator" content="AsciiDoc 8.6.10" />
+<title>The Caracal Microarchitecture</title>
+<style type="text/css">
+/* Shared CSS for AsciiDoc xhtml11 and html5 backends */
+
+/* Default font. */
+body {
+  font-family: Georgia,serif;
+}
+
+/* Title font. */
+h1, h2, h3, h4, h5, h6,
+div.title, caption.title,
+thead, p.table.header,
+#toctitle,
+#author, #revnumber, #revdate, #revremark,
+#footer {
+  font-family: Arial,Helvetica,sans-serif;
+}
+
+body {
+  margin: 1em 5% 1em 5%;
+}
+
+a {
+  color: blue;
+  text-decoration: underline;
+}
+a:visited {
+  color: fuchsia;
+}
+
+em {
+  font-style: italic;
+  color: navy;
+}
+
+strong {
+  font-weight: bold;
+  color: #083194;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: #527bbd;
+  margin-top: 1.2em;
+  margin-bottom: 0.5em;
+  line-height: 1.3;
+}
+
+h1, h2, h3 {
+  border-bottom: 2px solid silver;
+}
+h2 {
+  padding-top: 0.5em;
+}
+h3 {
+  float: left;
+}
+h3 + * {
+  clear: left;
+}
+h5 {
+  font-size: 1.0em;
+}
+
+div.sectionbody {
+  margin-left: 0;
+}
+
+hr {
+  border: 1px solid silver;
+}
+
+p {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+ul, ol, li > p {
+  margin-top: 0;
+}
+ul > li     { color: #aaa; }
+ul > li > * { color: black; }
+
+.monospaced, code, pre {
+  font-family: "Courier New", Courier, monospace;
+  font-size: inherit;
+  color: navy;
+  padding: 0;
+  margin: 0;
+}
+pre {
+  white-space: pre-wrap;
+}
+
+#author {
+  color: #527bbd;
+  font-weight: bold;
+  font-size: 1.1em;
+}
+#email {
+}
+#revnumber, #revdate, #revremark {
+}
+
+#footer {
+  font-size: small;
+  border-top: 2px solid silver;
+  padding-top: 0.5em;
+  margin-top: 4.0em;
+}
+#footer-text {
+  float: left;
+  padding-bottom: 0.5em;
+}
+#footer-badges {
+  float: right;
+  padding-bottom: 0.5em;
+}
+
+#preamble {
+  margin-top: 1.5em;
+  margin-bottom: 1.5em;
+}
+div.imageblock, div.exampleblock, div.verseblock,
+div.quoteblock, div.literalblock, div.listingblock, div.sidebarblock,
+div.admonitionblock {
+  margin-top: 1.0em;
+  margin-bottom: 1.5em;
+}
+div.admonitionblock {
+  margin-top: 2.0em;
+  margin-bottom: 2.0em;
+  margin-right: 10%;
+  color: #606060;
+}
+
+div.content { /* Block element content. */
+  padding: 0;
+}
+
+/* Block element titles. */
+div.title, caption.title {
+  color: #527bbd;
+  font-weight: bold;
+  text-align: left;
+  margin-top: 1.0em;
+  margin-bottom: 0.5em;
+}
+div.title + * {
+  margin-top: 0;
+}
+
+td div.title:first-child {
+  margin-top: 0.0em;
+}
+div.content div.title:first-child {
+  margin-top: 0.0em;
+}
+div.content + div.title {
+  margin-top: 0.0em;
+}
+
+div.sidebarblock > div.content {
+  background: #ffffee;
+  border: 1px solid #dddddd;
+  border-left: 4px solid #f0f0f0;
+  padding: 0.5em;
+}
+
+div.listingblock > div.content {
+  border: 1px solid #dddddd;
+  border-left: 5px solid #f0f0f0;
+  background: #f8f8f8;
+  padding: 0.5em;
+}
+
+div.quoteblock, div.verseblock {
+  padding-left: 1.0em;
+  margin-left: 1.0em;
+  margin-right: 10%;
+  border-left: 5px solid #f0f0f0;
+  color: #888;
+}
+
+div.quoteblock > div.attribution {
+  padding-top: 0.5em;
+  text-align: right;
+}
+
+div.verseblock > pre.content {
+  font-family: inherit;
+  font-size: inherit;
+}
+div.verseblock > div.attribution {
+  padding-top: 0.75em;
+  text-align: left;
+}
+/* DEPRECATED: Pre version 8.2.7 verse style literal block. */
+div.verseblock + div.attribution {
+  text-align: left;
+}
+
+div.admonitionblock .icon {
+  vertical-align: top;
+  font-size: 1.1em;
+  font-weight: bold;
+  text-decoration: underline;
+  color: #527bbd;
+  padding-right: 0.5em;
+}
+div.admonitionblock td.content {
+  padding-left: 0.5em;
+  border-left: 3px solid #dddddd;
+}
+
+div.exampleblock > div.content {
+  border-left: 3px solid #dddddd;
+  padding-left: 0.5em;
+}
+
+div.imageblock div.content { padding-left: 0; }
+span.image img { border-style: none; vertical-align: text-bottom; }
+a.image:visited { color: white; }
+
+dl {
+  margin-top: 0.8em;
+  margin-bottom: 0.8em;
+}
+dt {
+  margin-top: 0.5em;
+  margin-bottom: 0;
+  font-style: normal;
+  color: navy;
+}
+dd > *:first-child {
+  margin-top: 0.1em;
+}
+
+ul, ol {
+    list-style-position: outside;
+}
+ol.arabic {
+  list-style-type: decimal;
+}
+ol.loweralpha {
+  list-style-type: lower-alpha;
+}
+ol.upperalpha {
+  list-style-type: upper-alpha;
+}
+ol.lowerroman {
+  list-style-type: lower-roman;
+}
+ol.upperroman {
+  list-style-type: upper-roman;
+}
+
+div.compact ul, div.compact ol,
+div.compact p, div.compact p,
+div.compact div, div.compact div {
+  margin-top: 0.1em;
+  margin-bottom: 0.1em;
+}
+
+tfoot {
+  font-weight: bold;
+}
+td > div.verse {
+  white-space: pre;
+}
+
+div.hdlist {
+  margin-top: 0.8em;
+  margin-bottom: 0.8em;
+}
+div.hdlist tr {
+  padding-bottom: 15px;
+}
+dt.hdlist1.strong, td.hdlist1.strong {
+  font-weight: bold;
+}
+td.hdlist1 {
+  vertical-align: top;
+  font-style: normal;
+  padding-right: 0.8em;
+  color: navy;
+}
+td.hdlist2 {
+  vertical-align: top;
+}
+div.hdlist.compact tr {
+  margin: 0;
+  padding-bottom: 0;
+}
+
+.comment {
+  background: yellow;
+}
+
+.footnote, .footnoteref {
+  font-size: 0.8em;
+}
+
+span.footnote, span.footnoteref {
+  vertical-align: super;
+}
+
+#footnotes {
+  margin: 20px 0 20px 0;
+  padding: 7px 0 0 0;
+}
+
+#footnotes div.footnote {
+  margin: 0 0 5px 0;
+}
+
+#footnotes hr {
+  border: none;
+  border-top: 1px solid silver;
+  height: 1px;
+  text-align: left;
+  margin-left: 0;
+  width: 20%;
+  min-width: 100px;
+}
+
+div.colist td {
+  padding-right: 0.5em;
+  padding-bottom: 0.3em;
+  vertical-align: top;
+}
+div.colist td img {
+  margin-top: 0.3em;
+}
+
+@media print {
+  #footer-badges { display: none; }
+}
+
+#toc {
+  margin-bottom: 2.5em;
+}
+
+#toctitle {
+  color: #527bbd;
+  font-size: 1.1em;
+  font-weight: bold;
+  margin-top: 1.0em;
+  margin-bottom: 0.1em;
+}
+
+div.toclevel0, div.toclevel1, div.toclevel2, div.toclevel3, div.toclevel4 {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+div.toclevel2 {
+  margin-left: 2em;
+  font-size: 0.9em;
+}
+div.toclevel3 {
+  margin-left: 4em;
+  font-size: 0.9em;
+}
+div.toclevel4 {
+  margin-left: 6em;
+  font-size: 0.9em;
+}
+
+span.aqua { color: aqua; }
+span.black { color: black; }
+span.blue { color: blue; }
+span.fuchsia { color: fuchsia; }
+span.gray { color: gray; }
+span.green { color: green; }
+span.lime { color: lime; }
+span.maroon { color: maroon; }
+span.navy { color: navy; }
+span.olive { color: olive; }
+span.purple { color: purple; }
+span.red { color: red; }
+span.silver { color: silver; }
+span.teal { color: teal; }
+span.white { color: white; }
+span.yellow { color: yellow; }
+
+span.aqua-background { background: aqua; }
+span.black-background { background: black; }
+span.blue-background { background: blue; }
+span.fuchsia-background { background: fuchsia; }
+span.gray-background { background: gray; }
+span.green-background { background: green; }
+span.lime-background { background: lime; }
+span.maroon-background { background: maroon; }
+span.navy-background { background: navy; }
+span.olive-background { background: olive; }
+span.purple-background { background: purple; }
+span.red-background { background: red; }
+span.silver-background { background: silver; }
+span.teal-background { background: teal; }
+span.white-background { background: white; }
+span.yellow-background { background: yellow; }
+
+span.big { font-size: 2em; }
+span.small { font-size: 0.6em; }
+
+span.underline { text-decoration: underline; }
+span.overline { text-decoration: overline; }
+span.line-through { text-decoration: line-through; }
+
+div.unbreakable { page-break-inside: avoid; }
+
+
+/*
+ * xhtml11 specific
+ *
+ * */
+
+div.tableblock {
+  margin-top: 1.0em;
+  margin-bottom: 1.5em;
+}
+div.tableblock > table {
+  border: 3px solid #527bbd;
+}
+thead, p.table.header {
+  font-weight: bold;
+  color: #527bbd;
+}
+p.table {
+  margin-top: 0;
+}
+/* Because the table frame attribute is overriden by CSS in most browsers. */
+div.tableblock > table[frame="void"] {
+  border-style: none;
+}
+div.tableblock > table[frame="hsides"] {
+  border-left-style: none;
+  border-right-style: none;
+}
+div.tableblock > table[frame="vsides"] {
+  border-top-style: none;
+  border-bottom-style: none;
+}
+
+
+/*
+ * html5 specific
+ *
+ * */
+
+table.tableblock {
+  margin-top: 1.0em;
+  margin-bottom: 1.5em;
+}
+thead, p.tableblock.header {
+  font-weight: bold;
+  color: #527bbd;
+}
+p.tableblock {
+  margin-top: 0;
+}
+table.tableblock {
+  border-width: 3px;
+  border-spacing: 0px;
+  border-style: solid;
+  border-color: #527bbd;
+  border-collapse: collapse;
+}
+th.tableblock, td.tableblock {
+  border-width: 1px;
+  padding: 4px;
+  border-style: solid;
+  border-color: #527bbd;
+}
+
+table.tableblock.frame-topbot {
+  border-left-style: hidden;
+  border-right-style: hidden;
+}
+table.tableblock.frame-sides {
+  border-top-style: hidden;
+  border-bottom-style: hidden;
+}
+table.tableblock.frame-none {
+  border-style: hidden;
+}
+
+th.tableblock.halign-left, td.tableblock.halign-left {
+  text-align: left;
+}
+th.tableblock.halign-center, td.tableblock.halign-center {
+  text-align: center;
+}
+th.tableblock.halign-right, td.tableblock.halign-right {
+  text-align: right;
+}
+
+th.tableblock.valign-top, td.tableblock.valign-top {
+  vertical-align: top;
+}
+th.tableblock.valign-middle, td.tableblock.valign-middle {
+  vertical-align: middle;
+}
+th.tableblock.valign-bottom, td.tableblock.valign-bottom {
+  vertical-align: bottom;
+}
+
+
+/*
+ * manpage specific
+ *
+ * */
+
+body.manpage h1 {
+  padding-top: 0.5em;
+  padding-bottom: 0.5em;
+  border-top: 2px solid silver;
+  border-bottom: 2px solid silver;
+}
+body.manpage h2 {
+  border-style: none;
+}
+body.manpage div.sectionbody {
+  margin-left: 3em;
+}
+
+@media print {
+  body.manpage div#toc { display: none; }
+}
+
+
+</style>
+<script type="text/javascript">
+/*<![CDATA[*/
+var asciidoc = {  // Namespace.
+
+/////////////////////////////////////////////////////////////////////
+// Table Of Contents generator
+/////////////////////////////////////////////////////////////////////
+
+/* Author: Mihai Bazon, September 2002
+ * http://students.infoiasi.ro/~mishoo
+ *
+ * Table Of Content generator
+ * Version: 0.4
+ *
+ * Feel free to use this script under the terms of the GNU General Public
+ * License, as long as you do not remove or alter this notice.
+ */
+
+ /* modified by Troy D. Hanson, September 2006. License: GPL */
+ /* modified by Stuart Rackham, 2006, 2009. License: GPL */
+
+// toclevels = 1..4.
+toc: function (toclevels) {
+
+  function getText(el) {
+    var text = "";
+    for (var i = el.firstChild; i != null; i = i.nextSibling) {
+      if (i.nodeType == 3 /* Node.TEXT_NODE */) // IE doesn't speak constants.
+        text += i.data;
+      else if (i.firstChild != null)
+        text += getText(i);
+    }
+    return text;
+  }
+
+  function TocEntry(el, text, toclevel) {
+    this.element = el;
+    this.text = text;
+    this.toclevel = toclevel;
+  }
+
+  function tocEntries(el, toclevels) {
+    var result = new Array;
+    var re = new RegExp('[hH]([1-'+(toclevels+1)+'])');
+    // Function that scans the DOM tree for header elements (the DOM2
+    // nodeIterator API would be a better technique but not supported by all
+    // browsers).
+    var iterate = function (el) {
+      for (var i = el.firstChild; i != null; i = i.nextSibling) {
+        if (i.nodeType == 1 /* Node.ELEMENT_NODE */) {
+          var mo = re.exec(i.tagName);
+          if (mo && (i.getAttribute("class") || i.getAttribute("className")) != "float") {
+            result[result.length] = new TocEntry(i, getText(i), mo[1]-1);
+          }
+          iterate(i);
+        }
+      }
+    }
+    iterate(el);
+    return result;
+  }
+
+  var toc = document.getElementById("toc");
+  if (!toc) {
+    return;
+  }
+
+  // Delete existing TOC entries in case we're reloading the TOC.
+  var tocEntriesToRemove = [];
+  var i;
+  for (i = 0; i < toc.childNodes.length; i++) {
+    var entry = toc.childNodes[i];
+    if (entry.nodeName.toLowerCase() == 'div'
+     && entry.getAttribute("class")
+     && entry.getAttribute("class").match(/^toclevel/))
+      tocEntriesToRemove.push(entry);
+  }
+  for (i = 0; i < tocEntriesToRemove.length; i++) {
+    toc.removeChild(tocEntriesToRemove[i]);
+  }
+
+  // Rebuild TOC entries.
+  var entries = tocEntries(document.getElementById("content"), toclevels);
+  for (var i = 0; i < entries.length; ++i) {
+    var entry = entries[i];
+    if (entry.element.id == "")
+      entry.element.id = "_toc_" + i;
+    var a = document.createElement("a");
+    a.href = "#" + entry.element.id;
+    a.appendChild(document.createTextNode(entry.text));
+    var div = document.createElement("div");
+    div.appendChild(a);
+    div.className = "toclevel" + entry.toclevel;
+    toc.appendChild(div);
+  }
+  if (entries.length == 0)
+    toc.parentNode.removeChild(toc);
+},
+
+
+/////////////////////////////////////////////////////////////////////
+// Footnotes generator
+/////////////////////////////////////////////////////////////////////
+
+/* Based on footnote generation code from:
+ * http://www.brandspankingnew.net/archive/2005/07/format_footnote.html
+ */
+
+footnotes: function () {
+  // Delete existing footnote entries in case we're reloading the footnodes.
+  var i;
+  var noteholder = document.getElementById("footnotes");
+  if (!noteholder) {
+    return;
+  }
+  var entriesToRemove = [];
+  for (i = 0; i < noteholder.childNodes.length; i++) {
+    var entry = noteholder.childNodes[i];
+    if (entry.nodeName.toLowerCase() == 'div' && entry.getAttribute("class") == "footnote")
+      entriesToRemove.push(entry);
+  }
+  for (i = 0; i < entriesToRemove.length; i++) {
+    noteholder.removeChild(entriesToRemove[i]);
+  }
+
+  // Rebuild footnote entries.
+  var cont = document.getElementById("content");
+  var spans = cont.getElementsByTagName("span");
+  var refs = {};
+  var n = 0;
+  for (i=0; i<spans.length; i++) {
+    if (spans[i].className == "footnote") {
+      n++;
+      var note = spans[i].getAttribute("data-note");
+      if (!note) {
+        // Use [\s\S] in place of . so multi-line matches work.
+        // Because JavaScript has no s (dotall) regex flag.
+        note = spans[i].innerHTML.match(/\s*\[([\s\S]*)]\s*/)[1];
+        spans[i].innerHTML =
+          "[<a id='_footnoteref_" + n + "' href='#_footnote_" + n +
+          "' title='View footnote' class='footnote'>" + n + "</a>]";
+        spans[i].setAttribute("data-note", note);
+      }
+      noteholder.innerHTML +=
+        "<div class='footnote' id='_footnote_" + n + "'>" +
+        "<a href='#_footnoteref_" + n + "' title='Return to text'>" +
+        n + "</a>. " + note + "</div>";
+      var id =spans[i].getAttribute("id");
+      if (id != null) refs["#"+id] = n;
+    }
+  }
+  if (n == 0)
+    noteholder.parentNode.removeChild(noteholder);
+  else {
+    // Process footnoterefs.
+    for (i=0; i<spans.length; i++) {
+      if (spans[i].className == "footnoteref") {
+        var href = spans[i].getElementsByTagName("a")[0].getAttribute("href");
+        href = href.match(/#.*/)[0];  // Because IE return full URL.
+        n = refs[href];
+        spans[i].innerHTML =
+          "[<a href='#_footnote_" + n +
+          "' title='View footnote' class='footnote'>" + n + "</a>]";
+      }
+    }
+  }
+},
+
+install: function(toclevels) {
+  var timerId;
+
+  function reinstall() {
+    asciidoc.footnotes();
+    if (toclevels) {
+      asciidoc.toc(toclevels);
+    }
+  }
+
+  function reinstallAndRemoveTimer() {
+    clearInterval(timerId);
+    reinstall();
+  }
+
+  timerId = setInterval(reinstall, 500);
+  if (document.addEventListener)
+    document.addEventListener("DOMContentLoaded", reinstallAndRemoveTimer, false);
+  else
+    window.onload = reinstallAndRemoveTimer;
+}
+
+}
+asciidoc.install(3);
+/*]]>*/
+</script>
+</head>
+<body class="book">
+<div id="header">
+<h1>The Caracal Microarchitecture</h1>
+<span id="author">Tenstorrent</span><br />
+<div id="toc">
+  <div id="toctitle">Table of Contents</div>
+  <noscript><p><b>JavaScript must be enabled in your browser to display the table of contents.</b></p></noscript>
+</div>
+</div>
+<div id="content">
+<div class="sect1">
+<h2 id="_abstract">Abstract</h2>
+<div class="sectionbody">
+<div class="paragraph"><p>Caracal is Tenstorrent&#8217;s fork of the Berkeley Out-of-Order Machine (BOOM),
+a synthesizable, parameterizable RV64GC out-of-order core.
+The Caracal microarchitecture is a clean-slate re-architecture of BOOM v4
+implmenting RVV 1.0 instructions. The microarchitecture provides OOO vector load/store support along with a In-Order Vector Unit for arithmetic operations. The vector co-processor is integrated using the Tenstorrent Custom Instruction Interface (tt_CII).</p></div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_introduction_amp_overview">Introduction &amp; Overview</h2>
+<div class="sectionbody">
+<div class="paragraph"><p>This document provides an overview of the Caracal micro-architecture, its relationship to BOOM and the Chipyard ecosystem, and details on its implementation of the RISC-V ISA and Vector Extension (RVV).</p></div>
+<div class="admonitionblock">
+<table><tr>
+<td class="icon">
+<img src="./images/icons/note.png" alt="Note" />
+</td>
+<td class="content">Unless otherwise specifically mentioned the reader should assume that Caracal does not modify the existing BOOM micro-architecture.</td>
+</tr></table>
+</div>
+<div class="sect2">
+<h3 id="_relationship_to_boomv4_and_chipyard">Relationship to BOOMv4 and Chipyard</h3>
+<div class="paragraph"><p>Caracal is a fork of BOOMv4 [5/20/2026] with a clean-slate re-architecture to support RVV 1.0 and OOO vector load/store. The scalar pipeline is largely unchanged from BOOMv4, with the front-end and back-end stages extended to support vector instructions and state. Caracal remains compatible with the Chipyard ecosystem, allowing it to be used as a drop-in core for Chipyard SoC designs and simulations.</p></div>
+<div class="paragraph"><p>The following table shows which modules have been modified to support RVV1.0 instructions and OOO vector load/store support, with in-order CII issued vector arithmetic operations.</p></div>
+<div class="tableblock">
+<table rules="all"
+width="100%"
+frame="border"
+cellspacing="0" cellpadding="4">
+<col width="25%" />
+<col width="75%" />
+<thead>
+<tr>
+<th align="left" valign="top"> Subsystem </th>
+<th align="left" valign="top"> Caracal status (unchanged / extended / new)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td align="left" valign="top"><p class="table">Front-end (fetch, BPU)</p></td>
+<td align="left" valign="top"><p class="table">Unchanged</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">Decode / Rename</p></td>
+<td align="left" valign="top"><p class="table">Extended</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">Integer execution</p></td>
+<td align="left" valign="top"><p class="table">Unchanged</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">FP execution</p></td>
+<td align="left" valign="top"><p class="table">Unchanged</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">Vector (RVV) execution</p></td>
+<td align="left" valign="top"><p class="table">New</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">Load/Store Unit</p></td>
+<td align="left" valign="top"><p class="table">Extended</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">Memory system</p></td>
+<td align="left" valign="top"><p class="table">Unchanged</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_the_caracal_pipeline">The Caracal Pipeline</h3>
+<div class="imageblock">
+<div class="content">
+<img src="figures/caracal_pipeline.png" alt="Caracal pipeline" />
+</div>
+<div class="title">Figure 1. The Caracal pipeline, note greyed area are identical to BOOMv4.</div>
+</div>
+<div class="paragraph"><p>Caracal keeps BOOM v4&#8217;s nine-stage out-of-order pipeline intact and threads
+a vector path through it. Everything is gated on the <code>usingRVV</code> core parameter
+(<code>common/parameters.scala</code>), so with vectors disabled the core elaborates as
+stock BOOM v4. The stages below follow an instruction from fetch to commit;
+greyed stages in the figure are bit-identical to BOOM v4, and each
+description calls out only where the vector path attaches.</p></div>
+<div class="dlist"><dl>
+<dt class="hdlist1">
+Fetch (F0–F5)
+</dt>
+<dd>
+<p>
+Identical to BOOM v4. The six-stage front-end (next-PC select, I$ access,
+I$ response, fetch-buffer enqueue, BPD redirect, deliver-to-core) and the
+TAGE-based branch predictor are untouched — vector instructions are ordinary
+32-bit (or RVC-expanded) words and are not distinguished until decode. No
+vector state is read or written here.
+</p>
+</dd>
+<dt class="hdlist1">
+Decode
+</dt>
+<dd>
+<p>
+Extended. The scalar decoders are unchanged; a parallel vector decoder
+(<code>VDecode</code>) recognizes RVV opcodes (<code>v_legal</code> gate in <code>exu/decode.scala</code>) and
+populates the new vector <code>MicroOp</code> fields — <code>is_vec</code>, the logical vector
+specifiers (<code>lvs1/lvs2/lvs3/lvd/lvm</code>), and the <code>vconfig</code> snapshot
+(<code>vstart/vl/vtype</code> mirror) in <code>common/micro-op.scala</code>. <code>vset{i}vl{i}</code> is
+decoded as a <strong>scalar</strong> ALU uop (not <code>is_vec</code>) so it updates <code>vtype</code>/<code>vl</code>
+in-line on the existing integer datapath; younger vector uops carry the
+resulting <code>vconfig</code> so they need no separate CSR read. Decode also sets the
+<code>iq_type</code> routing bits for the new vector issue queues
+(<code>IQ_V_LOAD/IQ_V_STORE/IQ_V_ALU</code>, widened in <code>common/consts.scala</code>).
+</p>
+</dd>
+<dt class="hdlist1">
+Rename
+</dt>
+<dd>
+<p>
+Extended. The scalar integer/FP map tables, free lists, and busy tables are
+the BOOM v4 design unchanged. Caracal adds a third register class — <code>RT_VEC</code>
+(<code>common/consts.scala</code>) — and a vector physical register file
+(<code>numVecPhysRegs</code>, default 128) renamed alongside INT and FP, mapping the
+logical <code>lvs*/lvd/lvm</code> specifiers to physical <code>pvs*/pvdest/pvm</code>. Vector ops
+allocate ROB entries through the same path as scalar ops.
+</p>
+</dd>
+<dt class="hdlist1">
+Dispatch (Rename2)
+</dt>
+<dd>
+<p>
+Reuses BOOM v4&#8217;s dispatcher unchanged. Dispatch routes purely on the
+<code>iq_type</code> bits set in decode, so vector uops fall into the vector issue queues
+with no vector-specific dispatch logic.
+</p>
+</dd>
+<dt class="hdlist1">
+Issue
+</dt>
+<dd>
+<p>
+Extended. The age-ordered issue-unit logic is reused; Caracal instantiates
+additional vector issue queues (<code>IQ_V_LOAD</code>, <code>IQ_V_STORE</code>, <code>IQ_V_ALU</code>)
+alongside the scalar <code>IQ_MEM/IQ_UNQ/IQ_ALU/IQ_FP</code>. The wakeup/select policy is
+the same; only the queue set and operand-readiness tracking are widened to
+cover vector physical registers.
+</p>
+</dd>
+<dt class="hdlist1">
+Register Read
+</dt>
+<dd>
+<p>
+Extended. Integer and FP read out of their existing regfiles unchanged.
+Vector-ALU and vector-load/store uops read their operands (<code>pvs1/pvs2/pvs3</code>,
+mask <code>pvm</code>) from the vector register file through dedicated read ports; the
+bypass network for scalar results is unchanged.
+</p>
+</dd>
+<dt class="hdlist1">
+Execute
+</dt>
+<dd>
+<p>
+New (vector) / unchanged (scalar). The integer ALUs, mul/div, branch unit, and
+FPU are the BOOM v4 functional units, untouched. Vector arithmetic is <strong>not</strong>
+executed on a BOOM EU: vector-ALU uops are issued in program order over the
+<strong>Tenstorrent Custom Instruction Interface (tt_CII)</strong> to an in-order vector
+unit that owns the vector lanes and vector register file datapath. This is the
+core architectural divergence — BOOM remains the OoO scalar host and scheduler,
+while RVV arithmetic executes on the attached in-order coprocessor.
+</p>
+</dd>
+<dt class="hdlist1">
+Memory (LSU)
+</dt>
+<dd>
+<p>
+Extended. The scalar LDQ/STQ, store-to-load forwarding, and 3-stage D$ pipeline
+(<code>s0/s1/s2</code>) are reused. Caracal adds <strong>out-of-order vector load/store</strong>:
+vector memory uops (<code>IQ_V_LOAD/IQ_V_STORE</code>) carry the statically-decoded access
+descriptor (<code>v_eew</code>, <code>mop</code>, <code>nf</code>, unit-stride/strided/indexed/segment flags
+from <code>VLSDecode</code>) and generate element/segment accesses against the same D$
+port, ordered through the existing LSU disambiguation machinery.
+</p>
+</dd>
+<dt class="hdlist1">
+Writeback
+</dt>
+<dd>
+<p>
+Extended. Scalar results write back to the INT/FP regfiles exactly as in
+BOOM v4. Vector results (<code>RT_VEC</code> destinations) write back to the vector
+register file; the writeback arbitration is the BOOM v4 design widened for
+the additional vector write ports.
+</p>
+</dd>
+<dt class="hdlist1">
+Commit
+</dt>
+<dd>
+<p>
+Reuses BOOM v4&#8217;s ROB unchanged in structure. The ROB entry&#8217;s <code>dst_rtype</code> was
+widened to 3 bits (<code>exu/rob.scala</code>) to encode <code>RT_VEC</code>, so vector uops commit
+in program order through the same head-pointer/exception machinery as scalar
+ops. Precise vector state (<code>vtype</code>/<code>vl</code>) is recovered on redirect/exception via
+the per-uop <code>vconfig</code> snapshot rather than a separate rollback path.
+</p>
+</dd>
+</dl></div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_core_overview">Core Overview</h2>
+<div class="sectionbody">
+<div class="imageblock">
+<div class="content">
+<img src="figures/caracal.png" alt="Caracal Overview" />
+</div>
+<div class="title">Figure 2. Overview of Caracal Microarchitecture.</div>
+</div>
+<div class="sect2">
+<h3 id="_the_instruction_fetch_stage">The Instruction Fetch Stage</h3>
+<div class="paragraph"><p>The Instruction fetch stage is unchanged from BOOMv4. You may review the BOOMv4 IFU here: <a href="https://docs.boom-core.org/en/latest/sections/instruction-fetch-stage.html">https://docs.boom-core.org/en/latest/sections/instruction-fetch-stage.html</a> .</p></div>
+<div class="sect3">
+<h4 id="_vector_rvv_decode">Vector (RVV) Decode</h4>
+<div class="paragraph"><p>The Decoder is extended to support RVV1.0 instruction opcodes. The decoder itself is single cycle combinational module which produces the decoded uOP packet bundle. For Caracal, parameterizable super-scalar decoder support is also maintained.</p></div>
+<div class="admonitionblock">
+<table><tr>
+<td class="icon">
+<img src="./images/icons/note.png" alt="Note" />
+</td>
+<td class="content">A uOP packet in BOOMv4 is simply a decoded instruction. The decoder does not perform any cracking or micro-op expansion; all instructions, including vector instructions, are decoded into a single uOP.</td>
+</tr></table>
+</div>
+<div class="tableblock">
+<table rules="all"
+width="100%"
+frame="border"
+cellspacing="0" cellpadding="4">
+<col width="33%" />
+<col width="66%" />
+<thead>
+<tr>
+<th align="left" valign="top"> Parameter </th>
+<th align="left" valign="top"> Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td align="left" valign="top"><p class="table">RVV spec version</p></td>
+<td align="left" valign="top"><p class="table">RVV1.0</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">VLEN</p></td>
+<td align="left" valign="top"><p class="table">256</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">ELEN</p></td>
+<td align="left" valign="top"><p class="table">64</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">Supported SEW(s)</p></td>
+<td align="left" valign="top"><p class="table">4, 8, 16, 32, 64</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">Supported LMUL(s)</p></td>
+<td align="left" valign="top"><p class="table">ALL</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">Vector regfile depth</p></td>
+<td align="left" valign="top"><p class="table">128</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect3">
+<h4 id="_vset_special_handling">VSET Special Handling</h4>
+<div class="paragraph"><p>Because we delay vector uOP cracking until the execution stage of the pipeline, the vector mapper must in advance allocate enough vector PRNs for a specific instruction based on LMUL/EMUL. Thus all uOPs emitted by the decoder must contain the calculated EMUL of the instruction. This EMUL information is used by the Mapper to allocate PRN vector register groups.</p></div>
+<div class="paragraph"><p>We introduce a new unit called <strong>Vector Config Unit</strong>. The VCFG keeps a local copy of the VTYPE and VL values set by a vset instruction, so that dependent, subsequent instructions can know  the most recent value of vset and be included in the uOP. The VCFG will also store performance counters and other related CSRs for vector instructions. The VCFG must also handle NxWide instruction decoder width, and handle the case where there are more than 1 vset instruction in a instruction bundle, the newest vset is used.</p></div>
+<div class="paragraph"><p><strong>vsetivli</strong> is the best case instruction as the VTYPE and VL is an immediate value and can be immediately decoded and stored in the VCFG for decoding of subsequent vector instructions.</p></div>
+<div class="paragraph"><p><strong>vsetvli</strong> is the most common case where VTYPE is an immediate but VL is supplied by a integer source register. In this case the decoder does not need to stall or wait for VL instead the uOP VL type is marked as a register, and the scalar value is resolved when the vector uOP enters the scalar scheduler.</p></div>
+<div class="paragraph"><p><strong>vsetvl</strong> is a special case as both the VTYPE and VL is a scalar source operand instead of an immediate encoded in the instruction. In this case the newer vector uOP cannot continue to be issued as the VTYPE value is needed by the next pipeline stage. To solve this issue we re-use the BOOM is_unique feature, and mark vsetvl as a unique instruction. This forces all instructions in the BOOM pipeline to complete before vsetvl can be issued by the decoder. This allows the scalar instructions that calculate the vtype and VL value to complete, and the VCSRU reads this value and updates its local copy of VTYPE, VL and use it for subsequent vector uOP decoding.</p></div>
+<div class="paragraph"><p>This does result in poorer performance for this instruction, but is acceptable as this vsetvl instruction type is not common.</p></div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_the_rename_stage">The Rename Stage</h3>
+<div class="paragraph"><p>The Rename Stage is extended to support vector register renaming. For vector instructions the rename stage is split into two pipeline stages <strong>Scalar Mapping/Rename</strong> and <strong>Vector Mapping/Rename</strong>.</p></div>
+<div class="paragraph"><p>In the scalar mapping the original BOOM implementation is unchanged, there still exists a integer rename_stage and fp_rename_stage. Scalar instructions may enter the rename stage and be dispatched normally to the scalar instruction queues.</p></div>
+<div class="paragraph"><p>Vector instructions will also enter the rename_stage and fp_rename_stage and have any scalar destination or source registers assigned a int or fp PRN. For vsetivl the VL register will require a integer PRN to be allocated for the VL value, which will be resolved in the scalar scheduling stage.</p></div>
+<div class="paragraph"><p>The vector physical register file will be parameterizable with default support for 128 PRNs.</p></div>
+<div class="tableblock">
+<table rules="all"
+width="100%"
+frame="border"
+cellspacing="0" cellpadding="4">
+<col width="33%" />
+<col width="33%" />
+<col width="33%" />
+<thead>
+<tr>
+<th align="left" valign="top"> Register file </th>
+<th align="left" valign="top"> Architectural regs </th>
+<th align="left" valign="top"> Physical regs (default)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td align="left" valign="top"><p class="table">Integer (INT)</p></td>
+<td align="left" valign="top"><p class="table">32</p></td>
+<td align="left" valign="top"><p class="table">128</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">Floating-point (FP)</p></td>
+<td align="left" valign="top"><p class="table">32</p></td>
+<td align="left" valign="top"><p class="table">128</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">Vector (VEC)</p></td>
+<td align="left" valign="top"><p class="table">32</p></td>
+<td align="left" valign="top"><p class="table">128</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="admonitionblock">
+<table><tr>
+<td class="icon">
+<img src="./images/icons/note.png" alt="Note" />
+</td>
+<td class="content">Caracal/BOOM has no dedicated mask <strong>register file</strong>; Vector mask is treated like any other vector register, with masking semantics handled in the execution units.</td>
+</tr></table>
+</div>
+<div class="sect3">
+<h4 id="_rename_map_table_rmt">Rename Map Table (RMT)</h4>
+<div class="paragraph"><p>BOOM maintains two sets of register rename map tables <strong>Speculative RMT</strong> and <strong>Committed RMT</strong>. The Committed RMT is an optional feature, which we we will always keep enabled in Caracal.</p></div>
+<div class="olist arabic"><ol class="arabic">
+<li>
+<p>
+Speculative RMT — map_table
+This is the working table updated at rename time as physical destinations are allocated. It reflects in-flight, not-yet-committed instructions. Source operands are read from it (map_resps).
+</p>
+</li>
+<li>
+<p>
+Architectural / Committed RMT — com_map_table
+Updated only by committed uops (driven from the ROB via com_remap_reqs). It holds the known-good architectural state.
+</p>
+</li>
+</ol></div>
+<div class="paragraph"><p>When an exception occurs, the com_map_table is copied to the speculative map_table. Because the com_map_table only contains the latest committed ARN to PRN mappings it holds the most recent correct state before the trapping instruction, thus instead of a ROB 1 entry/cycle walk back a single cycle copy is all that is needed to roll back the map_table.</p></div>
+<div class="paragraph"><p>The vector mapper extends the existing RenameStage implementation to support vector renaming. The vector mapper adds three features:</p></div>
+<div class="olist arabic"><ol class="arabic">
+<li>
+<p>
+<strong>LMUL TAG Whole Vector Group Checker</strong> We add an additional structure to the RMT for vector remapping. The LMUL tag checker adds a 2 bit tracking table for each of the ARN indexes to track which vector register group the ARN index belongs to.
+</p>
+</li>
+</ol></div>
+<div class="tableblock">
+<table rules="all"
+width="100%"
+frame="border"
+cellspacing="0" cellpadding="4">
+<col width="50%" />
+<col width="50%" />
+<tbody>
+<tr>
+<td align="left" valign="top"><p class="table">LMUL</p></td>
+<td align="left" valign="top"><p class="table">Encoding</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">LMUL=1</p></td>
+<td align="left" valign="top"><p class="table">2&#8217;b00</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">LMUL=2</p></td>
+<td align="left" valign="top"><p class="table">2&#8217;b01</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">LMUL=4</p></td>
+<td align="left" valign="top"><p class="table">2&#8217;b10</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">LMUL=8</p></td>
+<td align="left" valign="top"><p class="table">2&#8217;b11</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="olist arabic"><ol class="arabic">
+<li>
+<p>
+<strong>Periodic Vector RMT Checkpoints</strong>
+</p>
+</li>
+<li>
+<p>
+<strong>LMUL Tag Miss Handler</strong>
+</p>
+</li>
+</ol></div>
+</div>
+<div class="sect3">
+<h4 id="_free_list">Free List</h4>
+</div>
+<div class="sect3">
+<h4 id="_busy_table">Busy Table</h4>
+<div class="paragraph"><p>The Busy Table tracks the readiness status of each physical register. If all physical operands are ready, the instruction will be ready to be issued.</p></div>
+<div class="paragraph"><p>The Vector Busy</p></div>
+</div>
+<div class="sect3">
+<h4 id="_reorder_buffer_rob">Reorder Buffer (ROB)</h4>
+</div>
+<div class="sect3">
+<h4 id="_branch_snapshots">Branch Snapshots</h4>
+<div class="paragraph"><p>A copy of the speculative map_table is taken per outstanding branch (upto maxBrCount entries).</p></div>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_exception_handling">Exception Handling</h3>
+<div class="paragraph"><p>TODO: ROB size, commit width, exception handling, how vector ops occupy
+ROB entries.</p></div>
+<div class="tableblock">
+<table rules="all"
+width="100%"
+frame="border"
+cellspacing="0" cellpadding="4">
+<col width="25%" />
+<col width="25%" />
+<col width="50%" />
+<thead>
+<tr>
+<th align="left" valign="top"> Event </th>
+<th align="left" valign="top"> Recovery source </th>
+<th align="left" valign="top"> Cost</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td align="left" valign="top"><p class="table">Branch mispredict</p></td>
+<td align="left" valign="top"><p class="table"><code>br_snapshots(br_tag)</code></p></td>
+<td align="left" valign="top"><p class="table">1 cycle, only flushes younger-than-branch</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">Exception / pipeline flush</p></td>
+<td align="left" valign="top"><p class="table"><code>com_map_table</code></p></td>
+<td align="left" valign="top"><p class="table">1 cycle, flushes everything in flight</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">Normal</p></td>
+<td align="left" valign="top"><p class="table"><code>remap_table</code></p></td>
+<td align="left" valign="top"><p class="table">advance</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_the_issue_units">The Issue Units</h3>
+<div class="paragraph"><p>TODO: Describe issue queues (INT/MEM/FP/VEC), their depths, and the
+scheduling/wakeup policy.</p></div>
+</div>
+<div class="sect2">
+<h3 id="_the_register_files_and_bypass_network">The Register Files and Bypass Network</h3>
+<div class="paragraph"><p>TODO: Read/write port counts per register file, bypass network topology.</p></div>
+</div>
+<div class="sect2">
+<h3 id="_the_execution_pipelines">The Execution Pipelines</h3>
+<div class="paragraph"><p>TODO: Enumerate the functional units (ALUs, mul/div, FPU, branch unit,
+AGU) and their latencies.</p></div>
+</div>
+<div class="sect2">
+<h3 id="_the_load_store_unit_lsu">The Load/Store Unit (LSU)</h3>
+<div class="paragraph"><p>TODO: LDQ/STQ sizes, store-to-load forwarding, memory ordering, and any
+vector load/store integration.</p></div>
+</div>
+<div class="sect2">
+<h3 id="_the_memory_system">The Memory System</h3>
+<div class="paragraph"><p>The memory subsystem remains unchanged from BOOMv4. However we recommend to use LargeBoomV4Config or MegaBoomV4Config configurations to enable the dual port L1 DCache for best performance.</p></div>
+</div>
+<div class="sect2">
+<h3 id="_vector_agen_amp_dispatch">Vector AGEN &amp; Dispatch</h3>
+<div class="paragraph"><p>TODO: How vector ops are cracked/expanded into micro-ops and dispatched.
+Cross-reference <a href="#_vector_rvv_decode">[_vector_rvv_decode]</a>.</p></div>
+</div>
+<div class="sect2">
+<h3 id="_the_vector_register_file">The Vector Register File</h3>
+<div class="paragraph"><p>TODO: Width, port count, renaming of vector registers, masking.</p></div>
+</div>
+<div class="sect2">
+<h3 id="_vector_execution_units">Vector Execution Units</h3>
+<div class="paragraph"><p>TODO: Lanes, supported operation classes (integer, fixed-point, FP,
+reductions, permutes), and latencies.</p></div>
+</div>
+<div class="sect2">
+<h3 id="_the_vector_load_store_unit_vlsu">The Vector Load/Store Unit (VLSU)</h3>
+<div class="paragraph"><p>TODO: Unit-stride / strided / indexed accesses, segment loads/stores,
+interaction with the scalar LSU and D$.</p></div>
+</div>
+<div class="sect2">
+<h3 id="_masking_amp_tail_inactive_handling">Masking &amp; Tail/Inactive Handling</h3>
+<div class="paragraph"><p>TODO: Mask register usage, tail-agnostic/undisturbed and
+mask-agnostic/undisturbed policies.</p></div>
+</div>
+</div>
+</div>
+<div class="sect1">
+<h2 id="_usage">Usage</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_parameterization_amp_configs">Parameterization &amp; Configs</h3>
+<div class="paragraph"><p>TODO: List the Caracal config classes and the config fragments that
+compose them.</p></div>
+<div class="tableblock">
+<table rules="all"
+width="100%"
+frame="border"
+cellspacing="0" cellpadding="4">
+<col width="25%" />
+<col width="25%" />
+<col width="50%" />
+<thead>
+<tr>
+<th align="left" valign="top"> Config </th>
+<th align="left" valign="top"> Size </th>
+<th align="left" valign="top"> Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td align="left" valign="top"><p class="table"><code>SmallBoomV4Config</code></p></td>
+<td align="left" valign="top"><p class="table">1 small core</p></td>
+<td align="left" valign="top"><p class="table">&lt;fill in&gt;</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table"><code>MediumBoomV4Config</code></p></td>
+<td align="left" valign="top"><p class="table">1 medium core</p></td>
+<td align="left" valign="top"><p class="table">&lt;fill in&gt;</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table"><code>LargeBoomV4Config</code></p></td>
+<td align="left" valign="top"><p class="table">1 large core</p></td>
+<td align="left" valign="top"><p class="table">&lt;fill in&gt;</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table"><code>MegaBoomV4Config</code></p></td>
+<td align="left" valign="top"><p class="table">1 mega core</p></td>
+<td align="left" valign="top"><p class="table">&lt;fill in&gt;</p></td>
+</tr>
+<tr>
+<td align="left" valign="top"><p class="table">&lt;Caracal vector config&gt;</p></td>
+<td align="left" valign="top"><p class="table">&lt;fill in&gt;</p></td>
+<td align="left" valign="top"><p class="table">&lt;fill in&gt;</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="sect2">
+<h3 id="_the_caracal_chipyard_ecosystem">The Caracal/Chipyard Ecosystem</h3>
+<div class="paragraph"><p>TODO: How Caracal plugs into Chipyard, FireSim, and ASIC flows.</p></div>
+</div>
+<div class="sect2">
+<h3 id="_debugging">Debugging</h3>
+<div class="paragraph"><p>TODO: Waveform flows (FSDB/Verdi, VPD/DVE, VCD/GTKWave, Xcelium IDA),
+useful internal signals, and the trace interface.
+=== Micro-architectural Performance Counters</p></div>
+<div class="paragraph"><p>TODO: Available HPM/uarch counters and how to read them.</p></div>
+</div>
+<div class="sect2">
+<h3 id="_verification">Verification</h3>
+<div class="paragraph"><p>TODO: riscv-tests, torture/csmith, co-simulation, and any RVV-specific
+verification (vector test suites).</p></div>
+</div>
+<div class="sect2">
+<h3 id="_physical_realization_ppa">Physical Realization (PPA)</h3>
+<div class="paragraph"><p>TODO: Synthesis/area results, target frequency, and PPA goals.
+Cross-reference the area analysis docs in <code>../docs/</code>.</p></div>
+</div>
+</div>
+</div>
+</div>
+<div id="footnotes"><hr /></div>
+<div id="footer">
+<div id="footer-text">
+Last updated
+ 2026-06-09 13:31:02 CDT
+</div>
+</div>
+</body>
+</html>

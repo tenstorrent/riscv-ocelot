@@ -269,7 +269,7 @@ class BoomMSHR(implicit edge: TLEdgeOut, p: Parameters) extends BoomModule()(p)
                      (rpq.io.deq.bits.uop.mem_cmd =/= M_XLR)) // LR should go through replay
     // drain all loads for now
     val rp_addr = Cat(req_tag, req_idx, rpq.io.deq.bits.addr(blockOffBits-1,0))
-    val word_idx  = if (rowWords == 1) 0.U else rp_addr(log2Up(rowWords*coreDataBytes)-1, log2Up(wordBytes))
+    val word_idx  = if (rowWords == 1) 0.U else rp_addr(log2Up(rowWords*wordBytes)-1, log2Up(wordBytes))
     val data      = io.lb_resp
     val data_word = data >> Cat(word_idx, 0.U(log2Up(coreDataBits).W))
     val loadgen = new LoadGen(rpq.io.deq.bits.uop.mem_size, rpq.io.deq.bits.uop.mem_signed,
@@ -398,10 +398,16 @@ class BoomIOMSHR(id: Int)(implicit edge: TLEdgeOut, p: Parameters) extends BoomM
     // We don't need brupdate in here because uncacheable operations are guaranteed non-speculative
   })
 
-  def beatOffset(addr: UInt) = addr.extract(beatOffBits-1, wordOffBits)
+  // Guarded like `word_idx` above: with a `coreDataBits`-wide word equal to the
+  // TL beat (`beatWords == 1`) the extract range inverts, and the only word in
+  // the beat is word 0.
+  def beatOffset(addr: UInt) = if (beatWords == 1) 0.U else addr.extract(beatOffBits-1, wordOffBits)
 
   def wordFromBeat(addr: UInt, dat: UInt) = {
-    val shift = Cat(beatOffset(addr), 0.U((wordOffBits+log2Ceil(wordBytes)).W))
+    // Shift is beatOffset * wordBits, so the zero-pad is log2(wordBits). The
+    // old spelling `wordOffBits + log2Ceil(wordBytes)` is 2*wordOffBits, which
+    // only equals log2(wordBits) when wordBytes is 8.
+    val shift = Cat(beatOffset(addr), 0.U(log2Ceil(wordBits).W))
     (dat >> shift)(wordBits-1, 0)
   }
 

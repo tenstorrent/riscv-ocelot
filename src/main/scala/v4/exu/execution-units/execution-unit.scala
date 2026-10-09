@@ -404,6 +404,9 @@ class UniqueExeUnit(
     s.bits.hv := RegNext(exe_uop.bits.mem_cmd === M_HFENCEV)
     s.bits.hg := RegNext(exe_uop.bits.mem_cmd === M_HFENCEG)
 
+    // A VL producer is never granted to this ALUUnit (vset tap is off the ALU EU's io_alu_resp alone).
+    if (usingRVV) assert(!(exe_uop.valid && exe_uop.bits.is_vl_producer.get))
+
     (Some(c), Some(s))
   } else {
     assert(!(exe_uop.valid && exe_uop.bits.fu_code(FC_CSR)))
@@ -553,7 +556,11 @@ class ALUExeUnit(
   exe_int_req.pred_data := exe_pred_data
   exe_int_req.ftq_info  := exe_ftq_data
 
-  fu_types += ((FC_ALU, true.B, "ALU"))
+  //@req-spec-decode.c7
+  // Every ALU EU advertises FC_ALU unconditionally, so a register-sourced vset
+  // (fu_code(FC_ALU), set by VsetDecode) can always be granted an ALU. FC_ALU
+  // already covers it; no new FC_* code.
+  fu_types += ((FC_ALU, true.B, if (usingRVV) "ALU+VSET" else "ALU"))
 
   val alu = Module(new ALUUnit(dataWidth = xLen))
   alu.io.req.valid  := exe_uop.valid && exe_uop.bits.fu_code(FC_ALU)
@@ -565,6 +572,10 @@ class ALUExeUnit(
   val io_alu_resp = IO(Output(Valid(new ExeUnitResp(xLen))))
   io_alu_resp.valid := alu.io.resp.valid
   io_alu_resp.bits  := alu.io.resp.bits
+
+  // A VL producer granted here carries fu_code(FC_ALU); its VL writeback rides
+  // this existing io_alu_resp bus (tapped downstream by BoomCore), not a new port.
+  if (usingRVV) assert(!(exe_uop.valid && exe_uop.bits.is_vl_producer.get) || exe_uop.bits.fu_code(FC_ALU))
 
   val io_brinfo = IO(Output(Valid(new BrResolutionInfo)))
   io_brinfo := alu.io.brinfo

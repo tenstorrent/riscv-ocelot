@@ -1,0 +1,1208 @@
+family: rob
+description: >
+  ROB participation of vector uops: group-done completion tracking, commit, and
+  precise vector exception behaviour.
+spec_sources:
+  - docs_caracal/src/midcore.rst
+
+groups:
+  a: the ROB entry — BOOM v4 reuse, dst_rtype, and one entry per OP.v
+  b: the aggregate group-done contract on the ROB side
+  c: the three completion paths — tt_CII, vector load, vector store
+  d: shared instructions — two halves, one ROB entry
+  e: rob_unsafe and the group-safe event
+  f: commit and the stale destination group
+  g: precise exceptions — trap with vstart = 0 and full restart
+  h: precise exceptions for segmented (shared) load/store
+
+reqs:
+
+  # --- a: the ROB entry -------------------------------------------------------
+
+  - id: spec-rob.a1
+    kind: structure
+    statement: >
+      Caracal must reuse BOOM v4's ROB with no structural change beyond spec-rob.a2.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rob-vec
+      heading: "Reorder Buffer (ROB)"
+      quote: >
+        |caracal| reuses |boom| v4's ROB structurally unchanged.
+
+  - id: spec-rob.a2
+    kind: structure
+    statement: >
+      The ROB entry's dst_rtype field must be widened to 3 bits.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rob-vec
+      heading: "Reorder Buffer (ROB)"
+      quote: >
+        The only field change is
+        widening the entry's ``dst_rtype`` to 3 bits (``exu/rob.scala``) to encode ``RT_VEC``,
+
+  - id: spec-rob.a3
+    kind: structure
+    statement: >
+      The only change to BOOM v4's dst_rtype field must be its widening to 3 bits.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rob-vec
+      heading: "Reorder Buffer (ROB)"
+      quote: >
+        The only field change is
+        widening the entry's ``dst_rtype`` to 3 bits (``exu/rob.scala``) to encode ``RT_VEC``,
+    notes: >
+      A hard negative obligation on the ROB: no vector-specific field, counter or side
+      structure may be added to the entry. The completion-side consequences are spec-rob.b7
+      (no group-write counter) and spec-rob.d4 (a 1-bit flag, not a counter) — the one
+      field the entry does gain beyond the widened dst_rtype is the explicit stale group of
+      spec-rob.f2, which the Commit section states separately.
+
+  - id: spec-rob.a4
+    kind: interface
+    statement: >
+      The 3-bit dst_rtype must encode RT_VEC.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rob-vec
+      heading: "Reorder Buffer (ROB)"
+      quote: >
+        The only field change is
+        widening the entry's ``dst_rtype`` to 3 bits (``exu/rob.scala``) to encode ``RT_VEC``,
+
+  - id: spec-rob.a5
+    kind: function
+    statement: >
+      Vector uops must allocate through the same head-pointer and exception machinery as
+      scalar ops.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rob-vec
+      heading: "Reorder Buffer (ROB)"
+      quote: >
+        so vector uop's allocate, commit, and roll back through the same
+        head-pointer/exception machinery as scalar ops.
+
+  - id: spec-rob.a6
+    kind: function
+    statement: >
+      Vector uops must commit through the same head-pointer and exception machinery as
+      scalar ops.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rob-vec
+      heading: "Reorder Buffer (ROB)"
+      quote: >
+        so vector uop's allocate, commit, and roll back through the same
+        head-pointer/exception machinery as scalar ops.
+
+  - id: spec-rob.a7
+    kind: function
+    statement: >
+      Vector uops must roll back through the same head-pointer and exception machinery as
+      scalar ops.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rob-vec
+      heading: "Reorder Buffer (ROB)"
+      quote: >
+        so vector uop's allocate, commit, and roll back through the same
+        head-pointer/exception machinery as scalar ops.
+
+  - id: spec-rob.a8
+    kind: structure
+    statement: >
+      A vector instruction must not be cracked into one uop per destination register.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rob-vec
+      heading: "Reorder Buffer (ROB)"
+      quote: >
+        a vector instruction is **not** cracked into one uop per
+        destination register.
+    notes: >
+      The enabling precondition is on the rename side — the vector mapper allocates whole
+      LMUL/EMUL register groups atomically (midcore.rst :ref:`free-list`, owned by
+      spec-rename).
+
+  - id: spec-rob.a9
+    kind: structure
+    statement: >
+      A vector instruction must occupy a single ROB entry regardless of EMUL.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: rob-vec
+      heading: "Reorder Buffer (ROB)"
+      quote: >
+        It therefore occupies **a single ROB entry**, regardless of
+        ``EMUL``.
+    notes: >
+      Rationale, not obligation: "This keeps the ROB small under wide vectors and lets
+      vector instructions retire in one commit slot." Retiring in one commit slot is a
+      consequence of the single entry, so it is not mined separately.
+
+  # --- b: the aggregate group-done contract -----------------------------------
+
+  - id: spec-rob.b1
+    kind: function
+    statement: >
+      A ROB entry owning an EMUL-wide destination group must not clear its busy bit until
+      all of the group's writes are done.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        A single ROB entry that owns an ``EMUL``-wide destination group needs to know when **all** of
+        the group's writes are done before it can clear its busy bit and commit.
+
+  - id: spec-rob.b2
+    kind: function
+    statement: >
+      A ROB entry owning an EMUL-wide destination group must not commit until all of the
+      group's writes are done.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        A single ROB entry that owns an ``EMUL``-wide destination group needs to know when **all** of
+        the group's writes are done before it can clear its busy bit and commit.
+
+  - id: spec-rob.b3
+    kind: structure
+    statement: >
+      The ROB side of vector completion must remain identical to scalar, namely a
+      single-shot rob_bsy clear per entry.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        |caracal| keeps the ROB
+        side **identical to scalar** — a single-shot ``rob_bsy`` clear per entry — by requiring every
+        vector producer to **aggregate its group into one group-done event** rather than streaming
+        per-PRN writebacks into the ROB.
+
+  - id: spec-rob.b4
+    kind: interface
+    statement: >
+      Every vector producer must aggregate its destination group into one group-done event.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        |caracal| keeps the ROB
+        side **identical to scalar** — a single-shot ``rob_bsy`` clear per entry — by requiring every
+        vector producer to **aggregate its group into one group-done event** rather than streaming
+        per-PRN writebacks into the ROB.
+
+  - id: spec-rob.b5
+    kind: interface
+    statement: >
+      A vector producer must not stream per-PRN writebacks into the ROB.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        |caracal| keeps the ROB
+        side **identical to scalar** — a single-shot ``rob_bsy`` clear per entry — by requiring every
+        vector producer to **aggregate its group into one group-done event** rather than streaming
+        per-PRN writebacks into the ROB.
+
+  - id: spec-rob.b6
+    kind: structure
+    statement: >
+      The per-PRN completion counting must live in the vector producer.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        The per-PRN counting lives in the producer, not in a new ROB
+        counter
+
+  - id: spec-rob.b7
+    kind: structure
+    statement: >
+      The ROB must not add a new counter for per-PRN completion.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        The per-PRN counting lives in the producer, not in a new ROB
+        counter
+
+  # --- c: the three completion paths ------------------------------------------
+
+  - id: spec-rob.c1
+    kind: interface
+    statement: >
+      The in-order tt_CII coprocessor must signal completion once per instruction.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        An in-order unit knows when an entire ``OP.v`` has retired, so it
+        signals completion **once per instruction**.
+    notes: >
+      The precondition that the vector ALU path executes in program order on the in-order
+      tt_CII coprocessor is an execution-side obligation, mined in spec-cii. The
+      once-per-instruction event itself — one VecGroupDone plus clr_rob on the last
+      writeback beat — is specified on the CII side as spec-cii.g10-g13; this requirement
+      records the ROB's dependence on that aggregation.
+
+  - id: spec-rob.c2
+    kind: function
+    statement: >
+      One wakeup from the tt_CII path must clear rob_bsy for a vector arithmetic
+      instruction.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        This maps directly onto the existing
+        single-writeback busy-clear in ``rob.scala`` — one wakeup clears ``rob_bsy``.
+
+  - id: spec-rob.c3
+    kind: interface
+    statement: >
+      Element and segment sub-accesses of a vector memory operation must not report to the
+      ROB individually.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        The vector memory path generates element/segment sub-accesses that complete **out of order**
+        through the LSU, but they do **not** report to the ROB individually.
+
+  - id: spec-rob.c4
+    kind: function
+    statement: >
+      The ROB must clear rob_bsy for a vector load on the single group-done event emitted by
+      the Load Coalescing Buffer.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        The ROB clears ``rob_bsy`` on that single event — no per-entry completion counter is added.
+    notes: >
+      The producer side of this event — the LCB owning the per-PRN assembly and the
+      per-group PRN-done count (target from ``v_emul``/``v_seg_nf``), and emitting one
+      group-done carrying the group's member-PRN vector when the last destination PRN is
+      assembled — is spec-lsu.e13-e16 and is not duplicated here. The "no per-entry
+      completion counter is added" clause is the load-path restatement of spec-rob.b7.
+
+  - id: spec-rob.c5
+    kind: interface
+    statement: >
+      The group-done that clears rob_bsy must be the same event that drives the Busy-Table
+      clear and the vector wakeup.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        The same group-done drives the Busy-Table clear and the vector wakeup (see :ref:`group-done wakeup <group-done>`),
+        so the three structures stay consistent by construction.
+    notes: >
+      The obligation is the identity of the event, not the three effects: sharing one
+      group-done is what keeps the ROB busy bit, the Busy Table and the wakeup network
+      consistent by construction. The Busy-Table and wakeup behaviour themselves are
+      specified in midcore.rst §"Busy Table" and the group-done wakeup section, owned by
+      spec-rename.
+
+  - id: spec-rob.c6
+    kind: function
+    statement: >
+      A non-shared vector store must clear its ROB busy bit via a single lsu_clr_bsy.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        A **non-shared** vector store clears via
+        a single ``lsu_clr_bsy`` once its whole active element set has translated/disambiguated (it writes
+        no VRF)
+    notes: >
+      Vector stores write no VRF, so they have no destination group to aggregate and need no
+      group-done; the single lsu_clr_bsy takes its place. Scoped to non-shared stores on
+      2026-08-03: a shared store's LSU half signals the same event but defers it past
+      translate/disambiguate, which is spec-rob.c9.
+
+  - id: spec-rob.c7
+    kind: function
+    statement: >
+      A non-shared vector store's lsu_clr_bsy must not be asserted until its whole active
+      element set has translated and disambiguated.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        A **non-shared** vector store clears via
+        a single ``lsu_clr_bsy`` once its whole active element set has translated/disambiguated (it writes
+        no VRF)
+    notes: >
+      Scoped to non-shared stores on 2026-08-03. Translate/disambiguate remains a lower bound
+      for a shared store too, but that half must additionally wait for DGEN — spec-rob.c9.
+
+  - id: spec-rob.c8
+    kind: structure
+    statement: >
+      The ROB completion path for scalar ops must be left unchanged.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        scalar ops are unchanged.
+
+  - id: spec-rob.c9
+    kind: timing
+    statement: >
+      A shared store's LSU half must defer its completion until after DGEN has read ``pvtmp``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        **A shared store's LSU half defers its completion until after DGEN has read ``pvtmp``**, not to
+        the translate/disambiguate point that governs a non-shared store.
+    notes: >
+      Resolved 2026-08-03. Signalling at translate would claim the half is done while it still
+      has to obtain its store data from the coprocessor, and it would invert the fixed
+      CII-then-LSU order of spec-rob.d7/d14. The non-shared rule is spec-rob.c6/c7.
+
+  # --- d: shared instructions -------------------------------------------------
+
+  - id: spec-rob.d1
+    kind: structure
+    statement: >
+      A shared instruction must occupy a single ROB entry.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        A shared instruction occupies **two issue slots** — one in the CII IQ (coprocessor half) and
+        one in the vector load/store IQ (LSU half) — but **a single ROB entry**.
+
+  - id: spec-rob.d2
+    kind: structure
+    statement: >
+      A shared instruction must occupy two issue slots, one in the CII issue queue and one
+      in the vector load/store issue queue.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        A shared instruction occupies **two issue slots** — one in the CII IQ (coprocessor half) and
+        one in the vector load/store IQ (LSU half) — but **a single ROB entry**.
+
+  - id: spec-rob.d3
+    kind: function
+    statement: >
+      The shared instruction must be the only case in which a ROB entry waits for more than
+      one completion.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        This is the **only**
+        case that waits for more than one completion, and it needs just a **1-bit "other half pending"
+        flag**, not a counter
+
+  - id: spec-rob.d4
+    kind: structure
+    statement: >
+      The ROB entry must track the outstanding half of a shared instruction with a 1-bit
+      "other half pending" flag.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        This is the **only**
+        case that waits for more than one completion, and it needs just a **1-bit "other half pending"
+        flag**, not a counter
+    notes: >
+      Because the halves complete in a fixed order (spec-rob.d7), the flag is equivalent to
+      "wait for the consumer half" and the producer's completion is implied; the spec keeps
+      it as an explicit flag for clarity and as a cross-check, not because either order is
+      possible.
+
+  - id: spec-rob.d5
+    kind: structure
+    statement: >
+      The ROB must not use a counter to track the completions of a shared instruction.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        This is the **only**
+        case that waits for more than one completion, and it needs just a **1-bit "other half pending"
+        flag**, not a counter
+
+  - id: spec-rob.d15
+    kind: function
+    statement: >
+      A shared instruction's ROB entry must clear rob_bsy only when both halves' completion
+      events have arrived.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        the entry clears ``rob_bsy`` only when **both** halves' completion events
+        have arrived.
+    notes: >
+      Supersedes the retired spec-rob.d6, which named "the LSU group-done" — false for a
+      segmented store, whose LSU half writes no VRF and so emits no group-done. Which event each
+      half emits is spec-rob.d16 and d17.
+
+  - id: spec-rob.d16
+    kind: interface
+    statement: >
+      A segmented load's LSU half must emit a group-done.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        a segmented
+        **load**'s LSU half writes ``pvtmp`` and so emits a real **group-done**
+    notes: >
+      It emits a real group-done because it writes pvtmp as a destination group.
+
+  - id: spec-rob.d17
+    kind: interface
+    statement: >
+      A segmented store's LSU half must signal ``lsu_clr_bsy``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        while a segmented
+        **store**'s LSU half writes no VRF and so signals **``lsu_clr_bsy``**.
+    notes: >
+      Resolved 2026-08-03. The event type follows from whether the half writes the VRF. The
+      coprocessor half always emits a group-done, which is spec-rob.d18.
+
+  - id: spec-rob.d18
+    kind: interface
+    statement: >
+      The coprocessor half of a shared instruction must emit a group-done.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        The coprocessor half always
+        emits a group-done.
+
+  - id: spec-rob.d19
+    kind: function
+    statement: >
+      The other-half-pending flag must be set at dispatch when ``is_shared`` is seen.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        **The flag is set at dispatch**, when the Decoder's ``is_shared`` is seen, and cleared when the
+        **second** completion arrives.
+    notes: >
+      Resolved 2026-08-03. Setting it at dispatch rather than on the first completion is what
+      makes the flag safe: set-on-first would hang if both ever arrived together. The spec then
+      argues that case is unreachable anyway — spec-rob.d21.
+
+  - id: spec-rob.d20
+    kind: function
+    statement: >
+      The other-half-pending flag must be cleared when the second completion arrives.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        and cleared when the
+        **second** completion arrives.
+
+  - id: spec-rob.d21
+    kind: timing
+    statement: >
+      The two halves' completion events must never land in the same cycle.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        Both completions can never land in the same cycle: the consumer
+        half is woken *by* the producer's ``pvtmp`` group-done, so it issues and executes strictly
+        afterwards.
+    notes: >
+      A consequence of the wakeup dependency rather than something logic enforces, but stated as
+      an obligation because it is what licenses omitting same-cycle handling from the flag. The
+      fixed producer-then-consumer order is spec-rob.d7.
+
+  - id: spec-rob.d7
+    kind: interface
+    statement: >
+      The two halves of a shared instruction must always complete in the fixed order
+      producer half then consumer half.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        The two halves always complete in a **fixed order** — producer half, then consumer half —
+        because the consumer is woken by the producer's ``pvtmp`` group-done
+
+  - id: spec-rob.d8
+    kind: interface
+    statement: >
+      A segmented load's two halves must complete in the order LSU then CII.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        LSU-then-CII for a
+        segmented load, and (per the dependency chain in :ref:`shared-store-chain`) CII-then-LSU for a
+        segmented store.
+
+  - id: spec-rob.d14
+    kind: interface
+    statement: >
+      A segmented store's two halves must complete in the order CII then LSU.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        LSU-then-CII for a
+        segmented load, and (per the dependency chain in :ref:`shared-store-chain`) CII-then-LSU for a
+        segmented store.
+    notes: >
+      Supersedes the retired spec-rob.d9, which recorded the pre-2026-07-31 wording. With this
+      ordering the producer-then-consumer rule of spec-rob.d7 and the "wait for the consumer
+      half" gloss are both consistent for a store: the coprocessor is the pvtmp producer and
+      the LSU is the consumer.
+
+  - id: spec-rob.d10
+    kind: structure
+    statement: >
+      The two halves of a shared instruction must be sequenced through the pvtmp group in
+      the VRF.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        The two halves are sequenced through the ``pvtmp`` group
+        in the VRF — the producer (LSU for a segmented load, coprocessor for a segmented store) writes
+        ``pvtmp``, whose group-done wakes the consumer's IQ slot (see the CII Shared Instruction
+        Scheduling section).
+
+  - id: spec-rob.d11
+    kind: function
+    statement: >
+      The producer half of a shared instruction must write pvtmp.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        The two halves are sequenced through the ``pvtmp`` group
+        in the VRF — the producer (LSU for a segmented load, coprocessor for a segmented store) writes
+        ``pvtmp``, whose group-done wakes the consumer's IQ slot (see the CII Shared Instruction
+        Scheduling section).
+    notes: >
+      The producer is the LSU for a segmented load and the coprocessor for a segmented
+      store. That pvtmp is an ordinary VRF group, reclaimed on mispredict and freed at
+      commit, is mined in spec-rename and spec-lsu group l.
+
+  - id: spec-rob.d12
+    kind: interface
+    statement: >
+      The pvtmp group-done must wake the consumer half's issue-queue slot.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        The two halves are sequenced through the ``pvtmp`` group
+        in the VRF — the producer (LSU for a segmented load, coprocessor for a segmented store) writes
+        ``pvtmp``, whose group-done wakes the consumer's IQ slot (see the CII Shared Instruction
+        Scheduling section).
+
+  - id: spec-rob.d13
+    kind: function
+    statement: >
+      A segmented store's LSU-half D$ writes must occur post-commit.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        For a segmented **store** the LSU half's actual D$ writes are still
+        post-commit, exactly as for any store.
+
+  # --- e: rob_unsafe and the group-safe event ---------------------------------
+
+  - id: spec-rob.e1
+    kind: function
+    statement: >
+      A multi-access vector load must not be treated as memory-safe until all of its element
+      addresses have disambiguated.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        a multi-access vector load is
+        not memory-safe until **all** of its element addresses have disambiguated
+
+  - id: spec-rob.e2
+    kind: interface
+    statement: >
+      The LSU must report a single group-safe event that clears rob_unsafe.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        so the LSU reports a
+        single **group-safe** event (when the last element address has been LCAM-checked) that clears
+        ``rob_unsafe``
+
+  - id: spec-rob.e3
+    kind: interface
+    statement: >
+      The group-safe event must be reported when the last element address has been
+      LCAM-checked.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        so the LSU reports a
+        single **group-safe** event (when the last element address has been LCAM-checked) that clears
+        ``rob_unsafe``
+
+  - id: spec-rob.e4
+    kind: structure
+    statement: >
+      rob_unsafe must not be cleared per sub-access.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        that clears
+        ``rob_unsafe`` — not a per-sub-access clear.
+    notes: >
+      rob_unsafe is gated the same way as rob_bsy: one aggregate event per instruction, so
+      the ROB gains no per-sub-access clear port and no counter (see spec-rob.b7).
+
+  - id: spec-rob.e5
+    kind: function
+    statement: >
+      A vector store's ``rob_unsafe`` must be cleared by one group-safe event when the last of
+      its element addresses has been LCAM-checked.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        A vector **store** clears ``rob_unsafe`` on the same shape of event: one group-safe when the last of
+        its element addresses has been LCAM-checked.
+    notes: >
+      Resolved 2026-08-03: the section specified the clear only for a multi-access vector load
+      (spec-rob.e2/e3). A store takes the same shape of event, which is what the segmented-store
+      chain already assumed when it had the LSU half's address path clear unsafe.
+
+  - id: spec-rob.e6
+    kind: function
+    statement: >
+      A shared instruction must require only the LSU half's group-safe to clear ``rob_unsafe``.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: group-done-wb
+      heading: "Completion tracking"
+      quote: >
+        A **shared** instruction needs **only** the LSU half's
+        group-safe — the coprocessor half performs no memory access, so it carries no speculation hazard
+    notes: >
+      Resolved 2026-08-03. Requiring a second group-safe from the coprocessor half would
+      deadlock: that half cannot issue until the PNR has passed the entry, which needs
+      rob_unsafe already cleared. This is the same circular wait resolved as
+      spec-issue.d16-d18, seen from the ROB side.
+
+  # --- f: commit and the stale destination group ------------------------------
+
+  - id: spec-rob.f1
+    kind: function
+    statement: >
+      At retirement a vector ROB entry must free its entire stale destination group of EMUL
+      stale vector pregs rather than a single preg.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vec-commit
+      heading: "Commit"
+      quote: >
+        At retirement a vector entry frees its entire **stale destination group** — ``EMUL``
+        stale vector pregs, not one.
+    notes: >
+      This couples to the free-list deallocation path of midcore.rst :ref:`free-list`; the
+      deallocation mechanism itself is owned by spec-rename.
+
+  - id: spec-rob.f2
+    kind: structure
+    statement: >
+      The ROB must carry the EMUL stale PRNs captured at rename.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vec-commit
+      heading: "Commit"
+      quote: >
+        the ROB carries the ``EMUL``
+        stale PRNs captured at rename (an explicit stale group, not a base+count) alongside the new
+        ``pvdest``.
+    notes: >
+      The reason the stale PRNs must be carried explicitly rather than recomputed is that
+      group allocation is non-contiguous.
+
+  - id: spec-rob.f3
+    kind: structure
+    statement: >
+      The ROB must represent the stale destination group as an explicit stale group, not as
+      a base plus count.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vec-commit
+      heading: "Commit"
+      quote: >
+        the ROB carries the ``EMUL``
+        stale PRNs captured at rename (an explicit stale group, not a base+count) alongside the new
+        ``pvdest``.
+
+  - id: spec-rob.f4
+    kind: structure
+    statement: >
+      The ROB must carry the stale group alongside the new pvdest.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vec-commit
+      heading: "Commit"
+      quote: >
+        the ROB carries the ``EMUL``
+        stale PRNs captured at rename (an explicit stale group, not a base+count) alongside the new
+        ``pvdest``.
+
+  - id: spec-rob.f5
+    kind: structure
+    statement: >
+      Every ROB entry must provide ``MAX_MEMBERS`` stale-PRN slots.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vec-commit
+      heading: "Commit"
+      quote: >
+        **Every ROB entry provides ``MAX_MEMBERS`` = 8 stale-PRN slots.**
+    notes: >
+      Resolved 2026-08-03: the entry width implied by spec-rob.f2 was unstated. The spec records
+      the cost explicitly — 8 x log2(numVecPhysRegisters) bits per entry, about 56 bits at the
+      default 96 PRNs, paid on every entry including scalar ones. Sizing to the worst-case EMUL
+      is what avoids a second structure and any per-entry indirection.
+
+  - id: spec-rob.f6
+    kind: structure
+    statement: >
+      A vector ROB entry must use ``EMUL`` of its stale-PRN slots and leave the remainder
+      don't-care.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: vec-commit
+      heading: "Commit"
+      quote: >
+        A vector entry uses ``EMUL`` of
+        them and leaves the remainder don't-care; a scalar entry uses one, for its stale ``pdst``.
+    notes: >
+      A scalar entry uses one slot, for its stale pdst.
+
+  # --- g: precise exceptions --------------------------------------------------
+
+  - id: spec-rob.g1
+    kind: function
+    statement: >
+      The ROB must make restartable a trap taken by a vector load/store that faults partway
+      through its element stream.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        Because the whole instruction is one ROB entry, the trap must be made restartable.
+
+  - id: spec-rob.g2
+    kind: function
+    statement: >
+      A faulting vector load/store must trap with vstart = 0.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        it traps with ``vstart = 0`` and restarts the whole
+        instruction.
+    notes: >
+      Legal because nothing was architecturally written: loads are idempotent and stores
+      have not touched memory. The LSU-side statement of the same rule is spec-lsu.f9-f11;
+      this is the ROB-side obligation, since the ROB owns the exception and the vstart write.
+
+  - id: spec-rob.g3
+    kind: function
+    statement: >
+      A faulting vector load/store must restart the whole instruction.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        it traps with ``vstart = 0`` and restarts the whole
+        instruction.
+    notes: >
+      The cost is re-draining elements 0..k-1 after the handler returns; forward progress is
+      unaffected.
+
+  - id: spec-rob.g4
+    kind: function
+    statement: >
+      A faulting vector load/store must not resume at vstart = k.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        **Do not resume at ``vstart = k``.**
+    notes: >
+      From this section's warning block. Resuming at k is not implementable in this
+      microarchitecture and silently corrupts data: elements 0..k-1 were written into a
+      freshly allocated pvdest that the exception path returns to the free list, so
+      architectural vd still maps to stale_pvdest and those k elements are gone. The
+      loadstore.rst statement of the same prohibition is spec-lsu.f12. The RVV 17.1
+      justification that once appeared here has been removed, because that relaxation
+      concerns elements after the faulting element, not before it.
+
+  - id: spec-rob.g5
+    kind: function
+    statement: >
+      A faulting vector instruction must never commit.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        The faulting instruction never
+        commits, so ``pvdest`` is never installed in ``com_map_table``;
+
+  - id: spec-rob.g6
+    kind: function
+    statement: >
+      A faulting vector instruction's pvdest must never be installed in com_map_table.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        The faulting instruction never
+        commits, so ``pvdest`` is never installed in ``com_map_table``;
+
+  - id: spec-rob.g7
+    kind: function
+    statement: >
+      The exception path must restore map_table from com_map_table.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        the exception path restores
+        ``map_table := com_map_table`` and returns the whole group to the free list.
+
+  - id: spec-rob.g8
+    kind: function
+    statement: >
+      The exception path must return the faulting instruction's whole destination group to
+      the free list.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        the exception path restores
+        ``map_table := com_map_table`` and returns the whole group to the free list.
+
+  - id: spec-rob.g9
+    kind: function
+    statement: >
+      Vector stores must drain to memory only post-commit.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        stores have not touched memory (they drain only
+        post-commit)
+    notes: >
+      This is what makes vstart = 0 a legal trap value for a faulting vector store: no
+      architectural memory state exists to be resumed from.
+
+  - id: spec-rob.g10
+    kind: interface
+    statement: >
+      The faulting-element index must not be carried to the ROB.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        The faulting-element index is **not** carried to the ROB and **not** written to ``vstart``.
+    notes: >
+      Stated here as a ROB-side simplification; the producer-side twin, phrased on
+      fault_elem in loadstore.rst, is spec-lsu.f6.
+
+  - id: spec-rob.g11
+    kind: function
+    statement: >
+      The faulting-element index must not be written to vstart.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        The faulting-element index is **not** carried to the ROB and **not** written to ``vstart``.
+    notes: >
+      The loadstore.rst twin is spec-lsu.f7.
+
+  - id: spec-rob.g12
+    kind: interface
+    statement: >
+      The LSU exception port must report a vector fault as a plain precise exception, like a
+      scalar load.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        The
+        LSU exception port reports a plain precise exception, like a scalar load.
+
+  - id: spec-rob.g13
+    kind: structure
+    statement: >
+      fault_elem must survive only as the element cursor's stop signal and as a
+      debug/performance counter.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        ``fault_elem`` survives only as (a) the *stop* signal for the element cursor and (b) a
+        debug/performance counter.
+
+  - id: spec-rob.g14
+    kind: function
+    statement: >
+      CII arithmetic ops must complete atomically.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        CII arithmetic ops complete atomically and raise exceptions at instruction granularity, so they need
+        no element index either.
+
+  - id: spec-rob.g15
+    kind: function
+    statement: >
+      CII arithmetic ops must raise exceptions at instruction granularity.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        CII arithmetic ops complete atomically and raise exceptions at instruction granularity, so they need
+        no element index either.
+
+  - id: spec-rob.g16
+    kind: interface
+    statement: >
+      A CII arithmetic op's exception report must carry no element index.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Precise exceptions for vector ops"
+      quote: >
+        CII arithmetic ops complete atomically and raise exceptions at instruction granularity, so they need
+        no element index either.
+    notes: >
+      vleff is unaffected by this section: it does not trap for a fault at element i > 0, it
+      trims VL — a genuinely different mechanism, mined from loadstore.rst as spec-lsu
+      group g.
+
+  # --- h: precise exceptions for segmented (shared) load/store ----------------
+
+  - id: spec-rob.h1
+    kind: function
+    statement: >
+      A faulting shared instruction must require no special pvtmp cleanup.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Segmented Load/Store (Shared Instruction)"
+      quote: >
+        a faulting (non-committing)
+        shared instruction needs **no special temp cleanup**
+    notes: >
+      Enabled by pvtmp being an ordinary VRF group freed at commit, which is mined in
+      spec-rename and spec-lsu group l.
+
+  - id: spec-rob.h2
+    kind: function
+    statement: >
+      A faulting shared instruction's pvtmp group must be reclaimed by the standard
+      free-list flush/rollback path, like any uncommitted allocation.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Segmented Load/Store (Shared Instruction)"
+      quote: >
+        its ``pvtmp`` group is reclaimed by the
+        standard free-list flush/rollback path like any uncommitted allocation.
+    notes: >
+      The exception-flush trigger is the ROB-side case; the mispredict-rollback and
+      commit-free triggers for the same pvtmp group are mined in spec-rename and spec-lsu
+      group l.
+
+  - id: spec-rob.h3
+    kind: function
+    statement: >
+      A faulting segmented load/store must not commit partial data.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Segmented Load/Store (Shared Instruction)"
+      quote: >
+        a faulting segmented load/store **does not commit partial
+        data**: both ``pvdest`` and ``pvtmp`` are uncommitted physical groups
+    notes: >
+      Earlier drafts stated that segmented load/stores "commit data up to the point of
+      exception"; the spec records that this is not achievable for the same reason
+      vstart = k is not (spec-rob.g4). A segmented store's memory writes are post-commit
+      (spec-rob.d13, spec-rob.g9), so the fault leaves no architectural trace and the whole
+      instruction restarts (spec-rob.g3).
+
+  - id: spec-rob.h4
+    kind: structure
+    statement: >
+      Both pvdest and pvtmp of a faulting segmented load/store must be uncommitted physical
+      groups.
+    source:
+      file: docs_caracal/src/midcore.rst
+      anchor: precise-vec-exc
+      heading: "Segmented Load/Store (Shared Instruction)"
+      quote: >
+        a faulting segmented load/store **does not commit partial
+        data**: both ``pvdest`` and ``pvtmp`` are uncommitted physical groups
+
+coverage:
+
+  # midcore.rst is a three-way file; families.yaml assigns these five sections to rob.
+  - file: docs_caracal/src/midcore.rst
+    heading: "Reorder Buffer (ROB)"
+    anchor: rob-vec
+    reqs: [spec-rob.a1, spec-rob.a2, spec-rob.a3, spec-rob.a4, spec-rob.a5, spec-rob.a6,
+           spec-rob.a7, spec-rob.a8, spec-rob.a9]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "Completion tracking"
+    anchor: group-done-wb
+    reqs: [spec-rob.b1, spec-rob.b2, spec-rob.b3, spec-rob.b4, spec-rob.b5, spec-rob.b6,
+           spec-rob.b7,
+           spec-rob.c1, spec-rob.c2, spec-rob.c3, spec-rob.c4, spec-rob.c5, spec-rob.c6,
+           spec-rob.c7, spec-rob.c8,
+           spec-rob.d1, spec-rob.d2, spec-rob.d3, spec-rob.d4, spec-rob.d5, spec-rob.d15,
+           spec-rob.d7, spec-rob.d8, spec-rob.d14, spec-rob.d10, spec-rob.d11,
+           spec-rob.d12, spec-rob.d13,
+           spec-rob.e1, spec-rob.e2, spec-rob.e3, spec-rob.e4,
+           spec-rob.c9, spec-rob.d16, spec-rob.d17, spec-rob.d18, spec-rob.d19, spec-rob.d20, spec-rob.d21, spec-rob.e5, spec-rob.e6]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "Commit"
+    anchor: vec-commit
+    reqs: [spec-rob.f1, spec-rob.f2, spec-rob.f3, spec-rob.f4,
+           spec-rob.f5, spec-rob.f6]
+
+  - file: docs_caracal/src/midcore.rst
+    heading: "Precise exceptions for vector ops"
+    anchor: precise-vec-exc
+    reqs: [spec-rob.g1, spec-rob.g2, spec-rob.g3, spec-rob.g4, spec-rob.g5, spec-rob.g6,
+           spec-rob.g7, spec-rob.g8, spec-rob.g9, spec-rob.g10, spec-rob.g11,
+           spec-rob.g12, spec-rob.g13, spec-rob.g14, spec-rob.g15, spec-rob.g16]
+
+  # This section has no anchor of its own; precise-vec-exc is the nearest enclosing label.
+  - file: docs_caracal/src/midcore.rst
+    heading: "Segmented Load/Store (Shared Instruction)"
+    anchor: precise-vec-exc
+    reqs: [spec-rob.h1, spec-rob.h2, spec-rob.h3, spec-rob.h4]
+
+retired:
+
+  - id: spec-rob.d6
+    statement: >
+      A shared instruction's ROB entry must clear rob_bsy only when both the LSU group-done
+      and the coprocessor group-done have arrived.
+    retired_because: >
+      Named "the LSU group-done", which does not exist for a segmented store: that half writes no
+      VRF, so it signals lsu_clr_bsy rather than a group-done. midcore.rst §"Completion tracking"
+      was corrected on 2026-08-03 to say "both halves' completion events". Superseded by
+      spec-rob.d15, with the per-half event types as spec-rob.d16, d17 and d18.
+
+  - id: spec-rob.d9
+    statement: >
+      A segmented store's two halves must complete in the order LSU then CII.
+    retired_because: >
+      midcore.rst "Completion tracking" was corrected on 2026-07-31: the note now reads
+      "CII-then-LSU for a segmented store", resolving the contradiction with the
+      producer-then-consumer rule (spec-rob.d7) and with the following paragraph, which names
+      the coprocessor as the pvtmp producer for a store. Superseded by spec-rob.d14.
+
+# All four open questions recorded against this family were resolved on 2026-08-03:
+#
+#   segmented store's busy-clear order -> the LSU half defers its completion until after DGEN has
+#     read pvtmp, so the order is CII-then-LSU as spec-rob.d7/d14 require. The event is
+#     lsu_clr_bsy, not a group-done, because that half writes no VRF. c6/c7 scoped to non-shared
+#     stores, spec-rob.c9 issued; d6 retired and spec-rob.d15-d18 issued.
+#   when the other-half-pending flag is set -> at dispatch on is_shared, cleared on the second
+#     completion; the same-cycle case is unreachable because the consumer half is woken by the
+#     producer's group-done. spec-rob.d19-d21.
+#   what clears rob_unsafe for a store   -> one group-safe on the last LCAM check, and a shared
+#     instruction needs only the LSU half's. spec-rob.e5, e6. Requiring a second would close the
+#     same cycle resolved as spec-issue.d16-d18.
+#   how many stale-PRN slots per entry   -> MAX_MEMBERS = 8, on every entry; spec-rob.f5, f6.
