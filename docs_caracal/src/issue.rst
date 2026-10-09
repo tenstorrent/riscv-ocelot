@@ -347,7 +347,12 @@ This is the same argument that forces per-member matching on ``pvs*`` above.
 ``STALE_VD`` for a given op is the VPU decoder's decision and is not visible to the host — the
 issue packet carries no hint of it, and no back-channel exists. Every ``IQ_V_ALU`` entry with a
 vector destination must therefore wait on ``stale_pvdest`` readiness, including the ops that will
-never pull it.
+never pull it, with ONE exception: a whole-register move ``vmv<nr>r.v``. It overwrites every
+element of its destination at any ``vl``/``vtype``, so by contract the VPU never pulls old-``vd``
+for it (``VS3`` nor ``STALE_VD``) and stages its third operand from ``VS2`` instead; the host
+therefore neither renames ``lvs3`` for it nor gates it on ``stale_pvdest``. Without the exemption
+the ``vmv1r.v`` that restarts an accumulator waits on the previous reduction into the same arch
+vreg, serialising otherwise independent dependence chains.
 
 
 .. _issue-vl-delivery:

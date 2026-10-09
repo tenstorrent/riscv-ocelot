@@ -459,7 +459,7 @@ from Tenstorrent Inc.
     IQ_V_STORE  rdy_vs3.used  := true             (it tracks the SELECTED DGEN group)
                 (no rdy_vold instance)
     IQ_V_ALU    rdy_vs3.used  := (is_shared && uses_ldq) || v_uses_vs3
-                rdy_vold.used := dst_rtype === RT_VEC
+                rdy_vold.used := dst_rtype === RT_VEC && !v_is_whole_reg
 
   ===> THE TABLE IS EXPRESSED IN `v_uses_vs*`, NOT IN `is_shared`/`uses_ldq`, AND
        THAT IS THE FIX FOR THE MOST COMMON VECTOR INSTRUCTION IN THE DESIGN. The
@@ -539,11 +539,15 @@ from Tenstorrent Inc.
     v_needs_old_dest := v_tail_undist || v_mask_undist    (both are MicroOp fields
                         i.e. `vta === 0 || vma === 0`)     set in VecDecode)
 
-  - IQ_V_ALU: STILL UNCONDITIONAL, and the conservatism is NOT removable from
-    here. The host cannot know whether the coprocessor will actually pull the
-    `STALE_VD` source slot. The VPU decides, and NO VPU-SIDE SIGNAL EXISTS to ask.
-    So the op waits whenever the pull is possible, i.e. whenever it has a vector
-    destination.
+  - IQ_V_ALU: UNCONDITIONAL except for a whole-register move. The host cannot
+    know whether the coprocessor will actually pull the `STALE_VD` source slot.
+    The VPU decides, and NO VPU-SIDE SIGNAL EXISTS to ask. So the op waits
+    whenever the pull is possible, i.e. whenever it has a vector destination.
+    The one exception is `vmv<nr>r.v` (`v_is_whole_reg`, which VecDecode sets on
+    the arithmetic lane for that encoding): it overwrites every element at any
+    `vl`/`vtype`, and the VPU contract is that it never pulls old-`vd` for it,
+    staging its third operand from `VS2` instead. The `vec_vold_dep_all` plusarg
+    restores the wait for it, as it does for loads.
   - IQ_V_LOAD: the only readers of a load's stale group are the LCB's undisturbed
     pre-load and VecGroupCopy, and VecGroupCopy's own launch predicate is
     `must_preserve = (vta == 0) || (vma == 0 && !vl_zero)` (part 5 of
@@ -844,8 +848,9 @@ from Tenstorrent Inc.
 
   //@req-spec-issue.g39
   The `IQ_V_ALU` gate is deliberately CONSERVATIVE: `rdy_vold.used` is
-  `dst_rtype === RT_VEC`, so every CII op with a vector destination waits, including
-  the ops that will never pull `STALE_VD`. Whether the coprocessor pulls it is the
+  `dst_rtype === RT_VEC && !v_is_whole_reg`, so every CII op with a vector
+  destination except `vmv<nr>r.v` waits, including the ops that will never pull
+  `STALE_VD`. Whether the coprocessor pulls it is the
   VPU decoder's decision, the issue packet carries no hint of it, and no
   back-channel exists — so the host cannot narrow the gate.
 
@@ -857,7 +862,7 @@ from Tenstorrent Inc.
 
   The fix is the fifth `VecGroupReady` instance, `rdy_vold`, in `IQ_V_LOAD` and
   `IQ_V_ALU` slots only, with `prns := slot_uop.stale_pvdest`,
-  `members := slot_uop.v_emul`, `used` per the part 4 table (unconditional in an
+  `members := slot_uop.v_emul`, `used` per the part 4 table (`!v_is_whole_reg` in an
   ALU slot, ANDed with `v_needs_old_dest` in a load slot), and a
   fifth group `vold_rdy` on the per-member side channel. `VecBusyTable` is amended
   in parallel to export that group's per-member read.

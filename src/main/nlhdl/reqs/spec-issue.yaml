@@ -1724,7 +1724,8 @@ reqs:
   - id: spec-issue.g39
     kind: function
     statement: >
-      Every IQ_V_ALU entry with a vector destination must wait on stale_pvdest readiness.
+      Every IQ_V_ALU entry with a vector destination must wait on stale_pvdest readiness, except a
+      whole-register move (vmv<nr>r.v), which the VPU never pulls old-vd for.
     source:
       file: docs_caracal/src/issue.rst
       anchor: issue-sched-stage
@@ -1732,11 +1733,12 @@ reqs:
       quote: >
         Every ``IQ_V_ALU`` entry with a
         vector destination must therefore wait on ``stale_pvdest`` readiness, including the ops that
-        will never pull it.
+        will never pull it, with ONE exception: a whole-register move ``vmv<nr>r.v``.
     notes: >
       Deliberately conservative: whether the coprocessor pulls STALE_VD is the VPU decoder's
       decision, the issue packet carries no hint of it, and no back-channel exists. The host cannot
-      narrow the gate, so it waits for every vector-destination CII op.
+      narrow the gate in general. The single exemption is vmv<nr>r.v, whose no-pull is a fixed
+      VPU contract (tt_vpu_cii_wrapper_pipelined_top stages VS3 from VS2 for it).
 
 coverage:
 

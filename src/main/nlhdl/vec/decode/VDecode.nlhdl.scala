@@ -277,8 +277,10 @@ RT_FLT needs no such conversion — f0 is a real register.
   source group — so it is not in the list.
 
   `v_uses_vs3` is true exactly when the lane has a VECTOR destination, i.e.
-  wherever part 2 writes `lvs3 := inst(11,7)` and `dst_rtype := RT_VEC`. It is
-  false for part 3's scalar-destination family, where `inst(11,7)` names a GPR or
+  wherever part 2 writes `lvs3 := inst(11,7)` and `dst_rtype := RT_VEC`, EXCEPT a
+  whole-register move `vmv<nr>r.v`: it overwrites every element at any `vl`, and
+  the VPU never pulls old-`vd` for it, so its `lvs3` is neither renamed nor
+  waited on. It is false for part 3's scalar-destination family, where `inst(11,7)` names a GPR or
   an FP register and `lvs3` names no vector register at all. There is no separate
   "encodes a third source" test, and part 2 says why: `lvs3` is deliberately the
   destination for every vector-destination arithmetic op, because the coprocessor

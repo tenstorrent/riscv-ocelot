@@ -377,10 +377,10 @@ class VecIssueSlot(
     // A/B escape hatch: restores the unconditional arm this gate replaced, so one
     // simv measures both sides of the change with no RTL-version confound.
     val vOldDepAll = PlusArg("vec_vold_dep_all", 0,
-      "Arm rdy_vold on every vector load, ignoring vta/vma (pre-fix behaviour)",
+      "Arm rdy_vold on every vector load and vmv<nr>r.v (pre-fix behaviour)",
       width = 1).orR
     m.io.used := track_valid && track_uop.dst_rtype === RT_VEC &&
-      (if (isLoadSlot) (v_needs_old_dest || vOldDepAll) else true.B)
+      (if (isLoadSlot) (v_needs_old_dest || vOldDepAll) else (!track_uop.v_is_whole_reg.get || vOldDepAll))
     m.io.in_member_rdy := io.in_member_rdy.vold_rdy
     io.out_member_rdy.vold_rdy := m.io.out_member_rdy
   }

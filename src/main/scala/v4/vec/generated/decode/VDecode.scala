@@ -134,7 +134,7 @@ class VDecode(implicit p: Parameters) extends BoomModule
     val vs2_zero_c = funct3 === OPMVV && funct6 === 0x14.U && vs1f === "b10001".U
     val v_uses_vs2_w = !(vs2_zero_a || vs2_zero_b || vs2_zero_c)
 
-    val v_uses_vs3_w = !is_scalar_dest_family
+    val v_uses_vs3_w = !is_scalar_dest_family && !is_whole_reg_move
 
     //@req-spec-decode.b1
     //@req-spec-decode.b2

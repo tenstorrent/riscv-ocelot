@@ -205,6 +205,7 @@ class VecDecode(implicit p: Parameters) extends BoomModule
         uopOut.v_uses_vs2.get  := arith.io.uop_out(w).v_uses_vs2.get
         uopOut.v_uses_vs3.get  := arith.io.uop_out(w).v_uses_vs3.get
         uopOut.v_is_masked.get := arith.io.uop_out(w).v_is_masked.get
+        uopOut.v_is_whole_reg.get := isWholeRegMove
         uopOut.fu_code(FC_ALU) := true.B
       }
 

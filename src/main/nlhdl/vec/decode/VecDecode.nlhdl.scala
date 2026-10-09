@@ -282,6 +282,10 @@ from Tenstorrent Inc.
   unit-stride forms are forced false so a reader never consults `pvm` for
   them. The arithmetic side of this field is `arith`'s.
 
+  `v_is_whole_reg` is also written on an ARITHMETIC lane, as `is_whole_reg_move`
+  (the `vmv<nr>r.v` encoding). Its only arithmetic reader is VecIssueSlot's
+  `IQ_V_ALU` `rdy_vold.used`, which exempts that encoding from the stale-dest wait.
+
   The two element widths, which is where an indexed access is got wrong:
   `v_eew := Mux(desc.eew_is_index, vcfg.dec_vconfig(w).vsew, desc.eew)` and
   `v_idx_eew := desc.eew` (meaningful only when `v_is_indexed`).

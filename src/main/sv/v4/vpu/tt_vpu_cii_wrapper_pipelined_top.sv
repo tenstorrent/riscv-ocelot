@@ -107,6 +107,7 @@ module tt_vpu_cii_wrapper_top
     logic                   rf_rden2;        // VS3 is a real 3rd source (not old-dest merge)
     logic                   scalar_src;      // vs1 comes from the INT/FP RF
     logic                   vec_single_reg;  // VPU writes member 0 only
+    logic                   vs3_from_vs2;    // vmv<nr>r.v: no old-dest pull, VS3 staged from VS2
     logic                   scalar_dest;
     cii_caracal_dst_kind_e  dst_kind;
   } op_dec_s;
@@ -134,6 +135,7 @@ module tt_vpu_cii_wrapper_top
   logic                             vec_single_reg;
   logic                             scalar_src;
   logic                             need_old_dest;
+  logic                             whole_reg_move;
   logic                             vm_needed;
   tt_briscv_pkg::vec_autogen_s      dec_uop;
   tt_briscv_pkg::csr_t              csr_dec;
@@ -508,12 +510,16 @@ module tt_vpu_cii_wrapper_top
 
     vm_needed  = dec_uop.usemask || ~d_op.instr.insn[25];
 
+    whole_reg_move = (d_op.instr.insn[6:0] == 7'b1010111) &&
+                     (d_op.instr.insn[14:12] == 3'b011) &&
+                     (d_op.instr.insn[31:26] == 6'b100111);
+
     // Pull the old dest group (VS3) for RMW/accumulate, tail-undisturbed (vta=0),
     // or mask-undisturbed masked ops -- AND for vec_single_reg ops, whose upper
-    need_old_dest = dec_uop.rf_rden2 ||
+    need_old_dest = ~whole_reg_move && (dec_uop.rf_rden2 ||
                     (~d_op.instr.vtype.vta) ||
                     (~d_op.instr.vtype.vma && ~d_op.instr.insn[25]) ||
-                    vec_single_reg;
+                    vec_single_reg);
 
     // dst_nm = number of writeback beats = BOOM's dest group size.
     dec_ctl.dst_nm     = dec_uop.scalar_dest ? 5'd1 :
@@ -532,6 +538,7 @@ module tt_vpu_cii_wrapper_top
     dec_ctl.rf_rden2       = dec_uop.rf_rden2;
     dec_ctl.scalar_src     = scalar_src;
     dec_ctl.vec_single_reg = vec_single_reg;
+    dec_ctl.vs3_from_vs2   = whole_reg_move;
     dec_ctl.scalar_dest    = dec_uop.scalar_dest;
 
     // scalar-dest routes to INT RF, except vfmv.f.s (OPFVV, funct3=0b001) which
@@ -709,7 +716,9 @@ module tt_vpu_cii_wrapper_top
       // lane 1: VS2  (wide -> up to 2*NM members)
       s_p1[rcv_slot][s_rcvd[rcv_slot][CII_MEMBER_W-1:0]] <= dat_fifo_data[1].rsp_dat;
       // lane 2: VS3 / old-dest
-      s_p2[rcv_slot][s_rcvd[rcv_slot][CII_MEMBER_W-1:0]] <= dat_fifo_data[2].rsp_dat;
+      s_p2[rcv_slot][s_rcvd[rcv_slot][CII_MEMBER_W-1:0]] <= s_ctl[rcv_slot].vs3_from_vs2 ?
+                                                           dat_fifo_data[1].rsp_dat :
+                                                           dat_fifo_data[2].rsp_dat;
       // lane 3: v0 mask -- single register (member 0 only)
       if (s_rcvd[rcv_slot] == 5'd0) s_vm[rcv_slot] <= dat_fifo_data[3].rsp_dat;
     end

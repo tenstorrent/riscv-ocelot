@@ -1671,6 +1671,7 @@ class BoomCore(roccCSRs: Seq[Seq[CustomCSR]])(implicit p: Parameters) extends Bo
 
 
   if (PIPEVIEW_PRINTF) {
+    printf("O3PV cyc %d\n", debug_tsc_reg)
     for (w <- 0 until coreWidth) {
       val dec_seq      = dec_fbundle.uops(w).bits.debug_seq.get
       val dec_last_seq = RegNext(dec_seq)

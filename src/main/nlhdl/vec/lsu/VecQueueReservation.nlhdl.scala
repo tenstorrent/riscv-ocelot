@@ -508,6 +508,10 @@ from Tenstorrent Inc.
   Sharing one pair was the original reading and it is wrong; it would place
   `us_data_base` at the address queue's base and scatter a US store's data
   writes over another op's region.
+  Each row also holds its own carry-inclusive `full_idx`, sized per direction
+  (`1 + ldqAddrSz` / `1 + stqAddrSz`); the two need not be equal. Every lookup
+  that selects a row by `is_store` from either table zero-extends both rows to
+  the wider `full_idx` before muxing, so an LDQ and STQ of different sizes elaborate.
   This table is per-LDQ/STQ-ENTRY state, NOT state scoped to "the current
   instruction", and it exports no busy — it is what the vector-LSU invariant
   relies on, not a violation of it, and it is the only place in the machine

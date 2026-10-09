@@ -172,6 +172,12 @@ class VecQueueReservation(implicit p: Parameters) extends BoomModule
 
   val ldqTable = RegInit(VecInit(Seq.fill(numLdqEntries)(0.U.asTypeOf(new VecResvRow(1 + ldqAddrSz)))))
   val stqTable = RegInit(VecInit(Seq.fill(numStqEntries)(0.U.asTypeOf(new VecResvRow(1 + stqAddrSz)))))
+  def pickRow(isStore: Bool, st: VecResvRow, ld: VecResvRow): VecResvRow = {
+    val w  = 1 + (ldqAddrSz max stqAddrSz)
+    val sw = Wire(new VecResvRow(w)); sw := st
+    val lw = Wire(new VecResvRow(w)); lw := ld
+    Mux(isStore, sw, lw)
+  }
 
   // =========================================================================
   // ---- 1/2. Per-lane requested count and queue selection ----
@@ -362,7 +368,7 @@ class VecQueueReservation(implicit p: Parameters) extends BoomModule
 
   for (i <- 0 until 4) {
     val l    = io.resv_lookup(i)
-    val row  = Mux(l.bits.is_store, stqTable(l.bits.q_idx(stqAddrSz - 1, 0)), ldqTable(l.bits.q_idx(ldqAddrSz - 1, 0)))
+    val row  = pickRow(l.bits.is_store, stqTable(l.bits.q_idx(stqAddrSz - 1, 0)), ldqTable(l.bits.q_idx(ldqAddrSz - 1, 0)))
     for (k <- 0 until 2) {
       val slotLive = l.valid && row.valid && row.slots(k).valid
       io.resv_resp(i)(k).base  := Mux(slotLive, row.slots(k).base, 0.U)
@@ -380,7 +386,7 @@ class VecQueueReservation(implicit p: Parameters) extends BoomModule
   for (i <- 0 until 4) {
     val r   = io.release(i)
     val idx = r.bits.q_idx
-    val row = Mux(r.bits.is_store, stqTable(idx(stqAddrSz - 1, 0)), ldqTable(idx(ldqAddrSz - 1, 0)))
+    val row = pickRow(r.bits.is_store, stqTable(idx(stqAddrSz - 1, 0)), ldqTable(idx(ldqAddrSz - 1, 0)))
 
     //@req-spec-lsu.b4
     // MODULAR: `regionEnd` truncates to qSz. Every base/tail here is a WRAPPING
@@ -456,7 +462,7 @@ class VecQueueReservation(implicit p: Parameters) extends BoomModule
   // ---- Retire: the only head-side reclamation path ----
   // =========================================================================
 
-  val retireRow = Mux(io.retire.bits.is_store,
+  val retireRow = pickRow(io.retire.bits.is_store,
     stqTable(io.retire.bits.q_idx(stqAddrSz - 1, 0)),
     ldqTable(io.retire.bits.q_idx(ldqAddrSz - 1, 0)))
 
