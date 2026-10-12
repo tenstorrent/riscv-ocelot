@@ -6,7 +6,9 @@ module tt_vfp_encoder
    input  logic                    [ 1:0] data_sel,     // 0: same , 1: reserved, 2: upscale_lo, 3: upscale_hi
    output logic [NUM_LANE-1:0][3:0][16:0] f16_data_out,
    output logic [NUM_LANE-1:0][1:0][32:0] f32_data_out,
-   output logic [NUM_LANE-1:0][0:0][64:0] f64_data_out
+   output logic [NUM_LANE-1:0][0:0][64:0] f64_data_out,
+   output logic [NUM_LANE-1:0][1:0]       f32_upscale_nv,
+   output logic [NUM_LANE-1:0]            f64_upscale_nv
 );
 
 `include "HardFloat_localFuncs.vi"
@@ -22,9 +24,11 @@ module tt_vfp_encoder
          (
             .data_in     (lane_in     [i]),
             .data_sel    (lane_sel       ),
-            .f16_data_out(f16_data_out[i]),
-            .f32_data_out(f32_data_out[i]),
-            .f64_data_out(f64_data_out[i])
+            .f16_data_out   (f16_data_out   [i]),
+            .f32_data_out   (f32_data_out   [i]),
+            .f64_data_out   (f64_data_out   [i]),
+            .f32_upscale_nv (f32_upscale_nv [i]),
+            .f64_upscale_nv (f64_upscale_nv [i])
          );
       end
    endgenerate

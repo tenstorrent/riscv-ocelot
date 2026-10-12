@@ -41,6 +41,8 @@ import tt_briscv_pkg::*;
    logic [2:0][NUM_LANE-1:0][3:0][16:0] encoded_f16_data_s0;
    logic [2:0][NUM_LANE-1:0][1:0][32:0] encoded_f32_data_s0;
    logic [2:0][NUM_LANE-1:0][0:0][64:0] encoded_f64_data_s0;
+   logic [2:0][NUM_LANE-1:0][1:0]       enc_f32_nv_s0;
+   logic [2:0][NUM_LANE-1:0]            enc_f64_nv_s0;
    logic      [NUM_LANE-1:0]     [63:0] int_data_s0;
    logic                                ctl_wdeop_s0;
 
@@ -60,6 +62,9 @@ import tt_briscv_pkg::*;
    logic [2:0][NUM_LANE-1:0][3:0][16:0] lane_f16_data_s1;
    logic [2:0][NUM_LANE-1:0][1:0][32:0] lane_f32_data_s1;
    logic [2:0][NUM_LANE-1:0][0:0][64:0] lane_f64_data_s1;
+   logic [2:0][NUM_LANE-1:0][1:0]       enc_f32_nv_s1;
+   logic [2:0][NUM_LANE-1:0]            enc_f64_nv_s1;
+   logic                                upscale_nv_s1;
    logic      [NUM_LANE-1:0]     [63:0] lane_int_data_s1;
 
    logic [NUM_LANE-1:0][ 3:0] lane_valid_s1;
@@ -77,6 +82,7 @@ import tt_briscv_pkg::*;
    logic                      ctl_valid_s2;
    vec_autogen_s              ctl_autogen_s2;
    logic               [ 1:0] ctl_sew_s2;
+   logic                      upscale_nv_s2;
 
    logic [NUM_LANE*64/2-1:0]  nrwop_res_s2;
    logic [NUM_LANE-1:0][ 4:0] nrwop_exc_s2;
@@ -91,9 +97,11 @@ import tt_briscv_pkg::*;
          (
             .data_in     (encoder_data_in_s0 [i]),
             .data_sel    (encoder_data_sel_s0[i]),
-            .f16_data_out(encoded_f16_data_s0[i]),
-            .f32_data_out(encoded_f32_data_s0[i]),
-            .f64_data_out(encoded_f64_data_s0[i])
+            .f16_data_out  (encoded_f16_data_s0[i]),
+            .f32_data_out  (encoded_f32_data_s0[i]),
+            .f64_data_out  (encoded_f64_data_s0[i]),
+            .f32_upscale_nv(enc_f32_nv_s0     [i]),
+            .f64_upscale_nv(enc_f64_nv_s0     [i])
          );
    
          assign encoder_data_in_s0 [i] = i_rddata[i];
@@ -289,6 +297,8 @@ import tt_briscv_pkg::*;
          lane_f16_data_s1     <=  encoded_f16_data_s0;
          lane_f32_data_s1     <=  encoded_f32_data_s0;
          lane_f64_data_s1     <=  encoded_f64_data_s0;
+         enc_f32_nv_s1        <=  enc_f32_nv_s0;
+         enc_f64_nv_s1        <=  enc_f64_nv_s0;
          lane_int_data_s1     <=  int_data_s0;
       end
    end
@@ -499,12 +509,47 @@ import tt_briscv_pkg::*;
       endcase
    end
 
+   // sNaN widened in the encoder becomes a canonical qNaN, so the arithmetic
+   // unit no longer sees it. Fold that lost invalid into the result flags.
+   // Add consumes a and c, multiply consumes a and b, and fma consumes all three.
+   always_comb begin
+      upscale_nv_s1 = 1'b0;
+      if (ctl_valid_s1 && ctl_autogen_s1.reductop && ctl_wdeop_s1) begin
+         if ((ctl_sew_s1 == 2'h2) && f32_red_en_s1)
+            upscale_nv_s1 = enc_f32_nv_s1[2][f32_red_c_idx_s1/2][f32_red_c_idx_s1%2];
+         else if ((ctl_sew_s1 == 2'h3) && f64_red_en_s1)
+            upscale_nv_s1 = enc_f64_nv_s1[2][f64_red_c_idx_s1];
+      end else if (ctl_mode_s1 != 2'h0) begin
+         for (int i = 0; i < NUM_LANE; i++) begin
+            if (ctl_sew_s1 == 2'h2) begin
+               for (int e = 0; e < 2; e++) begin
+                  if (lane_valid_s1[i][e]) begin
+                     if (ctl_mode_s1 inside {2'h1, 2'h3})
+                        upscale_nv_s1 |= enc_f32_nv_s1[0][i][e] | enc_f32_nv_s1[2][i][e];
+                     if (ctl_mode_s1 inside {2'h2, 2'h3})
+                        upscale_nv_s1 |= enc_f32_nv_s1[0][i][e] | enc_f32_nv_s1[1][i][e];
+                  end
+               end
+            end else if (ctl_sew_s1 == 2'h3) begin
+               if (lane_valid_s1[i][0]) begin
+                  if (ctl_mode_s1 inside {2'h1, 2'h3})
+                     upscale_nv_s1 |= enc_f64_nv_s1[0][i] | enc_f64_nv_s1[2][i];
+                  if (ctl_mode_s1 inside {2'h2, 2'h3})
+                     upscale_nv_s1 |= enc_f64_nv_s1[0][i] | enc_f64_nv_s1[1][i];
+               end
+            end
+         end
+      end
+   end
+
    // Stage 2
    always_ff @(posedge i_clk, negedge i_reset_n) begin
       if (~i_reset_n) begin
-         ctl_valid_s2 <= '0;
+         ctl_valid_s2  <= '0;
+         upscale_nv_s2 <= 1'b0;
       end else begin
-         ctl_valid_s2 <= ctl_valid_s1;
+         ctl_valid_s2  <= ctl_valid_s1;
+         upscale_nv_s2 <= upscale_nv_s1;
       end
    end
 
@@ -570,7 +615,8 @@ import tt_briscv_pkg::*;
 
       o_result_ooo_exc.fpNV |= f16_red_exc_s2[4] ||
                                f32_red_exc_s2[4] ||
-                               f64_red_exc_s2[4];
+                               f64_red_exc_s2[4] ||
+                               upscale_nv_s2;
       o_result_ooo_exc.fpDZ |= f16_red_exc_s2[3] ||
                                f32_red_exc_s2[3] ||
                                f64_red_exc_s2[3];
