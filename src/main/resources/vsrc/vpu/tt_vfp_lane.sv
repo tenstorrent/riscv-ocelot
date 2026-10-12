@@ -632,9 +632,9 @@ module tt_vfp_lane
             5'b01111: begin
                cvt_res = (i_sew == 2'h2) ? i32_wcvtxf :
                                            i64_wcvtxf;
-               cvt_exc = (i_sew == 2'h2) ? ({5{i_valid[0]}} & i32_wcvtxf_exc[0]) |
-                                           ({5{i_valid[1]}} & i32_wcvtxf_exc[1])  :
-                                           ({5{i_valid[0]}} & i64_wcvtxf_exc[0]) ;
+               cvt_exc = (i_sew == 2'h2) ? ({5{i_valid[0]}} & {|i32_wcvtxf_exc[0][2:1], 3'h0, i32_wcvtxf_exc[0][0]}) |
+                                           ({5{i_valid[1]}} & {|i32_wcvtxf_exc[1][2:1], 3'h0, i32_wcvtxf_exc[1][0]})  :
+                                           ({5{i_valid[0]}} & {|i64_wcvtxf_exc[0][2:1], 3'h0, i64_wcvtxf_exc[0][0]}) ;
             end
             // vfwcvt.f.xu.v
             // vfwcvt.f.x.v
@@ -685,13 +685,13 @@ module tt_vfp_lane
                cvt_res = (i_sew == 2'h0) ? i8_ncvtxf  :
                          (i_sew == 2'h1) ? i16_ncvtxf :
                                            i32_ncvtxf;
-               cvt_exc = (i_sew == 2'h0) ? ({5{i_valid[0]}} & { i8_ncvtxf_exc[0][2], 3'h0,  i8_ncvtxf_exc[0][0]}) |
-                                           ({5{i_valid[1]}} & { i8_ncvtxf_exc[1][2], 3'h0,  i8_ncvtxf_exc[1][0]}) |
-                                           ({5{i_valid[2]}} & { i8_ncvtxf_exc[2][2], 3'h0,  i8_ncvtxf_exc[2][0]}) |
-                                           ({5{i_valid[3]}} & { i8_ncvtxf_exc[3][2], 3'h0,  i8_ncvtxf_exc[3][0]})  :
-                         (i_sew == 2'h1) ? ({5{i_valid[0]}} & {i16_ncvtxf_exc[0][2], 3'h0, i16_ncvtxf_exc[0][0]}) |
-                                           ({5{i_valid[1]}} & {i16_ncvtxf_exc[1][2], 3'h0, i16_ncvtxf_exc[1][0]})  :
-                                           ({5{i_valid[0]}} & {i32_ncvtxf_exc[0][2], 3'h0, i32_ncvtxf_exc[0][0]});
+               cvt_exc = (i_sew == 2'h0) ? ({5{i_valid[0]}} & {|i8_ncvtxf_exc[0][2:1], 3'h0, i8_ncvtxf_exc[0][0]}) |
+                                           ({5{i_valid[1]}} & {|i8_ncvtxf_exc[1][2:1], 3'h0, i8_ncvtxf_exc[1][0]}) |
+                                           ({5{i_valid[2]}} & {|i8_ncvtxf_exc[2][2:1], 3'h0, i8_ncvtxf_exc[2][0]}) |
+                                           ({5{i_valid[3]}} & {|i8_ncvtxf_exc[3][2:1], 3'h0, i8_ncvtxf_exc[3][0]})  :
+                         (i_sew == 2'h1) ? ({5{i_valid[0]}} & {|i16_ncvtxf_exc[0][2:1], 3'h0, i16_ncvtxf_exc[0][0]}) |
+                                           ({5{i_valid[1]}} & {|i16_ncvtxf_exc[1][2:1], 3'h0, i16_ncvtxf_exc[1][0]})  :
+                                           ({5{i_valid[0]}} & {|i32_ncvtxf_exc[0][2:1], 3'h0, i32_ncvtxf_exc[0][0]});
             end
             // vfncvt.f.f.v
             // vfncvt.rod.f.f.v

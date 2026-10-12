@@ -106,7 +106,7 @@ module tt_vfp_ex_unit
       .out              (o_int_res),
       .intExceptionFlags(int_exc_raw)
    );
-   assign o_int_exc = {5{i_valid}} & {int_exc_raw[2], 3'h0, int_exc_raw[0]};
+   assign o_int_exc = {5{i_valid}} & {|int_exc_raw[2:1], 3'h0, int_exc_raw[0]};
 
    // Comparison
    logic [4:0] cmp_exc_raw;
